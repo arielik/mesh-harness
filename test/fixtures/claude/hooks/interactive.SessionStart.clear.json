@@ -1,0 +1,13 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "mode": "interactive",
+  "claudePidHeaderPresent": true,
+  "input": {
+    "session_id": "7cc75828-2aa1-407b-9506-8a9f1401a582",
+    "transcript_path": "/home/dev/.claude/projects/-work-interactive/7cc75828-2aa1-407b-9506-8a9f1401a582.jsonl",
+    "cwd": "/work/interactive",
+    "scratchpad_dir": "/tmp/claude-1000/-work-interactive/7cc75828-2aa1-407b-9506-8a9f1401a582/scratchpad",
+    "hook_event_name": "SessionStart",
+    "source": "clear"
+  }
+}

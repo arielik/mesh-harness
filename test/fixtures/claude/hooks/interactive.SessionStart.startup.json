@@ -1,0 +1,14 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "mode": "interactive",
+  "claudePidHeaderPresent": true,
+  "input": {
+    "session_id": "f92c48b0-49ed-4650-b8f7-c87574da1f2f",
+    "transcript_path": "/home/dev/.claude/projects/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f.jsonl",
+    "cwd": "/work/interactive",
+    "scratchpad_dir": "/tmp/claude-1000/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f/scratchpad",
+    "hook_event_name": "SessionStart",
+    "source": "startup",
+    "model": "claude-haiku-5-5"
+  }
+}

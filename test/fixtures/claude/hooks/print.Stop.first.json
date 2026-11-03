@@ -1,0 +1,20 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "mode": "print",
+  "claudePidHeaderPresent": false,
+  "input": {
+    "session_id": "81ecbc70-7057-4968-880c-5060cc935fce",
+    "transcript_path": "/home/dev/.claude/projects/-work-print/81ecbc70-7057-4968-880c-5060cc935fce.jsonl",
+    "cwd": "/work/print",
+    "prompt_id": "b3770518-1335-4180-ad3c-cc833f14db7f",
+    "permission_mode": "default",
+    "effort": {
+      "level": "medium"
+    },
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "FIRST",
+    "background_tasks": [],
+    "session_crons": []
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "mode": "interactive",
+  "claudePidHeaderPresent": false,
+  "input": {
+    "session_id": "f92c48b0-49ed-4650-b8f7-c87574da1f2f",
+    "transcript_path": "/home/dev/.claude/projects/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f.jsonl",
+    "cwd": "/work/interactive",
+    "scratchpad_dir": "/tmp/claude-1000/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f/scratchpad",
+    "prompt_id": "5d76f284-0ac5-44f7-9a82-2a9d8d9cdbe7",
+    "permission_mode": "default",
+    "effort": {
+      "level": "medium"
+    },
+    "hook_event_name": "Stop",
+    "stop_hook_active": true,
+    "last_assistant_message": "SECOND",
+    "background_tasks": [],
+    "session_crons": []
+  }
+}

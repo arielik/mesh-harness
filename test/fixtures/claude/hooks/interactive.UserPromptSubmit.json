@@ -1,0 +1,15 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "mode": "interactive",
+  "claudePidHeaderPresent": true,
+  "input": {
+    "session_id": "f92c48b0-49ed-4650-b8f7-c87574da1f2f",
+    "transcript_path": "/home/dev/.claude/projects/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f.jsonl",
+    "cwd": "/work/interactive",
+    "scratchpad_dir": "/tmp/claude-1000/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f/scratchpad",
+    "prompt_id": "278ca9f0-b4ed-4650-a6f5-cee0385b8dff",
+    "permission_mode": "default",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "<prompt text>"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "note": "Captured at startup while a startup notice was open (first interactive spike run); recorded by hand.",
+  "entry": {
+    "pid": 15323,
+    "cwd": "/work/interactive",
+    "kind": "interactive",
+    "startedAt": 1793748001601,
+    "sessionId": "67bb2568-de41-4bc7-8632-f1e8c295f21f",
+    "name": "interactive-da",
+    "status": "waiting",
+    "waitingFor": "dialog open"
+  }
+}

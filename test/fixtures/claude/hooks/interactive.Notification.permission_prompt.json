@@ -1,0 +1,15 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "mode": "interactive",
+  "claudePidHeaderPresent": true,
+  "input": {
+    "session_id": "f92c48b0-49ed-4650-b8f7-c87574da1f2f",
+    "transcript_path": "/home/dev/.claude/projects/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f.jsonl",
+    "cwd": "/work/interactive",
+    "scratchpad_dir": "/tmp/claude-1000/-work-interactive/f92c48b0-49ed-4650-b8f7-c87574da1f2f/scratchpad",
+    "prompt_id": "591546b2-8d31-497b-8a83-470a0aca8e66",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission",
+    "notification_type": "permission_prompt"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "claudeCodeVersion": "2.1.314",
+  "mode": "print",
+  "claudePidHeaderPresent": true,
+  "input": {
+    "session_id": "81ecbc70-7057-4968-880c-5060cc935fce",
+    "transcript_path": "/home/dev/.claude/projects/-work-print/81ecbc70-7057-4968-880c-5060cc935fce.jsonl",
+    "cwd": "/work/print",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}

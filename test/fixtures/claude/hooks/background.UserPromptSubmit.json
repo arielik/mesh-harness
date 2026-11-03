@@ -1,0 +1,16 @@
+{
+  "claudeCodeVersion": "2.1.317",
+  "mode": "background",
+  "claudePidHeaderPresent": true,
+  "input": {
+    "session_id": "93474861-d30b-4ad0-9342-df42de2bb05f",
+    "transcript_path": "/home/dev/.claude/projects/-work-interactive/93474861-d30b-4ad0-9342-df42de2bb05f.jsonl",
+    "cwd": "/work/interactive",
+    "scratchpad_dir": "/tmp/claude-1000/-work-interactive/93474861-d30b-4ad0-9342-df42de2bb05f/scratchpad",
+    "prompt_id": "6e519438-70a7-4b47-b744-7b41599437d0",
+    "permission_mode": "default",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "<prompt text>",
+    "session_title": "mesh-spike-bg"
+  }
+}

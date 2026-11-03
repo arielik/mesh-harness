@@ -1,0 +1,18 @@
+{
+  "claudeCodeVersion": "2.1.317",
+  "mode": "background",
+  "claudePidHeaderPresent": true,
+  "input": {
+    "session_id": "93474861-d30b-4ad0-9342-df42de2bb05f",
+    "transcript_path": "/home/dev/.claude/projects/-work-interactive/93474861-d30b-4ad0-9342-df42de2bb05f.jsonl",
+    "cwd": "/work/interactive",
+    "scratchpad_dir": "/tmp/claude-1000/-work-interactive/93474861-d30b-4ad0-9342-df42de2bb05f/scratchpad",
+    "hook_event_name": "SessionStart",
+    "source": "resume",
+    "session_title": "mesh-spike-bg",
+    "seconds_since_last_response": 104,
+    "context_tokens": 38486,
+    "prompt_cache_likely_expired": false,
+    "estimated_cache_write_usd": 0.0077
+  }
+}
