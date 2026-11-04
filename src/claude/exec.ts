@@ -36,8 +36,8 @@ export const run: Runner = (cmd, args, opts = {}) =>
       child.kill("SIGTERM");
       done({ code: 124, stdout, stderr: stderr + `\n${cmd}: timed out` });
     }, opts.timeoutMs ?? 30_000);
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    child.stdout?.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stderr?.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", (e) => done({ code: 127, stdout, stderr: String(e) }));
     child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
     if (child.stdin) {
