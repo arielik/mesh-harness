@@ -548,7 +548,19 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 - Web: Goals board, Goal page with an SVG DAG laid out by depth (no React Flow), step panel with facts, Design tab with plan versions and step-level diffs, approve/revise, Timeline. Hash routing, no router library.
 - Design contributors and critical-path highlighting stay in `docs/later.md`.
 
-### M4. Ledger, analysis feed + hardening (weeks 12–14)
+### M4. Local-first, workflow capture, ledger, analysis feed + hardening (weeks 12–16)
+
+**First, local-first and workflow capture** ([design](../analysis/2026-11-04-local-first-and-workflow-capture.md), owner decisions 11–14). The process lives in the repo's agents and workflows and never calls mesh. mesh runs in two modes, Team and Solo, and everything keeps working without the hub.
+
+| # | Task | Size | Acceptance |
+|---|---|---|---|
+| 4.0.1 | **Local hub in the daemon**: the same `HubService` on the daemon's SQLite; Solo when no hub is configured; tools go to the local hub first | M | T3: a full Solo goal with records |
+| 4.0.2 | **Replication with the team hub**: local copies of held goals and steps, outbox up, pull down, idempotent; conflict rule: first claim at the hub wins (decision 16). Publishing locally created goals waits for the goal model (decision 15). | M | T2, T4 |
+| 4.0.3 | **Circuit breaker** on the hub link: fail fast after the first failure, background probe, status in TUI and `mesh status` | S | T1 |
+| 4.0.4 | **Records rendered by the daemon** (same `core/trail.ts`) | S | Offline `mesh_done` writes the record |
+| 4.0.5 | **Workflow capture**: `SubagentStart`/`SubagentStop` hooks (7 in total); read `journal.jsonl`, `agent-*.meta.json` and `workflows/<run>.json`; label → record key (the team's id as written) and round, no mesh goal needed; typed result → round data; pending records in `<git-common-dir>/mesh/pending/`; `mesh ledger stage <id>`; backfill on daemon start | M | T5 with captured fixtures |
+| 4.0.6 | **Canonical workflows** in `architecture-and-standards/claude-assets/workflows/`: labels `"<stage> <id> r<N>"`, a schema on every `agent()`, richer schemas, one optional `mesh ledger stage` line in Close | S | Runs unchanged without mesh |
+| 4.0.7 | **`pnpm spike e2e-offline`**: no daemon / hub blackholed / hub restored mid-run / Solo, real Claude | M | T7 |
 
 The ledger rule: durable, generated summaries are committed in git (the ledger); precise and live-only data stays in hub events, kept N days. No hand-written ledger fields: everything comes from hooks, events and tool arguments.
 
@@ -556,7 +568,7 @@ The ledger rule: durable, generated summaries are committed in git (the ledger);
 |---|---|---|---|
 | 4.1 | `GET /v1/events?after=` + service tokens; JSON Schema generated from `protocol` (`schemas/`, `docs/events.md`), checked for drift in CI | S | mesh-ai can page the full log |
 | 4.2 | `mesh hub backup`; event retention option (R6); the ledger rule documented | S | Old events pruned; a backup restores |
-| 4.3 | `pnpm test:claude`: M0 spikes as a contract suite against the installed Claude Code | S | Runs on demand or nightly |
+| 4.3 | `pnpm test:claude`: M0 spikes as a contract suite against the installed Claude Code, including the subagent hooks and the workflow file formats (T6) | S | Runs on demand or nightly |
 | 4.4 | Docs: overview, concepts, install, auth (providers + Kanidm preset), operations, ledger format | S | |
 | 4.5 | **`mesh.ledger.v1` schema** (R1): `schema` and `record: goal\|plan\|step` on every trail file; zod in `protocol/`; unknown fields allowed | S | Golden files validate; old records still parse |
 | 4.6 | **Provenance per segment** (R2): `segments[]` with sid, user, from/to, model + `model_source` (`hook` from `SessionStart`, `agent` from the optional `model` argument of `mesh_done`), effort and permission_mode (from `Stop`, kept instead of dropped), Claude Code version, harness hash, repo commit, mesh version, turns, human prompts, nudges, waits. Plans carry `{version, approved_by, approved_at}`. No token usage. | M | A step taken over by a second person shows two segments with their own models |
@@ -569,7 +581,7 @@ The ledger rule: durable, generated summaries are committed in git (the ledger);
 | 4.13 | **Goal roll-up** (C8): at goal done, `goal.yaml` gets totals per stage (rounds, cycles, buckets, parks, people, models, harness hashes, lead time) | S | A finished goal has a retro record with no agent involved |
 | 4.14 | mesh-ai side (its own backlog): JSONL import, Flow/Quality/Models/People views | — | Tracked in mesh-ai |
 
-### M4.5. Lifecycle data, all optional (weeks 15–16)
+### M4.5. Lifecycle data, all optional (weeks 17–18)
 
 Optional plan fields and guards only: no roles engine and no workflow engine. A plan without them works as today. The target process these serve is described in [the mesh development cycle](../analysis/2026-11-04-mesh-development-cycle.md).
 

@@ -16,6 +16,7 @@ These items are deliberately left out of [the implementation plan](plan/implemen
 | Local web "My sessions" page | The TUI covers it, and it adds local CSRF surface |
 | Token usage via OpenTelemetry | An analysis concern for mesh-ai, opt-in |
 | Replay evals | mesh-ai, after step records exist |
-| Hub running inside `mesh up --solo` | `mesh hub` on loopback with the `none` provider covers solo use |
 | TanStack Query in the web app | A small fetch + SSE hook was enough for the Live page |
 | A real-Kanidm test in CI | The mock issuer covers the protocol; verify against a lab Kanidm manually |
+| Goal model and goal identity (backlog, capabilities, use cases in git, in owner or dedicated repos; see `architecture-and-standards`) | Owner decision 15: debate separately; until then programme records are keyed by the team's own ids and Solo goals stay local |
+| Publishing goals created offline to the team hub | Depends on the goal model |
