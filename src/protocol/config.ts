@@ -7,10 +7,23 @@ export const DaemonConfig = z.object({
   key: z.string().min(16),
   notify: z.boolean().default(true),
   workspaceRoots: z.array(z.string()).default([]),
+  /** Default autopilot level for sessions (plan §3.6). */
+  autopilot: z.enum(["off", "nudge", "chain"]).default("nudge"),
 });
 export type DaemonConfig = z.infer<typeof DaemonConfig>;
 
+/** ~/.config/mesh/credentials.json, written by `mesh login` (mode 0600), shared by CLI and daemon. */
+export const Credentials = z.object({
+  hub: z.string().url(),
+  token: z.string(),
+  user: z.object({ id: z.string(), name: z.string(), roles: z.array(z.string()) }),
+  machine: z.string().optional(),
+});
+export type Credentials = z.infer<typeof Credentials>;
+
 export interface MeshPaths {
+  credentials: string;
+  claudeMd: string;
   configDir: string;
   stateDir: string;
   daemonConfig: string;
@@ -25,6 +38,8 @@ export function resolvePaths(env: Record<string, string | undefined>, home: stri
   const stateDir = env.MESH_STATE_DIR ?? join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "mesh");
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   return {
+    credentials: join(configDir, "credentials.json"),
+    claudeMd: join(claudeConfigDir, "CLAUDE.md"),
     configDir,
     stateDir,
     daemonConfig: join(configDir, "daemon.json"),

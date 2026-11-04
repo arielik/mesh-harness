@@ -90,6 +90,7 @@ export function render(v: View): string[] {
     lines.push("  No Claude Code sessions yet. Start one with `claude` or `mesh run <repo>`.");
   }
   const labelW = Math.min(24, Math.max(10, ...list.map((s) => sessionLabel(s).length)));
+  const stepW = Math.min(16, Math.max(0, ...list.map((s) => (s.step ?? "").length)));
   let current: Group | undefined;
   for (const s of list) {
     const g = groupOf(s);
@@ -101,8 +102,9 @@ export function render(v: View): string[] {
       current = g;
     }
     const pending = pendingBySid.get(s.sid);
-    const right = `${pending ? `✉${pending} ` : ""}${s.bgId ? "bg " : ""}${age(since(s, v.now)).padStart(4)}`;
-    const left = `  ${ICON[g]} ${fit(sessionLabel(s), labelW)}  `;
+    const auto = s.autopilot && s.autopilot !== "nudge" ? `${s.autopilot} ` : "";
+    const right = `${pending ? `✉${pending} ` : ""}${auto}${s.bgId ? "bg " : ""}${age(since(s, v.now)).padStart(4)}`;
+    const left = `  ${ICON[g]} ${fit(sessionLabel(s), labelW)}  ${stepW ? `${fit(s.step ?? "—", stepW)}  ` : ""}`;
     const middle = fit(detail(s, v.now), Math.max(0, v.width - left.length - right.length - 1));
     const row = `${left}${middle} ${right}`;
     lines.push(s.sid === v.selected ? paint(C.inverse, row) : row);
@@ -110,7 +112,7 @@ export function render(v: View): string[] {
 
   const footer: string[] = [];
   if (v.input) footer.push(paint(C.bold, `${v.input.label}${v.input.value}▌`));
-  else footer.push(paint(C.dim, "⏎ jump · s say · r refresh · ↑↓ move · q quit"));
+  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · n next step · r refresh · ↑↓ move · q quit"));
   if (v.status) footer.push(fit(v.status, v.width));
   const room = v.height - footer.length - 1;
   const body = lines.length > room ? [...lines.slice(0, Math.max(0, room - 1)), paint(C.dim, "  …")] : lines;

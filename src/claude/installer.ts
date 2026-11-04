@@ -30,6 +30,8 @@ export function hookCommand(t: HookTarget, kind: HookKind): string {
     '-H "X-Claude-Pid: ${CLAUDE_PID:-$PPID}"',
     '-H "X-Tmux-Pane: ${TMUX_PANE:-}"',
     '-H "X-Tmux: ${TMUX:-}"',
+    '-H "X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}"',
+    '-H "X-Mesh-Step: ${MESH_STEP:-}"',
     hookUrl(t, kind),
   ].join(" ");
 }

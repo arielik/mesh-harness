@@ -160,6 +160,26 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         const r = await jump(s, opts.env, leave, enter);
         status = r.message || undefined;
         draw();
+      } else if (key === "a") {
+        const order = ["nudge", "chain", "off"] as const;
+        const cur = s.autopilot ?? "nudge";
+        const next = order[(order.indexOf(cur) + 1) % order.length] as "off" | "nudge" | "chain";
+        try {
+          await client.autopilot(s.sid, next);
+          status = `autopilot ${next} for ${s.name ?? s.repo?.name ?? s.sid.slice(0, 8)}`;
+        } catch (e) {
+          status = e instanceof Error ? e.message : String(e);
+        }
+        await refresh();
+      } else if (key === "n") {
+        status = "looking for a ready step…";
+        draw();
+        try {
+          status = (await client.next(s.sid)).message;
+        } catch (e) {
+          status = e instanceof Error ? e.message : String(e);
+        }
+        await refresh();
       } else if (key === "s") {
         prompt = { label: `say to ${s.name ?? s.repo?.name ?? s.sid.slice(0, 8)}: `, value: "", target: s.sid };
         draw();

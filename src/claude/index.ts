@@ -17,3 +17,4 @@ export {
   type HookTarget,
 } from "./installer.ts";
 export { claudeVersion, compareVersions, MIN_CLAUDE_VERSION, parseVersion } from "./version.ts";
+export { claudeMdInstalled, installClaudeMd, installMcp, MCP_NAME, mcpInstalled, uninstallClaudeMd, uninstallMcp } from "./extras.ts";

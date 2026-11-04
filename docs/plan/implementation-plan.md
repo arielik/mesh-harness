@@ -1,6 +1,6 @@
 # mesh-harness implementation plan
 
-Status: **v2.2, reviewed; M0, M1a and M1b done**. Date: 2026-11-03. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
+Status: **v2.3, reviewed; M0, M1 and M2 done**. Date: 2026-11-03. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
 
 Sources:
 
@@ -510,6 +510,13 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 
 **Exit:** two developers using token auth share a goal with a manual DAG, claim steps in different repos, autopilot chains steps, and one take-over has been done.
 
+**Status: done.** Covered by `test/hub.test.ts` (auth, claims, fix cycles, idempotency, pause and take-over, SSE wake, inbox), `test/m2-flow.test.ts` (two daemons, MCP tools, chain, messages, questions, nudge/escalate, `mesh run --step` binding) and `pnpm spike e2e-m2` against real Claude Code (the agent completed `G1.alpha`, autopilot handed it `G1.beta`, the goal finished). Notes:
+
+- The hook commands also send `X-Mesh-Autopilot` and `X-Mesh-Step` (from `$MESH_AUTOPILOT`/`$MESH_STEP` set by `mesh run`), so a session started for a step binds itself. `mesh doctor` reports older hooks as out of date; re-run `mesh setup`.
+- `mesh setup` now also registers the `mesh` MCP server (`claude mcp add -s user`) and adds the `CLAUDE.md` block (task 2.6); `--no-mcp` skips both; `--uninstall` removes everything exactly.
+- `mesh_ask` marks the session so the end of its turn reads as needs-you even if the last message isn't a question.
+- Solo mode is `mesh hub` on loopback with the default `none` provider, plus `mesh login --hub http://127.0.0.1:7700`; an in-process hub inside `mesh up` is in `docs/later.md`.
+
 ### M2b. Web + OIDC (weeks 7–8)
 
 | # | Task | Size | Acceptance |
@@ -517,6 +524,8 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 | 2.8 | `oidc` provider: discovery, redirect + PKCE (hub-mediated), CLI exchange with a CLI-side PKCE, device flow if advertised, group normalization, Kanidm preset, `bootstrap_admins` | M | Contract suite against the mock issuer; a manual check against Kanidm |
 | 2.9 | Web sessions (cookie, Origin check), web login | S | Integration tests |
 | 2.10 | Web: Live page (people, machines, sessions, attention, activity) | M | Playwright smoke test |
+
+**Status: done.** OIDC is generic with a Kanidm preset; the contract suite runs against a mock issuer (code + PKCE, userinfo fallback, device flow) and the hub-mediated CLI and web flows are tested end to end (`test/hub.test.ts`, `test/cli-login.test.ts`). Not yet checked against a real Kanidm instance. The web app is React + Vite without TanStack Query (a small fetch + SSE hook was enough); `pnpm test:web` runs the Playwright smoke test against the built hub.
 
 ### M3. SDD (weeks 9–11)
 

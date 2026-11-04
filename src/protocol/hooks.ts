@@ -43,6 +43,9 @@ export interface HookHeaders {
   claudePid?: string | undefined;
   tmuxPane?: string | undefined;
   tmux?: string | undefined;
+  /** $MESH_AUTOPILOT and $MESH_STEP, set by `mesh run`. */
+  autopilot?: string | undefined;
+  step?: string | undefined;
 }
 
 /** A hook call normalised for the core. Never carries prompt text (only its length). */
@@ -64,6 +67,9 @@ export interface HookEvent {
   model?: string;
   promptId?: string;
   promptLength?: number;
+  autopilot?: "off" | "nudge" | "chain";
+  /** Step `mesh run --step` claimed for this session. */
+  stepHint?: string;
   /** True when the prompt was typed by mesh (a delivery), so it is not counted as a human prompt. */
   delivered?: boolean;
 }
@@ -75,6 +81,8 @@ export function toHookEvent(kind: HookKind, input: HookInput, headers: HookHeade
   if (headers.tmuxPane && /^%\d+$/.test(headers.tmuxPane)) ev.pane = headers.tmuxPane;
   const socket = headers.tmux?.split(",")[0];
   if (socket) ev.tmuxSocket = socket;
+  if (headers.autopilot === "off" || headers.autopilot === "nudge" || headers.autopilot === "chain") ev.autopilot = headers.autopilot;
+  if (headers.step && /^G\d+\.[a-z0-9-]+$/i.test(headers.step)) ev.stepHint = headers.step;
   if (input.transcript_path !== undefined) ev.transcriptPath = input.transcript_path;
   if (input.source !== undefined) ev.source = input.source;
   if (input.reason !== undefined) ev.reason = input.reason;

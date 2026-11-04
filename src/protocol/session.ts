@@ -49,8 +49,15 @@ export const Session = z.object({
   seenByReconciler: z.boolean(),
   endedAt: z.number().optional(),
   endedReason: z.string().optional(),
-  /** Mesh step this session holds (from M2). */
+  /** Mesh step this session holds. */
   step: z.string().optional(),
+  /** Autopilot level (plan §3.6). */
+  autopilot: z.enum(["off", "nudge", "chain"]).optional(),
+  /** Autopilot nudges sent for the current step, and whether it escalated to the person. */
+  nudges: z.number().int().optional(),
+  escalated: z.boolean().optional(),
+  /** The agent called mesh_ask during this turn: the turn ends waiting for an answer. */
+  asked: z.boolean().optional(),
 });
 export type Session = z.infer<typeof Session>;
 
@@ -66,6 +73,8 @@ export const Message = z.object({
   createdAt: z.number(),
   deliveredAt: z.number().optional(),
   error: z.string().optional(),
+  /** Id of the hub message this came from (plan §5.4). */
+  hubId: z.number().int().optional(),
 });
 export type Message = z.infer<typeof Message>;
 

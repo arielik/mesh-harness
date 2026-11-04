@@ -29,6 +29,9 @@ export const DAEMON_MIGRATIONS: readonly string[] = [
      delivered_at INTEGER
    );
    CREATE INDEX message_pending ON message (state, sid);`,
+  `ALTER TABLE message ADD COLUMN hub_id INTEGER;
+   CREATE UNIQUE INDEX message_hub ON message (hub_id) WHERE hub_id IS NOT NULL;
+   CREATE TABLE outbox (id TEXT PRIMARY KEY, at INTEGER NOT NULL, value TEXT NOT NULL);`,
 ];
 
 interface MessageRow {
@@ -40,6 +43,7 @@ interface MessageRow {
   error: string | null;
   created_at: number;
   delivered_at: number | null;
+  hub_id: number | null;
 }
 
 function toMessage(r: MessageRow): Message {
@@ -52,6 +56,7 @@ function toMessage(r: MessageRow): Message {
     ...(r.method !== null ? { method: r.method } : {}),
     ...(r.error !== null ? { error: r.error } : {}),
     ...(r.delivered_at !== null ? { deliveredAt: r.delivered_at } : {}),
+    ...(r.hub_id !== null ? { hubId: r.hub_id } : {}),
   });
 }
 
@@ -116,14 +121,39 @@ export class DaemonStore {
       .map((r) => JSON.parse(r.value) as HookEvent);
   }
 
-  queueMessage(sid: string, text: string, now: number): Message {
+  queueMessage(sid: string, text: string, now: number, hubId?: number): Message {
     const { lastId } = this.db.run(
-      "INSERT INTO message (sid, text, state, created_at) VALUES (?, ?, 'pending', ?)",
+      "INSERT INTO message (sid, text, state, created_at, hub_id) VALUES (?, ?, 'pending', ?, ?)",
       sid,
       text,
       now,
+      hubId ?? null,
     );
     return this.message(lastId) as Message;
+  }
+
+  hasHubMessage(hubId: number): boolean {
+    return this.db.get("SELECT 1 FROM message WHERE hub_id = ?", hubId) !== undefined;
+  }
+
+  // ---------- outbox (observations spooled for the hub, plan §5.3) ----------
+
+  outboxAdd(id: string, at: number, value: unknown): void {
+    this.db.run("INSERT OR IGNORE INTO outbox (id, at, value) VALUES (?, ?, ?)", id, at, JSON.stringify(value));
+  }
+
+  outboxPeek(limit: number): { id: string; value: unknown }[] {
+    return this.db.all<{ id: string; value: string }>("SELECT id, value FROM outbox ORDER BY at, rowid LIMIT ?", limit).map((r) => ({ id: r.id, value: JSON.parse(r.value) }));
+  }
+
+  outboxRemove(ids: readonly string[]): void {
+    this.db.transaction(() => {
+      for (const id of ids) this.db.run("DELETE FROM outbox WHERE id = ?", id);
+    });
+  }
+
+  outboxSize(): number {
+    return this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM outbox")?.n ?? 0;
   }
 
   message(id: number): Message | undefined {

@@ -1,4 +1,4 @@
-import { KEY_HEADER, SayResponse, SessionsResponse, type DaemonConfig } from "../protocol/index.ts";
+import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig } from "../protocol/index.ts";
 
 export class DaemonUnreachable extends Error {
   constructor(port: number) {
@@ -49,5 +49,17 @@ export class DaemonClient {
 
   async say(target: string, text: string) {
     return SayResponse.parse(await this.call("POST", "/local/say", { target, text }));
+  }
+
+  async autopilot(target: string, level: "off" | "nudge" | "chain"): Promise<Session> {
+    return Session.parse(await this.call("POST", "/local/autopilot", { target, level }));
+  }
+
+  async next(target: string): Promise<{ step?: string; message: string }> {
+    return (await this.call("POST", "/local/next", { target })) as { step?: string; message: string };
+  }
+
+  async status(): Promise<{ hub: string; user?: string; outbox: number; error?: string; host: string }> {
+    return (await this.call("GET", "/local/status")) as { hub: string; user?: string; outbox: number; error?: string; host: string };
   }
 }

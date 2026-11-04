@@ -3,35 +3,34 @@
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import {
+  claudeMdInstalled,
   claudeVersion,
   compareVersions,
   inspectSettingsFile,
+  installClaudeMd,
+  installMcp,
   installSettingsFile,
+  mcpInstalled,
   MIN_CLAUDE_VERSION,
   run as runProgram,
+  uninstallClaudeMd,
+  uninstallMcp,
   uninstallSettingsFile,
-  type Runner,
 } from "../claude/index.ts";
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import type { DaemonConfig, MeshPaths, Session } from "../protocol/index.ts";
+import { CLAUDE_MD_BLOCK, type DaemonConfig, type Session } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
-import { loadConfig, newConfig, parseArgs, saveConfig, type Io } from "./context.ts";
+import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
+
+export type { CliEnv } from "./context.ts";
+import { HubClient, loadCredentials } from "./hub-client.ts";
+import { hubCommands } from "./hub-commands.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
 import { age, groupOf, ordered } from "./tui/render.ts";
 import { jump, runTui } from "./tui/tui.ts";
 
-export interface CliEnv {
-  io: Io;
-  paths: MeshPaths;
-  env: Record<string, string | undefined>;
-  cwd: string;
-  /** argv to start this mesh binary (node + script), for tmux windows and services. */
-  self: string[];
-  runner?: Runner;
-  version: string;
-}
 
 function client(c: CliEnv): DaemonClient {
   return new DaemonClient(loadConfig(c.paths));
@@ -43,9 +42,20 @@ export function setupCommand(c: CliEnv): Command {
     summary: "install mesh's hooks into Claude Code (--uninstall to remove)",
     async run(args) {
       const a = parseArgs(args, ["port"]);
+      const runner = c.runner ?? runProgram;
       if (a.has("uninstall")) {
         const r = uninstallSettingsFile(c.paths.claudeSettings);
-        c.io.out(r.changed ? `Removed mesh hooks from ${c.paths.claudeSettings}.` : "No mesh hooks were installed.");
+        const md = uninstallClaudeMd(c.paths.claudeMd);
+        const mcp = await uninstallMcp(runner);
+        c.io.out(
+          [
+            r.changed ? `Removed mesh hooks from ${c.paths.claudeSettings}.` : "No mesh hooks were installed.",
+            md.changed ? `Removed the mesh block from ${c.paths.claudeMd}.` : "",
+            mcp ? "Removed the mesh MCP server." : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        );
         return 0;
       }
       let config: DaemonConfig;
@@ -60,10 +70,13 @@ export function setupCommand(c: CliEnv): Command {
       }
       saveConfig(c.paths, config);
       const r = installSettingsFile(c.paths.claudeSettings, config);
+      const mcp = a.has("no-mcp") ? { ok: true, skipped: true } : await installMcp([...c.self, "mcp"], runner);
+      if (!a.has("no-mcp")) installClaudeMd(c.paths.claudeMd, CLAUDE_MD_BLOCK);
       c.io.out(
         [
           `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
           r.changed ? `Installed 5 hooks into ${c.paths.claudeSettings}.` : `Hooks already installed in ${c.paths.claudeSettings}.`,
+          "skipped" in mcp ? "Skipped the MCP server (--no-mcp)." : mcp.ok ? `Registered the mesh MCP server and added a short block to ${c.paths.claudeMd}.` : `Could not register the MCP server: ${"error" in mcp ? mcp.error : ""}`,
           "Claude sessions started from now on report to mesh. Next:",
           "  mesh up             # run the daemon here, or",
           "  mesh up --install   # run it as a user service",
@@ -109,9 +122,18 @@ export function doctorCommand(c: CliEnv): Command {
         if (st.installed.length === 5 && st.stale.length === 0) ok(`hooks installed in ${c.paths.claudeSettings}`);
         else if (st.installed.length === 0) bad("hooks not installed; run: mesh setup");
         else bad(`hooks out of date (${[...new Set([...st.stale])].join(", ") || "incomplete"}); run: mesh setup`);
+        if (await mcpInstalled(runner)) ok("mesh MCP server registered");
+        else warn("mesh MCP server not registered (agents can't use mesh tools); run: mesh setup");
+        if (!claudeMdInstalled(c.paths.claudeMd)) warn(`no mesh block in ${c.paths.claudeMd}; run: mesh setup`);
         try {
-          const h = await new DaemonClient(config).health();
+          const d = new DaemonClient(config);
+          const h = await d.health();
           ok(`daemon running on 127.0.0.1:${config.port} (${h.sessions} live sessions)`);
+          const st = await d.status();
+          const creds = loadCredentials(c.paths);
+          if (!creds) warn("not logged in to a hub (solo mode); run: mesh login --hub <url>");
+          else if (st.hub === "ok") ok(`hub ${creds.hub} as ${creds.user.id}${st.outbox ? ` (${st.outbox} events waiting to sync)` : ""}`);
+          else bad(`hub ${creds.hub}: ${st.hub}${st.error ? ` (${st.error})` : ""}`);
         } catch (e) {
           bad(e instanceof Error ? e.message : String(e));
         }
@@ -125,7 +147,7 @@ function line(s: Session, now: number): string {
   const g = groupOf(s);
   const what = g === "NEEDS YOU" ? needsLabel(s) : g === "IDLE" && s.lastMessage ? `done: ${s.lastMessage}` : g.toLowerCase();
   const since = age(now - (s.lastStopAt ?? s.lastEventAt));
-  return `${sessionLabel(s).padEnd(24)} ${s.state.padEnd(9)} ${since.padStart(4)}  ${s.pane ?? s.bgId ?? "-"}  ${what}`;
+  return `${sessionLabel(s).padEnd(24)} ${(s.step ?? "-").padEnd(14)} ${s.state.padEnd(9)} ${since.padStart(4)}  ${s.pane ?? s.bgId ?? "-"}  ${what}`;
 }
 
 export function lsCommand(c: CliEnv): Command {
@@ -203,7 +225,7 @@ export function runCommand(c: CliEnv): Command {
     name: "run",
     summary: "start claude in tmux windows, one per repo: mesh run <repo…> [--bg --prompt P] [--model M]",
     async run(args) {
-      const a = parseArgs(args, ["model", "prompt", "session", "socket-name"]);
+      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto"]);
       if (a.positional.length === 0) {
         c.io.err("usage: mesh run <repo…> [--model M] [--prompt P] [--bg] [--session NAME] [--no-tui] [--no-bind]");
         return 2;
@@ -217,7 +239,23 @@ export function runCommand(c: CliEnv): Command {
       const roots = defaultRoots(c.cwd, config?.workspaceRoots ?? []);
       const dirs = a.positional.map((r) => resolveRepo(r, roots));
       const model = a.str("model");
-      const prompt = a.str("prompt");
+      const step = a.str("step");
+      const auto = a.str("auto");
+      if (auto && auto !== "off" && auto !== "nudge" && auto !== "chain") {
+        c.io.err("--auto must be off, nudge or chain");
+        return 2;
+      }
+      if (step && dirs.length !== 1) {
+        c.io.err("--step starts one session: give exactly one repo");
+        return 2;
+      }
+      if (step) {
+        // Claim first so nobody else takes it while Claude starts; the session re-binds on start.
+        const claimed = await HubClient.from(c.paths).post<{ id: string }>(`/v1/steps/${encodeURIComponent(step)}/claim`, {});
+        c.io.out(`Claimed ${claimed.id}.`);
+      }
+      const prompt = a.str("prompt") ?? (step ? `You hold mesh step ${step}. Start with the mesh_context tool, then work on it.` : undefined);
+      const env: Record<string, string> = { ...(step ? { MESH_STEP: step } : {}), ...(auto ? { MESH_AUTOPILOT: auto } : {}) };
       const runner = c.runner ?? runProgram;
 
       if (a.has("bg")) {
@@ -228,7 +266,7 @@ export function runCommand(c: CliEnv): Command {
         for (const dir of dirs) {
           const name = basename(dir);
           const argv = ["--bg", "--name", name, ...(model ? ["--model", model] : []), prompt];
-          const r = await runner("claude", argv, { cwd: dir, timeoutMs: 60_000 });
+          const r = await runner("claude", argv, { cwd: dir, timeoutMs: 60_000, env });
           if (r.code !== 0) {
             c.io.err(`${name}: ${(r.stderr || r.stdout).trim()}`);
             return 1;
@@ -255,7 +293,7 @@ export function runCommand(c: CliEnv): Command {
       }
       for (const dir of dirs) {
         const name = basename(dir);
-        const spec = { name, cwd: dir, argv: claudeArgv(name) };
+        const spec = { name, cwd: dir, argv: claudeArgv(step ? `${name}·${step}` : name), env };
         const pane = first ? await newSession(sessionName, spec, tmux) : await newWindow(sessionName, spec, tmux);
         first = false;
         windows.push(`${name} (${pane})`);
@@ -271,5 +309,5 @@ export function runCommand(c: CliEnv): Command {
 }
 
 export function meshCommands(c: CliEnv): Command[] {
-  return [setupCommand(c), doctorCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c)];
+  return [setupCommand(c), doctorCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ...hubCommands(c)];
 }

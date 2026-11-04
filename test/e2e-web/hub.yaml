@@ -1,0 +1,11 @@
+# Hub for the Playwright smoke test (tokens are test-only).
+listen: 127.0.0.1:7799
+db: ":memory:"
+auth:
+  providers:
+    - id: team
+      kind: token
+      users:
+        - { name: alice, token_sha256: f0e1ac38548059f8fe1f7181fcfdc05a2f1d5c9f1f3734d16b0a34d6faefea7a }
+        - { name: bob, token_sha256: f71efdafcab3a461efb733eb629c983c9bb38adce749cd076c36462a68e38dce }
+  bootstrap_admins: [team:alice]

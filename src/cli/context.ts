@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import type { Runner } from "../claude/index.ts";
 import { DaemonConfig, resolvePaths, type MeshPaths } from "../protocol/index.ts";
 
 export interface Io {
@@ -34,6 +35,7 @@ export function newConfig(port?: number): DaemonConfig {
     key: randomBytes(24).toString("hex"),
     notify: true,
     workspaceRoots: [],
+    autopilot: "nudge",
   };
 }
 
@@ -67,4 +69,15 @@ export function parseArgs(args: readonly string[], valueFlags: readonly string[]
     return typeof v === "string" ? v : undefined;
   };
   return { flags, positional, has: (k: string) => flags.has(k), str };
+}
+
+export interface CliEnv {
+  io: Io;
+  paths: MeshPaths;
+  env: Record<string, string | undefined>;
+  cwd: string;
+  /** argv to start this mesh binary (node + script), for tmux windows and services. */
+  self: string[];
+  runner?: Runner;
+  version: string;
 }

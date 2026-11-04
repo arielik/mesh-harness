@@ -1,0 +1,724 @@
+// Hub service: the single writer (plan §8). Every mutation runs in one transaction that writes the
+// state change and its event; the bus then hints SSE subscribers.
+
+import { randomBytes, randomUUID } from "node:crypto";
+import { loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
+import {
+  canApprove,
+  claim,
+  finish,
+  isOwnerOrAdmin,
+  materialize,
+  needsLabel,
+  recomputeReady,
+  release,
+  reopen,
+  repoMatches,
+  takeOver,
+  validatePlan,
+  pause,
+  type Principal,
+  type Role,
+} from "../core/index.ts";
+import type {
+  Attention,
+  DoneResult,
+  Goal,
+  GoalDetail,
+  InboxMessage,
+  LiveView,
+  LoginResult,
+  Plan,
+  PlanInput,
+  ProviderInfo,
+  Question,
+  Session,
+  Step,
+  StepContext,
+  SyncRequest,
+  UserView,
+} from "../protocol/index.ts";
+import type { HubStore, NewEvent, UserRow } from "../store/index.ts";
+import { Bus } from "./bus.ts";
+import type { HubConfig } from "./config.ts";
+
+export class HubError extends Error {
+  status: number;
+  details?: unknown;
+  constructor(status: number, message: string, details?: unknown) {
+    super(message);
+    this.status = status;
+    this.details = details;
+  }
+}
+
+export interface Actor extends Principal {
+  machineId?: string | undefined;
+  tokenHash: string;
+  tokenKind: string;
+}
+
+interface LoginAttempt {
+  provider: string;
+  client: "cli" | "web";
+  nonce: string;
+  verifier: string;
+  redirectUri: string;
+  cliPort?: number | undefined;
+  cliChallenge?: string | undefined;
+  hostname?: string | undefined;
+}
+
+interface CliCode {
+  userId: string;
+  roles: Role[];
+  cliChallenge: string;
+}
+
+const LOGIN_TTL = 10 * 60_000;
+const ONLINE_MS = 2 * 60_000;
+
+export class HubService {
+  readonly store: HubStore;
+  readonly config: HubConfig;
+  readonly tokens: Tokens;
+  readonly bus = new Bus();
+  now: () => number;
+
+  constructor(store: HubStore, config: HubConfig, now: () => number = () => Date.now()) {
+    this.store = store;
+    this.config = config;
+    this.tokens = new Tokens(store, config.policies);
+    this.now = now;
+  }
+
+  // ---------- helpers ----------
+
+  private emit(e: Omit<NewEvent, "at"> & { at?: number }): void {
+    const seq = this.store.appendEvent({ ...e, at: e.at ?? this.now() });
+    if (seq !== undefined) queueMicrotask(() => this.bus.publish({ type: "changed", seq }));
+  }
+
+  private provider(id: string): AuthProvider {
+    const p = this.config.providers.find((x) => x.id === id);
+    if (!p) throw new HubError(404, `unknown auth provider "${id}"`);
+    return p;
+  }
+
+  userView(u: UserRow): UserView {
+    return { id: u.id, name: u.name, roles: u.roles };
+  }
+
+  private goalOr404(id: string): Goal {
+    const g = this.store.getGoal(id);
+    if (!g) throw new HubError(404, `no goal ${id}`);
+    return g;
+  }
+
+  private stepOr404(id: string): Step {
+    const s = this.store.getStep(id);
+    if (!s) throw new HubError(404, `no step ${id}`);
+    return s;
+  }
+
+  private sessionOf(sid: string | undefined): Session | undefined {
+    return sid ? this.store.getSession(sid)?.session : undefined;
+  }
+
+  /** Queue a message for a session's machine and wake that daemon. */
+  private message(toSid: string | undefined, fromUser: string, kind: string, text: string): number | undefined {
+    if (!toSid) return undefined;
+    const hs = this.store.getSession(toSid);
+    if (!hs || hs.session.state === "ended") return undefined;
+    const m = this.store.addMessage({ toMachine: hs.machineId, toSid, fromUser, kind, text }, this.now());
+    queueMicrotask(() => this.bus.publish({ type: "wake", machine: hs.machineId }));
+    return m.id;
+  }
+
+  // ---------- auth ----------
+
+  providersInfo(): ProviderInfo[] {
+    return this.config.providers.map((p) => ({ id: p.id, kind: p.kind, label: p.label, flows: p.flows() }));
+  }
+
+  /** Who a presented token belongs to. */
+  authenticate(token: string): Actor | undefined {
+    const row = this.tokens.verify(token, this.now());
+    if (!row) return undefined;
+    const user = this.store.getUser(row.userId);
+    if (!user) return undefined;
+    return { userId: user.id, roles: user.roles as Role[], machineId: row.machineId, tokenHash: row.hash, tokenKind: row.kind };
+  }
+
+  private machineFor(userId: string, hostname: string | undefined): string {
+    const host = hostname?.trim() || "unknown";
+    const existing = this.store.listMachines().find((m) => m.userId === userId && m.hostname === host);
+    const id = existing?.id ?? `m-${randomBytes(4).toString("hex")}`;
+    this.store.upsertMachine({ id, userId, hostname: host }, this.now());
+    return id;
+  }
+
+  private issue(identity: Identity, client: "cli" | "web", hostname: string | undefined): LoginResult {
+    return this.store.tx(() => {
+      const { user, roles } = loginIdentity(this.store, identity, { roleMappings: this.config.roleMappings, bootstrapAdmins: this.config.bootstrapAdmins }, this.now());
+      const machine = client === "cli" ? this.machineFor(user.id, hostname) : undefined;
+      const t = this.tokens.issue(client === "cli" ? "device" : "web", user.id, this.now(), { machineId: machine, label: hostname });
+      this.emit({ type: "user.logged_in", user: user.id, payload: { provider: identity.provider, client, machine } });
+      return { token: t.token, user: { id: user.id, name: user.name, roles }, machine, expiresAt: t.expiresAt };
+    });
+  }
+
+  /** none/token providers. */
+  async loginDirect(providerId: string, input: { token?: string | undefined; hostname?: string | undefined; client: "cli" | "web" }): Promise<LoginResult> {
+    const p = this.provider(providerId);
+    const flow = p.flows().includes("none") ? "none" : "token";
+    if (flow === "token" && !input.token) throw new HubError(400, "token required");
+    const id = await p.complete(flow === "none" ? { flow: "none" } : { flow: "token", token: input.token as string });
+    if (id === "pending") throw new HubError(500, "unexpected pending login");
+    return this.issue(id, input.client, input.hostname);
+  }
+
+  /** Redirect flow start (hub-mediated, plan §4.4). Returns the IdP URL. */
+  async loginStart(providerId: string, client: "cli" | "web", opts: { cliPort?: number | undefined; cliChallenge?: string | undefined; hostname?: string | undefined }): Promise<string> {
+    const p = this.provider(providerId);
+    if (!p.flows().includes("redirect")) throw new HubError(400, `provider ${providerId} has no browser login`);
+    if (client === "cli" && (!opts.cliPort || !opts.cliChallenge)) throw new HubError(400, "cli_port and cli_challenge are required");
+    const state = randomId();
+    const attempt: LoginAttempt = {
+      provider: providerId,
+      client,
+      nonce: randomId(),
+      verifier: randomId(32),
+      redirectUri: `${this.config.url}/auth/${providerId}/callback`,
+      cliPort: opts.cliPort,
+      cliChallenge: opts.cliChallenge,
+      hostname: opts.hostname,
+    };
+    this.store.putLoginAttempt(`state:${state}`, attempt as unknown as Record<string, unknown>, this.now());
+    const r = await p.start("redirect", { state, nonce: attempt.nonce, pkceChallenge: pkceChallenge(attempt.verifier), redirectUri: attempt.redirectUri });
+    if (r.kind !== "redirect") throw new HubError(500, "provider did not return a redirect");
+    return r.url;
+  }
+
+  /** IdP callback. Returns where to send the browser and, for web logins, the session token. */
+  async loginCallback(providerId: string, callbackUrl: string): Promise<{ redirect: string; webToken?: LoginResult }> {
+    const state = new URL(callbackUrl).searchParams.get("state") ?? "";
+    const attempt = this.store.getLoginAttempt<LoginAttempt>(`state:${state}`, this.now(), LOGIN_TTL);
+    if (!attempt || attempt.provider !== providerId) throw new HubError(400, "unknown or expired login; start again");
+    this.store.deleteLoginAttempt(`state:${state}`);
+    const id = await this.provider(providerId).complete({ flow: "redirect", callbackUrl, pkceVerifier: attempt.verifier, state, nonce: attempt.nonce, redirectUri: attempt.redirectUri });
+    if (id === "pending") throw new HubError(500, "unexpected pending login");
+    if (attempt.client === "web") return { redirect: "/", webToken: this.issue(id, "web", undefined) };
+    // CLI: hand a one-time code to the CLI's localhost listener; it proves itself with its PKCE verifier.
+    const code = randomId(24);
+    this.store.putLoginAttempt(`code:${code}`, { identity: id, cliChallenge: attempt.cliChallenge, hostname: attempt.hostname } as unknown as Record<string, unknown>, this.now());
+    return { redirect: `http://127.0.0.1:${attempt.cliPort}/callback?code=${encodeURIComponent(code)}` };
+  }
+
+  cliExchange(code: string, verifier: string, hostname: string | undefined): LoginResult {
+    const rec = this.store.getLoginAttempt<{ identity: Identity; cliChallenge: string; hostname?: string } & Partial<CliCode>>(`code:${code}`, this.now(), 2 * 60_000);
+    this.store.deleteLoginAttempt(`code:${code}`);
+    if (!rec || pkceChallenge(verifier) !== rec.cliChallenge) throw new HubError(401, "invalid or expired login code");
+    return this.issue(rec.identity, "cli", hostname ?? rec.hostname);
+  }
+
+  async deviceStart(providerId: string, hostname: string | undefined, client: "cli" | "web" = "cli") {
+    const p = this.provider(providerId);
+    if (!p.flows().includes("device")) throw new HubError(400, `provider ${providerId} has no device login`);
+    const r = await p.start("device", { state: "", nonce: "", pkceChallenge: "", redirectUri: "" });
+    if (r.kind !== "device") throw new HubError(500, "provider did not start a device login");
+    this.store.putLoginAttempt(`device:${r.pollId}`, { provider: providerId, hostname, client }, this.now());
+    return r;
+  }
+
+  async devicePoll(providerId: string, pollId: string, hostname: string | undefined): Promise<LoginResult | "pending"> {
+    const rec = this.store.getLoginAttempt<{ provider: string; hostname?: string; client: "cli" | "web" }>(`device:${pollId}`, this.now(), LOGIN_TTL);
+    if (!rec || rec.provider !== providerId) throw new HubError(404, "unknown or expired device login");
+    const id = await this.provider(providerId).complete({ flow: "device", pollId });
+    if (id === "pending") return "pending";
+    this.store.deleteLoginAttempt(`device:${pollId}`);
+    return this.issue(id, rec.client, hostname ?? rec.hostname);
+  }
+
+  logout(actor: Actor): void {
+    this.store.revokeToken(actor.tokenHash);
+  }
+
+  me(actor: Actor): { user: UserView; machine?: string | undefined } {
+    const u = this.store.getUser(actor.userId) as UserRow;
+    return { user: this.userView(u), machine: actor.machineId };
+  }
+
+  // ---------- goals and plans ----------
+
+  createGoal(actor: Actor, input: { title: string; primaryRepo?: string | undefined; issueUrl?: string | undefined; priority: number }): Goal {
+    return this.store.tx(() => {
+      const now = this.now();
+      const goal = this.store.createGoal({
+        title: input.title,
+        ownerId: actor.userId,
+        state: "backlog",
+        ...(input.primaryRepo ? { primaryRepo: input.primaryRepo } : {}),
+        ...(input.issueUrl ? { issueUrl: input.issueUrl } : {}),
+        priority: input.priority,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const design: Step = {
+        id: `${goal.id}.design`,
+        goal: goal.id,
+        planVersion: 0,
+        kind: "design",
+        repo: input.primaryRepo ?? "",
+        title: "Design",
+        brief: `Design "${input.title}": write the design document, then propose the step plan with mesh_plan.`,
+        deps: [],
+        state: "ready",
+        fixCycles: 0,
+        updatedAt: now,
+      };
+      this.store.saveSteps([design]);
+      this.emit({ type: "goal.created", user: actor.userId, goal: goal.id, payload: { title: goal.title } });
+      this.emit({ type: "step.ready", goal: goal.id, step: design.id });
+      return goal;
+    });
+  }
+
+  listGoals(): Goal[] {
+    return this.store.listGoals();
+  }
+
+  goalDetail(id: string): GoalDetail {
+    const goal = this.goalOr404(id);
+    return { goal, steps: this.store.listSteps({ goal: goal.id }), plans: this.store.listPlans(goal.id) };
+  }
+
+  proposePlan(actor: Actor, goalId: string, input: PlanInput & { approve: boolean }): { plan: Plan; detail?: GoalDetail } {
+    const result = this.store.tx(() => {
+      const goal = this.goalOr404(goalId);
+      if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      const errors = validatePlan(input.steps);
+      if (errors.length) throw new HubError(422, `the plan has ${errors.length} problem(s): ${errors.join("; ")}`, errors);
+      const plans = this.store.listPlans(goal.id);
+      const now = this.now();
+      const plan: Plan = {
+        goal: goal.id,
+        version: (plans.at(-1)?.version ?? 0) + 1,
+        ...(input.design_ref ? { designRef: input.design_ref } : {}),
+        steps: input.steps,
+        proposedBy: actor.userId,
+        proposedAt: now,
+        decision: "pending",
+      };
+      // A newer proposal supersedes pending ones.
+      for (const p of plans) if (p.decision === "pending") this.store.savePlan({ ...p, decision: "revised", comment: "superseded", decidedAt: now });
+      this.store.savePlan(plan);
+      if (goal.state !== "in_progress") this.store.saveGoal({ ...goal, state: "awaiting_approval", updatedAt: now });
+      this.emit({ type: "plan.proposed", user: actor.userId, goal: goal.id, payload: { version: plan.version, steps: plan.steps.length } });
+      return plan;
+    });
+    if (input.approve) return { plan: result, detail: this.approvePlan(actor, goalId, result.version) };
+    return { plan: result };
+  }
+
+  approvePlan(actor: Actor, goalId: string, version?: number, comment?: string): GoalDetail {
+    this.store.tx(() => {
+      const goal = this.goalOr404(goalId);
+      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins can approve ${goal.id}`);
+      const plans = this.store.listPlans(goal.id);
+      const plan = version ? plans.find((p) => p.version === version) : plans.filter((p) => p.decision === "pending").at(-1);
+      if (!plan) throw new HubError(404, `no pending plan for ${goal.id}`);
+      if (plan.decision !== "pending") throw new HubError(409, `plan v${plan.version} is already ${plan.decision}`);
+      const now = this.now();
+      this.store.savePlan({ ...plan, decision: "approved", decidedBy: actor.userId, decidedAt: now, ...(comment ? { comment } : {}) });
+      const existing = this.store.listSteps({ goal: goal.id });
+      const m = materialize(goal.id, plan.version, plan.steps, existing, now);
+      const design = existing.find((s) => s.kind === "design");
+      const changes = [...m.upserts];
+      if (design && design.state !== "done") {
+        const holderSid = design.holderSid;
+        const d: Step = { ...design, state: "done", outcome: "done", summary: design.summary ?? `plan v${plan.version} approved`, updatedAt: now };
+        changes.push(d);
+        this.message(holderSid, actor.userId, "approved", `MESH: plan v${plan.version} for ${goal.id} was approved. Finish the design step with mesh_done if you haven't; the steps are now open.`);
+      }
+      this.store.saveSteps(changes);
+      const ready = recomputeReady(this.store.listSteps({ goal: goal.id }), now);
+      this.store.saveSteps(ready);
+      this.store.saveGoal({ ...goal, state: "in_progress", updatedAt: now });
+      this.emit({ type: "plan.approved", user: actor.userId, goal: goal.id, payload: { version: plan.version } });
+      for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready")) this.emit({ type: "step.ready", goal: goal.id, step: s.id });
+      for (const s of m.upserts.filter((x) => x.state === "dropped")) this.emit({ type: "step.dropped", goal: goal.id, step: s.id });
+      for (const s of m.changedForHolder) {
+        this.message(s.holderSid, actor.userId, "replan", `MESH: the brief of your step ${s.id} changed in plan v${plan.version}. Call mesh_context to read it.`);
+      }
+    });
+    return this.goalDetail(goalId);
+  }
+
+  revisePlan(actor: Actor, goalId: string, comment: string | undefined): GoalDetail {
+    this.store.tx(() => {
+      const goal = this.goalOr404(goalId);
+      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins can revise ${goal.id}`);
+      const plan = this.store.listPlans(goal.id).filter((p) => p.decision === "pending").at(-1);
+      if (!plan) throw new HubError(404, `no pending plan for ${goal.id}`);
+      const now = this.now();
+      this.store.savePlan({ ...plan, decision: "revised", decidedBy: actor.userId, decidedAt: now, ...(comment ? { comment } : {}) });
+      if (goal.state === "awaiting_approval") this.store.saveGoal({ ...goal, state: "design", updatedAt: now });
+      const design = this.store.getStep(`${goal.id}.design`);
+      this.message(design?.holderSid, actor.userId, "revise", `MESH: plan v${plan.version} for ${goal.id} needs changes: ${comment ?? "(no comment)"}. Update the design and propose again with mesh_plan.`);
+      this.emit({ type: "plan.revised", user: actor.userId, goal: goal.id, payload: { version: plan.version, comment } });
+    });
+    return this.goalDetail(goalId);
+  }
+
+  // ---------- steps ----------
+
+  listSteps(filter: { goal?: string | undefined; ready?: boolean; repo?: string | undefined; mine?: string | undefined }): Step[] {
+    let steps = this.store.listSteps({ goal: filter.goal, state: filter.ready ? "ready" : undefined, holderUser: filter.mine });
+    if (filter.repo) {
+      const want = filter.repo;
+      steps = steps.filter((s) => !s.repo || s.repo === want || repoMatches({ id: want, name: want.slice(want.lastIndexOf("/") + 1) }, s.repo) || repoMatches({ id: s.repo, name: s.repo.slice(s.repo.lastIndexOf("/") + 1) }, want));
+    }
+    return steps;
+  }
+
+  context(stepId: string): StepContext {
+    const step = this.stepOr404(stepId);
+    const goal = this.goalOr404(step.goal);
+    const plan = this.store.listPlans(goal.id).filter((p) => p.decision === "approved").at(-1);
+    const deps = step.deps.map((d) => this.store.getStep(d)).filter((s): s is Step => !!s);
+    return {
+      step,
+      goal,
+      designRef: plan?.designRef,
+      deps: deps.map((d) => ({ id: d.id, title: d.title, state: d.state, summary: d.summary, branch: d.branch, mr: d.mr })),
+      notes: this.store.listNotes(step.id),
+      openQuestions: this.store.openQuestions().filter((q) => q.step === step.id),
+    };
+  }
+
+  private machineOf(actor: Actor, sid: string | undefined): string | undefined {
+    return (sid ? this.store.getSession(sid)?.machineId : undefined) ?? actor.machineId;
+  }
+
+  claimStep(actor: Actor, stepId: string, sid: string | undefined): Step {
+    return this.store.tx(() => {
+      const step = this.stepOr404(stepId);
+      const r = claim(step, { userId: actor.userId, sid, machine: this.machineOf(actor, sid) }, this.now());
+      if (!r.ok) throw new HubError(r.status, r.error);
+      this.store.saveSteps([r.step]);
+      const goal = this.store.getGoal(step.goal);
+      if (goal && step.kind === "design" && goal.state === "backlog") this.store.saveGoal({ ...goal, state: "design", updatedAt: this.now() });
+      this.emit({ type: "step.claimed", user: actor.userId, sid, goal: step.goal, step: step.id });
+      return r.step;
+    });
+  }
+
+  releaseStep(actor: Actor, stepId: string, note: string | undefined): Step {
+    return this.store.tx(() => {
+      const step = this.stepOr404(stepId);
+      const goal = this.goalOr404(step.goal);
+      const r = release(step, { userId: actor.userId }, isOwnerOrAdmin(actor, goal.ownerId), this.now());
+      if (!r.ok) throw new HubError(r.status, r.error);
+      this.store.saveSteps([r.step]);
+      if (note) this.store.addNote({ step: step.id, user: actor.userId, text: note, at: this.now() });
+      this.emit({ type: "step.released", user: actor.userId, goal: step.goal, step: step.id, payload: { note } });
+      return r.step;
+    });
+  }
+
+  noteStep(actor: Actor, stepId: string, text: string, sid: string | undefined) {
+    return this.store.tx(() => {
+      const step = this.stepOr404(stepId);
+      const note = this.store.addNote({ step: step.id, user: actor.userId, ...(sid ? { sid } : {}), text, at: this.now() });
+      this.emit({ type: "step.noted", user: actor.userId, sid, goal: step.goal, step: step.id });
+      return note;
+    });
+  }
+
+  doneStep(actor: Actor, stepId: string, input: { summary: string; outcome: "done" | "fail"; branch?: string | undefined; mr?: string | undefined; reopen: string[]; sid?: string | undefined }): DoneResult {
+    return this.store.tx(() => {
+      const step = this.stepOr404(stepId);
+      const goal = this.goalOr404(step.goal);
+      const now = this.now();
+      const full = input.reopen.map((r) => (r.includes(".") ? r : `${step.goal}.${r}`));
+      const all = this.store.listSteps({ goal: step.goal });
+      for (const id of full) {
+        const s = all.find((x) => x.id.toLowerCase() === id.toLowerCase());
+        if (!s) throw new HubError(404, `cannot reopen ${id}: no such step`);
+        if (s.state !== "done") throw new HubError(409, `cannot reopen ${id}: it is ${s.state}, not done`);
+      }
+      if (input.outcome === "done" && full.length) throw new HubError(400, "reopen only makes sense with outcome fail");
+      const r = finish(step, { userId: actor.userId, sid: input.sid }, input, full.length > 0, actor.roles.includes("admin"), now);
+      if (!r.ok) throw new HubError(r.status, r.error);
+      let steps = all.map((s) => (s.id === r.step.id ? r.step : s));
+      const reopenChanges = reopen(steps, full, now);
+      const wanted = new Set(full.map((f) => f.toLowerCase()));
+      const reopened = reopenChanges.filter((x) => wanted.has(x.id.toLowerCase()));
+      steps = steps.map((s) => reopenChanges.find((x) => x.id === s.id) ?? s);
+      const ready = recomputeReady(steps, now);
+      steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
+      const changed = new Map<string, Step>([[r.step.id, r.step], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
+      this.store.saveSteps([...changed.values()]);
+      this.emit({ type: input.outcome === "done" ? "step.done" : "step.failed", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { summary: input.summary, mr: input.mr, reopen: full } });
+      for (const s of reopened) {
+        const before = all.find((x) => x.id === s.id);
+        this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: input.summary, fixCycles: s.fixCycles } });
+        this.store.addNote({ step: s.id, user: actor.userId, text: `Reopened by ${step.id}: ${input.summary}`, at: now });
+        this.message(before?.holderSid, actor.userId, "reopened", `MESH: step ${s.id} was reopened by ${step.id}: ${input.summary}. Claim it again with mesh_claim to fix it.`);
+      }
+      const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
+      for (const id of nowReady) this.emit({ type: "step.ready", goal: step.goal, step: id });
+      const goalDone = steps.length > 0 && steps.every((s) => s.state === "done" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
+      if (goalDone && goal.state !== "done") {
+        this.store.saveGoal({ ...goal, state: "done", updatedAt: now });
+        this.emit({ type: "goal.done", goal: goal.id });
+      }
+      return { step: r.step, reopened: reopened.map((s) => s.id), nowReady, goalDone };
+    });
+  }
+
+  takeStep(actor: Actor, stepId: string, sid: string | undefined): Step {
+    return this.store.tx(() => {
+      const step = this.stepOr404(stepId);
+      const goal = this.goalOr404(step.goal);
+      const holder = this.sessionOf(step.holderSid);
+      const stalledSince = holder?.state === "stalled" ? (holder.lastStopAt ?? holder.lastEventAt) : undefined;
+      const previous = step.holderUser;
+      const previousSid = step.holderSid;
+      const r = takeOver(step, { userId: actor.userId, sid, machine: this.machineOf(actor, sid) }, {
+        privileged: isOwnerOrAdmin(actor, goal.ownerId),
+        stalledSince,
+        now: this.now(),
+        rules: { takeoverAfterMs: this.config.thresholds.takeoverAfterMs },
+      });
+      if (!r.ok) throw new HubError(r.status, r.error);
+      this.store.saveSteps([r.step]);
+      if (previous && previous !== actor.userId) {
+        this.emit({ type: "step.taken_over", user: actor.userId, sid, goal: step.goal, step: step.id, payload: { from: previous } });
+        this.message(previousSid, actor.userId, "taken_over", `MESH: ${actor.userId} took over step ${step.id}. Stop working on it; your notes are kept.`);
+      }
+      return r.step;
+    });
+  }
+
+  // ---------- questions and messages ----------
+
+  ask(actor: Actor, input: { text: string; sid?: string | undefined; step?: string | undefined }): Question {
+    return this.store.tx(() => {
+      const step = input.step ? this.store.getStep(input.step) : undefined;
+      const owner = step ? this.store.getGoal(step.goal)?.ownerId : undefined;
+      const q = this.store.addQuestion({
+        ...(step ? { step: step.id } : {}),
+        ...(input.sid ? { sid: input.sid } : {}),
+        fromUser: actor.userId,
+        toUsers: [...new Set([actor.userId, ...(owner ? [owner] : [])])],
+        text: input.text,
+        at: this.now(),
+      });
+      this.emit({ type: "question.asked", user: actor.userId, sid: input.sid, goal: step?.goal, step: step?.id, payload: { question: q.id } });
+      return q;
+    });
+  }
+
+  answer(actor: Actor, id: number, text: string): Question {
+    return this.store.tx(() => {
+      const q = this.store.getQuestion(id);
+      if (!q) throw new HubError(404, `no question ${id}`);
+      if (q.answer !== undefined) throw new HubError(409, `question ${id} is already answered`);
+      if (!q.toUsers.includes(actor.userId) && !actor.roles.includes("admin")) throw new HubError(403, `question ${id} is not addressed to you`);
+      const answered: Question = { ...q, answer: text, answeredBy: actor.userId, answeredAt: this.now() };
+      this.store.saveQuestion(answered);
+      this.message(q.sid, actor.userId, "answer", `MESH: answer from ${actor.userId} to your question "${q.text}": ${text}`);
+      this.emit({ type: "question.answered", user: actor.userId, step: q.step, payload: { question: id } });
+      return answered;
+    });
+  }
+
+  say(actor: Actor, input: { toSid?: string | undefined; toStep?: string | undefined; text: string }): { id: number; toSid: string } {
+    return this.store.tx(() => {
+      const sid = input.toSid ?? (input.toStep ? this.stepOr404(input.toStep).holderSid : undefined);
+      if (!sid) throw new HubError(409, `${input.toStep} has no session holding it`);
+      const id = this.message(sid, actor.userId, "say", input.text);
+      if (id === undefined) throw new HubError(404, `session ${sid} is not live on any machine`);
+      this.emit({ type: "message.sent", user: actor.userId, sid, payload: { id } });
+      return { id, toSid: sid };
+    });
+  }
+
+  // ---------- daemon sync and inbox ----------
+
+  sync(actor: Actor, req: SyncRequest): { accepted: number } {
+    if (!actor.machineId) throw new HubError(403, "sync needs a device token (mesh login)");
+    const machine = actor.machineId;
+    return this.store.tx(() => {
+      const now = this.now();
+      let accepted = 0;
+      for (const e of req.events) {
+        const seq = this.store.appendEvent({ id: e.id, at: e.at, type: e.type, user: actor.userId, sid: e.sid, step: e.step, payload: { ...e.payload, machine } });
+        if (seq !== undefined) {
+          accepted++;
+          queueMicrotask(() => this.bus.publish({ type: "changed", seq }));
+        }
+      }
+      for (const s of req.sessions) {
+        const existing = this.store.getSession(s.sid);
+        if (existing && existing.userId !== actor.userId) continue; // never overwrite another user's session
+        this.store.upsertSession(s, actor.userId, machine, now);
+      }
+      this.store.touchMachine(machine, now, req.counts);
+      return { accepted };
+    });
+  }
+
+  inbox(actor: Actor): InboxMessage[] {
+    if (!actor.machineId) throw new HubError(403, "inbox needs a device token");
+    return this.store.inbox(actor.machineId).map((m) => ({ id: m.id, toSid: m.toSid, kind: m.kind, text: m.text, fromUser: m.fromUser, createdAt: m.createdAt }));
+  }
+
+  ack(actor: Actor, id: number, state: "delivered" | "failed", method: string | undefined): boolean {
+    if (!actor.machineId) throw new HubError(403, "ack needs a device token");
+    const ok = this.store.ackMessage(id, actor.machineId, state, method, this.now());
+    if (ok) this.emit({ type: "message.delivered", user: actor.userId, payload: { id, state, method } });
+    return ok;
+  }
+
+  // ---------- views ----------
+
+  attentionFor(viewer: Actor): Attention[] {
+    const out: Attention[] = [];
+    const goals = this.store.listGoals();
+    for (const g of goals) {
+      if (g.state === "awaiting_approval" && canApprove(viewer, g.ownerId)) {
+        const plan = this.store.listPlans(g.id).filter((p) => p.decision === "pending").at(-1);
+        out.push({ kind: "approval", text: `Plan v${plan?.version ?? "?"} for ${g.id} "${g.title}" awaits approval`, goal: g.id, at: plan?.proposedAt ?? g.updatedAt });
+      }
+    }
+    for (const q of this.store.openQuestions()) {
+      if (q.toUsers.includes(viewer.userId)) out.push({ kind: "question", text: `${q.fromUser} asks: ${q.text}`, step: q.step, sid: q.sid, question: q.id, at: q.at });
+    }
+    const owned = new Set(goals.filter((g) => g.ownerId === viewer.userId).map((g) => g.id));
+    for (const s of this.store.listSteps()) {
+      const mine = owned.has(s.goal) || s.holderUser === viewer.userId;
+      if (!mine) continue;
+      if (s.state === "failed") out.push({ kind: "failed", text: `${s.id} failed: ${s.summary ?? ""}`, goal: s.goal, step: s.id, at: s.updatedAt });
+      if (s.state === "paused") out.push({ kind: "paused", text: `${s.id} is paused (holder ${s.holderUser} went away)`, goal: s.goal, step: s.id, at: s.pausedAt ?? s.updatedAt });
+      const hs = this.sessionOf(s.holderSid);
+      if (s.state === "claimed" && hs?.state === "stalled") out.push({ kind: "stalled", text: `${s.id} stalled in ${s.holderUser}'s session`, goal: s.goal, step: s.id, sid: hs.sid, at: hs.lastStopAt ?? hs.lastEventAt });
+    }
+    for (const hs of this.store.listSessions()) {
+      if (hs.userId === viewer.userId && hs.session.state === "needs_you") {
+        out.push({ kind: "needs_you", text: `${hs.session.repo?.name ?? hs.session.name ?? hs.session.sid.slice(0, 8)}: ${needsLabel(hs.session)}`, step: hs.session.step, sid: hs.session.sid, at: hs.session.lastStopAt ?? hs.session.lastEventAt });
+      }
+    }
+    return out.sort((a, b) => b.at - a.at);
+  }
+
+  live(viewer: Actor): LiveView {
+    const now = this.now();
+    const users = this.store.listUsers().filter((u) => !(u.roles.includes("service") && !u.roles.includes("member")));
+    const machines = this.store.listMachines();
+    const sessions = this.store.listSessions().filter((hs) => hs.session.state !== "ended" || now - (hs.session.endedAt ?? 0) < 10 * 60_000);
+    const people = users.map((u) => {
+      const ms = machines
+        .filter((m) => m.userId === u.id)
+        .map((m) => ({ id: m.id, hostname: m.hostname, online: now - m.lastSeen < ONLINE_MS, lastSeen: m.lastSeen, counts: m.counts }));
+      const ss = sessions
+        .filter((hs) => hs.userId === u.id)
+        .map((hs) => ({
+          sid: hs.session.sid,
+          machine: hs.machineId,
+          user: u.id,
+          repo: hs.session.repo?.name,
+          name: hs.session.name,
+          step: hs.session.step,
+          state: hs.session.state,
+          needs: hs.session.needs,
+          autopilot: hs.session.autopilot,
+          lastTurnAt: hs.session.lastTurnStartAt,
+        }));
+      return { user: this.userView(u), online: ms.some((m) => m.online), machines: ms, sessions: ss };
+    });
+    const goals = this.store.listGoals().map((g) => {
+      const steps = this.store.listSteps({ goal: g.id }).filter((s) => s.state !== "dropped");
+      return {
+        id: g.id,
+        title: g.title,
+        state: g.state,
+        owner: g.ownerId,
+        done: steps.filter((s) => s.state === "done").length,
+        total: steps.length,
+        holders: [...new Set(steps.filter((s) => s.holderUser && (s.state === "claimed" || s.state === "paused")).map((s) => s.holderUser as string))],
+      };
+    });
+    const activity = this.store
+      .recentEvents(40)
+      .filter((e) => !e.type.startsWith("session.turn"))
+      .reverse()
+      .map((e) => ({ seq: e.seq, at: e.at, type: e.type, user: e.user, goal: e.goal, step: e.step, text: describe(e.type, e.step ?? e.goal, e.payload) }));
+    return { now, me: this.userView(this.store.getUser(viewer.userId) as UserRow), people, goals, attention: this.attentionFor(viewer), activity };
+  }
+
+  events(after: number, limit: number) {
+    return this.store.events(after, Math.min(Math.max(1, limit), 1000));
+  }
+
+  // ---------- time rules (plan §3.4) ----------
+
+  tick(): void {
+    const now = this.now();
+    this.store.tx(() => {
+      for (const s of this.store.listSteps({ state: "claimed" })) {
+        const hs = s.holderSid ? this.store.getSession(s.holderSid) : undefined;
+        const machine = s.holderMachine ? this.store.getMachine(s.holderMachine) : undefined;
+        const ended = hs?.session.state === "ended" && hs.session.endedReason !== "clear" && now - (hs.session.endedAt ?? 0) > this.config.thresholds.pauseGraceMs;
+        const offline = machine !== undefined && now - machine.lastSeen > this.config.thresholds.machineOfflineMs;
+        if (ended || offline) {
+          this.store.saveSteps([pause(s, now)]);
+          this.emit({ type: "step.paused", goal: s.goal, step: s.id, payload: { reason: ended ? "holder session ended" : "holder machine offline" } });
+        }
+      }
+    });
+  }
+
+  /** Mint a service token (mesh-ai). */
+  serviceToken(name: string): string {
+    const user = this.store.upsertIdentity({ provider: "service", subject: name, name, groups: ["service"] }, this.now());
+    this.store.setUserRoles(user.id, ["service"]);
+    return this.tokens.issue("service", user.id, this.now(), { label: name }).token;
+  }
+
+  newEventId(): string {
+    return randomUUID();
+  }
+}
+
+function describe(type: string, subject: string | undefined, payload: Record<string, unknown>): string {
+  const s = subject ?? "";
+  switch (type) {
+    case "goal.created":
+      return `created ${s} "${String(payload.title ?? "")}"`;
+    case "plan.proposed":
+      return `proposed plan v${String(payload.version)} for ${s}`;
+    case "plan.approved":
+      return `approved plan v${String(payload.version)} for ${s}`;
+    case "plan.revised":
+      return `asked for changes to ${s}`;
+    case "step.claimed":
+      return `claimed ${s}`;
+    case "step.done":
+      return `finished ${s}`;
+    case "step.failed":
+      return `${s} failed`;
+    case "step.reopened":
+      return `${s} reopened (fix cycle ${String(payload.fixCycles)})`;
+    case "step.taken_over":
+      return `took over ${s} from ${String(payload.from)}`;
+    case "step.paused":
+      return `${s} paused: ${String(payload.reason)}`;
+    case "goal.done":
+      return `${s} is done`;
+    default:
+      return `${type.replace(".", " ")} ${s}`.trim();
+  }
+}

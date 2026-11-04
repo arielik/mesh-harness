@@ -15,24 +15,34 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown",
-    "typecheck": "tsc --noEmit",
+    "build": "tsdown && vite build --config web/vite.config.ts --logLevel warn",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "lint": "eslint .",
     "boundaries": "depcruise src --config .dependency-cruiser.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "pnpm lint && pnpm typecheck && pnpm boundaries && pnpm test && pnpm build",
-    "spike": "node spikes/run.ts"
+    "spike": "node spikes/run.ts",
+    "build:web": "vite build --config web/vite.config.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "test:web": "playwright test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
     "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
     "dependency-cruiser": "^18.7.2",
     "eslint": "^10.14.0",
     "globals": "^17.14.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tsdown": "^0.23.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
     "vitest": "^5.1.0"
   },
   "devEngines": {
@@ -44,6 +54,11 @@
   },
   "packageManager": "pnpm@12.16.1",
   "dependencies": {
+    "@hono/node-server": "^2.1.6",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "hono": "^4.13.16",
+    "openid-client": "^6.8.9",
+    "yaml": "^2.9.1",
     "zod": "^4.6.7"
   }
 }

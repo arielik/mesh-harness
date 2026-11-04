@@ -2,6 +2,7 @@
 // `claude agents --json`, tracks transcript activity, delivers messages and notifies.
 
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { hostname } from "node:os";
 import { statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
@@ -9,6 +10,7 @@ import {
   applyObservation,
   applyTick,
   applyTranscriptMtime,
+  decide,
   DEFAULT_RULES,
   findSession,
   needsLabel,
@@ -23,6 +25,10 @@ import {
   SayRequest,
   stopReply,
   toHookEvent,
+  ToolCall,
+  TOOL_NAMES,
+  type InboxMessage,
+  type ToolName,
   type AgentEntry,
   type DaemonConfig,
   type HookEvent,
@@ -35,6 +41,8 @@ import {
 import type { DaemonStore } from "../store/index.ts";
 import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
 import { repoForCwd } from "./git.ts";
+import { HubLink, type LinkStatus } from "./hub-link.ts";
+import { runTool, stepMessage, type ToolHost } from "./tools.ts";
 
 export interface DaemonDeps {
   listAgents(): Promise<AgentEntry[] | null>;
@@ -46,6 +54,8 @@ export interface DaemonDeps {
   repoForCwd(cwd: string): Repo | undefined;
   mtime(path: string): number | undefined;
   log(line: string): void;
+  /** fetch used for the hub (tests inject one). */
+  fetch?: typeof fetch;
 }
 
 export const defaultDeps = (overrides: Partial<DaemonDeps> & Pick<DaemonDeps, "listAgents" | "paste" | "wakeBackground" | "notify">): DaemonDeps => ({
@@ -100,13 +110,25 @@ export class Daemon {
   readonly deps: DaemonDeps;
   readonly rules: Rules;
   readonly intervals: Intervals;
+  readonly link: HubLink | undefined;
 
-  constructor(opts: { config: DaemonConfig; store: DaemonStore; deps: DaemonDeps; rules?: Rules; intervals?: Partial<Intervals> }) {
+  constructor(opts: { config: DaemonConfig; store: DaemonStore; deps: DaemonDeps; rules?: Rules; intervals?: Partial<Intervals>; credentialsPath?: string }) {
     this.config = opts.config;
     this.store = opts.store;
     this.deps = opts.deps;
     this.rules = opts.rules ?? DEFAULT_RULES;
     this.intervals = { ...DEFAULT_INTERVALS, ...opts.intervals };
+    if (opts.credentialsPath) {
+      this.link = new HubLink({
+        credentialsPath: opts.credentialsPath,
+        store: this.store,
+        sessions: () => this.sessions,
+        onMessage: (m) => this.receive(m),
+        log: (l) => this.deps.log(l),
+        now: () => this.deps.now(),
+        ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
+      });
+    }
   }
 
   async start(port = this.config.port): Promise<void> {
@@ -125,11 +147,17 @@ export class Daemon {
     every(this.intervals.transcriptMs, () => this.checkTranscripts());
     every(this.intervals.tickMs, () => this.tick());
     every(this.intervals.deliveryMs, () => this.deliverPending());
+    every(this.intervals.deliveryMs * 3, () => this.link?.pullInbox());
+    if (this.link) {
+      this.link.credentials();
+      if (this.intervals.reconcileMs > 0) this.link.startStream();
+    }
     void this.reconcile().catch((e) => this.deps.log(`error: ${String(e)}`));
     this.deps.log(`mesh daemon listening on 127.0.0.1:${this.port}`);
   }
 
   async stop(): Promise<void> {
+    this.link?.stop();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     if (this.server) {
@@ -153,7 +181,109 @@ export class Daemon {
       }
     }
     this.store.saveSessions(changed, this.deps.now());
-    for (const s of changed) this.maybeNotify(before.get(s.sid), s);
+    for (const s of changed) {
+      this.maybeNotify(before.get(s.sid), s);
+      this.observe(before.get(s.sid), s);
+    }
+  }
+
+  /** Spool hub events for sessions that hold a step (others stay private, plan Q5). */
+  private observe(prev: Session | undefined, s: Session): void {
+    if (!this.link || (!s.step && !prev?.step)) return;
+    const at = this.deps.now();
+    const base = { sid: s.sid, ...(s.step ? { step: s.step } : {}) };
+    const add = (type: string, payload: Record<string, unknown> = {}) => this.link?.enqueue({ id: randomUUID(), at, type, ...base, payload: { repo: s.repo?.name, ...payload } });
+    if (prev && s.claudeSessionIds.length > prev.claudeSessionIds.length) add("session.rebound");
+    if (prev?.state === s.state && prev?.needs === s.needs) return;
+    if (s.state === "working") add("session.turn_started");
+    else if (s.state === "idle" && prev?.state === "working") add("session.turn_stopped");
+    else if (s.state === "needs_you") add("session.waiting", { needs: s.needs });
+    else if (s.state === "stalled") add("session.stalled");
+    else if (s.state === "ended") add("session.ended", { reason: s.endedReason });
+  }
+
+  /** Change a session outside the reducers (tool calls, autopilot). */
+  update(sid: string, patch: Partial<Session> & { clearStep?: boolean }): Session | undefined {
+    const i = this.sessions.findIndex((x) => x.sid === sid);
+    if (i < 0) return undefined;
+    const { clearStep, ...rest } = patch;
+    const s: Session = { ...(this.sessions[i] as Session), ...rest };
+    if (clearStep) {
+      delete s.step;
+      delete s.nudges;
+      delete s.escalated;
+    }
+    for (const k of Object.keys(s) as (keyof Session)[]) if (s[k] === undefined) delete s[k];
+    this.commit({ sessions: this.sessions.map((x) => (x.sid === sid ? s : x)), changed: [sid] });
+    void this.link?.flush();
+    return s;
+  }
+
+  autopilotOf(s: Session): "off" | "nudge" | "chain" {
+    return s.autopilot ?? this.config.autopilot;
+  }
+
+  /** A message from the hub inbox: queue it for local delivery. */
+  private receive(m: InboxMessage): "queued" | "unknown" {
+    const s = this.sessions.find((x) => x.sid === m.toSid && x.state !== "ended");
+    if (!s) return "unknown";
+    this.store.queueMessage(s.sid, m.text, this.deps.now(), m.id);
+    void this.deliverPending(s.sid).catch(() => undefined);
+    return "queued";
+  }
+
+  private settle(m: Message, state: "delivered" | "failed", detail: string): void {
+    if (state === "delivered") this.store.markDelivered(m.id, detail, this.deps.now());
+    else this.store.markFailed(m.id, detail);
+    if (m.hubId !== undefined) void this.link?.ack(m.hubId, state, state === "delivered" ? detail : undefined);
+    if (m.hubId !== undefined || state === "delivered") {
+      const s = this.sessions.find((x) => x.sid === m.sid);
+      if (s?.step) this.link?.enqueue({ id: randomUUID(), at: this.deps.now(), type: "message.delivered", sid: s.sid, step: s.step, payload: { state, method: detail } });
+    }
+  }
+
+  private toolHost(): ToolHost {
+    if (!this.link) throw new HttpError(409, "this daemon has no hub configured; run: mesh login");
+    return {
+      link: this.link,
+      update: (sid, patch) => this.update(sid, patch),
+      queue: (sid, text) => void this.store.queueMessage(sid, text, this.deps.now()),
+      autopilotOf: (s) => this.autopilotOf(s),
+    };
+  }
+
+  async callTool(tool: ToolName, call: ToolCall): Promise<{ text: string; isError?: boolean }> {
+    const s = this.sessions.find((x) => x.pid === call.pid && x.state !== "ended");
+    if (!s) return { text: "mesh doesn't know this Claude session yet (are the hooks installed? run `mesh doctor`).", isError: true };
+    return runTool(this.toolHost(), s, tool, call.args, call.key);
+  }
+
+  /** Claim the next ready step for a session's repo and send it its brief (TUI `n`). */
+  async assignNext(target: string): Promise<{ step?: string; message: string }> {
+    const s = findSession(this.sessions, target);
+    if (!s) throw new HttpError(404, `no live session matches "${target}"`);
+    const host = this.toolHost();
+    const q = s.repo ? `&repo=${encodeURIComponent(s.repo.id)}` : "";
+    const { steps } = await host.link.rpc<{ steps: { id: string }[] }>("GET", `/v1/steps?ready=1${q}`);
+    const next = steps[0];
+    if (!next) return { message: `no ready step for ${s.repo?.name ?? sessionLabel(s)}` };
+    await host.link.rpc("POST", `/v1/steps/${encodeURIComponent(next.id)}/claim`, { sid: s.sid }, randomUUID());
+    this.update(s.sid, { step: next.id, nudges: 0, escalated: false });
+    this.store.queueMessage(s.sid, stepMessage(next.id), this.deps.now());
+    void this.deliverPending(s.sid);
+    return { step: next.id, message: `${sessionLabel(s)} now holds ${next.id}` };
+  }
+
+  setAutopilot(target: string, level: "off" | "nudge" | "chain"): Session {
+    const s = findSession(this.sessions, target);
+    if (!s) throw new HttpError(404, `no live session matches "${target}"`);
+    return this.update(s.sid, { autopilot: level }) as Session;
+  }
+
+  status(): { hub: LinkStatus; user?: string | undefined; outbox: number; error?: string | undefined } {
+    if (!this.link) return { hub: "not-logged-in", outbox: 0 };
+    this.link.credentials();
+    return { hub: this.link.status, user: this.link.user, outbox: this.store.outboxSize(), error: this.link.lastError };
   }
 
   private maybeNotify(prev: Session | undefined, s: Session): void {
@@ -172,7 +302,7 @@ export class Daemon {
     return { now: this.deps.now(), newId: this.deps.newId, rules: this.rules };
   }
 
-  handleHook(kind: HookKind, input: HookInput, headers: { claudePid?: string; tmuxPane?: string; tmux?: string }): object {
+  handleHook(kind: HookKind, input: HookInput, headers: { claudePid?: string; tmuxPane?: string; tmux?: string; autopilot?: string; step?: string }): object {
     const now = this.deps.now();
     const ev: HookEvent = toHookEvent(kind, input, headers, now);
     if (kind === "UserPromptSubmit" && input.prompt !== undefined) {
@@ -187,12 +317,22 @@ export class Daemon {
     this.commit(result);
     const sid = result.changed[0] as string;
     this.store.appendHookEvent(sid, ev);
+    if (kind === "SessionStart" && ev.stepHint && this.link) {
+      const s = this.sessions.find((x) => x.sid === sid);
+      if (s && s.step !== ev.stepHint) {
+        const step = ev.stepHint;
+        void this.link
+          .rpc("POST", `/v1/steps/${encodeURIComponent(step)}/claim`, { sid }, `bind:${sid}:${step}`)
+          .then(() => this.update(sid, { step, nudges: 0, escalated: false }))
+          .catch((e) => this.deps.log(`could not bind ${sid} to ${step}: ${String(e)}`));
+      }
+    }
 
     if (kind === "Stop") {
       if (ev.stopHookActive !== true) {
         const [next] = this.store.pendingMessages(sid);
         if (next) {
-          this.store.markDelivered(next.id, "stop", now);
+          this.settle(next, "delivered", "stop");
           this.deps.log(`delivered message ${next.id} to ${sid} via Stop hook`);
           return stopReply(next.text);
         }
@@ -210,6 +350,7 @@ export class Daemon {
       if (entries === null) return;
       this.commit(applyObservation(this.sessions, entries, this.ctx()));
       await this.deliverPending();
+      await this.link?.flush();
     } finally {
       this.reconciling = false;
     }
@@ -226,10 +367,29 @@ export class Daemon {
   tick(): void {
     const now = this.deps.now();
     this.commit(applyTick(this.sessions, this.ctx()));
+    this.autopilot();
     // Forget long-ended sessions in memory; the store keeps them a week.
     this.sessions = this.sessions.filter((s) => s.state !== "ended" || now - (s.endedAt ?? 0) < 24 * 60 * 60_000);
     this.store.pruneSessions(now - 7 * 24 * 60 * 60_000);
     this.store.pruneHookEvents(now - 30 * 24 * 60 * 60_000);
+  }
+
+  /** Nudge stalled sessions, escalate after two nudges (plan §3.6). */
+  autopilot(): void {
+    for (const s of this.sessions) {
+      const action = decide(s, this.autopilotOf(s));
+      if (!action) continue;
+      if (action.kind === "nudge") {
+        this.store.queueMessage(s.sid, action.text, this.deps.now());
+        this.update(s.sid, { nudges: (s.nudges ?? 0) + 1 });
+        this.link?.enqueue({ id: randomUUID(), at: this.deps.now(), type: "session.nudged", sid: s.sid, ...(s.step ? { step: s.step } : {}), payload: { n: (s.nudges ?? 0) + 1 } });
+        void this.deliverPending(s.sid);
+      } else {
+        this.update(s.sid, { escalated: true });
+        this.link?.enqueue({ id: randomUUID(), at: this.deps.now(), type: "session.escalated", sid: s.sid, ...(s.step ? { step: s.step } : {}) });
+        if (this.config.notify) void this.deps.notify(`mesh · ${sessionLabel(s)}`, `stalled on ${s.step} after 2 nudges`).catch(() => undefined);
+      }
+    }
   }
 
   // ---------- messages ----------
@@ -250,14 +410,14 @@ export class Daemon {
     for (const m of pending) if (!firstPerSession.has(m.sid)) firstPerSession.set(m.sid, m);
 
     for (const m of pending) {
-      if (now - m.createdAt > MESSAGE_TTL_MS) this.store.markFailed(m.id, "not delivered within an hour");
+      if (now - m.createdAt > MESSAGE_TTL_MS) this.settle(m, "failed", "not delivered within an hour");
     }
     for (const [sid, m] of firstPerSession) {
       if (now - m.createdAt > MESSAGE_TTL_MS || this.delivering.has(sid)) continue;
       const s = this.sessions.find((x) => x.sid === sid);
       const plan = planDelivery(s, now, this.rules);
       if (plan.method === "fail") {
-        this.store.markFailed(m.id, plan.reason);
+        this.settle(m, "failed", plan.reason);
         continue;
       }
       if (plan.method === "stop" || plan.method === "wait" || !s) continue;
@@ -267,7 +427,7 @@ export class Daemon {
           this.typed.push({ text: m.text, at: now });
           const ok = await this.deps.paste(plan.pane, m.text, { socketPath: s.tmuxSocket });
           if (ok) {
-            this.store.markDelivered(m.id, "paste", this.deps.now());
+            this.settle(m, "delivered", "paste");
             this.markWorking(sid);
           } else {
             this.typed.pop();
@@ -276,10 +436,10 @@ export class Daemon {
           this.typed.push({ text: m.text, at: now });
           const r = await this.deps.wakeBackground({ bgId: plan.bgId, sessionId: plan.sessionId, cwd: s.cwd }, m.text);
           if (r.ok) {
-            this.store.markDelivered(m.id, "wake", this.deps.now());
+            this.settle(m, "delivered", "wake");
             this.markWorking(sid);
           } else {
-            this.store.markFailed(m.id, r.error ?? "wake failed");
+            this.settle(m, "failed", r.error ?? "wake failed");
           }
         }
       } finally {
@@ -323,10 +483,14 @@ export class Daemon {
           const v = req.headers[n];
           return typeof v === "string" && v !== "" ? v : undefined;
         };
-        const headers: { claudePid?: string; tmuxPane?: string; tmux?: string } = {};
+        const headers: { claudePid?: string; tmuxPane?: string; tmux?: string; autopilot?: string; step?: string } = {};
         const pid = h("x-claude-pid");
         const pane = h("x-tmux-pane");
         const tmux = h("x-tmux");
+        const autopilot = h("x-mesh-autopilot");
+        const stepHint = h("x-mesh-step");
+        if (autopilot) headers.autopilot = autopilot;
+        if (stepHint) headers.step = stepHint;
         if (pid) headers.claudePid = pid;
         if (pane) headers.tmuxPane = pane;
         if (tmux) headers.tmux = tmux;
@@ -340,6 +504,24 @@ export class Daemon {
         const body = SayRequest.safeParse(await readJson(req));
         if (!body.success) throw new HttpError(400, "expected {target, text}");
         return send(res, 200, this.say(body.data.target, body.data.text));
+      }
+      if (req.method === "POST" && path.startsWith("/local/mcp/")) {
+        const tool = path.slice("/local/mcp/".length) as ToolName;
+        if (!TOOL_NAMES.includes(tool)) throw new HttpError(404, "unknown tool");
+        const call = ToolCall.safeParse(await readJson(req));
+        if (!call.success) throw new HttpError(400, "expected {pid, args, key}");
+        return send(res, 200, await this.callTool(tool, call.data));
+      }
+      if (req.method === "GET" && path === "/local/status") return send(res, 200, { ...this.status(), host: hostname() });
+      if (req.method === "POST" && path === "/local/autopilot") {
+        const b = (await readJson(req)) as { target?: string; level?: string };
+        if (!b.target || (b.level !== "off" && b.level !== "nudge" && b.level !== "chain")) throw new HttpError(400, "expected {target, level: off|nudge|chain}");
+        return send(res, 200, this.setAutopilot(b.target, b.level));
+      }
+      if (req.method === "POST" && path === "/local/next") {
+        const b = (await readJson(req)) as { target?: string };
+        if (!b.target) throw new HttpError(400, "expected {target}");
+        return send(res, 200, await this.assignNext(b.target));
       }
       if (req.method === "POST" && path === "/local/reconcile") {
         await this.reconcile();

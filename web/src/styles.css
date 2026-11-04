@@ -1,0 +1,210 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d1f23;
+  --muted: #6b7078;
+  --line: #e3e5e8;
+  --card: #f7f8f9;
+  --accent: #3b6fd8;
+  --warn: #c98a00;
+  --bad: #c0392b;
+  --ok: #2e8b57;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e7e9;
+    --muted: #9aa0a8;
+    --line: #2c2f34;
+    --card: #1b1d21;
+  }
+  body {
+    background: #121316;
+  }
+}
+body {
+  margin: 0;
+  color: var(--fg);
+}
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 20px 48px;
+}
+h1 {
+  font-size: 22px;
+}
+h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 24px 0 8px;
+}
+.muted {
+  color: var(--muted);
+}
+.calm {
+  padding: 8px 0;
+}
+.error {
+  color: var(--bad);
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.top {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+.spacer {
+  flex: 1;
+}
+button,
+.button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: var(--accent);
+  color: white;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+button.small {
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--fg);
+}
+input {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-right: 8px;
+  background: transparent;
+  color: var(--fg);
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.login {
+  max-width: 420px;
+}
+.login .card {
+  margin-bottom: 12px;
+}
+.attention {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.att {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.att .kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--warn);
+  width: 80px;
+}
+.att-failed .kind,
+.att-stalled .kind {
+  color: var(--bad);
+}
+.att .text {
+  flex: 1;
+}
+.age {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.goals {
+  border-collapse: collapse;
+  width: 100%;
+}
+.goals td {
+  padding: 5px 8px 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+.goals .id {
+  font-weight: 600;
+  width: 48px;
+}
+.bar {
+  width: 140px;
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.bar > div {
+  height: 100%;
+  background: var(--ok);
+}
+.people {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+.person .row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dot.on {
+  background: var(--ok);
+}
+.dot.off {
+  background: var(--muted);
+}
+.session {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr 40px;
+  gap: 8px;
+  padding: 3px 0;
+}
+.session .step {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+}
+.st-needs_you .state {
+  color: var(--warn);
+  font-weight: 600;
+}
+.st-stalled .state {
+  color: var(--bad);
+}
+.st-working .state {
+  color: var(--accent);
+}
+.small-text {
+  font-size: 12px;
+  margin: 2px 0 0;
+}
+.activity {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.activity li {
+  padding: 3px 0;
+}

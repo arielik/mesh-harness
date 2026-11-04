@@ -148,6 +148,7 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
   if (ev.tmuxSocket !== undefined) s.tmuxSocket = ev.tmuxSocket;
   if (ev.transcriptPath !== undefined) s.transcriptPath = ev.transcriptPath;
   if (ev.model !== undefined) s.model = ev.model;
+  if (ev.autopilot !== undefined && s.autopilot === undefined) s.autopilot = ev.autopilot;
   if (ev.cwd) s.cwd = ev.cwd;
   s.lastEventAt = Math.max(s.lastEventAt, ev.at);
 
@@ -162,7 +163,13 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
       s.quiet = false;
       s.lastTurnStartAt = ev.at;
       s.turns += 1;
-      if (!ev.delivered) s.humanPrompts += 1;
+      delete s.asked;
+      if (!ev.delivered) {
+        s.humanPrompts += 1;
+        // A person stepped in: autopilot starts counting again.
+        delete s.nudges;
+        delete s.escalated;
+      }
       break;
     case "Notification":
       if (ev.notificationType === "permission_prompt") setNeeds(s, "permission");
@@ -174,7 +181,7 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
       s.lastStopAt = ev.at;
       const msg = preview(ev.lastAssistantMessage);
       if (msg !== undefined) s.lastMessage = msg;
-      if (endsWithQuestion(ev.lastAssistantMessage)) setNeeds(s, "question");
+      if (s.asked || endsWithQuestion(ev.lastAssistantMessage)) setNeeds(s, "question");
       else setIdle(s);
       break;
     }

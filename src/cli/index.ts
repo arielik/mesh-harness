@@ -4,3 +4,5 @@ export { dispatch, usage, type Command } from "./commands.ts";
 export { loadConfig, NotSetUp, parseArgs, paths, stdio, type Io } from "./context.ts";
 export { meshCommands, type CliEnv } from "./mesh-commands.ts";
 export { installService, launchdPlist, systemdUnit, type ServiceSpec } from "./service.ts";
+export { hubInit } from "./hub-commands.ts";
+export { HubClient, loadCredentials } from "./hub-client.ts";
