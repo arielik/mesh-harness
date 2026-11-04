@@ -565,27 +565,35 @@ The ledger rule: durable, generated summaries are committed in git (the ledger);
 | 4.9 | **A record for every stage**: the design step gets a record when its plan is approved (today it closes without one); review and test steps keep their rounds; plan files carry the approval | S | e2e-m3 leaves a design record |
 | 4.10 | **`superseded` plan decision** (R4): a pending plan replaced by a new proposal is `superseded`, not `revised` | S | Design rounds count only human `revised` |
 | 4.11 | **`mesh ledger export`** (R5): reads `.mesh/goals/**` from configured checkouts at a ref (default `origin/HEAD`), validates `mesh.ledger.v1`, writes JSONL, one line per record; optional join with `/v1/events` | M | mesh-ai imports the JSONL |
-| 4.12 | mesh-ai side (its own backlog): JSONL import, Flow/Quality/Models/People views | — | Tracked in mesh-ai |
+| 4.12 | **Artefact links** (C7): optional `artifacts: [{path, sha}]` and `refs` (spec id, backlog row) on `mesh_done` and goals | S | Records point at the team's spec, review and evidence files |
+| 4.13 | **Goal roll-up** (C8): at goal done, `goal.yaml` gets totals per stage (rounds, cycles, buckets, parks, people, models, harness hashes, lead time) | S | A finished goal has a retro record with no agent involved |
+| 4.14 | mesh-ai side (its own backlog): JSONL import, Flow/Quality/Models/People views | — | Tracked in mesh-ai |
 
 ### M4.5. Lifecycle data, all optional (weeks 15–16)
 
-Optional plan fields and guards only: no roles engine and no workflow engine. A plan without them works as today.
+Optional plan fields and guards only: no roles engine and no workflow engine. A plan without them works as today. The target process these serve is described in [the mesh development cycle](../analysis/2026-11-04-mesh-development-cycle.md).
 
 | # | Task | Size | Acceptance |
 |---|---|---|---|
-| 4.5.1 | **Verdicts** (R7): optional `verdict`, `findings` and `reopen: [{step, class}]` on `mesh_done` (class `impl\|test\|spec\|infra\|unclear`) | S–M | Review rounds and failure classes appear in records |
+| 4.5.1 | **Verdicts** (R7): optional `verdict`, `findings` (`new`/`repeat`/`regression` counts, `blockers`) and `failures: [{test, ac, bucket}]` on `mesh_done`; buckets use the team's taxonomy `spec-gap\|impl-bug\|test-bug\|infra\|unclear` | S–M | Review rounds, finding classes and failure buckets appear in records |
 | 4.5.2 | **Acceptance criteria** (R9): plan-level `acs`, `acs: [ids]` on steps; only test/review steps record `met`/`not_met`; implementing steps list the ACs they addressed | M | Per-AC outcome per round in the record |
 | 4.5.3 | **`reworks:`** on goals and plan steps (R10) | S | Export links the rework to the original step |
 | 4.5.4 | **Optional `role`** (free string) on plan steps (R11) | S | Grouped in the export |
 | 4.5.5 | **Blind steps** (R12, with R16 folded in): `blind: [ids]` and `produces.contract`; `mesh_context` hides the blinded steps' summary, notes and branch; claim and chain guards refuse a session or person who held a blinded step; `blind.separated` in the record | M | A tester session cannot see or inherit the implementer's work |
 | 4.5.6 | **Worktree per step** (R15): `mesh run --step S --worktree` | M | Two steps in one repo run on separate branches |
 | 4.5.7 | **Step stage table** (R13), including failed deliveries, as the single source for the TUI and web panels; categories don't overlap and every count equals its list's length (tested) | S | Property test over random states |
+| 4.5.8 | **More step kinds** (C1): `spec`, `plan`, `verify`, `merge`, `gate` | S | Old plans still validate |
+| 4.5.9 | **Caps and park rules** (C2, C3): `max_rounds` per step; park on churn (regressions over half) or stall (no new AC met in N cycles); `reopen` routing by bucket (spec-gap goes back through review, never an unreviewed amendment) | M | The hub parks at the cap; routing tested per bucket |
+| 4.5.10 | **Gate steps** (C4): done by a person in web/CLI or by a recorded rule; the record holds the rule inputs and the verdict reference | M | No free-text gate line needed |
+| 4.5.11 | **Reconcile check** (C5): every plan AC appears in the covering steps' `acs_addressed`, else reopen once, then park | S | A test plan missing an AC is sent back |
+| 4.5.12 | **`reads` / `forbid`** (C6): `mesh_context` shows only `reads` artefacts; `mesh run --step` passes `permissions.deny` for `forbid` paths; plan files committed on their own branch; reopen messages carry AC, bucket and assertion only | M | A test-side step never gets the impl plan, by context or on disk |
+| 4.5.13 | **Plan presets** (R14, C9, moved from M5) including `sdd-split` and its collapse variant | S–M | A design session proposes from the preset |
 
 Dropped: agent-reported test counts (R8; CI only) and token usage (R19).
 
 ### M5. Optional (later)
 
-GitLab issue import and comments (`gitlab/`), plus **CI ingest** (pipeline and test results per MR/step, joined into the ledger export; or joined from mesh-ai's Prometheus CI data). Plan presets (R14). Node SEA binaries and a hub container image. Design contributors, critical-path rendering, `--lane`. Claude Code channels as a delivery path once out of research preview. Everything else in `docs/later.md`.
+GitLab issue import and comments (`gitlab/`), plus **CI ingest** (pipeline and test results per MR/step, joined into the ledger export; or joined from mesh-ai's Prometheus CI data). Export adapters for existing machine ledgers such as `evidence/lane/verdicts.json` (C10). Node SEA binaries and a hub container image. Design contributors, critical-path rendering, `--lane`. Claude Code channels as a delivery path once out of research preview. Everything else in `docs/later.md`.
 
 ---
 
