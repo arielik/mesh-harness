@@ -1,6 +1,6 @@
 # mesh-harness implementation plan
 
-Status: **v2.4, reviewed; M0–M3 done**. Date: 2026-11-03. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
+Status: **v2.5, reviewed; M0–M3 done; M4/M4.5 reshaped by the owner decisions of 2026-11-04** ([analysis](../analysis/2026-11-04-team-value-metrics-and-ledger.md#owner-decisions-2026-11-04)). Date: 2026-11-04. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
 
 Sources:
 
@@ -548,19 +548,44 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 - Web: Goals board, Goal page with an SVG DAG laid out by depth (no React Flow), step panel with facts, Design tab with plan versions and step-level diffs, approve/revise, Timeline. Hash routing, no router library.
 - Design contributors and critical-path highlighting stay in `docs/later.md`.
 
-### M4. Analysis feed + hardening (weeks 12–13)
+### M4. Ledger, analysis feed + hardening (weeks 12–14)
+
+The ledger rule: durable, generated summaries are committed in git (the ledger); precise and live-only data stays in hub events, kept N days. No hand-written ledger fields: everything comes from hooks, events and tool arguments.
 
 | # | Task | Size | Acceptance |
 |---|---|---|---|
 | 4.1 | `GET /v1/events?after=` + service tokens; JSON Schema generated from `protocol` (`schemas/`, `docs/events.md`), checked for drift in CI | S | mesh-ai can page the full log |
-| 4.2 | `mesh hub backup`; event retention option | S | |
+| 4.2 | `mesh hub backup`; event retention option (R6); the ledger rule documented | S | Old events pruned; a backup restores |
 | 4.3 | `pnpm test:claude`: M0 spikes as a contract suite against the installed Claude Code | S | Runs on demand or nightly |
-| 4.4 | Docs: overview, concepts, install, auth (providers + Kanidm preset), operations | S | |
-| 4.5 | mesh-ai side (its own backlog): `harness.*` events, `.mesh/goals/**` ingest, Flow/Quality/Models/People views | — | Tracked in mesh-ai |
+| 4.4 | Docs: overview, concepts, install, auth (providers + Kanidm preset), operations, ledger format | S | |
+| 4.5 | **`mesh.ledger.v1` schema** (R1): `schema` and `record: goal\|plan\|step` on every trail file; zod in `protocol/`; unknown fields allowed | S | Golden files validate; old records still parse |
+| 4.6 | **Provenance per segment** (R2): `segments[]` with sid, user, from/to, model + `model_source` (`hook` from `SessionStart`, `agent` from the optional `model` argument of `mesh_done`), effort and permission_mode (from `Stop`, kept instead of dropped), Claude Code version, harness hash, repo commit, mesh version, turns, human prompts, nudges, waits. Plans carry `{version, approved_by, approved_at}`. No token usage. | M | A step taken over by a second person shows two segments with their own models |
+| 4.7 | **Harness hash**: repo `CLAUDE.md` + `.claude/**`, the user's `~/.claude` `CLAUDE.md`/agents/skills, plugin names and versions, mesh version; one combined hash plus one per part | S | Editing a user skill changes only that part's hash |
+| 4.8 | **Round history** (R3): `rounds[]` in step records, so a later `mesh_done` adds a round instead of overwriting | S | A reopened step keeps both rounds |
+| 4.9 | **A record for every stage**: the design step gets a record when its plan is approved (today it closes without one); review and test steps keep their rounds; plan files carry the approval | S | e2e-m3 leaves a design record |
+| 4.10 | **`superseded` plan decision** (R4): a pending plan replaced by a new proposal is `superseded`, not `revised` | S | Design rounds count only human `revised` |
+| 4.11 | **`mesh ledger export`** (R5): reads `.mesh/goals/**` from configured checkouts at a ref (default `origin/HEAD`), validates `mesh.ledger.v1`, writes JSONL, one line per record; optional join with `/v1/events` | M | mesh-ai imports the JSONL |
+| 4.12 | mesh-ai side (its own backlog): JSONL import, Flow/Quality/Models/People views | — | Tracked in mesh-ai |
+
+### M4.5. Lifecycle data, all optional (weeks 15–16)
+
+Optional plan fields and guards only: no roles engine and no workflow engine. A plan without them works as today.
+
+| # | Task | Size | Acceptance |
+|---|---|---|---|
+| 4.5.1 | **Verdicts** (R7): optional `verdict`, `findings` and `reopen: [{step, class}]` on `mesh_done` (class `impl\|test\|spec\|infra\|unclear`) | S–M | Review rounds and failure classes appear in records |
+| 4.5.2 | **Acceptance criteria** (R9): plan-level `acs`, `acs: [ids]` on steps; only test/review steps record `met`/`not_met`; implementing steps list the ACs they addressed | M | Per-AC outcome per round in the record |
+| 4.5.3 | **`reworks:`** on goals and plan steps (R10) | S | Export links the rework to the original step |
+| 4.5.4 | **Optional `role`** (free string) on plan steps (R11) | S | Grouped in the export |
+| 4.5.5 | **Blind steps** (R12, with R16 folded in): `blind: [ids]` and `produces.contract`; `mesh_context` hides the blinded steps' summary, notes and branch; claim and chain guards refuse a session or person who held a blinded step; `blind.separated` in the record | M | A tester session cannot see or inherit the implementer's work |
+| 4.5.6 | **Worktree per step** (R15): `mesh run --step S --worktree` | M | Two steps in one repo run on separate branches |
+| 4.5.7 | **Step stage table** (R13), including failed deliveries, as the single source for the TUI and web panels; categories don't overlap and every count equals its list's length (tested) | S | Property test over random states |
+
+Dropped: agent-reported test counts (R8; CI only) and token usage (R19).
 
 ### M5. Optional (later)
 
-GitLab issue import and comments (`gitlab/`). Node SEA binaries and a hub container image. Design contributors, critical-path rendering, `--lane`. Claude Code channels as a delivery path once out of research preview. Everything else in `docs/later.md`.
+GitLab issue import and comments (`gitlab/`), plus **CI ingest** (pipeline and test results per MR/step, joined into the ledger export; or joined from mesh-ai's Prometheus CI data). Plan presets (R14). Node SEA binaries and a hub container image. Design contributors, critical-path rendering, `--lane`. Claude Code channels as a delivery path once out of research preview. Everything else in `docs/later.md`.
 
 ---
 

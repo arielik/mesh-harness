@@ -455,3 +455,27 @@ Round 2: all ACs pass.
 8. **ACs as optional plan data (R9):** acceptable, given it nudges designs toward mesh-ai-style specs?
 9. **Model attribution gap:** fund a one-day spike on reading model and usage numbers from transcripts locally, or accept "model unknown" for some steps?
 10. **Step stage table (R13):** confirm that the prototype's panel rules (exclusive categories, counts equal list lengths) become a stated principle for the TUI and web.
+
+---
+
+## Owner decisions (2026-11-04)
+
+Recorded after a one-by-one review with the owner. These override the recommendations above where they differ.
+
+| # | Decision | Result |
+|---|---|---|
+| 1 | Ledger rule (§5.3) | **Adopted.** Git holds durable, generated summaries; hub events hold precise and live-only data, kept N days. No hand-written ledger fields. |
+| 2 | M4 MUST set | **R1–R6 approved for M4**, before real goals run in product repos. |
+| 3 | Where the reader lives | **`mesh ledger export` in mesh-harness**, writing JSONL; mesh-ai imports the JSONL. |
+| 4 | Harness hash scope | Repo `CLAUDE.md` + `.claude/**`, the user's `~/.claude` `CLAUDE.md`/agents/skills, plugin names and versions, and the mesh version. One combined hash plus one hash per part. Model and effort are recorded separately. |
+| 5 | Privacy | **Plain user names and models** in committed records. |
+| 6 | Blind steps | **R12 + R15 (worktree per step) in M4.5**, right after M4. |
+| 7 | Self-reported test counts | **Wait for CI only.** R8 is dropped. CI results come from a CI ingest added to the GitLab milestone, or from joining mesh-ai's Prometheus CI data in the export. |
+| 8 | Acceptance criteria | **Optional plan data; verifiers judge.** Plan-level `acs`; steps reference them. Only test and review steps record `met`/`not_met`; implementing steps list the ACs they addressed. |
+| 9 | Model attribution | The **agent passes its model** as a structured, optional `model` argument to `mesh_done`. Hooks give the model at session start (`SessionStart`); effort and permission mode come from `Stop`. **No token usage** (R19 is dropped), no transcript reading, no `PostModelSwitch` hook. Every stage the process runs (design, spec, review, plan, implement, test, fix) leaves a ledger record that mesh writes with the required metadata, including the model. |
+| 10 | Step stage table | **Adopted as a rule for the terminal view and the web**: one ordered state table in `core/`; every panel and count is built from it; categories don't overlap, and each count equals the length of its list. Tests check this. |
+
+Notes:
+
+- Decision 9 relaxes R21 slightly. The model comes through a tool argument, so it is structured data validated by the schema, not a free-text line, and the ledger rule still holds. The record keeps where each value came from (`model_source: hook | agent`), so analysis can tell them apart.
+- "Every stage leaves a record" means the design step gets a record when its plan is approved (today it is closed without one), review and test steps record their verdict and rounds, and plan files carry the approval provenance. It adds no new workflow concept: these stay generic step kinds.
