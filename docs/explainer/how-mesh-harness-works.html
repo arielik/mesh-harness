@@ -436,10 +436,10 @@ design → spec → cold spec review → implementation plan and test plan writt
       <li><code>workflows/&lt;run&gt;.json</code>: start, duration, attempt.</li>
     </ul>
   </li>
-  <li>The label says which step and round it is: <code>spec-review 771 r2</code>, <code>verify 771 c3</code>. The typed result becomes that round's data.</li>
-  <li>Records wait in <code>&lt;git-common-dir&gt;/mesh/pending/</code>, shared by all worktrees and never in the working tree. The workflow's Close step runs one optional line, <code>mesh ledger stage 771</code>, so they are committed with the closing commit. Without mesh the line is skipped.</li>
+  <li>The label says which step and round it is. The canonical workflows already use <code>&lt;role&gt;:&lt;row&gt;[:&lt;round&gt;]</code>, e.g. <code>reviewer:NA-1054:r2</code> or <code>test-executor:NA-1054:c3</code>. The typed result becomes that round's data.</li>
+  <li>Records wait in <code>&lt;git-common-dir&gt;/mesh/pending/</code>, shared by all worktrees and never in the working tree. The workflow's final ledger commit runs one optional line, <code>mesh ledger stage NA-1054</code>, so they are committed with the closing commit. Without mesh the line is skipped.</li>
 </ol>
-<p class="small">The canonical workflows in <code>claude-assets</code> change in only three ways: consistent labels, a <code>schema:</code> on every agent, and richer schemas (finding classes, per-AC results, fail-first). There is no mesh call and no network access. Design: <code>docs/analysis/2026-11-04-local-first-and-workflow-capture.md</code>.</p>
+<p class="small">The canonical workflows in <code>claude-assets</code> already label every agent and give each a <code>schema:</code>. The change only adds optional result fields (criteria covered, a result per criterion, finding counts per class) and one optional <code>mesh ledger stage</code> line. There is no mesh call and no network access. Design: <code>docs/analysis/2026-11-04-local-first-and-workflow-capture.md</code>.</p>
 
 <h3>How we'll know it works before relying on it</h3>
 <p>Blackholed-hub tests for the fail-fast link, offline-then-reconnect sync with no duplicates, a complete Solo goal, a conflicting claim made while offline, and parser tests against real Claude Code files. A contract suite catches Claude Code upgrades that change those files. A real-Claude run of a programme four ways must finish every time with the same records: no daemon, hub cut, hub restored mid-run, Solo.</p>

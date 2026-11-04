@@ -559,7 +559,7 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 | 4.0.3 | **Circuit breaker** on the hub link: fail fast after the first failure, background probe, status in TUI and `mesh status` | S | T1 |
 | 4.0.4 | **Records rendered by the daemon** (same `core/trail.ts`) | S | Offline `mesh_done` writes the record |
 | 4.0.5 | **Workflow capture**: `SubagentStart`/`SubagentStop` hooks (7 in total); read `journal.jsonl`, `agent-*.meta.json` and `workflows/<run>.json`; label → record key (the team's id as written) and round, no mesh goal needed; typed result → round data; pending records in `<git-common-dir>/mesh/pending/`; `mesh ledger stage <id>`; backfill on daemon start | M | T5 with captured fixtures |
-| 4.0.6 | **Canonical workflows** in `architecture-and-standards/claude-assets/workflows/`: labels `"<stage> <id> r<N>"`, a schema on every `agent()`, richer schemas, one optional `mesh ledger stage` line in Close | S | Runs unchanged without mesh |
+| 4.0.6 | **Canonical workflows** in `architecture-and-standards/claude-assets/workflows/`: labels already `<role>:<row>[:<round>]` and schemas on every `agent()`; add criteria and finding-count fields and one optional `mesh ledger stage` line. **Done on branch `chore/mesh-ledger-capture` (`b581ae9`), not pushed.** | S | Runs unchanged without mesh |
 | 4.0.7 | **`pnpm spike e2e-offline`**: no daemon / hub blackholed / hub restored mid-run / Solo, real Claude | M | T7 |
 
 The ledger rule: durable, generated summaries are committed in git (the ledger); precise and live-only data stays in hub events, kept N days. No hand-written ledger fields: everything comes from hooks, events and tool arguments.

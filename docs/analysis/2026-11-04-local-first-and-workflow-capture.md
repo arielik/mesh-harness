@@ -11,7 +11,7 @@ Date: 2026-11-04. Status: **design, for approval before M4 starts**. Follows [th
 | 13 | **Two modes: Team and Solo. Bare is dropped.** |
 | 15 | **Goal identity and the goal model are deferred.** A backlog, capabilities and use cases in git (owner or dedicated repos) is the likely model. No renaming now. |
 | 16 | **Offline conflict rule:** the first claim to reach the hub wins; the other person is told; both records are kept. |
-| 17 | **One optional `mesh ledger stage <id>` line** in the canonical Close step is accepted. |
+| 17 | **One optional `mesh ledger stage <row>` line** in the canonical workflows' final ledger commit is accepted. |
 | 14 | **Everything keeps working locally without the hub.** The team's process must run whether or not mesh is installed. mesh adds visibility and enforcement; it is never needed to get work done. |
 
 ## 1. The principle
@@ -73,7 +73,7 @@ The daemon embeds the same `HubService` on its own SQLite file: the **local hub*
 
 How goals are named and where they live will be decided separately. The likely direction is a backlog, capabilities and use cases kept **in git**, in the owner repos or in dedicated repos, following the model in `architecture-and-standards`. Until then:
 
-- **Programme capture needs no mesh goal.** Records are keyed by the id in the agent's label (e.g. `771` in `spec-review 771 r2`), exactly as the team's process names it. mesh does not allocate or rename it.
+- **Programme capture needs no mesh goal.** Records are keyed by the id in the agent's label (e.g. `NA-1054` in `reviewer:NA-1054:r2`), exactly as the team's process names it. mesh does not allocate or rename it.
 - **Solo goals** keep the current scheme from the local hub (`G<n>`), and stay local.
 - **Publishing locally created goals to the team hub is out of scope** until the goal model is decided. Replication covers held steps, events and done-results only.
 
@@ -81,22 +81,20 @@ How goals are named and where they live will be decided separately. The likely d
 
 1. `SubagentStart` → the daemon opens a **segment**: role = `agent_type`, start = daemon clock.
 2. `SubagentStop` → it closes the segment, then reads that agent's lines from `journal.jsonl`, `agent-<id>.meta.json` and `workflows/<run>.json`. That gives the label, phase, model, attempt, duration and typed result. Token counts in those files are ignored (decision 9).
-3. **The label says which step and round it is.** Canonical convention: `"<stage> <id> r<N>"` / `"<stage> <id> c<N>"`, e.g. `spec-review 771 r2`, `verify 771 c3`. The daemon records it under key `771`, stage `spec-review`, round 2. The key is the team's id as written; no mesh goal is created (decision 15). A label that doesn't parse becomes an unattached segment of the session; it is not lost.
+3. **The label says which step and round it is.** The canonical workflows already use one format: `<role>:<row>[:<round>]`, e.g. `reviewer:NA-1054:r2`, `test-executor:NA-1054:c3`, `developer:NA-1054:fix1`, `reviewer:NA-1054:diff1`. Labels without a row (`ledger`, `clean`, `gate-run`) are programme-level. The daemon records `reviewer:NA-1054:r2` under key `NA-1054`, role `reviewer`, round 2. The key is the team's id as written; no mesh goal is created (decision 15). A label that doesn't parse becomes an unattached segment of the session; it is not lost.
 4. **The typed result becomes the round's data:** verdict, blockers, finding classes, per-AC results, failures with bucket, fail-first. These come from the richer schemas in decision 12.
-5. **Where the records go:** into `<git-common-dir>/mesh/pending/<goal>/`. That folder is shared by all worktrees of the repo, sits outside the working tree and is never committed by accident. The workflow's existing Close step then runs `mesh ledger stage <id>`, which copies the pending records into the row's worktree so they are committed with the closing commit. **If mesh isn't installed, the command is skipped (`command -v mesh || true`).** This is the only mention of mesh in the workflows: one optional line. Without mesh the programme behaves exactly as today.
+5. **Where the records go:** into `<git-common-dir>/mesh/pending/<row>/`. That folder is shared by all worktrees of the repo, sits outside the working tree and is never committed by accident. The workflow's final ledger commit (in the main tree, on the programme branch) then runs `mesh ledger stage <row>`, which copies the pending records into that tree so they are committed with the ledger. **If mesh isn't installed, the command is skipped (`command -v mesh || true`).** This is the only mention of mesh in the workflows: one optional line. Without mesh the programme behaves exactly as today.
 6. **Backfill.** Claude Code keeps these files for its cleanup period, 30 days by default. When the daemon starts it can import programme runs it missed while it was down.
 
-### 4.6 What the canonical `programme.js` change looks like
+### 4.6 The canonical workflow change (done on a branch, 2026-11-04)
 
-- Labels follow `"<stage> <id> r<N>"`.
-- A `schema:` on every `agent()` call, including the mechanical ones.
-- Richer schemas:
-  - `REVIEW` adds `findings: {new, repeat, regression}`;
-  - `EXEC` adds `acs: {AC-01: met|not_met|unrun}` and keeps `surfaces_not_run`;
-  - test-writer `WORK` adds `fail_first: {red: [], not_red: []}`;
-  - mutation results become `{killed, survived: []}`.
-- Close step: `command -v mesh >/dev/null && mesh ledger stage <id> || true`.
-- Nothing else. No mesh tools, no network.
+The canonical `define-rows.js` and `build-rows.js` in `architecture-and-standards/claude-assets/workflows/` are newer than the per-programme `programme.js` copies in vpc-node-agent. **Every `agent()` call already has a `schema:`, and labels already follow `<role>:<row>[:<round>]`**, so neither needed changing. The change (branch `chore/mesh-ledger-capture`, commit `b581ae9`, not pushed) only adds optional result fields and one optional line:
+
+- **Spec and diff reviews:** `findings_new` and `findings_repeat` next to the existing `findings` and `regression_of_own_repair`.
+- **Plans** (`PLAN`) and **builders** (`BRANCH`): `criteria`, the acceptance criteria covered. This is the input for the reconcile check. The test-writer's existing `not_fail_first` stays.
+- **Test executor** (`TEST`): `criteria: [{criterion, state: pass|fail|unrun, surface}]`, one entry per criterion, next to the existing `acs_passing`, `failing[{criterion, bucket}]` and `not_run`.
+- **Final ledger commit:** "if `mesh` exists, run `mesh ledger stage <row>` for each row and stage the files it prints; otherwise skip silently".
+- Nothing else. No mesh tools, no network, labels unchanged. The vpc-node-agent `programme.js` copies are one-off scripts; new programmes should start from the canonical workflows.
 
 ## 5. How we become confident before relying on it
 
@@ -118,4 +116,4 @@ Resolved by the owner on 2026-11-04:
 
 1. **Goal ids and the goal model:** deferred (decision 15, §4.4).
 2. **Conflict rule:** first claim to reach the hub wins, the other person gets a message, and both records are kept (decision 16).
-3. **Close-step line:** one optional `mesh ledger stage <id>` line in the canonical workflows is accepted (decision 17).
+3. **Ledger-commit line:** one optional `mesh ledger stage <row>` line in the canonical workflows is accepted (decision 17).
