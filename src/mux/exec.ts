@@ -30,7 +30,7 @@ export const run: Runner = (cmd, args, opts = {}) =>
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       env: opts.env ? { ...process.env, ...opts.env } : process.env,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: [opts.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     });
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
@@ -40,5 +40,9 @@ export const run: Runner = (cmd, args, opts = {}) =>
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", (e) => done({ code: 127, stdout, stderr: String(e) }));
     child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
-    child.stdin.end(opts.input ?? "");
+    if (child.stdin) {
+      // The program may exit before reading its input; that is not our error.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(opts.input);
+    }
   });
