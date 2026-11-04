@@ -4,7 +4,11 @@ Each runtime dependency needs one line of justification here (plan §1.7). Dev d
 
 ## Runtime
 
-None yet. Planned: `zod`, `hono`, `@hono/node-server`, `openid-client`, `@modelcontextprotocol/sdk`, `yaml` (each added with the task that first needs it).
+| Package | Why |
+|---|---|
+| `zod` | Schemas for hook input, `agents --json`, config and the local API (plan §5) |
+
+Planned: `hono`, `@hono/node-server`, `openid-client`, `@modelcontextprotocol/sdk`, `yaml` (each added with the task that first needs it). SQLite is Node's built-in `node:sqlite`.
 
 ## Development
 

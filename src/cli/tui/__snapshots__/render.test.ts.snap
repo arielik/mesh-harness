@@ -1,0 +1,28 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`render > renders the list (snapshot) 1`] = `
+"mesh 0.0.0 · ariel  ·  2 need you                                                                   
+
+NEEDS YOU (2)
+  ● frr-dplane-ovs  permission                                                                    2m
+  ● vpc-node-agent  asks: Keep the v4 fallback on by default?                                     6m
+
+WORKING (1)
+  ◐ proto-defs      working · turn 14 · 3m                                                   ✉1   5s
+
+STALLED / QUIET (1)
+  ◌ rust-ovs        quiet: no transcript activity for 25m                                        25m
+
+IDLE (1)
+  ○ docs-bg         done: Docs updated.                                                      bg  30s
+
+ENDED (1)
+  · f               ended (prompt_input_exit)                                                     1m
+
+
+
+
+
+
+⏎ jump · s say · r refresh · ↑↓ move · q quit"
+`;

@@ -17,6 +17,8 @@ export async function dispatch(
   out: (s: string) => void,
 ): Promise<number> {
   const [name, ...rest] = argv;
+  const fallback = commands.find((c) => c.name === "tui");
+  if (name === undefined && fallback) return fallback.run([]);
   if (name === undefined || name === "help" || name === "--help" || name === "-h") {
     out(usage(commands, version));
     return 0;

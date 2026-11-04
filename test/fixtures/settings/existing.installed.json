@@ -1,0 +1,88 @@
+{
+  "model": "haiku",
+  "effortLevel": "high",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "say done"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:27777/mesh/hook/stop",
+            "timeout": 3,
+            "headers": {
+              "X-Mesh-Key": "0123456789abcdef0123456789abcdef"
+            }
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./guard.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" http://127.0.0.1:27777/mesh/hook/session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" http://127.0.0.1:27777/mesh/hook/prompt"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" http://127.0.0.1:27777/mesh/hook/notification"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" http://127.0.0.1:27777/mesh/hook/session-end"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git log *)"
+    ]
+  }
+}

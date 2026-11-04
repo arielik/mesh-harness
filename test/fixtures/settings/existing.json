@@ -1,0 +1,22 @@
+{
+  "model": "haiku",
+  "effortLevel": "high",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "say done" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "./guard.sh" }
+        ]
+      }
+    ]
+  },
+  "permissions": { "allow": ["Bash(git log *)"] }
+}

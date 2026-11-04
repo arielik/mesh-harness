@@ -1,0 +1,48 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`service files (golden) > launchd plist 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.mesh-harness.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/node</string>
+    <string>/opt/mesh/dist/main.mjs</string>
+    <string>up</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/home/dev/.local/state/mesh/daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>/home/dev/.local/state/mesh/daemon.log</string>
+</dict>
+</plist>
+"
+`;
+
+exports[`service files (golden) > systemd unit 1`] = `
+"[Unit]
+Description=mesh-harness daemon (watches your Claude Code sessions)
+After=default.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/mesh/dist/main.mjs up
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+"
+`;

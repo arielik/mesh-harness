@@ -1,2 +1,19 @@
-// Claude Code adapter: installer, agents --json, resume --bg (plan §5.1, §6).
-export {};
+// Claude Code adapter: hook installer, agents --json, background wake, version (plan §5.1, §6).
+export { listAgents } from "./agents.ts";
+export { attachCommand, wakeBackground, type WakeResult } from "./background.ts";
+export { run, type RunOptions, type RunResult, type Runner } from "./exec.ts";
+export {
+  hookCommand,
+  hookUrl,
+  inspect,
+  inspectSettingsFile,
+  installInto,
+  installSettingsFile,
+  MESH_HOOK_PATH,
+  meshHookGroup,
+  uninstallFrom,
+  uninstallSettingsFile,
+  type HookStatus,
+  type HookTarget,
+} from "./installer.ts";
+export { claudeVersion, compareVersions, MIN_CLAUDE_VERSION, parseVersion } from "./version.ts";

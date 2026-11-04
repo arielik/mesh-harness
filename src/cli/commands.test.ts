@@ -31,3 +31,10 @@ describe("dispatch", () => {
     expect(output).toContain('unknown command "nope"');
   });
 });
+
+describe("dispatch fallback", () => {
+  it("runs the tui command when called with no arguments", async () => {
+    const tui: Command = { name: "tui", summary: "", run: async () => 42 };
+    expect(await dispatch([], [tui], "1", () => undefined)).toBe(42);
+  });
+});

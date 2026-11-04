@@ -62,3 +62,22 @@ describe("claude agents --json fixtures", () => {
     expect(agents.some((a) => a.data.entry.kind === "interactive")).toBe(true);
   });
 });
+
+describe("protocol schemas accept every captured fixture", async () => {
+  const { HookInput, AgentEntry, toHookEvent, hookKindFromSlug, HOOK_SLUGS } = await import("../src/protocol/index.ts");
+
+  it.each(load("hooks"))("HookInput parses $file", ({ data }) => {
+    const parsed = HookInput.safeParse(data.input);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const kind = data.input.hook_event_name as keyof typeof HOOK_SLUGS;
+    expect(hookKindFromSlug(HOOK_SLUGS[kind])).toBe(kind);
+    const ev = toHookEvent(kind, { ...parsed.data, prompt: "secret" }, { claudePid: "123", tmuxPane: "%4", tmux: "/tmp/s,1,0" }, 1);
+    expect(ev).toMatchObject({ kind, claudeSessionId: data.input.session_id, pid: 123, pane: "%4", tmuxSocket: "/tmp/s" });
+    expect(JSON.stringify(ev)).not.toContain("secret");
+  });
+
+  it.each(load("agents"))("AgentEntry parses $file", ({ data }) => {
+    expect(AgentEntry.safeParse(data.entry).success).toBe(true);
+  });
+});

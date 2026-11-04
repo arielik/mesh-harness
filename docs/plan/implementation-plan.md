@@ -1,6 +1,6 @@
 # mesh-harness implementation plan
 
-Status: **v2.1, reviewed; M0 done**. Date: 2026-11-03. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
+Status: **v2.2, reviewed; M0, M1a and M1b done**. Date: 2026-11-03. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
 
 Sources:
 
@@ -320,7 +320,7 @@ auth:
 
 | Event | Type | Command / URL | Blocking |
 |---|---|---|---|
-| `SessionStart` | `command`, `async: true` | `curl -s -m 2 -o /dev/null --data-binary @- -H "X-Mesh-Key: <secret>" -H "X-Claude-Pid: ${CLAUDE_PID:-$PPID}" http://127.0.0.1:<port>/hook/session-start` | no |
+| `SessionStart` | `command`, `async: true` | `curl -s -m 2 -o /dev/null --data-binary @- -H "X-Mesh-Key: <secret>" -H "X-Claude-Pid: ${CLAUDE_PID:-$PPID}" -H "X-Tmux-Pane: ${TMUX_PANE:-}" -H "X-Tmux: ${TMUX:-}" http://127.0.0.1:<port>/mesh/hook/session-start` | no |
 | `UserPromptSubmit` | same, `/hook/prompt` | | no |
 | `Notification` | same, `/hook/notification` | | no |
 | `SessionEnd` | same, `/hook/session-end` | | no |
@@ -383,7 +383,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 3. **Reconciler.**
    - Polls `claude agents --json` every 5 seconds (spike S7).
    - Maps `pid ↔ sid ↔ session_id`.
-   - Maps pid → tmux pane with `tmux list-panes -a -F '#{pane_pid} #{pane_id}'` plus a walk up the process tree.
+   - Takes the tmux pane and server from the hooks' `X-Tmux-Pane`/`X-Tmux` headers (`$TMUX_PANE`, `$TMUX`), so no process-tree walk is needed. Sessions without hooks still appear through `agents --json`, but without a pane (no jump or paste).
    - Checks transcript modification times every 30 seconds.
 4. **Delivery** (`deliver(sid, text)`), first match wins:
    1. The session is `working`: queue the message for the next `Stop` (as `additionalContext`, only when `stop_hook_active` is false).
@@ -479,6 +479,13 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 
 **Exit:** a developer sees all their Claude sessions, sorted by needs-you, and jumps to them. Worth a week of daily use before going further.
 
+**Status: done.** Notes:
+
+- `mesh setup` installs the five hooks only. The MCP server and the `CLAUDE.md` block move to task 2.6, when the MCP tools exist.
+- The daemon uses plain `node:http`; `hono` arrives with the hub.
+- Desktop notifications live in `mux` (`mux/notify.ts`).
+- `mesh up --install` writes the launchd/systemd file and prints the enable command; it does not load it.
+
 ### M1b. Talking to sessions (week 4)
 
 | # | Task | Size | Acceptance |
@@ -486,6 +493,8 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 | 1.8 | `mux/tmux`: paste-buffer delivery with the S8 guard | S | A dialog-open case never receives keys |
 | 1.9 | Delivery chain (Stop `additionalContext`, paste, `--resume --bg`, notify) + `mesh say` + TUI `s` | M | Each path covered by fakes; method recorded |
 | 1.10 | `mesh run` (tmux windows, labels, `--bg`) | S | e2e with fake claude |
+
+**Status: done.** `mesh run` creates a `mesh` tmux session whose window 0 runs the TUI, plus one window per repo, and binds `prefix + m` back to the TUI (`--no-bind` to skip). Verified end to end against Claude Code 2.1.317 with `pnpm spike e2e`: tracking, paste delivery, the dialog guard, Stop-hook delivery, question detection, `/clear` rebind, the TUI and `/exit` all pass.
 
 ### M2a. Hub core with simple auth (weeks 5–6)
 
