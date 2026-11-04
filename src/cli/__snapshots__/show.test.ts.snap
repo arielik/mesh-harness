@@ -1,0 +1,22 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`mesh show > renders the goal DAG by level (snapshot) 1`] = `
+"G17 · IPv6 underlay
+in progress · owner @ariel · 2/7 steps done · frr-dplane-ovs
+plan v2 approved by @sara · design frr@main:docs/design/g17.md
+
+start
+  ✓ design    design    frr-dplane-ovs   done     — plan v2 approved
+  ✓ proto     implement proto-defs       done     !41  — fields added
+  ○ old       implement proto-defs       ready
+then (after proto)
+  ◐ agent     implement vpc-node-agent   claimed  @tom · working
+  ◐ dplane    implement frr-dplane-ovs   claimed  @ariel · needs permission  fix cycle 1
+then (after dplane)
+  · dplane-t  test      frr-dplane-ovs   blocked
+then (after agent, dplane-t)
+  · e2e       test      vpc-lab          blocked
+dropped by a later plan: docs
+
+ready to pick: mesh run proto-defs --step G17.old"
+`;

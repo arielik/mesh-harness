@@ -1,0 +1,69 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`trail files (golden) > renders a step record 1`] = `
+"---
+goal: G17
+step: dplane
+kind: implement
+repo: frr-dplane-ovs
+plan: v2
+holders:
+  - user: ariel
+    from: 2026-11-03T09:12Z
+    to: 2026-11-03T10:12Z
+  - user: tom
+    from: 2026-11-03T10:22Z
+    to: 2026-11-03T11:17Z
+sessions:
+  - s1
+  - s2
+models:
+  - claude-opus-5-5
+  - claude-sonnet-5
+turns: 5
+human_prompts: 3
+nudges: 1
+waits:
+  count: 2
+  minutes: 9
+fix_cycles: 1
+outcome: done
+mr: "!88"
+branch: mesh/g17-dplane
+started: 2026-11-03T09:12Z
+finished: 2026-11-03T11:17Z
+---
+Added v6 underlay next-hop programming.
+
+Notes:
+- ariel: v4 fallback stays on (decided with owner)
+"
+`;
+
+exports[`trail files (golden) > renders plan and goal files 1`] = `
+"goal: G17
+version: 2
+design: frr-dplane-ovs@design/g17:docs/design/g17-ipv6-underlay.md
+proposed:
+  by: ariel
+  at: 2026-11-03T09:12Z
+decision: approved
+decided:
+  by: sara
+  at: 2026-11-03T09:42Z
+  comment: ship it
+steps:
+  - id: proto
+    repo: proto-defs
+    kind: implement
+    title: proto
+    brief: add fields
+  - id: dplane
+    repo: frr-dplane-ovs
+    kind: implement
+    title: dplane
+    deps:
+      - proto
+    brief: program v6
+"
+`;

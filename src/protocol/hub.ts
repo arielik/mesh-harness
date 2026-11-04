@@ -1,7 +1,7 @@
 // Hub HTTP API request schemas and response shapes (plan §5.3–§5.6).
 
 import { z } from "zod";
-import type { Goal, Note, Plan, Question, Step } from "./goal.ts";
+import type { Goal, Note, Plan, Question, Step, StepFacts, TrailFile } from "./goal.ts";
 import { PlanInput } from "./goal.ts";
 import { Session } from "./session.ts";
 
@@ -38,10 +38,12 @@ export const NewGoal = z.object({
   title: z.string().min(1).max(200),
   primaryRepo: z.string().optional(),
   issueUrl: z.string().url().optional(),
+  repos: z.array(z.string()).max(20).optional(),
   priority: z.number().int().min(0).max(9).default(3),
 });
 
 export const ProposePlan = PlanInput.extend({ approve: z.boolean().default(false) });
+export const Replan = z.object({ comment: z.string().max(4000).optional() });
 export const Decide = z.object({ comment: z.string().max(4000).optional() });
 export const Approve = Decide.extend({ version: z.number().int().positive().optional() });
 
@@ -87,6 +89,8 @@ export interface InboxMessage {
   text: string;
   fromUser: string;
   createdAt: number;
+  /** Structured details for the daemon, e.g. {goal, version} on plan approval. */
+  data?: Record<string, unknown> | undefined;
 }
 
 export interface StepContext {
@@ -103,12 +107,30 @@ export interface DoneResult {
   reopened: string[];
   nowReady: string[];
   goalDone: boolean;
+  /** The step record to commit with the work (`.mesh/goals/<G>/steps/<id>.md`). */
+  record?: TrailFile | undefined;
 }
 
 export interface GoalDetail {
   goal: Goal;
   steps: Step[];
   plans: Plan[];
+  /** Live state of each holder's session, by step id (stalled, needs you, …). */
+  holders?: Record<string, { sid: string; state: string; needs?: string | undefined; user: string }> | undefined;
+}
+
+export interface StepView {
+  context: StepContext;
+  facts: StepFacts;
+}
+
+export interface TimelineEntry {
+  seq: number;
+  at: number;
+  type: string;
+  user?: string | undefined;
+  step?: string | undefined;
+  text: string;
 }
 
 export interface LiveSession {

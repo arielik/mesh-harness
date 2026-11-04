@@ -37,6 +37,9 @@ export const HUB_MIGRATIONS: readonly string[] = [
      seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, at INTEGER NOT NULL, type TEXT NOT NULL,
      user_id TEXT, sid TEXT, goal TEXT, step TEXT, payload TEXT NOT NULL);
    CREATE TABLE idem (key TEXT NOT NULL, user_id TEXT NOT NULL, response TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (key, user_id));`,
+  `ALTER TABLE message ADD COLUMN data TEXT;
+   CREATE INDEX event_step ON event (step);
+   CREATE INDEX event_goal ON event (goal);`,
 ];
 
 export type TokenKind = "device" | "web" | "service";
@@ -88,6 +91,7 @@ export interface MessageRow {
   method?: string | undefined;
   createdAt: number;
   ackedAt?: number | undefined;
+  data?: Record<string, unknown> | undefined;
 }
 
 export interface EventRow {
@@ -405,26 +409,27 @@ export class HubStore {
 
   // ---------- messages ----------
 
-  addMessage(m: { toMachine: string; toSid: string; fromUser: string; kind: string; text: string }, now: number): MessageRow {
+  addMessage(m: { toMachine: string; toSid: string; fromUser: string; kind: string; text: string; data?: Record<string, unknown> | undefined }, now: number): MessageRow {
     const { lastId } = this.db.run(
-      "INSERT INTO message (to_machine, to_sid, from_user, kind, text, state, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+      "INSERT INTO message (to_machine, to_sid, from_user, kind, text, state, created_at, data) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
       m.toMachine,
       m.toSid,
       m.fromUser,
       m.kind,
       m.text,
       now,
+      m.data ? json(m.data) : null,
     );
     return this.getMessage(lastId) as MessageRow;
   }
 
   getMessage(id: number): MessageRow | undefined {
-    const r = this.db.get<{ id: number; to_machine: string; to_sid: string; from_user: string; kind: string; text: string; state: MessageRow["state"]; method: string | null; created_at: number; acked_at: number | null }>(
+    const r = this.db.get<{ id: number; to_machine: string; to_sid: string; from_user: string; kind: string; text: string; state: MessageRow["state"]; method: string | null; created_at: number; acked_at: number | null; data: string | null }>(
       "SELECT * FROM message WHERE id = ?",
       id,
     );
     return r
-      ? { id: r.id, toMachine: r.to_machine, toSid: r.to_sid, fromUser: r.from_user, kind: r.kind, text: r.text, state: r.state, method: opt(r.method), createdAt: r.created_at, ackedAt: opt(r.acked_at) }
+      ? { id: r.id, toMachine: r.to_machine, toSid: r.to_sid, fromUser: r.from_user, kind: r.kind, text: r.text, state: r.state, method: opt(r.method), createdAt: r.created_at, ackedAt: opt(r.acked_at), data: r.data ? JSON.parse(r.data) : undefined }
       : undefined;
   }
 
@@ -462,6 +467,24 @@ export class HubStore {
     const rows = filter.goal
       ? this.db.all<Record<string, unknown>>("SELECT * FROM event WHERE seq > ? AND goal = ? ORDER BY seq LIMIT ?", after, filter.goal, limit)
       : this.db.all<Record<string, unknown>>("SELECT * FROM event WHERE seq > ? ORDER BY seq LIMIT ?", after, limit);
+    return rows.map((r) => ({
+      seq: r.seq as number,
+      id: r.id as string,
+      at: r.at as number,
+      type: r.type as string,
+      user: opt(r.user_id as string | null),
+      sid: opt(r.sid as string | null),
+      goal: opt(r.goal as string | null),
+      step: opt(r.step as string | null),
+      payload: JSON.parse(r.payload as string),
+    }));
+  }
+
+  /** Events about a step, or about any step of a goal (session events carry the step). */
+  eventsFor(filter: { step?: string; goal?: string }): EventRow[] {
+    const rows = filter.step
+      ? this.db.all<Record<string, unknown>>("SELECT * FROM event WHERE step = ? ORDER BY seq", filter.step)
+      : this.db.all<Record<string, unknown>>("SELECT * FROM event WHERE goal = ? OR step LIKE ? ORDER BY seq", filter.goal ?? "", `${filter.goal ?? ""}.%`);
     return rows.map((r) => ({
       seq: r.seq as number,
       id: r.id as string,

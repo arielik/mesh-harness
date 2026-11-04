@@ -43,6 +43,7 @@ import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
 import { repoForCwd } from "./git.ts";
 import { HubLink, type LinkStatus } from "./hub-link.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
+import { writeTrail } from "./trail.ts";
 
 export interface DaemonDeps {
   listAgents(): Promise<AgentEntry[] | null>;
@@ -194,9 +195,11 @@ export class Daemon {
     const base = { sid: s.sid, ...(s.step ? { step: s.step } : {}) };
     const add = (type: string, payload: Record<string, unknown> = {}) => this.link?.enqueue({ id: randomUUID(), at, type, ...base, payload: { repo: s.repo?.name, ...payload } });
     if (prev && s.claudeSessionIds.length > prev.claudeSessionIds.length) add("session.rebound");
+    // Turns are counted from the session's turn counter, so a pasted prompt (state already
+    // "working") still counts; delivered = no new human prompt.
+    if (s.turns > (prev?.turns ?? 0)) add("session.turn_started", { delivered: s.humanPrompts === (prev?.humanPrompts ?? 0), ...(s.model ? { model: s.model } : {}) });
     if (prev?.state === s.state && prev?.needs === s.needs) return;
-    if (s.state === "working") add("session.turn_started");
-    else if (s.state === "idle" && prev?.state === "working") add("session.turn_stopped");
+    if (s.state === "idle" && prev?.state === "working") add("session.turn_stopped");
     else if (s.state === "needs_you") add("session.waiting", { needs: s.needs });
     else if (s.state === "stalled") add("session.stalled");
     else if (s.state === "ended") add("session.ended", { reason: s.endedReason });
@@ -227,6 +230,14 @@ export class Daemon {
   private receive(m: InboxMessage): "queued" | "unknown" {
     const s = this.sessions.find((x) => x.sid === m.toSid && x.state !== "ended");
     if (!s) return "unknown";
+    const goal = typeof m.data?.goal === "string" ? m.data.goal : undefined;
+    if (m.kind === "plan_approved" && goal) {
+      if (s.step === `${goal}.design`) this.update(s.sid, { clearStep: true });
+      void this.link
+        ?.rpc<{ files: { path: string; text: string }[] }>("GET", `/v1/goals/${encodeURIComponent(goal)}/files`)
+        .then(({ files }) => writeTrail(s.cwd, files.filter((f) => f.path.endsWith(`plan.v${String(m.data?.version)}.yaml`))))
+        .catch((e) => this.deps.log(`could not write the approved plan for ${goal}: ${String(e)}`));
+    }
     this.store.queueMessage(s.sid, m.text, this.deps.now(), m.id);
     void this.deliverPending(s.sid).catch(() => undefined);
     return "queued";
@@ -513,6 +524,11 @@ export class Daemon {
         return send(res, 200, await this.callTool(tool, call.data));
       }
       if (req.method === "GET" && path === "/local/status") return send(res, 200, { ...this.status(), host: hostname() });
+      if (req.method === "GET" && path === "/local/goals") {
+        if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+        const live = await this.link.rpc<{ goals: unknown[] }>("GET", "/v1/live");
+        return send(res, 200, { goals: live.goals });
+      }
       if (req.method === "POST" && path === "/local/autopilot") {
         const b = (await readJson(req)) as { target?: string; level?: string };
         if (!b.target || (b.level !== "off" && b.level !== "nudge" && b.level !== "chain")) throw new HttpError(400, "expected {target, level: off|nudge|chain}");

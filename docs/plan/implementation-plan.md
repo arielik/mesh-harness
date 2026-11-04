@@ -1,6 +1,6 @@
 # mesh-harness implementation plan
 
-Status: **v2.3, reviewed; M0, M1 and M2 done**. Date: 2026-11-03. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
+Status: **v2.4, reviewed; M0–M3 done**. Date: 2026-11-03. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
 
 Sources:
 
@@ -539,6 +539,14 @@ Sizes: **S** ≤ 1 day, **M** 2–3 days. Total estimate: **about 14–16 weeks 
 | 3.6 | `mesh show G`, `mesh next`, `mesh take`; TUI `g` and `n` | S | Snapshot tests |
 
 **Exit:** a real goal goes design → revise → approve → steps in two repos by two people → done, with step records committed in MRs.
+
+**Status: done.** `pnpm spike e2e-m3` runs this against real Claude Code (two people, two daemons, two repos): the design session wrote the design and proposed plan v1 with `mesh_plan`, re-proposed v2 after `mesh goal revise`, the approved plan file was written into the design repo, alice and bob each finished a step in their repo with the step record committed, a review step followed, and the goal finished. In-process coverage: `test/m3-flow.test.ts`, `src/core/trail.test.ts`, `src/cli/show.test.ts`, `test/e2e-web/goals.spec.ts`. Notes:
+
+- The daemon writes trail files into the session's repo (`.mesh/goals/<G>/goal.yaml`, `plan.vN.yaml` on `mesh_plan` and again on approval, `steps/<id>.md` on `mesh_done`), and the tool result asks the agent to commit them. Hub messages carry structured `data` (migration 2) so the daemon knows which plan to write on approval.
+- Step facts (turns, human prompts, nudges, waits, holders, models, fix cycles) are computed on the hub from the events daemons sync; delivered prompts are excluded from human prompts.
+- `POST /v1/goals/:id/replan` (`mesh goal replan`) opens the design step again; the next proposal follows the replan rules.
+- Web: Goals board, Goal page with an SVG DAG laid out by depth (no React Flow), step panel with facts, Design tab with plan versions and step-level diffs, approve/revise, Timeline. Hash routing, no router library.
+- Design contributors and critical-path highlighting stay in `docs/later.md`.
 
 ### M4. Analysis feed + hardening (weeks 12–13)
 

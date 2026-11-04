@@ -19,7 +19,7 @@ import {
 } from "../claude/index.ts";
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { CLAUDE_MD_BLOCK, type DaemonConfig, type Session } from "../protocol/index.ts";
+import { CLAUDE_MD_BLOCK, type DaemonConfig, type GoalDetail, type Session } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -223,9 +223,21 @@ export function tuiCommand(c: CliEnv): Command {
 export function runCommand(c: CliEnv): Command {
   return {
     name: "run",
-    summary: "start claude in tmux windows, one per repo: mesh run <repo…> [--bg --prompt P] [--model M]",
+    summary: "start claude in tmux, one window per repo: mesh run <repo…> [--step S | --design G] [--auto L] [--bg --prompt P]",
     async run(args) {
-      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto"]);
+      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design"]);
+      const designGoal = a.str("design");
+      let design: GoalDetail | undefined;
+      if (designGoal) {
+        design = await HubClient.from(c.paths).get<GoalDetail>(`/v1/goals/${encodeURIComponent(designGoal)}`);
+        if (a.positional.length === 0) {
+          if (!design.goal.primaryRepo) {
+            c.io.err(`${design.goal.id} has no primary repo; say where to design: mesh run <repo> --design ${design.goal.id}`);
+            return 2;
+          }
+          a.positional.push(design.goal.primaryRepo);
+        }
+      }
       if (a.positional.length === 0) {
         c.io.err("usage: mesh run <repo…> [--model M] [--prompt P] [--bg] [--session NAME] [--no-tui] [--no-bind]");
         return 2;
@@ -239,7 +251,15 @@ export function runCommand(c: CliEnv): Command {
       const roots = defaultRoots(c.cwd, config?.workspaceRoots ?? []);
       const dirs = a.positional.map((r) => resolveRepo(r, roots));
       const model = a.str("model");
-      const step = a.str("step");
+      const step = a.str("step") ?? (design ? `${design.goal.id}.design` : undefined);
+      const addDirs: string[] = [];
+      for (const r of design?.goal.repos ?? []) {
+        try {
+          addDirs.push(resolveRepo(r, roots));
+        } catch (e) {
+          c.io.err(`warning: ${e instanceof Error ? e.message.split("\n")[0] : String(e)} (the design session won't see ${r})`);
+        }
+      }
       const auto = a.str("auto");
       if (auto && auto !== "off" && auto !== "nudge" && auto !== "chain") {
         c.io.err("--auto must be off, nudge or chain");
@@ -254,7 +274,13 @@ export function runCommand(c: CliEnv): Command {
         const claimed = await HubClient.from(c.paths).post<{ id: string }>(`/v1/steps/${encodeURIComponent(step)}/claim`, {});
         c.io.out(`Claimed ${claimed.id}.`);
       }
-      const prompt = a.str("prompt") ?? (step ? `You hold mesh step ${step}. Start with the mesh_context tool, then work on it.` : undefined);
+      const prompt =
+        a.str("prompt") ??
+        (design
+          ? `You hold the design step of mesh goal ${design.goal.id} "${design.goal.title}". Start with the mesh_context tool and follow its brief: write the design document, then propose the plan with mesh_plan.`
+          : step
+            ? `You hold mesh step ${step}. Start with the mesh_context tool, then work on it.`
+            : undefined);
       const env: Record<string, string> = { ...(step ? { MESH_STEP: step } : {}), ...(auto ? { MESH_AUTOPILOT: auto } : {}) };
       const runner = c.runner ?? runProgram;
 
@@ -281,7 +307,8 @@ export function runCommand(c: CliEnv): Command {
       const server: TmuxServer = a.str("socket-name") ? { socketName: a.str("socket-name") } : (inTmux ?? {});
       const tmux = { ...server, runner };
       const created = !(await hasSession(sessionName, tmux));
-      const claudeArgv = (name: string) => ["claude", "-n", name, ...(model ? ["--model", model] : []), ...(prompt ? [prompt] : [])];
+      // The prompt goes first: --add-dir takes a variable number of values.
+      const claudeArgv = (name: string) => ["claude", ...(prompt ? [prompt] : []), "-n", name, ...(model ? ["--model", model] : []), ...addDirs.flatMap((d) => ["--add-dir", d])];
       const windows: string[] = [];
       let first = true;
       if (created) {

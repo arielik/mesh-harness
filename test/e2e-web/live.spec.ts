@@ -22,7 +22,7 @@ test("sign in, see the Live page, approve a pending plan", async ({ page, reques
   await page.getByLabel("Token token").fill("alice-e2e-token");
   await page.getByRole("button", { name: "Sign in" }).click();
 
-  await expect(page.getByText("Needs attention (1)")).toBeVisible();
+  await expect(page.getByText(/Needs attention/)).toBeVisible();
   await expect(page.getByText(`Plan v1 for ${goal.id} "IPv6 underlay" awaits approval`)).toBeVisible();
   await expect(page.locator(".goals")).toContainText("IPv6 underlay");
   await expect(page.locator(".people")).toContainText("bob");

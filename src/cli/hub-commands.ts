@@ -7,12 +7,14 @@ import { createInterface } from "node:readline/promises";
 import { stringify, parse as parseYaml } from "yaml";
 import { sha256 } from "../auth/index.ts";
 import { repoMatches } from "../core/index.ts";
-import { PlanInput, type Goal, type GoalDetail, type Step } from "../protocol/index.ts";
+import { PlanInput, type Goal, type GoalDetail, type Step, type TrailFile } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
 import { clearCredentials, HubClient, hubFetch, loadCredentials, saveCredentials } from "./hub-client.ts";
 import { login } from "./login.ts";
+import { renderGoal } from "./show.ts";
+import { writeTrailHere } from "./trail-files.ts";
 
 const stepLine = (s: Step) => `${s.id.padEnd(20)} ${s.state.padEnd(8)} ${s.kind.padEnd(9)} ${(s.repo || "-").padEnd(18)} ${s.holderUser ? `@${s.holderUser} ` : ""}${s.title}`;
 
@@ -92,19 +94,21 @@ function readPlan(file: string): PlanInput {
 export function goalCommand(c: CliEnv): Command {
   const usage = [
     "usage:",
-    '  mesh goal new "<title>" [--repo R] [--issue URL] [--priority 0-9]',
+    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--issue URL] [--priority 0-9]',
     "  mesh goal ls",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",
     '  mesh goal approve <G> [--comment "…"]',
     '  mesh goal revise <G> "<comment>"',
+    '  mesh goal replan <G> ["<comment>"]',
+    "  mesh goal files <G> [--write]",
   ].join("\n");
   return {
     name: "goal",
     summary: "goals and plans: new, ls, show, plan, approve, revise",
     async run(args) {
       const [sub, ...rest] = args;
-      const a = parseArgs(rest, ["repo", "issue", "priority", "file", "comment"]);
+      const a = parseArgs(rest, ["repo", "repos", "issue", "priority", "file", "comment"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "new": {
@@ -113,10 +117,11 @@ export function goalCommand(c: CliEnv): Command {
           const g = await hub().post<Goal>("/v1/goals", {
             title,
             ...(a.str("repo") ? { primaryRepo: a.str("repo") } : {}),
+            ...(a.str("repos") ? { repos: (a.str("repos") as string).split(",").map((r) => r.trim()).filter(Boolean) } : {}),
             ...(a.str("issue") ? { issueUrl: a.str("issue") } : {}),
             ...(a.str("priority") ? { priority: Number(a.str("priority")) } : {}),
           });
-          c.io.out(`Created ${g.id} "${g.title}". Start the design with: mesh run <repo> --step ${g.id}.design`);
+          c.io.out(`Created ${g.id} "${g.title}". Start the design with: mesh run --design ${g.id}`);
           return 0;
         }
         case "ls": {
@@ -129,10 +134,7 @@ export function goalCommand(c: CliEnv): Command {
           const id = a.positional[0];
           if (!id) break;
           const d = await hub().get<GoalDetail>(`/v1/goals/${encodeURIComponent(id)}`);
-          c.io.out(`${d.goal.id} "${d.goal.title}" · ${d.goal.state} · owner @${d.goal.ownerId}`);
-          const latest = d.plans.at(-1);
-          if (latest) c.io.out(`plan v${latest.version} (${latest.decision})${latest.designRef ? ` · design ${latest.designRef}` : ""}`);
-          for (const s of d.steps) c.io.out(`  ${stepLine(s)}${s.deps.length ? `  ← ${s.deps.map((x) => x.split(".")[1]).join(", ")}` : ""}`);
+          c.io.out(renderGoal(d, { color: process.stdout.isTTY === true }));
           return 0;
         }
         case "plan": {
@@ -158,9 +160,43 @@ export function goalCommand(c: CliEnv): Command {
           c.io.out(`Asked for changes to ${id}; the design session gets your comment.`);
           return 0;
         }
+        case "replan": {
+          const [id, ...words] = a.positional;
+          if (!id) break;
+          await hub().post(`/v1/goals/${encodeURIComponent(id)}/replan`, words.length ? { comment: words.join(" ") } : {});
+          c.io.out(`${id}.design is open again. Continue the design with: mesh run --design ${id}`);
+          return 0;
+        }
+        case "files": {
+          const id = a.positional[0];
+          if (!id) break;
+          const { files } = await hub().get<{ files: TrailFile[] }>(`/v1/goals/${encodeURIComponent(id)}/files`);
+          if (a.has("write")) {
+            const w = writeTrailHere(c.cwd, files);
+            c.io.out(w.length ? `Wrote ${w.join(", ")}` : "Not inside a git checkout; nothing written.");
+          } else for (const f of files) c.io.out(`# ${f.path}\n${f.text}`);
+          return 0;
+        }
       }
       c.io.err(usage);
       return 2;
+    },
+  };
+}
+
+export function showCommand(c: CliEnv): Command {
+  return {
+    name: "show",
+    summary: "a goal and its step DAG: mesh show <goal>",
+    async run(args) {
+      const [id] = args;
+      if (!id) {
+        c.io.err("usage: mesh show <goal>");
+        return 2;
+      }
+      const d = await HubClient.from(c.paths).get<GoalDetail>(`/v1/goals/${encodeURIComponent(id)}`);
+      c.io.out(renderGoal(d, { color: process.stdout.isTTY === true }));
+      return 0;
     },
   };
 }
@@ -273,5 +309,5 @@ export function hubInit(path: string, users: string[], listen: string): { tokens
 }
 
 export function hubCommands(c: CliEnv): Command[] {
-  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), nextCommand(c), takeCommand(c), answerCommand(c), autopilotCommand(c)];
+  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), showCommand(c), nextCommand(c), takeCommand(c), answerCommand(c), autopilotCommand(c)];
 }

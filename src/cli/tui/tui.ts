@@ -6,7 +6,7 @@ import { attachCommand } from "../../claude/index.ts";
 import { jumpToPane, serverFromEnv } from "../../mux/index.ts";
 import type { Session, SessionsResponse } from "../../protocol/index.ts";
 import type { DaemonClient } from "../client.ts";
-import { ordered, render } from "./render.ts";
+import { ordered, render, renderGoals, type GoalRow } from "./render.ts";
 
 const ALT_ON = "\x1b[?1049h\x1b[?25l";
 const ALT_OFF = "\x1b[?25h\x1b[?1049l";
@@ -52,10 +52,16 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   let status: string | undefined = undefined;
   let prompt: { label: string; value: string; target: string } | undefined;
   let paused = false;
+  let goals: GoalRow[] | undefined;
   let stopped = false;
 
   const draw = () => {
     if (paused || stopped) return;
+    if (goals) {
+      const lines = renderGoals(goals, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header, status });
+      out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
+      return;
+    }
     const list = ordered(data.sessions);
     if (!list.some((s) => s.sid === selected)) selected = list[0]?.sid;
     const lines = render({
@@ -148,6 +154,19 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         return;
       }
       if (key === "q" || key === "\x03") return quit();
+      if (key === "g") {
+        if (goals) goals = undefined;
+        else {
+          try {
+            goals = await client.goals();
+            status = undefined;
+          } catch (e) {
+            status = e instanceof Error ? e.message : String(e);
+          }
+        }
+        return draw();
+      }
+      if (goals) return;
       if (key === "\x1b[A" || key === "k") return move(-1);
       if (key === "\x1b[B" || key === "j") return move(1);
       if (key === "r") {

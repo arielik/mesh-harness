@@ -15,6 +15,8 @@ export const Goal = z.object({
   ownerId: z.string(),
   state: GoalState,
   primaryRepo: z.string().optional(),
+  /** Other repos the design may touch (`mesh run --design` adds them with --add-dir). */
+  repos: z.array(z.string()).optional(),
   issueUrl: z.string().optional(),
   priority: z.number().int(),
   createdAt: z.number(),
@@ -101,3 +103,22 @@ export const Question = z.object({
   answeredAt: z.number().optional(),
 });
 export type Question = z.infer<typeof Question>;
+
+/** Facts about one step, computed from hub events (journeys doc §3.1). */
+export const StepFacts = z.object({
+  holders: z.array(z.object({ user: z.string(), from: z.number(), to: z.number().optional() })),
+  sessions: z.array(z.string()),
+  models: z.array(z.string()),
+  turns: z.number().int(),
+  humanPrompts: z.number().int(),
+  nudges: z.number().int(),
+  waits: z.object({ count: z.number().int(), minutes: z.number() }),
+  fixCycles: z.number().int(),
+  startedAt: z.number().optional(),
+  finishedAt: z.number().optional(),
+});
+export type StepFacts = z.infer<typeof StepFacts>;
+
+/** A file mesh asks a session to commit (step records, plan versions, goal.yaml). */
+export const TrailFile = z.object({ path: z.string(), text: z.string() });
+export type TrailFile = z.infer<typeof TrailFile>;

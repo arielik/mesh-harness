@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Attention, LiveView, ProviderInfo } from "../../src/protocol/hub.ts";
 import { api, ApiError } from "./api.ts";
+import { GoalPage, GoalsBoard } from "./goals.tsx";
 import "./styles.css";
 
 function ago(now: number, at: number | undefined): string {
@@ -85,9 +86,18 @@ function AttentionList({ items, now, onApprove }: { items: Attention[]; now: num
   );
 }
 
-function Live({ data, onLogout, onApprove }: { data: LiveView; onLogout: () => void; onApprove: (goal: string) => void }) {
+function useRoute(): string {
+  const [hash, setHash] = useState(location.hash || "#/");
+  useEffect(() => {
+    const on = () => setHash(location.hash || "#/");
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  return hash;
+}
+
+function Header({ data, route, onLogout }: { data: LiveView; route: string; onLogout: () => void }) {
   const online = data.people.filter((p) => p.online);
-  const sessions = data.people.flatMap((p) => p.sessions.filter((s) => s.state !== "ended"));
   const machinesOnline = data.people.flatMap((p) => p.machines.filter((m) => m.online));
   const counts = machinesOnline.reduce<Record<string, number>>((acc, m) => {
     for (const [k, v] of Object.entries(m.counts)) acc[k] = (acc[k] ?? 0) + v;
@@ -95,22 +105,35 @@ function Live({ data, onLogout, onApprove }: { data: LiveView; onLogout: () => v
   }, {});
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   return (
-    <main>
-      <header className="top">
-        <strong>mesh</strong>
-        <span className="muted">
-          {online.length} {online.length === 1 ? "person" : "people"} · {machinesOnline.length} machines · {total} sessions
-          {counts.working ? ` · working ${counts.working}` : ""}
-          {counts.needs_you ? ` · needs someone ${counts.needs_you}` : ""}
-          {counts.stalled ? ` · stalled ${counts.stalled}` : ""}
-        </span>
-        <span className="spacer" />
-        <span>{data.me.name}</span>
-        <button className="small" onClick={onLogout}>
-          Sign out
-        </button>
-      </header>
+    <header className="top">
+      <strong>mesh</strong>
+      <nav className="nav">
+        <a href="#/" className={route === "#/" ? "active" : ""}>
+          Live{data.attention.length ? ` (${data.attention.length})` : ""}
+        </a>
+        <a href="#/goals" className={route.startsWith("#/goal") ? "active" : ""}>
+          Goals
+        </a>
+      </nav>
+      <span className="muted">
+        {online.length} {online.length === 1 ? "person" : "people"} · {machinesOnline.length} machines · {total} sessions
+        {counts.working ? ` · working ${counts.working}` : ""}
+        {counts.needs_you ? ` · needs someone ${counts.needs_you}` : ""}
+        {counts.stalled ? ` · stalled ${counts.stalled}` : ""}
+      </span>
+      <span className="spacer" />
+      <span>{data.me.name}</span>
+      <button className="small" onClick={onLogout}>
+        Sign out
+      </button>
+    </header>
+  );
+}
 
+function Live({ data, onApprove }: { data: LiveView; onApprove: (goal: string) => void }) {
+  const sessions = data.people.flatMap((p) => p.sessions.filter((s) => s.state !== "ended"));
+  return (
+    <>
       <section>
         <h2>Needs attention ({data.attention.length})</h2>
         <AttentionList items={data.attention} now={data.now} onApprove={onApprove} />
@@ -125,8 +148,12 @@ function Live({ data, onLogout, onApprove }: { data: LiveView; onLogout: () => v
               .filter((g) => g.state !== "done" && g.state !== "dropped")
               .map((g) => (
                 <tr key={g.id}>
-                  <td className="id">{g.id}</td>
-                  <td>{g.title}</td>
+                  <td className="id">
+                    <a href={`#/goal/${g.id}`}>{g.id}</a>
+                  </td>
+                  <td>
+                    <a href={`#/goal/${g.id}`}>{g.title}</a>
+                  </td>
                   <td className="muted">{g.state.replace("_", " ")}</td>
                   <td>
                     <div className="bar" title={`${g.done}/${g.total}`}>
@@ -180,7 +207,7 @@ function Live({ data, onLogout, onApprove }: { data: LiveView; onLogout: () => v
         </ul>
       </section>
       {sessions.length === 0 && data.goals.length === 0 && <p className="muted">Tip: run <code>mesh login --hub {location.origin}</code> on your machine.</p>}
-    </main>
+    </>
   );
 }
 
@@ -189,6 +216,7 @@ function App() {
   const [needLogin, setNeedLogin] = useState(false);
   const [error, setError] = useState<string>();
   const timer = useRef<number | undefined>(undefined);
+  const route = useRoute();
 
   const load = useCallback(async () => {
     try {
@@ -219,12 +247,20 @@ function App() {
 
   if (needLogin) return <Login onDone={() => void load()} />;
   if (!data) return <main className="muted">{error ?? "Loading…"}</main>;
+  const goalMatch = /^#\/goal\/([^/]+)$/.exec(route);
+  const progress = Object.fromEntries(data.goals.map((g) => [g.id, { done: g.done, total: g.total, holders: g.holders }]));
   return (
-    <Live
-      data={data}
-      onLogout={() => void api.logout().finally(() => setNeedLogin(true))}
-      onApprove={(goal) => void api.approve(goal).then(load, (e: Error) => setError(e.message))}
-    />
+    <main>
+      <Header data={data} route={route} onLogout={() => void api.logout().finally(() => setNeedLogin(true))} />
+      {error && <p className="error">{error}</p>}
+      {goalMatch ? (
+        <GoalPage key={goalMatch[1]} id={decodeURIComponent(goalMatch[1] as string)} />
+      ) : route === "#/goals" ? (
+        <GoalsBoard progress={progress} onRefresh={() => void load()} />
+      ) : (
+        <Live data={data} onApprove={(goal) => void api.approve(goal).then(load, (e: Error) => setError(e.message))} />
+      )}
+    </main>
   );
 }
 

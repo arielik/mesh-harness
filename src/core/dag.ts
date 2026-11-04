@@ -182,3 +182,31 @@ export function topoOrder(steps: readonly Step[]): Step[] {
   for (const s of steps) visit(s, 0);
   return out;
 }
+
+/** Depth of each step: 0 for steps without (known) deps, else 1 + the deepest dep. For layouts. */
+export function depths(steps: readonly Step[]): Map<string, number> {
+  const byId = new Map(steps.map((s) => [s.id, s]));
+  const memo = new Map<string, number>();
+  const depth = (s: Step, guard: number): number => {
+    const known = memo.get(s.id);
+    if (known !== undefined) return known;
+    if (guard > steps.length) return 0;
+    const deps = s.deps.map((d) => byId.get(d)).filter((d): d is Step => d !== undefined);
+    const v = deps.length ? 1 + Math.max(...deps.map((d) => depth(d, guard + 1))) : 0;
+    memo.set(s.id, v);
+    return v;
+  };
+  for (const s of steps) depth(s, 0);
+  return memo;
+}
+
+/** Steps grouped by depth, each level in plan order. */
+export function levels(steps: readonly Step[]): Step[][] {
+  const d = depths(steps);
+  const out: Step[][] = [];
+  for (const s of steps) {
+    const i = d.get(s.id) ?? 0;
+    (out[i] ??= []).push(s);
+  }
+  return out.map((l) => l ?? []);
+}

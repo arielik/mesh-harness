@@ -112,10 +112,36 @@ export function render(v: View): string[] {
 
   const footer: string[] = [];
   if (v.input) footer.push(paint(C.bold, `${v.input.label}${v.input.value}▌`));
-  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · n next step · r refresh · ↑↓ move · q quit"));
+  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · n next step · g goals · r refresh · ↑↓ move · q quit"));
   if (v.status) footer.push(fit(v.status, v.width));
   const room = v.height - footer.length - 1;
   const body = lines.length > room ? [...lines.slice(0, Math.max(0, room - 1)), paint(C.dim, "  …")] : lines;
+  while (body.length < room) body.push("");
+  return [...body, "", ...footer];
+}
+
+export interface GoalRow {
+  id: string;
+  title: string;
+  state: string;
+  owner: string;
+  done: number;
+  total: number;
+  holders: string[];
+}
+
+/** The goals view of the TUI (`g`). */
+export function renderGoals(goals: readonly GoalRow[], v: { width: number; height: number; header: string; status?: string | undefined }): string[] {
+  const lines = [v.header, "", "GOALS"];
+  if (goals.length === 0) lines.push("  No goals. Create one: mesh goal new \"<title>\"");
+  for (const g of goals) {
+    const bar = g.total ? `${"█".repeat(Math.round((10 * g.done) / g.total))}${"░".repeat(10 - Math.round((10 * g.done) / g.total))}` : "          ";
+    const row = `  ${g.id.padEnd(5)} ${fit(g.title, 32)}  ${g.state.replace(/_/g, " ").padEnd(17)} ${bar} ${`${g.done}/${g.total}`.padEnd(5)} ${g.holders.map((h) => `@${h}`).join(" ")}`;
+    lines.push(fit(row, v.width));
+  }
+  const footer = ["g back to sessions · details: mesh show <goal>", ...(v.status ? [fit(v.status, v.width)] : [])];
+  const room = v.height - footer.length - 1;
+  const body = lines.slice(0, room);
   while (body.length < room) body.push("");
   return [...body, "", ...footer];
 }

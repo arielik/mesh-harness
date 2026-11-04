@@ -69,3 +69,14 @@ export function repoForCwd(cwd: string): Repo | undefined {
     return undefined;
   }
 }
+
+/** The working tree root for `cwd` (the folder holding `.git`, a dir or a worktree's file). */
+export function findRepoRoot(cwd: string): string | undefined {
+  let dir = resolve(cwd);
+  for (;;) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}

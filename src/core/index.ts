@@ -5,3 +5,4 @@ export * from "./autopilot.ts";
 export * from "./claims.ts";
 export * from "./dag.ts";
 export * from "./roles.ts";
+export * from "./trail.ts";

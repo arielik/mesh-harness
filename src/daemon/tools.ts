@@ -2,8 +2,9 @@
 // finds the session, calls the hub, and keeps the session's step binding up to date.
 
 import { repoMatches, pickNext } from "../core/index.ts";
-import { PlanStep, TOOLS, type DoneResult, type Session, type Step, type StepContext, type ToolName, type ToolResult } from "../protocol/index.ts";
+import { PlanStep, TOOLS, type DoneResult, type Session, type Step, type StepContext, type ToolName, type ToolResult, type TrailFile } from "../protocol/index.ts";
 import { HubRpcError, type HubLink } from "./hub-link.ts";
+import { commitHint, writeTrail } from "./trail.ts";
 
 export interface ToolHost {
   link: HubLink;
@@ -116,6 +117,11 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
       );
       host.update(s.sid, { clearStep: true });
       const lines = [`${r.step.id} is ${r.step.state}.`];
+      if (r.record) {
+        const w = writeTrail(s.cwd, [r.record]);
+        if (w.written.length) lines.push(`mesh wrote the step record ${w.written[0]}. ${commitHint(w.written)}`);
+        else lines.push(`Step record (save as ${r.record.path} and commit it):\n${r.record.text}`);
+      }
       if (r.reopened.length) lines.push(`Reopened for fixing: ${r.reopened.join(", ")}.`);
       if (r.goalDone) lines.push(`Goal ${r.step.goal} is done.`);
       if (outcome === "done" && host.autopilotOf(s) === "chain") {
@@ -148,7 +154,11 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
         { design_ref: args.design_ref, steps, approve: false },
         key,
       );
-      return ok(`Plan v${r.plan.version} for ${r.plan.goal} proposed with ${steps.length} steps. It waits for approval; you'll get a message when it is approved or needs changes. End your turn.`);
+      const { files } = await host.link.rpc<{ files: TrailFile[] }>("GET", `/v1/goals/${encodeURIComponent(r.plan.goal)}/files`);
+      const w = writeTrail(s.cwd, files.filter((f) => f.path.endsWith("goal.yaml") || f.path.endsWith(`plan.v${r.plan.version}.yaml`)));
+      return ok(
+        `Plan v${r.plan.version} for ${r.plan.goal} proposed with ${steps.length} steps. ${w.written.length ? `mesh wrote ${w.written.join(" and ")}. ${commitHint(w.written)} together with the design document. ` : ""}It waits for approval; you'll get a message when it is approved or needs changes. End your turn.`,
+      );
     }
   }
 }

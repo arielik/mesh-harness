@@ -208,3 +208,189 @@ input {
 .activity li {
   padding: 3px 0;
 }
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.nav {
+  display: flex;
+  gap: 12px;
+}
+.nav a.active {
+  font-weight: 600;
+  text-decoration: underline;
+}
+.newgoal {
+  margin: 16px 0;
+  display: flex;
+  gap: 4px;
+}
+.board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(160px, 1fr));
+  gap: 10px;
+}
+.column h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.goalcard {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--fg);
+}
+.goalcard .row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+.goalcard .bar {
+  width: 80px;
+}
+.goaltitle {
+  font-size: 18px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg);
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin: 12px 0;
+}
+.tab {
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.tab.active {
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.stepsview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 12px;
+  align-items: start;
+}
+.dagwrap {
+  overflow: auto;
+}
+.dag .edge {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+.dag .node {
+  cursor: pointer;
+}
+.dag .node rect {
+  fill: var(--card);
+  stroke: var(--line);
+  stroke-width: 1.5;
+}
+.dag .node.sel rect {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+.dag .st-done rect {
+  stroke: var(--ok);
+}
+.dag .st-claimed rect {
+  stroke: var(--accent);
+}
+.dag .st-paused rect,
+.dag .st-failed rect {
+  stroke: var(--bad);
+}
+.dag .st-blocked text {
+  opacity: 0.6;
+}
+.dag text {
+  fill: var(--fg);
+  font-size: 12px;
+}
+.dag .nid {
+  font-weight: 600;
+}
+.dag .nstate,
+.dag .nwho {
+  fill: var(--muted);
+  font-size: 11px;
+}
+.panel h3 {
+  margin-top: 0;
+  font-size: 14px;
+}
+.panel .brief {
+  white-space: pre-wrap;
+}
+.facts td {
+  padding: 2px 8px 2px 0;
+  font-size: 12px;
+}
+.facts td:nth-child(odd) {
+  color: var(--muted);
+}
+.notes {
+  padding-left: 16px;
+}
+.hint {
+  display: inline-block;
+  margin-top: 6px;
+}
+.decide textarea {
+  width: 100%;
+  min-height: 48px;
+  font: inherit;
+  margin: 6px 0;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.decide .row {
+  display: flex;
+  gap: 8px;
+}
+.plan {
+  margin: 10px 0;
+}
+.plan h4 {
+  margin: 0 0 6px;
+}
+.decision {
+  font-size: 11px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+.dec-approved {
+  color: var(--ok);
+}
+.dec-pending {
+  color: var(--warn);
+}
+.dec-revised {
+  color: var(--muted);
+}
+.add {
+  color: var(--ok);
+}
+.del {
+  color: var(--bad);
+}
+.chg {
+  color: var(--warn);
+}
+.plansteps td {
+  padding: 2px 10px 2px 0;
+  font-size: 12px;
+}

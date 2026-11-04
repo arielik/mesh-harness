@@ -6,6 +6,10 @@ import { loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type
 import {
   canApprove,
   claim,
+  goalFile,
+  planFile,
+  stepFacts,
+  stepRecord,
   finish,
   isOwnerOrAdmin,
   materialize,
@@ -35,7 +39,10 @@ import type {
   Session,
   Step,
   StepContext,
+  StepView,
   SyncRequest,
+  TimelineEntry,
+  TrailFile,
   UserView,
 } from "../protocol/index.ts";
 import type { HubStore, NewEvent, UserRow } from "../store/index.ts";
@@ -126,11 +133,11 @@ export class HubService {
   }
 
   /** Queue a message for a session's machine and wake that daemon. */
-  private message(toSid: string | undefined, fromUser: string, kind: string, text: string): number | undefined {
+  private message(toSid: string | undefined, fromUser: string, kind: string, text: string, data?: Record<string, unknown>): number | undefined {
     if (!toSid) return undefined;
     const hs = this.store.getSession(toSid);
     if (!hs || hs.session.state === "ended") return undefined;
-    const m = this.store.addMessage({ toMachine: hs.machineId, toSid, fromUser, kind, text }, this.now());
+    const m = this.store.addMessage({ toMachine: hs.machineId, toSid, fromUser, kind, text, ...(data ? { data } : {}) }, this.now());
     queueMicrotask(() => this.bus.publish({ type: "wake", machine: hs.machineId }));
     return m.id;
   }
@@ -251,7 +258,7 @@ export class HubService {
 
   // ---------- goals and plans ----------
 
-  createGoal(actor: Actor, input: { title: string; primaryRepo?: string | undefined; issueUrl?: string | undefined; priority: number }): Goal {
+  createGoal(actor: Actor, input: { title: string; primaryRepo?: string | undefined; repos?: string[] | undefined; issueUrl?: string | undefined; priority: number }): Goal {
     return this.store.tx(() => {
       const now = this.now();
       const goal = this.store.createGoal({
@@ -259,6 +266,7 @@ export class HubService {
         ownerId: actor.userId,
         state: "backlog",
         ...(input.primaryRepo ? { primaryRepo: input.primaryRepo } : {}),
+        ...(input.repos?.length ? { repos: input.repos } : {}),
         ...(input.issueUrl ? { issueUrl: input.issueUrl } : {}),
         priority: input.priority,
         createdAt: now,
@@ -271,7 +279,12 @@ export class HubService {
         kind: "design",
         repo: input.primaryRepo ?? "",
         title: "Design",
-        brief: `Design "${input.title}": write the design document, then propose the step plan with mesh_plan.`,
+        brief: [
+          `Design "${input.title}".`,
+          `1. Read the relevant code${input.repos?.length ? ` (also in: ${input.repos.join(", ")})` : ""} and write a design document, e.g. docs/design/${goal.id.toLowerCase()}-<slug>.md, with the approach, risks and how it will be tested.`,
+          "2. Split the work into steps (implement / test / review / docs), one repo each, with dependencies where order matters; steps without dependencies on each other can be done in parallel by other people.",
+          "3. Propose them with mesh_plan (design_ref = where the document is). A person approves or asks for changes; you get a message either way. Then end your turn.",
+        ].join("\n"),
         deps: [],
         state: "ready",
         fixCycles: 0,
@@ -290,7 +303,59 @@ export class HubService {
 
   goalDetail(id: string): GoalDetail {
     const goal = this.goalOr404(id);
-    return { goal, steps: this.store.listSteps({ goal: goal.id }), plans: this.store.listPlans(goal.id) };
+    const steps = this.store.listSteps({ goal: goal.id });
+    const holders: NonNullable<GoalDetail["holders"]> = {};
+    for (const s of steps) {
+      if (!s.holderSid || (s.state !== "claimed" && s.state !== "paused")) continue;
+      const hs = this.store.getSession(s.holderSid);
+      if (hs) holders[s.id] = { sid: hs.session.sid, state: hs.session.state, ...(hs.session.needs ? { needs: hs.session.needs } : {}), user: hs.userId };
+    }
+    return { goal, steps, plans: this.store.listPlans(goal.id), holders };
+  }
+
+  /** The trail files for a goal (goal.yaml and every plan version), as they should be committed. */
+  goalFiles(id: string): TrailFile[] {
+    const goal = this.goalOr404(id);
+    return [goalFile(goal), ...this.store.listPlans(goal.id).map(planFile)];
+  }
+
+  stepView(id: string): StepView {
+    const context = this.context(id);
+    return { context, facts: stepFacts(context.step, this.store.eventsFor({ step: context.step.id })) };
+  }
+
+  timeline(goalId: string): TimelineEntry[] {
+    const goal = this.goalOr404(goalId);
+    return this.store
+      .eventsFor({ goal: goal.id })
+      .filter((e) => !e.type.startsWith("session.turn") && e.type !== "message.delivered")
+      .map((e) => ({ seq: e.seq, at: e.at, type: e.type, user: e.user, step: e.step, text: describe(e.type, e.step ?? e.goal, e.payload) }));
+  }
+
+  /** Reopen the design (plan §3.4 replan): a new plan version replaces steps not yet done. */
+  replan(actor: Actor, goalId: string, comment: string | undefined): GoalDetail {
+    this.store.tx(() => {
+      const goal = this.goalOr404(goalId);
+      if (!isOwnerOrAdmin(actor, goal.ownerId) && !actor.roles.includes("approver")) throw new HubError(403, `only the goal owner, approvers or admins can replan ${goal.id}`);
+      if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      const design = this.store.getStep(`${goal.id}.design`);
+      if (!design) throw new HubError(404, `${goal.id} has no design step`);
+      const now = this.now();
+      const reopened: Step = { ...design, state: "ready", updatedAt: now };
+      delete reopened.outcome;
+      const previousSid = design.holderSid;
+      delete reopened.holderUser;
+      delete reopened.holderSid;
+      delete reopened.holderMachine;
+      delete reopened.claimedAt;
+      this.store.saveSteps([reopened]);
+      this.store.addNote({ step: reopened.id, user: actor.userId, text: `Replan requested${comment ? `: ${comment}` : ""}`, at: now });
+      this.store.saveGoal({ ...goal, state: "design", updatedAt: now });
+      this.message(previousSid, actor.userId, "replan", `MESH: ${actor.userId} asked to replan ${goal.id}${comment ? `: ${comment}` : ""}. Claim ${reopened.id} with mesh_claim, update the design and propose a new plan with mesh_plan.`);
+      this.emit({ type: "goal.replan", user: actor.userId, goal: goal.id, step: reopened.id, payload: { comment } });
+      this.emit({ type: "step.ready", goal: goal.id, step: reopened.id });
+    });
+    return this.goalDetail(goalId);
   }
 
   proposePlan(actor: Actor, goalId: string, input: PlanInput & { approve: boolean }): { plan: Plan; detail?: GoalDetail } {
@@ -336,11 +401,18 @@ export class HubService {
       const design = existing.find((s) => s.kind === "design");
       const changes = [...m.upserts];
       if (design && design.state !== "done") {
-        const holderSid = design.holderSid;
         const d: Step = { ...design, state: "done", outcome: "done", summary: design.summary ?? `plan v${plan.version} approved`, updatedAt: now };
         changes.push(d);
-        this.message(holderSid, actor.userId, "approved", `MESH: plan v${plan.version} for ${goal.id} was approved. Finish the design step with mesh_done if you haven't; the steps are now open.`);
+        this.emit({ type: "step.done", user: actor.userId, goal: goal.id, step: d.id, payload: { summary: d.summary } });
       }
+      const designSid = design?.holderSid;
+      this.message(
+        designSid,
+        actor.userId,
+        "plan_approved",
+        `MESH: plan v${plan.version} for ${goal.id} was approved by ${actor.userId}${comment ? ` (${comment})` : ""}. mesh updated .mesh/goals/${goal.id}/plan.v${plan.version}.yaml with the approval; commit it with the design. The steps are open now.`,
+        { goal: goal.id, version: plan.version },
+      );
       this.store.saveSteps(changes);
       const ready = recomputeReady(this.store.listSteps({ goal: goal.id }), now);
       this.store.saveSteps(ready);
@@ -365,7 +437,7 @@ export class HubService {
       this.store.savePlan({ ...plan, decision: "revised", decidedBy: actor.userId, decidedAt: now, ...(comment ? { comment } : {}) });
       if (goal.state === "awaiting_approval") this.store.saveGoal({ ...goal, state: "design", updatedAt: now });
       const design = this.store.getStep(`${goal.id}.design`);
-      this.message(design?.holderSid, actor.userId, "revise", `MESH: plan v${plan.version} for ${goal.id} needs changes: ${comment ?? "(no comment)"}. Update the design and propose again with mesh_plan.`);
+      this.message(design?.holderSid, actor.userId, "plan_revised", `MESH: plan v${plan.version} for ${goal.id} needs changes: ${comment ?? "(no comment)"}. Update the design and propose again with mesh_plan.`, { goal: goal.id, version: plan.version });
       this.emit({ type: "plan.revised", user: actor.userId, goal: goal.id, payload: { version: plan.version, comment } });
     });
     return this.goalDetail(goalId);
@@ -474,7 +546,8 @@ export class HubService {
         this.store.saveGoal({ ...goal, state: "done", updatedAt: now });
         this.emit({ type: "goal.done", goal: goal.id });
       }
-      return { step: r.step, reopened: reopened.map((s) => s.id), nowReady, goalDone };
+      const record = stepRecord(r.step, stepFacts(r.step, this.store.eventsFor({ step: r.step.id })), this.store.listNotes(r.step.id).filter((n) => !n.text.startsWith("Reopened by")));
+      return { step: r.step, reopened: reopened.map((s) => s.id), nowReady, goalDone, record };
     });
   }
 
@@ -573,7 +646,7 @@ export class HubService {
 
   inbox(actor: Actor): InboxMessage[] {
     if (!actor.machineId) throw new HubError(403, "inbox needs a device token");
-    return this.store.inbox(actor.machineId).map((m) => ({ id: m.id, toSid: m.toSid, kind: m.kind, text: m.text, fromUser: m.fromUser, createdAt: m.createdAt }));
+    return this.store.inbox(actor.machineId).map((m) => ({ id: m.id, toSid: m.toSid, kind: m.kind, text: m.text, fromUser: m.fromUser, createdAt: m.createdAt, ...(m.data ? { data: m.data } : {}) }));
   }
 
   ack(actor: Actor, id: number, state: "delivered" | "failed", method: string | undefined): boolean {
@@ -718,6 +791,26 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `${s} paused: ${String(payload.reason)}`;
     case "goal.done":
       return `${s} is done`;
+    case "goal.replan":
+      return `asked to replan ${s.split(".")[0]}${payload.comment ? `: ${String(payload.comment)}` : ""}`;
+    case "step.released":
+      return `released ${s}`;
+    case "step.noted":
+      return `added a note to ${s}`;
+    case "step.ready":
+      return `${s} is ready`;
+    case "step.dropped":
+      return `${s} dropped by a new plan`;
+    case "question.asked":
+      return `asked a question on ${s}`;
+    case "question.answered":
+      return `answered a question on ${s}`;
+    case "session.waiting":
+      return `session on ${s} waits for ${String(payload.needs ?? "input")}`;
+    case "session.nudged":
+      return `autopilot nudged the session on ${s}`;
+    case "session.escalated":
+      return `${s} stalled after nudges`;
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }

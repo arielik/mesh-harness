@@ -26,6 +26,7 @@ import {
   NoteRequest,
   ProposePlan,
   ReleaseRequest,
+  Replan,
   SESSION_COOKIE,
   SyncRequest,
   type LoginResult,
@@ -167,6 +168,9 @@ export function buildRoutes(svc: HubService): Route[] {
       return c.json(svc.approvePlan(a, param(c, "id"), b.version, b.comment));
     }),
     r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment))),
+    r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
+    r("GET", "/v1/goals/:id/files", "member", (c) => c.json({ files: svc.goalFiles(param(c, "id")) })),
+    r("GET", "/v1/goals/:id/timeline", "member", (c) => c.json({ timeline: svc.timeline(param(c, "id")) })),
 
     // ---------- steps ----------
     r("GET", "/v1/steps", "member", (c, a) =>
@@ -180,6 +184,7 @@ export function buildRoutes(svc: HubService): Route[] {
       }),
     ),
     r("GET", "/v1/steps/:id/context", "member", (c) => c.json(svc.context(param(c, "id")))),
+    r("GET", "/v1/steps/:id", "member", (c) => c.json(svc.stepView(param(c, "id")))),
     r("POST", "/v1/steps/:id/claim", "member", async (c, a) => c.json(svc.claimStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     r("POST", "/v1/steps/:id/release", "member", async (c, a) => c.json(svc.releaseStep(a, param(c, "id"), (await body(c, ReleaseRequest)).note))),
     r("POST", "/v1/steps/:id/note", "member", async (c, a) => {

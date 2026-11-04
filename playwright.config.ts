@@ -3,6 +3,8 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "test/e2e-web",
   timeout: 30_000,
+  workers: 1,
+  fullyParallel: false,
   use: { baseURL: "http://127.0.0.1:7799", headless: true },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],
   webServer: {
