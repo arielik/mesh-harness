@@ -28,7 +28,7 @@ const duration = z.union([z.string(), z.number()]).transform((v, ctx) => {
 const roles = z.object({ approver: z.array(z.string()).optional(), admin: z.array(z.string()).optional(), service: z.array(z.string()).optional() }).default({});
 
 const ProviderConfig = z.discriminatedUnion("kind", [
-  z.object({ id: z.string().default("local"), kind: z.literal("none"), roles }),
+  z.object({ id: z.string().default("local"), kind: z.literal("none"), roles, user: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/).optional() }),
   z.object({
     id: z.string(),
     kind: z.literal("token"),
@@ -57,6 +57,8 @@ export const HubConfigFile = z.object({
   listen: z.string().default("127.0.0.1:7700"),
   url: z.string().optional(),
   db: z.string().default("mesh-hub.db"),
+  /** Hub events older than this are deleted (the durable summaries are in git). 0 keeps them forever. */
+  events_retention_days: z.number().int().min(0).default(180),
   auth: z
     .object({
       providers: z.array(ProviderConfig).min(1),
@@ -90,6 +92,7 @@ export interface HubConfig {
   bootstrapAdmins: string[];
   policies: SessionPolicies;
   thresholds: { takeoverAfterMs: number; pauseGraceMs: number; machineOfflineMs: number };
+  eventsRetentionDays: number;
 }
 
 export function isLoopback(host: string): boolean {
@@ -109,7 +112,7 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     roleMappings[p.id] = p.roles;
     if (p.kind === "none") {
       if (!isLoopback(host)) throw new Error(`the "none" provider only works on a loopback address, not ${host}`);
-      providers.push(new NoneProvider(p.id));
+      providers.push(new NoneProvider(p.id, p.user));
     } else if (p.kind === "token") {
       providers.push(new TokenProvider(p.id, p.users, p.label));
     } else {
@@ -150,6 +153,7 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     bootstrapAdmins: file.auth.bootstrap_admins,
     policies,
     thresholds: { takeoverAfterMs: file.thresholds.takeover_after, pauseGraceMs: file.thresholds.pause_grace, machineOfflineMs: file.thresholds.machine_offline },
+    eventsRetentionDays: file.events_retention_days,
   };
 }
 

@@ -1,0 +1,122 @@
+{
+  "$id": "https://mesh.local/schemas/ledger-agent-step.json",
+  "title": "mesh.ledger.v1 workflow agent record (front matter of .mesh/goals/<key>/steps/<role>.md)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "mesh.ledger.v1"
+    },
+    "record": {
+      "type": "string",
+      "const": "agent-step"
+    },
+    "key": {
+      "type": "string",
+      "description": "the team's id from the label, e.g. NA-1054"
+    },
+    "role": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "workflow": {
+      "type": "string"
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rounds_count": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "started": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+    },
+    "finished": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+    },
+    "rounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "label": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "workflow_run": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "model_source": {
+            "type": "string",
+            "const": "workflow"
+          },
+          "started": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          },
+          "finished": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          },
+          "duration_s": {
+            "type": "number"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "state": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "result": {
+            "description": "the agent's typed result (workflow schema), long strings cut to 300 characters"
+          }
+        },
+        "required": [
+          "n",
+          "label",
+          "agent_id"
+        ],
+        "additionalProperties": {}
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "record",
+    "key",
+    "role",
+    "name",
+    "rounds"
+  ],
+  "additionalProperties": {}
+}

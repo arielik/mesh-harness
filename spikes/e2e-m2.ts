@@ -52,7 +52,8 @@ export async function runE2eM2(): Promise<void> {
     check("mesh setup (hooks, no MCP)", (await meshCmd(["setup", "--port", String(hubPort + 1), "--no-notify", "--no-mcp"], { CLAUDE_CONFIG_DIR: claudeDir })).code === 0);
     const login = await meshCmd(["login", "--hub", hubUrl, "--token", token]);
     check("mesh login", login.code === 0, login.stdout.trim() || login.stderr.trim());
-    const daemon = spawn(process.execPath, [mesh, "up"], { env, stdio: ["ignore", "ignore", "pipe"] });
+    // Backfill off: a test daemon never imports workflow runs from your real Claude projects.
+    const daemon = spawn(process.execPath, [mesh, "up"], { env: { ...env, MESH_BACKFILL: "off" }, stdio: ["ignore", "ignore", "pipe"] });
     daemon.stderr?.on("data", (d) => {
       daemonLog.push(String(d));
       writeFileSync(join(out, "daemon.log"), daemonLog.join(""));
@@ -115,7 +116,7 @@ export async function runE2eM2(): Promise<void> {
     while (Date.now() - t0 < 240_000) {
       const r = await meshCmd(["goal", "show", "G1"]);
       writeFileSync(join(out, "goal.txt"), r.stdout);
-      if (/G1 "E2E chain" · done/.test(r.stdout)) {
+      if (/\ndone · owner/.test(r.stdout)) {
         goalDone = true;
         break;
       }

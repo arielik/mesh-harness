@@ -29,3 +29,9 @@ The Kanidm/OIDC spike (old S5) is no longer in M0. It is part of task 2.8 (plan 
 ## Plan amendments
 
 Applied to [the implementation plan](../plan/implementation-plan.md) as v2.1: §3.1, §3.3, §5.1, §5.2, §6.4, §7 and the risks table.
+
+## M4 additions
+
+- **`pnpm test:claude`** (`spikes/contract.ts`) re-checks every Claude Code behaviour mesh relies on. It covers the hooks (including `SubagentStart`/`SubagentStop`), `claude agents --json`, and the workflow files mesh reads (`journal.jsonl`, `agent-<id>.meta.json`, `workflows/<run>.json`). Green on 2.1.318.
+  - Finding: print-mode `SessionStart` has no `model` field, as in M0. Subagent models come from the workflow files.
+- **`pnpm spike e2e-offline`** runs a five-agent workflow programme four ways: no daemon, hub blackholed, hub restored mid-run, and Solo. Every run finished in 11–12 s with records of the same shape, and every agent reached the hub exactly once.

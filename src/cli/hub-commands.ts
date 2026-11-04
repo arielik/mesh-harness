@@ -94,7 +94,7 @@ function readPlan(file: string): PlanInput {
 export function goalCommand(c: CliEnv): Command {
   const usage = [
     "usage:",
-    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--issue URL] [--priority 0-9]',
+    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--refs spec=771,backlog=NA-1054] [--issue URL] [--priority 0-9]',
     "  mesh goal ls",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",
@@ -108,7 +108,7 @@ export function goalCommand(c: CliEnv): Command {
     summary: "goals and plans: new, ls, show, plan, approve, revise",
     async run(args) {
       const [sub, ...rest] = args;
-      const a = parseArgs(rest, ["repo", "repos", "issue", "priority", "file", "comment"]);
+      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "new": {
@@ -118,6 +118,7 @@ export function goalCommand(c: CliEnv): Command {
             title,
             ...(a.str("repo") ? { primaryRepo: a.str("repo") } : {}),
             ...(a.str("repos") ? { repos: (a.str("repos") as string).split(",").map((r) => r.trim()).filter(Boolean) } : {}),
+            ...(a.str("refs") ? { refs: Object.fromEntries((a.str("refs") as string).split(",").map((kv) => kv.split("=").map((x) => x.trim())).filter((kv) => kv.length === 2 && kv[0] && kv[1])) } : {}),
             ...(a.str("issue") ? { issueUrl: a.str("issue") } : {}),
             ...(a.str("priority") ? { priority: Number(a.str("priority")) } : {}),
           });

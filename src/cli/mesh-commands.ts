@@ -19,7 +19,7 @@ import {
 } from "../claude/index.ts";
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { CLAUDE_MD_BLOCK, type DaemonConfig, type GoalDetail, type Session } from "../protocol/index.ts";
+import { CLAUDE_MD_BLOCK, HOOK_KINDS, type DaemonConfig, type GoalDetail, type Session } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -27,6 +27,7 @@ import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./con
 export type { CliEnv } from "./context.ts";
 import { HubClient, loadCredentials } from "./hub-client.ts";
 import { hubCommands } from "./hub-commands.ts";
+import { ledgerCommand } from "./ledger.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
 import { age, groupOf, ordered } from "./tui/render.ts";
 import { jump, runTui } from "./tui/tui.ts";
@@ -119,7 +120,7 @@ export function doctorCommand(c: CliEnv): Command {
       else warn("tmux not found: jump and typing into sessions need it");
       if (config) {
         const st = inspectSettingsFile(c.paths.claudeSettings, config);
-        if (st.installed.length === 5 && st.stale.length === 0) ok(`hooks installed in ${c.paths.claudeSettings}`);
+        if (st.installed.length === HOOK_KINDS.length && st.stale.length === 0) ok(`hooks installed in ${c.paths.claudeSettings}`);
         else if (st.installed.length === 0) bad("hooks not installed; run: mesh setup");
         else bad(`hooks out of date (${[...new Set([...st.stale])].join(", ") || "incomplete"}); run: mesh setup`);
         if (await mcpInstalled(runner)) ok("mesh MCP server registered");
@@ -131,8 +132,12 @@ export function doctorCommand(c: CliEnv): Command {
           ok(`daemon running on 127.0.0.1:${config.port} (${h.sessions} live sessions)`);
           const st = await d.status();
           const creds = loadCredentials(c.paths);
-          if (!creds) warn("not logged in to a hub (solo mode); run: mesh login --hub <url>");
-          else if (st.hub === "ok") ok(`hub ${creds.hub} as ${creds.user.id}${st.outbox ? ` (${st.outbox} events waiting to sync)` : ""}`);
+          if (!creds) {
+            if (st.mode === "solo") ok(`Solo: working on the local hub ${st.hubUrl ?? ""} (log in to a team hub with: mesh login --hub <url>)`);
+            else warn("not logged in to a hub and no Solo hub; restart mesh up, or run: mesh login --hub <url>");
+          } else if (st.hub === "ok") ok(`hub ${creds.hub} as ${creds.user.id}${st.outbox ? ` (${st.outbox} events waiting to sync)` : ""}`);
+          else if (st.hub === "offline")
+            warn(`hub ${creds.hub} offline${st.offlineSince ? ` since ${new Date(st.offlineSince).toISOString().slice(11, 16)} UTC` : ""}: working locally (${st.outbox} events, ${st.queued} calls queued)`);
           else bad(`hub ${creds.hub}: ${st.hub}${st.error ? ` (${st.error})` : ""}`);
         } catch (e) {
           bad(e instanceof Error ? e.message : String(e));
@@ -335,6 +340,22 @@ export function runCommand(c: CliEnv): Command {
   };
 }
 
+export function statusCommand(c: CliEnv): Command {
+  return {
+    name: "status",
+    summary: "the daemon and hub: team, Solo, or offline and working locally",
+    async run() {
+      const st = await client(c).status();
+      const mode = st.mode === "solo" ? `Solo (local hub ${st.hubUrl ?? ""})` : st.mode === "team" ? `team hub ${st.hubUrl ?? ""}` : "no hub";
+      c.io.out(`daemon on ${st.host}: ${mode}${st.user ? ` as ${st.user}` : ""}`);
+      if (st.hub === "offline") c.io.out(`hub offline${st.offlineSince ? ` since ${new Date(st.offlineSince).toISOString().slice(11, 16)} UTC` : ""}: working locally; ${st.outbox} event(s) and ${st.queued ?? 0} call(s) are sent when it is back`);
+      else if (st.hub === "auth-failed") c.io.out("the hub refused our login; run: mesh login");
+      else if (st.outbox || st.queued) c.io.out(`${st.outbox} event(s) and ${st.queued ?? 0} call(s) waiting to sync`);
+      return 0;
+    },
+  };
+}
+
 export function meshCommands(c: CliEnv): Command[] {
-  return [setupCommand(c), doctorCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ...hubCommands(c)];
+  return [setupCommand(c), doctorCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), ...hubCommands(c)];
 }

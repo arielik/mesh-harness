@@ -78,6 +78,28 @@
           }
         ]
       }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/subagent-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/subagent-stop"
+          }
+        ]
+      }
     ]
   },
   "permissions": {

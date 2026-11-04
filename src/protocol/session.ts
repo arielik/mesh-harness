@@ -32,6 +32,9 @@ export const Session = z.object({
   needs: Needs.optional(),
   quiet: z.boolean(),
   model: z.string().optional(),
+  /** From the last Stop hook. */
+  effort: z.string().optional(),
+  permissionMode: z.string().optional(),
   startedAt: z.number(),
   lastEventAt: z.number(),
   lastTurnStartAt: z.number().optional(),

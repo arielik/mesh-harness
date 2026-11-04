@@ -53,7 +53,8 @@ export async function runE2e(): Promise<void> {
 
   let daemon: ChildProcess | undefined;
   try {
-    daemon = spawn(process.execPath, [mesh, "up"], { env: baseEnv, stdio: ["ignore", "ignore", "pipe"] });
+    // Backfill off: a test daemon never imports workflow runs from your real Claude projects.
+    daemon = spawn(process.execPath, [mesh, "up"], { env: { ...baseEnv, MESH_BACKFILL: "off" }, stdio: ["ignore", "ignore", "pipe"] });
     let daemonLog = "";
     daemon.stderr?.on("data", (d) => {
       daemonLog += d;

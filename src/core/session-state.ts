@@ -148,6 +148,8 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
   if (ev.tmuxSocket !== undefined) s.tmuxSocket = ev.tmuxSocket;
   if (ev.transcriptPath !== undefined) s.transcriptPath = ev.transcriptPath;
   if (ev.model !== undefined) s.model = ev.model;
+  if (ev.effort !== undefined) s.effort = ev.effort;
+  if (ev.permissionMode !== undefined) s.permissionMode = ev.permissionMode;
   if (ev.autopilot !== undefined && s.autopilot === undefined) s.autopilot = ev.autopilot;
   if (ev.cwd) s.cwd = ev.cwd;
   s.lastEventAt = Math.max(s.lastEventAt, ev.at);

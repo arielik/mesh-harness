@@ -18,6 +18,15 @@ export function loadCredentials(p: MeshPaths): Credentials | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/** Team credentials, else the Solo hub's (written by `mesh up` when no team hub is configured). */
+export function loadCredentialsOrSolo(p: MeshPaths): (Credentials & { solo?: boolean }) | undefined {
+  const team = loadCredentials(p);
+  if (team) return team;
+  if (!existsSync(p.soloCredentials)) return undefined;
+  const parsed = Credentials.safeParse(JSON.parse(readFileSync(p.soloCredentials, "utf8")));
+  return parsed.success ? { ...parsed.data, solo: true } : undefined;
+}
+
 export function saveCredentials(p: MeshPaths, c: Credentials): void {
   mkdirSync(p.configDir, { recursive: true, mode: 0o700 });
   writeFileSync(p.credentials, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600 });
@@ -62,8 +71,8 @@ export class HubClient {
   }
 
   static from(p: MeshPaths): HubClient {
-    const c = loadCredentials(p);
-    if (!c) throw new Error("not logged in to a hub. Run: mesh login --hub <url>");
+    const c = loadCredentialsOrSolo(p);
+    if (!c) throw new Error("not logged in to a hub, and no Solo hub is running. Run `mesh up` (Solo) or `mesh login --hub <url>`.");
     return new HubClient(c);
   }
 

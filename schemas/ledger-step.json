@@ -1,0 +1,348 @@
+{
+  "$id": "https://mesh.local/schemas/ledger-step.json",
+  "title": "mesh.ledger.v1 step record (front matter of .mesh/goals/<G>/steps/<id>.md)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "mesh.ledger.v1"
+    },
+    "record": {
+      "type": "string",
+      "const": "step"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "step": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "plan": {
+      "type": "string"
+    },
+    "plan_approved": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+        }
+      },
+      "required": [
+        "by"
+      ]
+    },
+    "holders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          }
+        },
+        "required": [
+          "user",
+          "from"
+        ]
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "turns": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "human_prompts": {
+      "description": "prompts a person typed (messages mesh delivered are not counted)",
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "nudges": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "waits": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "minutes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "count",
+        "minutes"
+      ],
+      "description": "times the agent waited on a person, and for how long"
+    },
+    "active_minutes": {
+      "type": "number"
+    },
+    "fix_cycles": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "mr": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "started": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+    },
+    "finished": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha": {
+            "description": "git blob id when mesh could read the file",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    "recorded_offline": {
+      "description": "written by the daemon while the hub was offline",
+      "type": "boolean"
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sid": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          },
+          "model": {
+            "type": "string"
+          },
+          "model_source": {
+            "type": "string",
+            "enum": [
+              "hook",
+              "agent",
+              "workflow"
+            ]
+          },
+          "effort": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "type": "string"
+          },
+          "claude_code": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "object",
+            "properties": {
+              "hash": {
+                "type": "string"
+              },
+              "parts": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "hash",
+              "parts"
+            ],
+            "description": "hashes of repo CLAUDE.md+.claude/**, user CLAUDE.md/agents/skills, plugins, mesh version"
+          },
+          "repo_commit": {
+            "type": "string"
+          },
+          "mesh": {
+            "type": "string"
+          },
+          "turns": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "human_prompts": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "nudges": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "waits": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "minutes": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "count",
+              "minutes"
+            ],
+            "description": "times the agent waited on a person, and for how long"
+          },
+          "active_minutes": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "sid",
+          "from"
+        ],
+        "additionalProperties": {}
+      }
+    },
+    "rounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "user": {
+            "type": "string"
+          },
+          "started": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          },
+          "finished": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+          },
+          "minutes": {
+            "type": "number"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reopen": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "sha": {
+                  "description": "git blob id when mesh could read the file",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "n",
+          "finished",
+          "outcome"
+        ],
+        "additionalProperties": {}
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "record",
+    "goal",
+    "step",
+    "kind",
+    "outcome"
+  ],
+  "additionalProperties": {}
+}

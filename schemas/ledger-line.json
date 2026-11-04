@@ -1,0 +1,63 @@
+{
+  "$id": "https://mesh.local/schemas/ledger-line.json",
+  "title": "one line of `mesh ledger export` (JSONL)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "record"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "record": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "kind",
+        "repo",
+        "path",
+        "ref",
+        "commit",
+        "record"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "event"
+        },
+        "event": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "kind",
+        "event"
+      ]
+    }
+  ]
+}

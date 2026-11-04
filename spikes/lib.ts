@@ -4,8 +4,8 @@
 
 import { execFile, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -107,6 +107,8 @@ export function hookSettings(port: number, opts: { stopUrlPort?: number; envDump
       UserPromptSubmit: [{ hooks: [curl("/hook/prompt")] }],
       Notification: [{ hooks: [curl("/hook/notification")] }],
       SessionEnd: [{ hooks: [curl("/hook/session-end")] }],
+      SubagentStart: [{ hooks: [curl("/hook/subagent-start")] }],
+      SubagentStop: [{ hooks: [curl("/hook/subagent-stop")] }],
       Stop: [
         {
           hooks: [
@@ -248,4 +250,48 @@ export function note(file: string, line: string): void {
 
 export function q(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Claude Code's project folder name for a working directory (every non-alphanumeric becomes "-"). */
+export function projectDirName(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
+
+/** Remove the session history Claude Code kept for a scratch working directory (spikes only). */
+export function forgetProject(cwd: string): void {
+  const home = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const dir = join(home, "projects", projectDirName(realpathSync(cwd)));
+  if (dir.includes("mesh-spike")) rmSync(dir, { recursive: true, force: true });
+}
+
+/** Agents and a workflow script shaped like the canonical programme workflows (labels <role>:<key>[:<round>]). */
+export function writeProgramme(dir: string, key: string): void {
+  mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+  const agent = (name: string, reply: string) =>
+    writeFileSync(join(dir, ".claude", "agents", `${name}.md`), `---\nname: ${name}\ndescription: ${name} for the mesh spike\nmodel: haiku\n---\n${reply} Do not use any tool except returning your structured result.\n`);
+  agent("spec-writer", "Return path specs/1-x.md and acceptance_criteria [\"AC-01\", \"AC-02\"].");
+  agent("reviewer", "Return verdict APPROVED with blocking_open 0.");
+  agent("developer", "Return status Completed and criteria [\"AC-01\", \"AC-02\"].");
+  agent("test-writer", "Return status Completed and criteria [\"AC-01\", \"AC-02\"].");
+  agent("test-executor", "Return verdict PASS and one criteria entry per AC-01 and AC-02 with state pass.");
+  writeFileSync(
+    join(dir, "programme.js"),
+    `export const meta = { name: 'spike-programme', description: 'define and build one row', phases: [{ title: 'Define', detail: 'spec and review' }, { title: 'Build', detail: 'develop, tests, verify' }] }
+const K = ${JSON.stringify(key)}
+const DOC = { type: 'object', properties: { path: { type: 'string' }, acceptance_criteria: { type: 'array', items: { type: 'string' } } }, required: ['path'] }
+const REVIEW = { type: 'object', properties: { verdict: { type: 'string', enum: ['APPROVED', 'CHANGES REQUESTED', 'BLOCKED'] }, blocking_open: { type: 'number' } }, required: ['verdict', 'blocking_open'] }
+const BRANCH = { type: 'object', properties: { status: { type: 'string', enum: ['Completed', 'Stopped'] }, criteria: { type: 'array', items: { type: 'string' } } }, required: ['status'] }
+const TEST = { type: 'object', properties: { verdict: { type: 'string', enum: ['PASS', 'FAIL'] }, criteria: { type: 'array', items: { type: 'object', properties: { criterion: { type: 'string' }, state: { type: 'string', enum: ['pass', 'fail', 'unrun'] } }, required: ['criterion', 'state'] } } }, required: ['verdict'] }
+phase('Define')
+const doc = await agent('Write the spec.', { label: 'spec-writer:' + K, phase: 'Define', agentType: 'spec-writer', schema: DOC })
+const rev = await agent('Review the spec.', { label: 'reviewer:' + K + ':r1', phase: 'Define', agentType: 'reviewer', schema: REVIEW })
+phase('Build')
+const [dev, tw] = await parallel([
+  () => agent('Implement.', { label: 'developer:' + K, phase: 'Build', agentType: 'developer', schema: BRANCH }),
+  () => agent('Write the tests.', { label: 'test-writer:' + K, phase: 'Build', agentType: 'test-writer', schema: BRANCH }),
+])
+const test = await agent('Run the tests.', { label: 'test-executor:' + K + ':c1', phase: 'Build', agentType: 'test-executor', schema: TEST })
+return { doc, rev, dev, tw, test }
+`,
+  );
 }

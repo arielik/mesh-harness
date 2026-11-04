@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { attachCommand } from "../../claude/index.ts";
 import { jumpToPane, serverFromEnv } from "../../mux/index.ts";
 import type { Session, SessionsResponse } from "../../protocol/index.ts";
-import type { DaemonClient } from "../client.ts";
+import type { DaemonClient, DaemonStatus } from "../client.ts";
 import { ordered, render, renderGoals, type GoalRow } from "./render.ts";
 
 const ALT_ON = "\x1b[?1049h\x1b[?25l";
@@ -42,6 +42,18 @@ export async function jump(s: Session, env: Record<string, string | undefined>, 
   return { ok, message: ok ? "" : `could not switch to ${s.pane}` };
 }
 
+/** The hub's state for the TUI header: Solo, offline (working locally), or nothing when all is well. */
+export function hubLabel(st: DaemonStatus): string {
+  if (st.mode === "solo") return " · solo (local hub)";
+  if (st.hub === "offline") {
+    const since = st.offlineSince ? ` since ${new Date(st.offlineSince).toISOString().slice(11, 16)} UTC` : "";
+    const queued = (st.queued ?? 0) + st.outbox;
+    return ` · hub offline${since}, working locally${queued ? ` (${queued} waiting)` : ""}`;
+  }
+  if (st.hub === "auth-failed") return " · hub login expired (mesh login)";
+  return "";
+}
+
 export async function runTui(client: DaemonClient, opts: { header: string; env: Record<string, string | undefined> }): Promise<number> {
   const out = process.stdout;
   const input = process.stdin;
@@ -54,11 +66,13 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   let paused = false;
   let goals: GoalRow[] | undefined;
   let stopped = false;
+  let hubTag = "";
+  let ticks = 0;
 
   const draw = () => {
     if (paused || stopped) return;
     if (goals) {
-      const lines = renderGoals(goals, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header, status });
+      const lines = renderGoals(goals, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, status });
       out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
       return;
     }
@@ -71,7 +85,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
       now: Date.now(),
       width: out.columns ?? 100,
       height: out.rows ?? 30,
-      header: opts.header,
+      header: opts.header + hubTag,
       status,
       input: prompt ? { label: prompt.label, value: prompt.value } : undefined,
       color: true,
@@ -82,6 +96,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   const refresh = async (reconcile = false) => {
     try {
       data = reconcile ? await client.reconcile() : await client.sessions();
+      if (ticks++ % 5 === 0) hubTag = hubLabel(await client.status());
       if (status?.startsWith("daemon")) status = undefined;
     } catch (e) {
       status = `daemon: ${e instanceof Error ? e.message : String(e)}`;

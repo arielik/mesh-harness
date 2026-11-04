@@ -49,6 +49,9 @@ async function person(name: string, repo: string): Promise<Person> {
     store,
     credentialsPath,
     deps: defaultDeps({
+        harness: () => ({ hash: "h0", parts: { repo: "r0", user: "u0", plugins: "none", mesh: "test" } }),
+        claudeVersion: async () => "2.1.318",
+        scanRuns: () => [],
       listAgents: async () => p.agents,
       paste: async (pane, text) => {
         p.pastes.push({ pane, text });

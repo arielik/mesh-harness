@@ -25,7 +25,9 @@
     "spike": "node spikes/run.ts",
     "build:web": "vite build --config web/vite.config.ts",
     "dev:web": "vite --config web/vite.config.ts",
-    "test:web": "playwright test"
+    "test:web": "playwright test",
+    "schemas": "node scripts/schemas.ts",
+    "test:claude": "node spikes/run.ts contract"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

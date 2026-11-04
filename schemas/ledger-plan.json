@@ -1,0 +1,110 @@
+{
+  "$id": "https://mesh.local/schemas/ledger-plan.json",
+  "title": "mesh.ledger.v1 plan record (.mesh/goals/<G>/plan.vN.yaml)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "mesh.ledger.v1"
+    },
+    "record": {
+      "type": "string",
+      "const": "plan"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "design": {
+      "type": "string"
+    },
+    "proposed": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+        }
+      },
+      "required": [
+        "by",
+        "at"
+      ]
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "revised",
+        "superseded"
+      ]
+    },
+    "decided": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+        },
+        "comment": {
+          "type": "string"
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "deps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "brief": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "additionalProperties": {}
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "record",
+    "goal",
+    "version",
+    "decision",
+    "steps"
+  ],
+  "additionalProperties": {}
+}

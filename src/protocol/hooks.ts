@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-/** The five hooks mesh installs (plan §5.1). */
-export const HOOK_KINDS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd"] as const;
+/** The hooks mesh installs (plan §5.1): five for sessions, two for subagents (workflow capture, M4). */
+export const HOOK_KINDS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd", "SubagentStart", "SubagentStop"] as const;
 export type HookKind = (typeof HOOK_KINDS)[number];
 
 /** URL path segment per hook, as used in the installed hook commands: /mesh/hook/<slug>. */
@@ -11,6 +11,8 @@ export const HOOK_SLUGS: Record<HookKind, string> = {
   Notification: "notification",
   Stop: "stop",
   SessionEnd: "session-end",
+  SubagentStart: "subagent-start",
+  SubagentStop: "subagent-stop",
 };
 
 export function hookKindFromSlug(slug: string): HookKind | undefined {
@@ -35,6 +37,11 @@ export const HookInput = z.looseObject({
   prompt: z.string().optional(),
   prompt_id: z.string().optional(),
   model: z.string().optional(),
+  permission_mode: z.string().optional(),
+  effort: z.looseObject({ level: z.string().optional() }).optional(),
+  agent_id: z.string().optional(),
+  agent_type: z.string().optional(),
+  agent_transcript_path: z.string().optional(),
 });
 export type HookInput = z.infer<typeof HookInput>;
 
@@ -72,6 +79,13 @@ export interface HookEvent {
   stepHint?: string;
   /** True when the prompt was typed by mesh (a delivery), so it is not counted as a human prompt. */
   delivered?: boolean;
+  /** Stop: the effort level and permission mode of the turn. */
+  effort?: string;
+  permissionMode?: string;
+  /** SubagentStart/SubagentStop. */
+  agentId?: string;
+  agentType?: string;
+  agentTranscriptPath?: string;
 }
 
 export function toHookEvent(kind: HookKind, input: HookInput, headers: HookHeaders, at: number): HookEvent {
@@ -92,6 +106,11 @@ export function toHookEvent(kind: HookKind, input: HookInput, headers: HookHeade
   if (input.model !== undefined) ev.model = input.model;
   if (input.prompt_id !== undefined) ev.promptId = input.prompt_id;
   if (input.prompt !== undefined) ev.promptLength = input.prompt.length;
+  if (input.permission_mode !== undefined) ev.permissionMode = input.permission_mode;
+  if (input.effort?.level !== undefined) ev.effort = input.effort.level;
+  if (input.agent_id !== undefined) ev.agentId = input.agent_id;
+  if (input.agent_type !== undefined) ev.agentType = input.agent_type;
+  if (input.agent_transcript_path !== undefined) ev.agentTranscriptPath = input.agent_transcript_path;
   return ev;
 }
 

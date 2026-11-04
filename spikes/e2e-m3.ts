@@ -67,7 +67,8 @@ export async function runE2eM3(): Promise<void> {
     await run(who, ["setup", "--port", String(port), "--no-notify", "--no-mcp"], { CLAUDE_CONFIG_DIR: who.claudeDir });
     const l = await run(who, ["login", "--hub", hubUrl, "--token", `m3-${name}`]);
     check(`${name}: mesh login`, l.code === 0, l.stdout.trim() || l.stderr.trim());
-    const d = spawn(process.execPath, [mesh, "up"], { env, stdio: ["ignore", "ignore", "pipe"] });
+    // Backfill off: a test daemon never imports workflow runs from your real Claude projects.
+    const d = spawn(process.execPath, [mesh, "up"], { env: { ...env, MESH_BACKFILL: "off" }, stdio: ["ignore", "ignore", "pipe"] });
     let dlog = "";
     d.stderr?.on("data", (x) => {
       dlog += x;

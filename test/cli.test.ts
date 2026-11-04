@@ -89,7 +89,7 @@ describe("mesh doctor", () => {
     const daemon = new Daemon({
       config,
       store,
-      deps: defaultDeps({ listAgents: async () => [], paste: async () => true, wakeBackground: async () => ({ ok: true }), notify: async () => undefined, log: () => undefined }),
+      deps: defaultDeps({ harness: () => undefined, claudeVersion: async () => undefined, scanRuns: () => [], listAgents: async () => [], paste: async () => true, wakeBackground: async () => ({ ok: true }), notify: async () => undefined, log: () => undefined }),
       intervals: { reconcileMs: 0, transcriptMs: 0, tickMs: 0, deliveryMs: 0 },
     });
     await daemon.start();

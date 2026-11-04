@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256 } from "../../src/auth/index.ts";
 import { Daemon, defaultDeps } from "../../src/daemon/index.ts";
-import { buildHubConfig, startHub, type RunningHub } from "../../src/hub/index.ts";
-import type { AgentEntry, DaemonConfig, HookInput, LoginResult, Session } from "../../src/protocol/index.ts";
+import { buildHubConfig, startHub, type HubConfig, type RunningHub } from "../../src/hub/index.ts";
+import type { AgentEntry, Credentials, DaemonConfig, HookInput, LoginResult, Session } from "../../src/protocol/index.ts";
 import { DaemonStore, HubStore } from "../../src/store/index.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON responses in assertions
@@ -24,10 +24,15 @@ export interface Person {
   /** A git checkout this person's sessions work in. */
   repoDir: string;
   repo: string;
+  /** Simulate this person's network to the hub being down. */
+  offline: boolean;
+  credentialsPath: string;
 }
 
 export class World {
   hub!: RunningHub;
+  hubConfig!: HubConfig;
+  hubStore!: HubStore;
   clock = 2_000_000_000;
   people: Record<string, Person> = {};
   private dirs: string[] = [];
@@ -41,10 +46,23 @@ export class World {
       },
       { baseDir: "/", env: {} },
     );
-    this.hub = await startHub(config, { store: await HubStore.open(":memory:"), tickMs: 0, now: () => this.clock });
+    this.hubConfig = config;
+    this.hubStore = await HubStore.open(":memory:");
+    this.hub = await startHub(config, { store: this.hubStore, tickMs: 0, now: () => this.clock });
   }
 
-  async person(name: string, repo: string): Promise<Person> {
+  /** The hub goes away (its data stays) … */
+  async stopHub(): Promise<void> {
+    await this.hub.stop();
+  }
+
+  /** … and comes back on the same address with the same data. */
+  async startHubAgain(): Promise<void> {
+    const config = { ...this.hubConfig, port: this.hub.port, host: "127.0.0.1" };
+    this.hub = await startHub(config, { store: this.hubStore, tickMs: 0, now: () => this.clock });
+  }
+
+  async person(name: string, repo: string, opts: { solo?: Credentials } = {}): Promise<Person> {
     const dir = mkdtempSync(join(tmpdir(), `mesh-world-${name}-`));
     this.dirs.push(dir);
     const repoDir = join(dir, repo);
@@ -53,15 +71,20 @@ export class World {
     const res = await fetch(`${this.hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: `${name}-token-secret`, hostname: `${name}-laptop` }) });
     const login = (await res.json()) as LoginResult;
     const credentialsPath = join(dir, "credentials.json");
-    writeFileSync(credentialsPath, JSON.stringify({ hub: this.hub.url, token: login.token, user: login.user, machine: login.machine }));
+    if (!opts.solo) writeFileSync(credentialsPath, JSON.stringify({ hub: this.hub.url, token: login.token, user: login.user, machine: login.machine }));
     const store = await DaemonStore.open(":memory:");
-    const p: Person = { name, login, store, pastes: [], notes: [], agents: null, repoDir, repo, daemon: undefined as unknown as Daemon };
+    const p: Person = { name, login, store, pastes: [], notes: [], agents: null, repoDir, repo, daemon: undefined as unknown as Daemon, offline: false, credentialsPath };
     const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: [], autopilot: "nudge" };
     p.daemon = new Daemon({
       config,
       store,
       credentialsPath,
+      ...(opts.solo ? { solo: () => opts.solo } : {}),
+      version: "test",
       deps: defaultDeps({
+        harness: () => ({ hash: "h0", parts: { repo: "r0", user: "u0", plugins: "none", mesh: "test" } }),
+        claudeVersion: async () => "2.1.318",
+        scanRuns: () => [],
         listAgents: async () => p.agents,
         paste: async (pane, text) => {
           p.pastes.push({ pane, text });
@@ -72,7 +95,12 @@ export class World {
         now: () => this.clock,
         repoForCwd: () => ({ id: `gitlab.lab/vpc/${repo}`, name: repo }),
         mtime: () => undefined,
-        log: () => undefined,
+        log: (l) => process.env.WORLD_LOG && console.log(`[${name}] ${l}`),
+        hubTimeoutMs: 500,
+        fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+          if (p.offline) throw new TypeError("fetch failed (simulated network loss)");
+          return fetch(url, init);
+        }) as typeof fetch,
       }),
       intervals: { reconcileMs: 0, transcriptMs: 0, tickMs: 0, deliveryMs: 0 },
     });

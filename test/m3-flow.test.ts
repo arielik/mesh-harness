@@ -84,7 +84,7 @@ describe("M3: design → approval → DAG → records", () => {
     const doneA = await w.tool(alice, 100, "mesh_done", { summary: "Programmed v6 next hops in the OVS bridge.", mr: "!88", branch: "mesh/g1-dplane" });
     expect(doneA.text).toContain(`mesh wrote the step record .mesh/goals/${G}/steps/dplane.md`);
     const record = readFileSync(join(alice.repoDir, `.mesh/goals/${G}/steps/dplane.md`), "utf8");
-    expect(record).toMatch(/^---\ngoal: G\d+\nstep: dplane\nkind: implement/);
+    expect(record).toMatch(/^---\nschema: mesh.ledger.v1\nrecord: step\ngoal: G\d+\nstep: dplane\nkind: implement/);
     expect(record).toContain("turns: 2");
     expect(record).toContain("human_prompts: 2");
     expect(record).toContain('mr: "!88"');

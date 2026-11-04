@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 import pkg from "../package.json" with { type: "json" };
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir, hostname, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { listAgents, wakeBackground } from "./claude/index.ts";
 import { dispatch, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
-import { HubService, loadHubConfig, startHub } from "./hub/index.ts";
+import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } from "./hub/index.ts";
 import { runShim } from "./mcp/index.ts";
 import { HubStore } from "./store/index.ts";
 import { Daemon, defaultDeps } from "./daemon/index.ts";
 import { desktopNotify, pasteToPane } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
+import type { Credentials } from "./protocol/index.ts";
 
 
 // node:sqlite is still flagged experimental; keep that one warning out of the user's terminal.
@@ -42,15 +43,29 @@ const up: Command = {
       return 0;
     }
     const store = await DaemonStore.open(p.daemonDb);
+    // Solo (M4): a local hub on loopback, used whenever no team hub is configured. Everything works
+    // without a team hub; `mesh login` switches to it, `mesh logout` back to Solo.
+    let solo: { hub: RunningHub; creds: Credentials } | undefined;
+    if (!a.has("no-solo")) {
+      try {
+        solo = await startSolo();
+      } catch (e) {
+        stdio.err(`mesh: the Solo hub did not start (${e instanceof Error ? e.message : String(e)}); team mode still works`);
+      }
+    }
     const daemon = new Daemon({
       config,
       store,
       credentialsPath: p.credentials,
+      ...(solo ? { solo: () => solo?.creds } : {}),
+      version: pkg.version,
       deps: defaultDeps({
         listAgents: () => listAgents(),
         paste: (pane, text, server) => pasteToPane(pane, text, server),
         wakeBackground: (t, text) => wakeBackground(t, text),
         notify: (title, body) => desktopNotify(title, body),
+        // MESH_BACKFILL=off: don't import past workflow runs (test daemons; privacy-minded setups).
+        ...(process.env.MESH_BACKFILL === "off" ? { scanRuns: () => [] } : {}),
       }),
     });
     try {
@@ -65,10 +80,27 @@ const up: Command = {
       for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => resolve());
     });
     await daemon.stop();
+    await solo?.hub.stop();
     store.close();
     return 0;
   },
 };
+
+async function startSolo(): Promise<{ hub: RunningHub; creds: Credentials }> {
+  const user = (process.env.USER ?? userInfo().username ?? "me").replace(/[^A-Za-z0-9._-]/g, "") || "me";
+  mkdirSync(p.stateDir, { recursive: true });
+  const config = buildHubConfig(
+    { listen: "127.0.0.1:0", db: p.soloHubDb, auth: { providers: [{ id: "local", kind: "none", user }], bootstrap_admins: [`local:${user}`] } },
+    { baseDir: p.stateDir, env: {} },
+  );
+  const webRoot = join(dirname(self[1] as string), "web");
+  const hub = await startHub(config, { webRoot: existsSync(webRoot) ? webRoot : undefined });
+  const login = await hub.svc.loginDirect("local", { client: "cli", hostname: hostname() });
+  const creds: Credentials = { hub: hub.url, token: login.token, user: login.user, ...(login.machine ? { machine: login.machine } : {}) };
+  writeFileSync(p.soloCredentials, `${JSON.stringify(creds, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(p.soloCredentials, 0o600);
+  return { hub, creds };
+}
 
 const hubConfigPath = (a: ReturnType<typeof parseArgs>) => {
   const explicit = a.str("config") ?? process.env.MESH_HUB_CONFIG;
@@ -78,7 +110,7 @@ const hubConfigPath = (a: ReturnType<typeof parseArgs>) => {
 
 const hub: Command = {
   name: "hub",
-  summary: "run the shared hub (init | token | revoke): mesh hub [--config mesh-hub.yaml]",
+  summary: "run the shared hub (init | token | revoke | backup <file>): mesh hub [--config mesh-hub.yaml]",
   async run(args) {
     const sub = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
     const rest = sub ? args.slice(1) : args;
@@ -93,6 +125,20 @@ const hub: Command = {
       return 0;
     }
     const config = loadHubConfig(hubConfigPath(a), process.env, process.cwd());
+    if (sub === "backup") {
+      const target = rest.find((x) => !x.startsWith("--") && x !== a.str("config"));
+      if (!target) throw new Error("usage: mesh hub backup <file> [--config mesh-hub.yaml]");
+      const file = resolve(target);
+      if (existsSync(file)) throw new Error(`${file} exists; pick a new file name`);
+      const store = await HubStore.open(config.db);
+      try {
+        store.backup(file);
+      } finally {
+        store.close();
+      }
+      stdio.out(`Backed up ${config.db} to ${file}. Restore: stop the hub, copy it over the db file, start the hub.`);
+      return 0;
+    }
     if (sub === "token" || sub === "revoke") {
       const store = await HubStore.open(config.db);
       try {
@@ -110,7 +156,7 @@ const hub: Command = {
       }
       return 0;
     }
-    if (sub !== undefined) throw new Error(`unknown hub subcommand "${sub}" (use: init, token, revoke)`);
+    if (sub !== undefined) throw new Error(`unknown hub subcommand "${sub}" (use: init, token, revoke, backup)`);
     const webRoot = join(dirname(self[1] as string), "web");
     const running = await startHub(config, { webRoot: existsSync(webRoot) ? webRoot : undefined });
     stdio.out(`mesh hub on ${running.url} (providers: ${config.providers.map((x) => `${x.id}/${x.kind}`).join(", ")}; db ${config.db})`);

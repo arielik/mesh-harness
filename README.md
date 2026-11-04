@@ -6,6 +6,8 @@ One place to see and steer all your Claude Code sessions, across repos and peopl
 - Journeys, dashboard and analysis: [docs/analysis/2026-11-03-journeys-dashboard-and-analysis.md](docs/analysis/2026-11-03-journeys-dashboard-and-analysis.md)
 - Implementation plan (leads development): [docs/plan/implementation-plan.md](docs/plan/implementation-plan.md)
 - Claude Code spike results: [docs/spikes/README.md](docs/spikes/README.md)
+- Guide: [overview](docs/guide/overview.md) · [concepts](docs/guide/concepts.md) · [install](docs/guide/install.md) · [auth](docs/guide/auth.md) · [operations](docs/guide/operations.md) · [the ledger](docs/guide/ledger.md) · [events](docs/events.md)
+- How it works, in pictures: [docs/explainer/how-mesh-harness-works.html](docs/explainer/how-mesh-harness-works.html)
 
 ## Use it (M1: local)
 
@@ -13,8 +15,9 @@ One place to see and steer all your Claude Code sessions, across repos and peopl
 pnpm install && pnpm build
 alias mesh="node $PWD/dist/main.mjs"
 
-mesh setup          # writes ~/.config/mesh/daemon.json and adds 5 hooks to ~/.claude/settings.json
-mesh up             # the daemon (or: mesh up --install, then run the printed enable command)
+mesh setup          # writes ~/.config/mesh/daemon.json and adds 7 hooks to ~/.claude/settings.json
+mesh up             # the daemon, with its own local hub (Solo) until you log in to a team hub
+mesh status         # team, Solo, or "hub offline, working locally"
 mesh doctor         # checks claude, curl, tmux, hooks, daemon
 
 mesh run frr-dplane-ovs vpc-node-agent   # tmux session "mesh": window 0 = list, one claude per repo
@@ -26,6 +29,8 @@ mesh setup --uninstall   # removes the hooks, restoring your settings file byte 
 ```
 
 Sessions you start yourself with `claude` show up too. With the hooks, mesh knows their tmux pane, so jump and say work; without them they still appear (from `claude agents --json`) but mesh can't type into them.
+
+Nothing in your agents, skills or workflows needs mesh: without it they run as before. With `mesh up` and no team hub, everything (goals, plans, steps, records) runs on a local hub (Solo). With a team hub that goes away, the steps you hold keep working, records are written locally, and everything is sent once when the hub is back.
 
 How messages reach a session: during a turn, mesh hands them over when the turn ends (Stop hook). At an idle prompt, it pastes them into the tmux pane, but only when Claude reports no dialog open. For background sessions, it wakes them in place. Prompts typed by mesh are not counted as human prompts.
 
@@ -51,7 +56,9 @@ mesh answer 3 "yes, keep the v4 fallback"
 mesh autopilot <session> off|nudge|chain
 ```
 
-Every run leaves a trail in the repos, written by mesh and committed by the agents: `.mesh/goals/<G>/goal.yaml`, `plan.vN.yaml` (with the approval) and one `steps/<id>.md` record per step (holders, models, turns, human prompts, nudges, waits, fix cycles, MR, summary). mesh-ai reads it.
+Every run leaves a trail in the repos, written by mesh and committed by the agents, in the `mesh.ledger.v1` format ([the ledger](docs/guide/ledger.md)): `.mesh/goals/<G>/goal.yaml` (with a roll-up when done), `plan.vN.yaml` (with the approval) and one `steps/<id>.md` record per step (segments with model, effort, Claude Code version and harness hash; rounds; holders, turns, human prompts, nudges, waits, fix cycles, artefacts). Nothing in it is typed by hand.
+
+Workflow programmes (one Claude session whose workflow runs subagents, labelled `<role>:<key>[:<round>]`) are captured too: mesh reads the subagent hooks and Claude Code's workflow files, writes one record per role under `<git dir>/mesh/pending/<key>/`, and `mesh ledger stage <key>` copies them into the tree that commits the ledger. `mesh ledger export --repo A --repo B [--events] --out ledger.jsonl` gives mesh-ai one validated JSONL file.
 
 Agents use eight MCP tools (`mesh_context`, `mesh_next`, `mesh_claim`, `mesh_release`, `mesh_note`, `mesh_done`, `mesh_ask`, `mesh_plan`). With `--auto chain`, finishing a step claims the next ready one in the same repo and hands it over when the turn ends. With `nudge` (default), a session that stops mid-step gets "continue" twice, then mesh notifies you.
 
@@ -75,5 +82,8 @@ pnpm spike background
 pnpm build && pnpm spike e2e   # M1 end to end
 pnpm spike e2e-m2              # M2 end to end: hub, login, MCP tools, chain autopilot
 pnpm spike e2e-m3              # M3 end to end: design → revise → approve → two people, two repos → records
+pnpm spike e2e-offline         # M4: a programme four ways: no daemon, hub cut, hub restored mid-run, Solo
+pnpm test:claude               # contract suite: every Claude Code behaviour mesh relies on (run after upgrading Claude Code)
+pnpm schemas                   # regenerate schemas/*.json after changing src/protocol
 pnpm test:web                  # Playwright smoke test of the dashboard (after pnpm build)
 ```

@@ -51,12 +51,11 @@
 <main>
 
 <h1>mesh-harness: how it works</h1>
-<p class="sub">What is built, how a team uses it, how data flows, what data is kept and what you can do with it, and the proposed development cycle (design → spec → split plans → blind build → evaluate → retrofit). Written 2026-11-04, after M3, the owner's ledger decisions and a study of the team's SDD repos (plan v2.5).</p>
+<p class="sub">What is built, how a team uses it, how data flows, what data is kept and what you can do with it, and the proposed development cycle (design → spec → split plans → blind build → evaluate → retrofit). Written 2026-11-04 and updated after M4 (plan v2.6): local-first, programme capture and the ledger are built.</p>
 
 <p class="legend small">
-  <span><span class="tag done">done</span> built, tested and pushed (M0–M3)</span>
-  <span><span class="tag m4">M4</span> next milestone</span>
-  <span><span class="tag m45">M4.5</span> right after M4</span>
+  <span><span class="tag done">done</span> built, tested and pushed (M0–M4)</span>
+  <span><span class="tag m45">M4.5</span> next milestone</span>
   <span><span class="tag later">later</span> M5 or beyond</span>
 </p>
 
@@ -104,7 +103,7 @@
   <tr><td><strong>M1</strong> local daemon + terminal view</td><td><code>mesh up</code> daemon, <code>mesh</code> TUI listing sessions by urgency, <code>mesh say</code>, <code>mesh jump</code>, <code>mesh run</code> (start Claude in tmux windows).</td><td><span class="tag done">done</span></td></tr>
   <tr><td><strong>M2</strong> hub, sign-in, team tools</td><td>Shared <code>mesh hub</code>, login (none / token / OIDC), goals and steps with claims, 8 MCP tools for agents, autopilot (nudge / chain), web Live page.</td><td><span class="tag done">done</span></td></tr>
   <tr><td><strong>M3</strong> design → approval → step graph</td><td><code>mesh run --design</code>, plan proposal and approval, replan, step records and plan files written into repos, <code>mesh show</code>, web Goals board and Goal page.</td><td><span class="tag done">done</span></td></tr>
-  <tr><td><strong>M4</strong> ledger + hardening</td><td><strong>Local-first</strong> (local hub in the daemon, Solo mode, fail-fast hub link, replication) and <strong>programme capture</strong> through subagent hooks and Claude Code's workflow files. Then: versioned record format <code>mesh.ledger.v1</code>, provenance per stretch of work (model, effort, harness hash…), round history, a record for every stage, links to the team's files (spec, reviews, evidence), a goal roll-up, <code>mesh ledger export</code> to JSONL, events feed, backup, retention, docs.</td><td><span class="tag m4">M4</span> ~5 weeks</td></tr>
+  <tr><td><strong>M4</strong> local-first, capture, ledger, hardening</td><td><strong>Local-first</strong> (local hub in the daemon, Solo mode, fail-fast hub link, replication) and <strong>programme capture</strong> through subagent hooks and Claude Code's workflow files. Then: versioned record format <code>mesh.ledger.v1</code>, provenance per stretch of work (model, effort, harness hash…), round history, a record for every stage, links to the team's files (spec, reviews, evidence), a goal roll-up, <code>mesh ledger export</code> to JSONL, events feed, backup, retention, docs.</td><td><span class="tag done">done</span></td></tr>
   <tr><td><strong>M4.5</strong> lifecycle data, all optional</td><td>Everything the <a href="#cycle">development cycle</a> needs, as optional fields: verdicts, finding classes and failure buckets, acceptance criteria and the reconcile check, round caps and park rules, gate steps, new step kinds, blind steps with <code>reads</code>/<code>forbid</code>, worktree per step, plan templates (<code>sdd-split</code>), rework links, roles, one state table for every panel.</td><td><span class="tag m45">M4.5</span> ~2 weeks</td></tr>
   <tr><td><strong>M5</strong></td><td>GitLab issues and <strong>CI ingest</strong> (test results per step), adapters for existing machine ledgers (e.g. <code>evidence/lane/verdicts.json</code>), packaging.</td><td><span class="tag later">later</span></td></tr>
 </table>
@@ -116,13 +115,13 @@
 
 <div class="grid">
   <div class="card"><h4>Claude Code session</h4><p>An ordinary <code>claude</code> in a tmux window, on your subscription. mesh doesn't wrap or replace it.</p></div>
-  <div class="card"><h4>Hooks (5, then 7 in M4)</h4><p><code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Notification</code>, <code>SessionEnd</code>: fire-and-forget <code>curl</code> to the daemon. <code>Stop</code>: a short HTTP call whose reply can hand the agent a queued message. <span class="tag m4">M4</span> <code>SubagentStart</code>/<code>SubagentStop</code>: fire-and-forget, to capture each subagent of a programme. They only reach the local daemon, so a dead daemon or a missing hub never blocks Claude.</p></div>
-  <div class="card"><h4>Daemon <code>mesh up</code></h4><p>One per person, on localhost. Knows your sessions and their state, delivers messages, runs autopilot, writes trail files into repos. Its own SQLite file. <span class="tag m4">M4</span> Runs its own local hub, so everything works when the team hub is away (Solo).</p></div>
+  <div class="card"><h4>Hooks (7)</h4><p><code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Notification</code>, <code>SessionEnd</code>: fire-and-forget <code>curl</code> to the daemon. <code>Stop</code>: a short HTTP call whose reply can hand the agent a queued message. <code>SubagentStart</code>/<code>SubagentStop</code>: fire-and-forget, to capture each subagent of a programme. They only reach the local daemon, so a dead daemon or a missing hub never blocks Claude.</p></div>
+  <div class="card"><h4>Daemon <code>mesh up</code></h4><p>One per person, on localhost. Knows your sessions and their state, delivers messages, runs autopilot, writes trail files into repos. Its own SQLite file. Runs its own local hub (Solo) when no team hub is configured; with a team hub that is away, the steps you hold keep working.</p></div>
   <div class="card"><h4>MCP tools (8)</h4><p>What agents call: <code>mesh_next</code>, <code>mesh_claim</code>, <code>mesh_context</code>, <code>mesh_note</code>, <code>mesh_ask</code>, <code>mesh_release</code>, <code>mesh_done</code>, <code>mesh_plan</code>. Served by the daemon over stdio.</p></div>
   <div class="card"><h4>Hub <code>mesh hub</code></h4><p>One per team. Holds goals, plans, steps, claims, messages and the event log. The single writer for shared state. SQLite.</p></div>
   <div class="card"><h4>Faces</h4><p>Terminal: <code>mesh</code> (TUI), <code>mesh show G1</code>. Web: Live page, Goals board, Goal page with the step graph, Design tab to approve, Timeline.</p></div>
   <div class="card"><h4>Git repos (the ledger)</h4><p><code>.mesh/goals/&lt;G&gt;/</code>: <code>goal.yaml</code>, <code>plan.vN.yaml</code>, <code>steps/&lt;id&gt;.md</code>. Committed by the agent with its work, so they show up in the MR.</p></div>
-  <div class="card"><h4>Ledger export <span class="tag m4">M4</span></h4><p><code>mesh ledger export</code> reads <code>.mesh/goals/**</code> from your checkouts, validates them and writes JSONL, one line per record.</p></div>
+  <div class="card"><h4>Ledger export <span class="tag done">done</span></h4><p><code>mesh ledger export</code> reads <code>.mesh/goals/**</code> from your checkouts, validates them and writes JSONL, one line per record.</p></div>
   <div class="card"><h4>mesh-ai</h4><p>The analysis plane. Imports the JSONL in batch and builds the Flow, Quality, Models and People views. It is not in the live path.</p></div>
 </div>
 
@@ -143,7 +142,7 @@
   <rect x="5" y="180" width="950" height="150" rx="10" fill="#effaf1" stroke="#b5dfbe"/>
   <text x="18" y="201" font-size="13" fill="#1a7f37" font-weight="700">DURABLE (per step, in git)</text>
   <rect x="5" y="345" width="950" height="170" rx="10" fill="#fff8e6" stroke="#ecd59a"/>
-  <text x="18" y="366" font-size="13" fill="#9a6700" font-weight="700">ANALYSIS (batch)  ·  export is M4</text>
+  <text x="18" y="366" font-size="13" fill="#9a6700" font-weight="700">ANALYSIS (batch)</text>
 
   <!-- live boxes -->
   <g font-size="13">
@@ -174,7 +173,7 @@
   <text x="469" y="105" text-anchor="middle" font-size="11" fill="#57606a">inbox (pull+ack)</text>
   <line x1="680" y1="66" x2="758" y2="55" stroke="#57606a" stroke-width="1.6" marker-end="url(#a)"/>
   <line x1="680" y1="85" x2="758" y2="108" stroke="#57606a" stroke-width="1.6" marker-end="url(#a)"/>
-  <text x="595" y="145" text-anchor="middle" font-size="11" fill="#57606a">event log kept N days (retention: M4)</text>
+  <text x="595" y="145" text-anchor="middle" font-size="11" fill="#57606a">event log kept N days (default 180)</text>
 
   <!-- durable -->
   <g font-size="13">
@@ -224,7 +223,7 @@
   <line x1="670" y1="425" x2="738" y2="425" stroke="#9a6700" stroke-width="1.6" marker-end="url(#p)"/>
   <path d="M680,107 C 900,170 960,330 880,388" fill="none" stroke="#9a6700" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#p)"/>
   <text x="900" y="330" font-size="11" fill="#9a6700" text-anchor="end">optional join:</text>
-  <text x="900" y="344" font-size="11" fill="#9a6700" text-anchor="end">/v1/events (M4)</text>
+  <text x="900" y="344" font-size="11" fill="#9a6700" text-anchor="end">/v1/events</text>
   <text x="837" y="490" text-anchor="middle" font-size="11" fill="#9a6700">+ CI results (M5)</text>
 </svg>
 
@@ -236,7 +235,7 @@
   <tr><td><strong>Daemon ↔ hub</strong></td><td>Session events for sessions holding a step; claims, done, plans; messages for your sessions</td><td>HTTP with an opaque hub token. Events go up through a local outbox (survives restarts). Messages come down by pull + ack; SSE only wakes the daemon to pull. Sessions not holding a step stay private to your laptop.</td></tr>
   <tr><td><strong>Hub → screens</strong></td><td>Who is online, which sessions need someone, goals, step graph, timeline</td><td>Web (React + Vite, hash routing, plain SVG graph) and CLI read the hub's HTTP API; the web refreshes on SSE <code>changed</code> events.</td></tr>
   <tr><td><strong>Hub → repo</strong></td><td>Step records, plan files, goal file</td><td>The hub renders the files (<code>src/core/trail.ts</code>) from its state and events; the daemon writes them into the session's git checkout under <code>.mesh/</code> only; the tool result tells the agent to <code>git add</code> them with its work.</td></tr>
-  <tr><td><strong>Repo → analysis</strong> <span class="tag m4">M4</span></td><td>All records across repos</td><td><code>mesh ledger export</code> reads <code>.mesh/goals/**</code> at a ref (default <code>origin/HEAD</code>), validates against <code>mesh.ledger.v1</code>, writes JSONL; can join <code>/v1/events</code> for precise timings. mesh-ai imports the file.</td></tr>
+  <tr><td><strong>Repo → analysis</strong> <span class="tag done">done</span></td><td>All records across repos</td><td><code>mesh ledger export</code> reads <code>.mesh/goals/**</code> at a ref (default <code>origin/HEAD</code>), validates against <code>mesh.ledger.v1</code>, writes JSONL; can join <code>/v1/events</code> for precise timings. mesh-ai imports the file.</td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -250,18 +249,18 @@
   <li><strong>Review the plan.</strong> The owner or an approver sees it in <code>mesh show G1</code> or the web Design tab, with what changed since the last approved version.
     <ul>
       <li><em>Ask for changes:</em> <code>mesh goal revise G1 "split out the tests"</code>. The comment is delivered into the design session, which proposes v2. <span class="small">Event: <code>plan.revised</code>.</span></li>
-      <li><em>Approve:</em> <code>mesh goal approve G1</code>. mesh rewrites <code>plan.v2.yaml</code> with who approved and their comment, the design step closes and steps without dependencies become ready. <span class="small">Events: <code>plan.approved</code>, <code>step.ready</code>.</span> <span class="tag m4">M4</span> the design step also gets its own record.</li>
+      <li><em>Approve:</em> <code>mesh goal approve G1</code>. mesh rewrites <code>plan.v2.yaml</code> with who approved and their comment, the design step closes and steps without dependencies become ready. <span class="small">Events: <code>plan.approved</code>, <code>step.ready</code>.</span> <span class="tag done">done</span> the design step also gets its own record.</li>
     </ul>
   </li>
   <li><strong>Work in parallel.</strong> Anyone runs <code>mesh next</code> or <code>mesh run &lt;repo&gt; --step G1.dplane</code>; agents can call <code>mesh_next</code>/<code>mesh_claim</code> themselves. One holder per step. If someone stops, another can <code>mesh take</code> the step. Autopilot <em>nudge</em> pokes stalled sessions; <em>chain</em> hands the next ready step to an idle session.</li>
   <li><strong>Finish a step.</strong> The agent calls <code>mesh_done</code> with a summary (and MR, branch). The hub computes the step's facts from its events and returns the record; the daemon writes <code>.mesh/goals/G1/steps/dplane.md</code>; the agent commits it with the code. Dependent steps become ready. A review or test step can reopen an earlier step (fix cycle +1). <span class="small">Events: <code>step.done</code>, <code>step.reopened</code>.</span></li>
   <li><strong>Replan if needed.</strong> <code>mesh goal replan G1 "agent needs a migration"</code> reopens the design; a new plan replaces only steps not yet done. <span class="small">Event: <code>goal.replan</code>.</span></li>
   <li><strong>Done.</strong> When all steps are done the goal is done. The trail is now in the repos' history, reviewed in the MRs. <span class="small">Event: <code>goal.done</code>.</span></li>
-  <li><strong>Analyse later</strong> <span class="tag m4">M4</span>. Run <code>mesh ledger export</code> over the checkouts; mesh-ai imports the JSONL.</li>
+  <li><strong>Analyse later</strong> <span class="tag done">done</span>. Run <code>mesh ledger export</code> over the checkouts; mesh-ai imports the JSONL.</li>
 </ol>
 
 <!-- ============================================================ -->
-<h2 id="cycle">6. The development cycle on mesh <span class="tag m45">proposed · M4–M4.5</span></h2>
+<h2 id="cycle">6. The development cycle on mesh <span class="tag m45">capture done · M4.5 for the rest</span></h2>
 
 <div class="simple">
 <p><strong>In short:</strong> mesh runs the team's existing SDD cycle as a <em>plan template</em>:
@@ -403,7 +402,7 @@ design → spec → cold spec review → implementation plan and test plan writt
 </table>
 
 <!-- ============================================================ -->
-<h2 id="offline">7. Works without the hub, and without mesh <span class="tag m4">M4</span></h2>
+<h2 id="offline">7. Works without the hub, and without mesh <span class="tag done">done</span></h2>
 
 <div class="simple">
 <p><strong>The rule:</strong> the process lives in the repo's agents, skills and workflows, and <strong>nothing in them calls mesh</strong>. Saying "start programme X" works the same with or without mesh. mesh <em>watches and helps</em>: live view, claims, enforcement, the ledger. It is never needed to get the work done.</p>
@@ -423,7 +422,7 @@ design → spec → cold spec review → implementation plan and test plan writt
   <tr><td>Hub unreachable (other network)</td><td>✅</td><td>Everything local: TUI, nudges, steps you hold, records written locally, programme capture. Events queue and sync once on reconnect.</td><td>Others' work, the web, claiming shared steps, approvals by others: these answer "offline" within 2 s, never hang</td></tr>
   <tr><td>No hub configured (Solo)</td><td>✅</td><td>The full process on a local hub: goals, plans, your own approvals, records</td><td>Nothing shared</td></tr>
 </table>
-<p class="small">Checked on 2026-11-04 with Claude Code 2.1.318. A workflow programme with mesh's hooks pointing at a dead daemon finished in 10 s, against 9 s with no hooks. Hooks only ever call the local daemon, never the hub. <strong>Today</strong> mesh tools fail when the hub is unreachable (after up to 15 s). Fixing that is the first part of M4: local hub, circuit breaker, records rendered by the daemon, replication.</p>
+<p class="small">Checked on 2026-11-04 with Claude Code 2.1.318. A workflow programme with mesh's hooks pointing at a dead daemon finished in 10 s, against 9 s with no hooks. Hooks only ever call the local daemon, never the hub. Since M4: a dead hub costs one call (up to 10 s), then mesh tools answer at once from local state. <code>pnpm spike e2e-offline</code> runs a five-agent programme four ways against real Claude Code (no daemon, hub blackholed, hub restored mid-run, Solo): each finished in 11–12 s with records of the same shape, and every agent reached the hub exactly once.</p>
 
 <h3>How a programme in one Claude process is captured</h3>
 <p>A programme runs as one Claude session whose workflow script starts subagents (spec-writer, reviewer, planners, developer, test-writer, test-executor). <strong>No subagent reports anything.</strong> mesh collects it:</p>
@@ -441,7 +440,7 @@ design → spec → cold spec review → implementation plan and test plan writt
 </ol>
 <p class="small">The canonical workflows in <code>claude-assets</code> already label every agent and give each a <code>schema:</code>. The change only adds optional result fields (criteria covered, a result per criterion, finding counts per class) and one optional <code>mesh ledger stage</code> line. There is no mesh call and no network access. Design: <code>docs/analysis/2026-11-04-local-first-and-workflow-capture.md</code>.</p>
 
-<h3>How we'll know it works before relying on it</h3>
+<h3>How it is tested</h3>
 <p>Blackholed-hub tests for the fail-fast link, offline-then-reconnect sync with no duplicates, a complete Solo goal, a conflicting claim made while offline, and parser tests against real Claude Code files. A contract suite catches Claude Code upgrades that change those files. A real-Claude run of a programme four ways must finish every time with the same records: no daemon, hub cut, hub restored mid-run, Solo.</p>
 
 <!-- ============================================================ -->
@@ -452,9 +451,9 @@ design → spec → cold spec review → implementation plan and test plan writt
 <table>
   <tr><th>Store</th><th>Holds</th><th>Lifetime</th><th>Who can see it</th></tr>
   <tr><td><strong>Daemon DB</strong> (your laptop)</td><td>Your sessions and their state, recent hook events (no prompt text), queued messages, outbox to the hub</td><td>Local, short</td><td>You</td></tr>
-  <tr><td><strong>Hub DB</strong> (team)</td><td>Users, machines, sessions holding steps, goals, plan versions, steps and claims, notes, questions, messages, the <strong>event log</strong></td><td>State: until deleted. Events: N days <span class="tag m4">retention, M4</span>. Backup <span class="tag m4">M4</span></td><td>Signed-in team members</td></tr>
+  <tr><td><strong>Hub DB</strong> (team)</td><td>Users, machines, sessions holding steps, goals, plan versions, steps and claims, notes, questions, messages, the <strong>event log</strong></td><td>State: until deleted. Events: 180 days by default (<code>events_retention_days</code>). Backup: <code>mesh hub backup</code></td><td>Signed-in team members</td></tr>
   <tr><td><strong>Git ledger</strong> (each repo)</td><td><code>goal.yaml</code>, <code>plan.vN.yaml</code>, <code>steps/&lt;id&gt;.md</code></td><td>Forever (repo history)</td><td>Anyone with repo access; plain names and models (owner decision 5)</td></tr>
-  <tr><td><strong>Ledger JSONL</strong> <span class="tag m4">M4</span></td><td>All records from many repos, validated, one per line</td><td>Regenerate any time</td><td>Whoever runs the export / mesh-ai</td></tr>
+  <tr><td><strong>Ledger JSONL</strong> <span class="tag done">done</span></td><td>All records from many repos, validated, one per line</td><td>Regenerate any time</td><td>Whoever runs the export / mesh-ai</td></tr>
 </table>
 
 <h3>Hub events (the live channel)</h3>
@@ -477,12 +476,12 @@ design → spec → cold spec review → implementation plan and test plan writt
   <tr><td><code>waits {count, minutes}</code></td><td>How often and how long the agent waited on a person</td><td><code>session.waiting</code> → next turn</td><td><span class="tag done">done</span></td></tr>
   <tr><td><code>fix_cycles, outcome, mr, branch, started, finished</code></td><td>Times the step was reopened; result; links; timing</td><td>Hub state</td><td><span class="tag done">done</span></td></tr>
   <tr><td>plan: <code>proposed, decision, decided {by, at, comment}, steps</code></td><td>Who proposed, who approved or asked for changes</td><td>Hub state</td><td><span class="tag done">done</span></td></tr>
-  <tr><td><code>schema: mesh.ledger.v1, record</code></td><td>Versioned format, so readers never break</td><td>mesh</td><td><span class="tag m4">M4</span></td></tr>
-  <tr><td><code>segments[]</code></td><td>Per stretch of work (a session, or a subagent of a programme: role, agent id, label): sid, user, from/to, <strong>model</strong> + <code>model_source</code> (hook, workflow or agent), <strong>effort</strong>, permission mode, Claude Code version, <strong>harness hash</strong>, repo commit, mesh version, turns, prompts, nudges, waits</td><td><code>SessionStart</code>, <code>Stop</code>, <code>SubagentStart/Stop</code> + Claude Code's workflow files, daemon</td><td><span class="tag m4">M4</span></td></tr>
-  <tr><td><code>rounds[]</code></td><td>One entry per <code>mesh_done</code>, so a reopened step keeps its history</td><td><code>mesh_done</code></td><td><span class="tag m4">M4</span></td></tr>
-  <tr><td>decision <code>superseded</code></td><td>A pending plan replaced by a new proposal, not counted as a human "revise"</td><td>Hub</td><td><span class="tag m4">M4</span> (bug fix)</td></tr>
-  <tr><td><code>artifacts[{path, sha}], refs</code></td><td>The team's files this step produced (spec, review, plan, evidence) and ids (spec 771, NA-1054)</td><td><code>mesh_done</code> arguments</td><td><span class="tag m4">M4</span></td></tr>
-  <tr><td>goal roll-up</td><td>Totals per stage at goal done: rounds, cycles, buckets, parks, people, models, harness hashes, lead time</td><td>Hub, from the step records</td><td><span class="tag m4">M4</span></td></tr>
+  <tr><td><code>schema: mesh.ledger.v1, record</code></td><td>Versioned format, so readers never break</td><td>mesh</td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>segments[]</code></td><td>Per stretch of work (a session, or a subagent of a programme: role, agent id, label): sid, user, from/to, <strong>model</strong> + <code>model_source</code> (hook, workflow or agent), <strong>effort</strong>, permission mode, Claude Code version, <strong>harness hash</strong>, repo commit, mesh version, turns, prompts, nudges, waits</td><td><code>SessionStart</code>, <code>Stop</code>, <code>SubagentStart/Stop</code> + Claude Code's workflow files, daemon</td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>rounds[]</code></td><td>One entry per <code>mesh_done</code>, so a reopened step keeps its history</td><td><code>mesh_done</code></td><td><span class="tag done">done</span></td></tr>
+  <tr><td>decision <code>superseded</code></td><td>A pending plan replaced by a new proposal, not counted as a human "revise"</td><td>Hub</td><td><span class="tag done">done</span> (bug fix)</td></tr>
+  <tr><td><code>artifacts[{path, sha}], refs</code></td><td>The team's files this step produced (spec, review, plan, evidence) and ids (spec 771, NA-1054)</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
+  <tr><td>goal roll-up</td><td>Totals per stage at goal done: rounds, cycles, buckets, parks, people, models, harness hashes, lead time</td><td>Hub, from the step records</td><td><span class="tag done">done</span></td></tr>
   <tr><td><code>verdict, findings{new, repeat, regression}, blockers</code></td><td>Review result and the finding classes the team's reviewer already uses</td><td><code>mesh_done</code> arguments</td><td><span class="tag m45">M4.5</span></td></tr>
   <tr><td><code>failures[{test, ac, bucket}]</code></td><td>Verify failures by bucket: spec-gap / impl-bug / test-bug / infra / unclear; the hub routes the fix</td><td><code>mesh_done</code> arguments</td><td><span class="tag m45">M4.5</span></td></tr>
   <tr><td><code>fail_first{red, not_red}</code>, <code>mutations{killed, survived}</code></td><td>Tests that failed at the baseline, and mutation results</td><td><code>mesh_done</code> arguments</td><td><span class="tag m45">M4.5</span></td></tr>
@@ -493,7 +492,7 @@ design → spec → cold spec review → implementation plan and test plan writt
   <tr><td>CI results</td><td>Tests run / failed per step</td><td>GitLab CI ingest (not the agent)</td><td><span class="tag later">M5</span></td></tr>
 </table>
 
-<h3>The harness hash <span class="tag m4">M4</span></h3>
+<h3>The harness hash <span class="tag done">done</span></h3>
 <p>A fingerprint of everything that shapes how the agent behaves apart from the model: the repo's <code>CLAUDE.md</code> and <code>.claude/**</code>, your <code>~/.claude</code> <code>CLAUDE.md</code>, agents and skills, plugin names and versions, and the mesh version. One combined hash plus one per part, so you can tell "the model changed" apart from "someone edited a skill". Only hashes are stored, never file contents.</p>
 
 <!-- ============================================================ -->
@@ -532,8 +531,8 @@ Added v6 underlay next-hop programming.
 Notes:
 - ariel: v4 fallback stays on (decided with owner)</pre>
 
-<h3>After M4 / M4.5 <span class="tag m4">M4</span> <span class="tag m45">M4.5</span></h3>
-<p class="small">Draft shape; exact field names are fixed when the <code>mesh.ledger.v1</code> schema is written in M4. New parts highlighted.</p>
+<h3>With M4 and M4.5 <span class="tag done">done</span> <span class="tag m45">M4.5</span></h3>
+<p class="small">The M4 fields (schema, record, segments, rounds, artifacts, refs) are final: see <code>docs/guide/ledger.md</code> and <code>schemas/ledger-step.json</code>. The M4.5 fields (role, blind, acs, verdicts, failures) are still a draft. New parts highlighted.</p>
 <pre><span class="n">schema: mesh.ledger.v1
 record: step</span>
 goal: G17
@@ -596,13 +595,13 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
     <p>The <code>sdd-split</code> template (<a href="#cycle">section 6</a>): spec, cold review, split plans, developer and test-writer apart, read-only verify per AC, diff review, gates. mesh enforces the separation and the caps.</p></div>
   <div class="card"><h4>Programme owner <span class="tag m45">M4.5</span></h4>
     <p>Run many backlog rows as goals with the template, unattended. Parks show up in "needs you" with their reason; gates wait in the web. No <code>programme.js</code> bookkeeping, and no typed results lost.</p></div>
-  <div class="card"><h4>Harness maintainer <span class="tag m4">M4</span>+</h4>
+  <div class="card"><h4>Harness maintainer <span class="tag done">done</span>+</h4>
     <p>Change an agent or skill in <code>claude-assets</code>; its harness hash changes; compare the next weeks' cohort with the last on rounds, cycles and ACs met. Keep or revert on evidence.</p></div>
-  <div class="card"><h4>Analyst / mesh-ai <span class="tag m4">M4</span></h4>
+  <div class="card"><h4>Analyst / mesh-ai <span class="tag done">done</span></h4>
     <p>Export the ledger and slice by model, harness hash, effort, repo, step kind, person, week. See <a href="#regress">section 11</a>.</p></div>
   <div class="card"><h4>Quality per acceptance criterion <span class="tag m45">M4.5</span></h4>
     <p>Which ACs fail first time, how many rounds until met, which failure class (impl, test, spec) dominates, which steps get reworked later.</p></div>
-  <div class="card"><h4>Ops <span class="tag m4">M4</span></h4>
+  <div class="card"><h4>Ops <span class="tag done">done</span></h4>
     <p><code>mesh hub backup</code>, event retention, docs; <code>pnpm test:claude</code> re-checks mesh's assumptions after a Claude Code upgrade.</p></div>
 </div>
 
@@ -613,11 +612,11 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
 
 <table>
   <tr><th>Signal</th><th>Computed from</th><th>Available</th></tr>
-  <tr><td>More fix cycles per step</td><td><code>fix_cycles</code>; <code>step.reopened</code> events</td><td><span class="tag done">today</span>, by model reliably from <span class="tag m4">M4</span></td></tr>
-  <tr><td>More human help (prompts, waits, nudges)</td><td><code>human_prompts</code>, <code>waits</code>, <code>nudges</code> per segment</td><td><span class="tag done">today</span> per step; per model/person in <span class="tag m4">M4</span></td></tr>
-  <tr><td>More time per step / per spec</td><td><code>started</code>/<code>finished</code>, segment from/to; design records</td><td><span class="tag done">today</span> per step; per design stage in <span class="tag m4">M4</span></td></tr>
-  <tr><td>More design rounds</td><td>Plan versions with decision <code>revised</code> (not <code>superseded</code>)</td><td><span class="tag m4">M4</span> (after the bug fix)</td></tr>
-  <tr><td>More review rounds, failure types</td><td><code>rounds[]</code>, <code>verdict</code>, <code>reopen.class</code></td><td><span class="tag m4">M4</span> rounds, <span class="tag m45">M4.5</span> verdicts</td></tr>
+  <tr><td>More fix cycles per step</td><td><code>fix_cycles</code>; <code>step.reopened</code> events</td><td><span class="tag done">today</span>, by model reliably from <span class="tag done">done</span></td></tr>
+  <tr><td>More human help (prompts, waits, nudges)</td><td><code>human_prompts</code>, <code>waits</code>, <code>nudges</code> per segment</td><td><span class="tag done">today</span> per step; per model/person in <span class="tag done">done</span></td></tr>
+  <tr><td>More time per step / per spec</td><td><code>started</code>/<code>finished</code>, segment from/to; design records</td><td><span class="tag done">today</span> per step; per design stage in <span class="tag done">done</span></td></tr>
+  <tr><td>More design rounds</td><td>Plan versions with decision <code>revised</code> (not <code>superseded</code>)</td><td><span class="tag done">done</span> (after the bug fix)</td></tr>
+  <tr><td>More review rounds, failure types</td><td><code>rounds[]</code>, <code>verdict</code>, <code>reopen.class</code></td><td><span class="tag done">done</span> rounds, <span class="tag m45">M4.5</span> verdicts</td></tr>
   <tr><td>More review churn (regressions of the writer's own fixes)</td><td><code>findings.regression</code> per round</td><td><span class="tag m45">M4.5</span></td></tr>
   <tr><td>Weaker tests (didn't fail first, mutations survived, ACs missed in the test plan)</td><td><code>fail_first.not_red</code>, <code>mutations.survived</code>, <code>reconcile.missing_acs</code></td><td><span class="tag m45">M4.5</span></td></tr>
   <tr><td>More fix cycles of one type (impl-bug vs spec-gap)</td><td><code>failures[].bucket</code> per verify cycle</td><td><span class="tag m45">M4.5</span></td></tr>
@@ -627,7 +626,7 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
   <tr><td>Token usage / cost</td><td>—</td><td>Not planned (owner decision 9)</td></tr>
 </table>
 
-<p><strong>Example question, after M4:</strong> "For <code>kind: implement</code> steps in the last 8 weeks, median <code>fix_cycles</code> and <code>human_prompts</code> by <code>model</code> and <code>harness.hash</code>." One <code>jq</code> or SQL query over the JSONL, or a mesh-ai Models view.</p>
+<p><strong>Example question, today:</strong> "For <code>kind: implement</code> steps in the last 8 weeks, median <code>fix_cycles</code> and <code>human_prompts</code> by <code>model</code> and <code>harness.hash</code>." One <code>jq</code> or SQL query over the JSONL, or a mesh-ai Models view.</p>
 
 <!-- ============================================================ -->
 <h2 id="privacy">12. Privacy and what is never stored</h2>
@@ -648,8 +647,8 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
   <tr><td><strong>Step</strong></td><td>One unit of work in one repo, of a kind (design, implement, test, review, docs). One holder at a time.</td></tr>
   <tr><td><strong>Claim / take over</strong></td><td>Becoming the holder of a step; taking a paused step from someone else.</td></tr>
   <tr><td><strong>Fix cycle</strong></td><td>A step reopened after it was done, usually by a failing test or review.</td></tr>
-  <tr><td><strong>Segment</strong> <span class="tag m4">M4</span></td><td>One continuous stretch of work on a step by one session (one person, one model setting).</td></tr>
-  <tr><td><strong>Round</strong> <span class="tag m4">M4</span></td><td>One <code>mesh_done</code> on a step; a reopened step has several rounds.</td></tr>
+  <tr><td><strong>Segment</strong> <span class="tag done">done</span></td><td>One continuous stretch of work on a step by one session (one person, one model setting).</td></tr>
+  <tr><td><strong>Round</strong> <span class="tag done">done</span></td><td>One <code>mesh_done</code> on a step; a reopened step has several rounds.</td></tr>
   <tr><td><strong>Trail / ledger</strong></td><td>The files mesh writes under <code>.mesh/goals/</code> and the agent commits.</td></tr>
   <tr><td><strong>Autopilot</strong></td><td><code>off</code>, <code>nudge</code> (poke stalled sessions), <code>chain</code> (hand the next ready step to an idle session).</td></tr>
   <tr><td><strong>Gate</strong> <span class="tag m45">M4.5</span></td><td>An approval step (R1 ADR, R2 spec, R3 landing) done by a person or by a recorded rule.</td></tr>

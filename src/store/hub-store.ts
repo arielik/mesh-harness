@@ -498,6 +498,15 @@ export class HubStore {
     }));
   }
 
+  pruneEvents(before: number): number {
+    return this.db.run("DELETE FROM event WHERE at < ?", before).changes;
+  }
+
+  /** A consistent copy of the whole database (VACUUM INTO), safe while the hub runs. */
+  backup(path: string): void {
+    this.db.run("VACUUM INTO ?", path);
+  }
+
   recentEvents(limit: number): EventRow[] {
     const max = this.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM event")?.m ?? 0;
     return this.events(Math.max(0, max - limit), limit);

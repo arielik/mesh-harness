@@ -33,6 +33,9 @@ let ids = 0;
 async function boot(existing?: DaemonStore) {
   store = existing ?? (await DaemonStore.open(":memory:"));
   const deps: DaemonDeps = defaultDeps({
+        harness: () => ({ hash: "h0", parts: { repo: "r0", user: "u0", plugins: "none", mesh: "test" } }),
+        claudeVersion: async () => "2.1.318",
+        scanRuns: () => [],
     listAgents: async () => f.agents,
     paste: async (pane, text) => {
       f.pastes.push({ pane, text });

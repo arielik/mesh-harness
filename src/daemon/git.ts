@@ -1,5 +1,6 @@
 // Repo identity for a working directory, read straight from .git (no git process).
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { repoFromRemote } from "../core/index.ts";
@@ -25,14 +26,54 @@ export function findGitDir(cwd: string): string | undefined {
   }
 }
 
-/** The config file of the repository (the common dir for worktrees). */
-function configFile(gitDir: string): string {
+/** The common git dir (shared by all worktrees of a repository). */
+export function commonDir(gitDir: string): string {
   const common = join(gitDir, "commondir");
   if (existsSync(common)) {
     const c = readFileSync(common, "utf8").trim();
-    return join(isAbsolute(c) ? c : resolve(gitDir, c), "config");
+    return isAbsolute(c) ? c : resolve(gitDir, c);
   }
-  return join(gitDir, "config");
+  return gitDir;
+}
+
+/** The config file of the repository (the common dir for worktrees). */
+function configFile(gitDir: string): string {
+  return join(commonDir(gitDir), "config");
+}
+
+/** The commit checked out in `cwd` (HEAD resolved through loose refs and packed-refs). */
+export function headCommit(cwd: string): string | undefined {
+  try {
+    const gitDir = findGitDir(cwd);
+    if (!gitDir) return undefined;
+    const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+    const ref = /^ref:\s*(.+)$/.exec(head)?.[1];
+    if (!ref) return /^[0-9a-f]{40}$/.test(head) ? head : undefined;
+    for (const dir of [gitDir, commonDir(gitDir)]) {
+      const loose = join(dir, ref);
+      if (existsSync(loose)) return readFileSync(loose, "utf8").trim();
+    }
+    const packed = join(commonDir(gitDir), "packed-refs");
+    if (existsSync(packed)) {
+      for (const line of readFileSync(packed, "utf8").split("\n")) {
+        const [sha, name] = line.trim().split(" ");
+        if (name === ref && sha && /^[0-9a-f]{40}$/.test(sha)) return sha;
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The git blob id of a file (what `git hash-object` prints), without running git. */
+export function blobSha(path: string): string | undefined {
+  try {
+    const data = readFileSync(path);
+    return createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex");
+  } catch {
+    return undefined;
+  }
 }
 
 /** Remote URLs by name from a git config file's text. */

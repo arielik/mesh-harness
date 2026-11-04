@@ -36,7 +36,7 @@ describe("hook installer", () => {
     expect(installSettingsFile(p, T).changed).toBe(true);
     golden("existing.installed.json", readFileSync(p, "utf8"));
     expect(inspectSettingsFile(p, T)).toEqual({
-      installed: ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd"],
+      installed: ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd", "SubagentStart", "SubagentStop"],
       stale: [],
     });
   });
@@ -84,7 +84,7 @@ describe("hook installer", () => {
   it("detects stale hooks after the port or key changes", () => {
     const p = tmpFile("existing.json");
     installSettingsFile(p, T);
-    expect(inspectSettingsFile(p, { ...T, port: 1234 }).stale).toHaveLength(5);
+    expect(inspectSettingsFile(p, { ...T, port: 1234 }).stale).toHaveLength(7);
   });
 
   it("hook commands carry the pid and tmux headers and never block", () => {

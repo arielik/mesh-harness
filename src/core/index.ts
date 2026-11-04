@@ -6,3 +6,4 @@ export * from "./claims.ts";
 export * from "./dag.ts";
 export * from "./roles.ts";
 export * from "./trail.ts";
+export * from "./agent-ledger.ts";

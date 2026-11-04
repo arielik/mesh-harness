@@ -8,8 +8,10 @@ export class NoneProvider implements AuthProvider {
   readonly kind = "none" as const;
   readonly label = "Local (no login)";
   readonly id: string;
-  constructor(id = "local") {
+  readonly user: string;
+  constructor(id = "local", user = "local") {
     this.id = id;
+    this.user = user;
   }
   flows(): FlowKind[] {
     return ["none"];
@@ -19,7 +21,7 @@ export class NoneProvider implements AuthProvider {
   }
   async complete(input: CompleteInput): Promise<Identity> {
     if (input.flow !== "none") throw new AuthError(`provider ${this.id} only supports the none flow`, 400);
-    return { provider: this.id, subject: "local", name: "local", groups: ["local"] };
+    return { provider: this.id, subject: this.user, name: this.user, groups: ["local"] };
   }
 }
 

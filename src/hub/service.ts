@@ -7,6 +7,7 @@ import {
   canApprove,
   claim,
   goalFile,
+  goalRollup,
   planFile,
   stepFacts,
   stepRecord,
@@ -258,7 +259,7 @@ export class HubService {
 
   // ---------- goals and plans ----------
 
-  createGoal(actor: Actor, input: { title: string; primaryRepo?: string | undefined; repos?: string[] | undefined; issueUrl?: string | undefined; priority: number }): Goal {
+  createGoal(actor: Actor, input: { title: string; primaryRepo?: string | undefined; repos?: string[] | undefined; issueUrl?: string | undefined; refs?: Record<string, string> | undefined; priority: number }): Goal {
     return this.store.tx(() => {
       const now = this.now();
       const goal = this.store.createGoal({
@@ -268,6 +269,7 @@ export class HubService {
         ...(input.primaryRepo ? { primaryRepo: input.primaryRepo } : {}),
         ...(input.repos?.length ? { repos: input.repos } : {}),
         ...(input.issueUrl ? { issueUrl: input.issueUrl } : {}),
+        ...(input.refs && Object.keys(input.refs).length ? { refs: input.refs } : {}),
         priority: input.priority,
         createdAt: now,
         updatedAt: now,
@@ -313,10 +315,30 @@ export class HubService {
     return { goal, steps, plans: this.store.listPlans(goal.id), holders };
   }
 
-  /** The trail files for a goal (goal.yaml and every plan version), as they should be committed. */
+  /**
+   * The trail files for a goal, as they should be committed: goal.yaml (with its roll-up once done),
+   * every plan version and the design step's record once the design is done.
+   */
   goalFiles(id: string): TrailFile[] {
     const goal = this.goalOr404(id);
-    return [goalFile(goal), ...this.store.listPlans(goal.id).map(planFile)];
+    const files = [this.goalYaml(goal), ...this.store.listPlans(goal.id).map(planFile)];
+    const design = this.store.getStep(`${goal.id}.design`);
+    if (design?.state === "done") files.push(this.recordOf(design));
+    return files;
+  }
+
+  private goalYaml(goal: Goal): TrailFile {
+    if (goal.state !== "done") return goalFile(goal);
+    const steps = this.store.listSteps({ goal: goal.id });
+    const events = this.store.eventsFor({ goal: goal.id });
+    const facts = new Map(steps.map((st) => [st.id, stepFacts(st, events)]));
+    const doneAt = events.filter((e) => e.type === "goal.done").at(-1)?.at ?? goal.updatedAt;
+    return goalFile(goal, goalRollup(goal, steps, this.store.listPlans(goal.id), facts, doneAt), doneAt);
+  }
+
+  private recordOf(step: Step): TrailFile {
+    const plan = this.store.listPlans(step.goal).find((p) => p.version === step.planVersion);
+    return stepRecord(step, stepFacts(step, this.store.eventsFor({ step: step.id })), this.store.listNotes(step.id).filter((n) => !n.text.startsWith("Reopened by")), plan);
   }
 
   stepView(id: string): StepView {
@@ -375,8 +397,9 @@ export class HubService {
         proposedAt: now,
         decision: "pending",
       };
-      // A newer proposal supersedes pending ones.
-      for (const p of plans) if (p.decision === "pending") this.store.savePlan({ ...p, decision: "revised", comment: "superseded", decidedAt: now });
+      // A newer proposal supersedes pending ones. "superseded" is not a human request for changes,
+      // so design rounds count only "revised" (M4, R4).
+      for (const p of plans) if (p.decision === "pending") this.store.savePlan({ ...p, decision: "superseded", decidedAt: now });
       this.store.savePlan(plan);
       if (goal.state !== "in_progress") this.store.saveGoal({ ...goal, state: "awaiting_approval", updatedAt: now });
       this.emit({ type: "plan.proposed", user: actor.userId, goal: goal.id, payload: { version: plan.version, steps: plan.steps.length } });
@@ -401,7 +424,18 @@ export class HubService {
       const design = existing.find((s) => s.kind === "design");
       const changes = [...m.upserts];
       if (design && design.state !== "done") {
-        const d: Step = { ...design, state: "done", outcome: "done", summary: design.summary ?? `plan v${plan.version} approved`, updatedAt: now };
+        const round = {
+          n: (design.rounds?.length ?? 0) + 1,
+          user: design.holderUser ?? plan.proposedBy,
+          ...(design.holderSid ? { sid: design.holderSid } : {}),
+          ...(design.roundStartedAt ?? design.claimedAt ? { startedAt: (design.roundStartedAt ?? design.claimedAt) as number } : {}),
+          finishedAt: now,
+          outcome: "done" as const,
+          summary: `plan v${plan.version} approved by ${actor.userId}`,
+          ...(plan.designRef ? { artifacts: [{ path: plan.designRef }] } : {}),
+        };
+        const d: Step = { ...design, state: "done", outcome: "done", summary: design.summary ?? `plan v${plan.version} approved`, rounds: [...(design.rounds ?? []), round], updatedAt: now };
+        delete d.roundStartedAt;
         changes.push(d);
         this.emit({ type: "step.done", user: actor.userId, goal: goal.id, step: d.id, payload: { summary: d.summary } });
       }
@@ -478,11 +512,12 @@ export class HubService {
       const step = this.stepOr404(stepId);
       const r = claim(step, { userId: actor.userId, sid, machine: this.machineOf(actor, sid) }, this.now());
       if (!r.ok) throw new HubError(r.status, r.error);
-      this.store.saveSteps([r.step]);
+      const claimed: Step = r.step.roundStartedAt === undefined ? { ...r.step, roundStartedAt: this.now() } : r.step;
+      this.store.saveSteps([claimed]);
       const goal = this.store.getGoal(step.goal);
       if (goal && step.kind === "design" && goal.state === "backlog") this.store.saveGoal({ ...goal, state: "design", updatedAt: this.now() });
       this.emit({ type: "step.claimed", user: actor.userId, sid, goal: step.goal, step: step.id });
-      return r.step;
+      return claimed;
     });
   }
 
@@ -508,11 +543,26 @@ export class HubService {
     });
   }
 
-  doneStep(actor: Actor, stepId: string, input: { summary: string; outcome: "done" | "fail"; branch?: string | undefined; mr?: string | undefined; reopen: string[]; sid?: string | undefined }): DoneResult {
+  doneStep(
+    actor: Actor,
+    stepId: string,
+    input: {
+      summary: string;
+      outcome: "done" | "fail";
+      branch?: string | undefined;
+      mr?: string | undefined;
+      reopen: string[];
+      sid?: string | undefined;
+      model?: string | undefined;
+      artifacts?: { path: string; sha?: string | undefined }[] | undefined;
+      /** When the daemon finished it; offline replays keep the real time. */
+      at?: number | undefined;
+    },
+  ): DoneResult {
     return this.store.tx(() => {
       const step = this.stepOr404(stepId);
       const goal = this.goalOr404(step.goal);
-      const now = this.now();
+      const now = input.at !== undefined && input.at <= this.now() && input.at > this.now() - 30 * 86_400_000 ? input.at : this.now();
       const full = input.reopen.map((r) => (r.includes(".") ? r : `${step.goal}.${r}`));
       const all = this.store.listSteps({ goal: step.goal });
       for (const id of full) {
@@ -521,8 +571,25 @@ export class HubService {
         if (s.state !== "done") throw new HubError(409, `cannot reopen ${id}: it is ${s.state}, not done`);
       }
       if (input.outcome === "done" && full.length) throw new HubError(400, "reopen only makes sense with outcome fail");
-      const r = finish(step, { userId: actor.userId, sid: input.sid }, input, full.length > 0, actor.roles.includes("admin"), now);
-      if (!r.ok) throw new HubError(r.status, r.error);
+      const fin = finish(step, { userId: actor.userId, sid: input.sid }, input, full.length > 0, actor.roles.includes("admin"), now);
+      if (!fin.ok) throw new HubError(fin.status, fin.error);
+      const round = {
+        n: (step.rounds?.length ?? 0) + 1,
+        user: actor.userId,
+        ...(input.sid ? { sid: input.sid } : {}),
+        ...(step.roundStartedAt ?? step.claimedAt ? { startedAt: (step.roundStartedAt ?? step.claimedAt) as number } : {}),
+        finishedAt: now,
+        outcome: input.outcome,
+        summary: input.summary,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.artifacts?.length ? { artifacts: input.artifacts.map((a) => ({ path: a.path, ...(a.sha ? { sha: a.sha } : {}) })) } : {}),
+        ...(full.length ? { reopen: full } : {}),
+        ...(input.branch ? { branch: input.branch } : {}),
+        ...(input.mr ? { mr: input.mr } : {}),
+      };
+      const finished: Step = { ...fin.step, rounds: [...(step.rounds ?? []), round] };
+      delete finished.roundStartedAt;
+      const r = { step: finished };
       let steps = all.map((s) => (s.id === r.step.id ? r.step : s));
       const reopenChanges = reopen(steps, full, now);
       const wanted = new Set(full.map((f) => f.toLowerCase()));
@@ -532,7 +599,7 @@ export class HubService {
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[r.step.id, r.step], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
       this.store.saveSteps([...changed.values()]);
-      this.emit({ type: input.outcome === "done" ? "step.done" : "step.failed", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { summary: input.summary, mr: input.mr, reopen: full } });
+      this.emit({ at: now, type: input.outcome === "done" ? "step.done" : "step.failed", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { summary: input.summary, mr: input.mr, reopen: full, round: round.n, ...(input.model ? { model: input.model } : {}) } });
       for (const s of reopened) {
         const before = all.find((x) => x.id === s.id);
         this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: input.summary, fixCycles: s.fixCycles } });
@@ -542,12 +609,15 @@ export class HubService {
       const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
       for (const id of nowReady) this.emit({ type: "step.ready", goal: step.goal, step: id });
       const goalDone = steps.length > 0 && steps.every((s) => s.state === "done" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
+      let files: TrailFile[] | undefined;
       if (goalDone && goal.state !== "done") {
-        this.store.saveGoal({ ...goal, state: "done", updatedAt: now });
-        this.emit({ type: "goal.done", goal: goal.id });
+        const doneGoal: Goal = { ...goal, state: "done", updatedAt: now };
+        this.store.saveGoal(doneGoal);
+        this.emit({ at: now, type: "goal.done", goal: goal.id });
+        files = [this.goalYaml(doneGoal)];
       }
-      const record = stepRecord(r.step, stepFacts(r.step, this.store.eventsFor({ step: r.step.id })), this.store.listNotes(r.step.id).filter((n) => !n.text.startsWith("Reopened by")));
-      return { step: r.step, reopened: reopened.map((s) => s.id), nowReady, goalDone, record };
+      const record = this.recordOf(r.step);
+      return { step: r.step, reopened: reopened.map((s) => s.id), nowReady, goalDone, record, ...(files ? { files } : {}) };
     });
   }
 
@@ -736,10 +806,24 @@ export class HubService {
     return this.store.events(after, Math.min(Math.max(1, limit), 1000));
   }
 
+  /** Drop hub events older than the retention period (the durable summaries are in git). */
+  pruneEvents(): number {
+    const days = this.config.eventsRetentionDays;
+    if (!days || days <= 0) return 0;
+    return this.store.pruneEvents(this.now() - days * 86_400_000);
+  }
+
   // ---------- time rules (plan §3.4) ----------
+
+  private lastPrune = 0;
 
   tick(): void {
     const now = this.now();
+    if (now - this.lastPrune > 6 * 3_600_000) {
+      this.lastPrune = now;
+      const n = this.pruneEvents();
+      if (n) this.emit({ type: "hub.events_pruned", payload: { count: n, days: this.config.eventsRetentionDays } });
+    }
     this.store.tx(() => {
       for (const s of this.store.listSteps({ state: "claimed" })) {
         const hs = s.holderSid ? this.store.getSession(s.holderSid) : undefined;
@@ -777,6 +861,8 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `approved plan v${String(payload.version)} for ${s}`;
     case "plan.revised":
       return `asked for changes to ${s}`;
+    case "agent.finished":
+      return `${String(payload.role ?? "agent")} finished ${String(payload.label ?? "")}`.trim();
     case "step.claimed":
       return `claimed ${s}`;
     case "step.done":

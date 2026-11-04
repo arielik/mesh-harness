@@ -1,9 +1,14 @@
 // The daemon's connection to the hub (plan §5.3, §5.4): spooled observations (sync), the message
 // inbox (pull + ack, woken by SSE hints) and online RPCs with idempotency keys.
+//
+// Local-first (M4): after one failed call the link is offline and calls fail at once; a background
+// probe re-opens it, then the outbox and the calls queued while offline are sent, once (ids and
+// idempotency keys make replays harmless). With no team hub configured the daemon's own local hub
+// is used (Solo).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { Credentials, IDEMPOTENCY_HEADER, type InboxMessage, type Session, type SyncEvent } from "../protocol/index.ts";
-import type { DaemonStore } from "../store/index.ts";
+import type { DaemonStore, PendingCall } from "../store/index.ts";
 
 export class HubRpcError extends Error {
   status: number;
@@ -24,9 +29,20 @@ export interface HubLinkDeps {
   log(line: string): void;
   now(): number;
   fetch?: typeof fetch;
+  /** Credentials of the daemon's local hub, used when no team hub is configured (Solo). */
+  solo?: () => Credentials | undefined;
+  /** A call queued while offline was sent (or refused) once the hub came back. */
+  onReplayed?(call: PendingCall, result: unknown): void;
+  onRejected?(call: PendingCall, error: HubRpcError): void;
+  /** Call timeout; a blackholed hub costs at most this once, then the link is offline. */
+  timeoutMs?: number;
 }
 
 export type LinkStatus = "not-logged-in" | "ok" | "offline" | "auth-failed";
+export type LinkMode = "team" | "solo" | "none";
+
+const PROBE_MIN_MS = 5_000;
+const PROBE_MAX_MS = 60_000;
 
 export class HubLink {
   status: LinkStatus = "not-logged-in";
@@ -37,7 +53,12 @@ export class HubLink {
   private streamAbort: AbortController | undefined;
   private streaming = false;
   private stopped = false;
-  private flushing = false;
+  private current: Promise<void> | undefined;
+  private again: Promise<void> | undefined;
+  mode: LinkMode = "none";
+  offlineSince: number | undefined;
+  private nextProbeAt = 0;
+  private probeBackoff = PROBE_MIN_MS;
 
   constructor(deps: HubLinkDeps) {
     this.deps = deps;
@@ -51,12 +72,28 @@ export class HubLink {
   credentials(): Credentials | undefined {
     const p = this.deps.credentialsPath;
     if (!existsSync(p)) {
-      if (this.creds) this.deps.log("logged out of the hub");
+      if (this.creds && this.mode === "team") this.deps.log("logged out of the hub");
+      const solo = this.deps.solo?.();
+      if (solo) {
+        if (this.mode !== "solo") {
+          this.deps.log(`solo: using the local hub ${solo.hub}`);
+          this.streamAbort?.abort();
+          this.status = "ok";
+          this.offlineSince = undefined;
+        }
+        this.mode = "solo";
+        this.creds = solo;
+        this.credsMtime = 0;
+        return solo;
+      }
+      this.mode = "none";
       this.creds = undefined;
       this.credsMtime = 0;
       this.status = "not-logged-in";
       return undefined;
     }
+    if (this.mode !== "team") this.credsMtime = 0;
+    this.mode = "team";
     const m = statSync(p).mtimeMs;
     if (m !== this.credsMtime) {
       this.credsMtime = m;
@@ -73,26 +110,59 @@ export class HubLink {
     return this.creds?.user.id;
   }
 
-  enqueue(e: Omit<SyncEvent, "payload"> & { payload?: Record<string, unknown> }): void {
-    if (!this.credentials()) return;
-    this.deps.store.outboxAdd(e.id, e.at, { ...e, payload: e.payload ?? {} });
+  /** True while the hub is unreachable (calls fail at once until the probe gets through). */
+  get offline(): boolean {
+    return this.status === "offline";
   }
 
-  async rpc<T>(method: "GET" | "POST", path: string, body?: unknown, idemKey?: string): Promise<T> {
+  enqueue(e: Omit<SyncEvent, "payload"> & { payload?: Record<string, unknown> }): void {
+    const value = { ...e, payload: e.payload ?? {} };
+    // Every event is kept locally too: offline step records are computed from it.
+    if (e.step) this.deps.store.eventLogAdd({ id: e.id, at: e.at, step: e.step, value });
+    if (!this.credentials()) return;
+    this.deps.store.outboxAdd(e.id, e.at, value);
+  }
+
+  private markOffline(c: Credentials, e: unknown): HubRpcError {
+    const now = this.deps.now();
+    if (this.status !== "offline") {
+      this.offlineSince = now;
+      this.probeBackoff = PROBE_MIN_MS;
+      this.deps.log(`hub ${c.hub} unreachable: ${String(e)}; working locally`);
+    } else this.probeBackoff = Math.min(this.probeBackoff * 2, PROBE_MAX_MS);
+    this.status = "offline";
+    this.lastError = String(e);
+    this.nextProbeAt = now + this.probeBackoff;
+    return this.offlineError(c);
+  }
+
+  private offlineError(c: Credentials): HubRpcError {
+    const since = this.offlineSince ? new Date(this.offlineSince).toISOString().slice(11, 16) : "now";
+    return new HubRpcError(503, `the hub ${c.hub} is offline (since ${since} UTC)`, { offline: true });
+  }
+
+  /**
+   * One call to the hub. While offline it fails at once unless `probe` is set and a probe is due
+   * (the background flush probes; tool calls never wait on a dead hub).
+   */
+  async rpc<T>(method: "GET" | "POST", path: string, body?: unknown, idemKey?: string, opts: { probe?: boolean } = {}): Promise<T> {
     const c = this.credentials();
     if (!c) throw new HubRpcError(401, "not logged in to a hub; run: mesh login");
+    if (this.status === "offline" && !(opts.probe && this.deps.now() >= this.nextProbeAt)) throw this.offlineError(c);
     let res: Response;
     try {
       res = await this.fetch(c.hub + path, {
         method,
         headers: { authorization: `Bearer ${c.token}`, "content-type": "application/json", ...(idemKey ? { [IDEMPOTENCY_HEADER]: idemKey } : {}) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(this.deps.timeoutMs ?? 10_000),
       });
     } catch (e) {
-      this.status = "offline";
-      this.lastError = String(e);
-      throw new HubRpcError(503, `the hub ${c.hub} is unreachable; try again later`);
+      throw this.markOffline(c, e);
+    }
+    if (this.status === "offline") {
+      this.deps.log(`hub ${c.hub} reachable again`);
+      this.offlineSince = undefined;
     }
     const json = (await res.json().catch(() => ({}))) as { error?: string; details?: unknown };
     if (res.status === 401) {
@@ -104,30 +174,81 @@ export class HubLink {
     return json as T;
   }
 
-  /** Send spooled observations and session snapshots. Safe to call often. */
-  async flush(): Promise<void> {
-    if (this.flushing || !this.credentials() || this.status === "auth-failed") return;
-    this.flushing = true;
+  /** Is a probe due? (The background loop calls flush; flush probes cheaply first.) */
+  private async probe(c: Credentials): Promise<boolean> {
+    if (this.status !== "offline") return true;
+    if (this.deps.now() < this.nextProbeAt) return false;
     try {
+      const res = await this.fetch(`${c.hub}/health`, { signal: AbortSignal.timeout(Math.min(3_000, this.deps.timeoutMs ?? 3_000)) });
+      if (!res.ok) throw new Error(`health ${res.status}`);
+      return true;
+    } catch (e) {
+      this.markOffline(c, e);
+      return false;
+    }
+  }
+
+  /** Send spooled observations, session snapshots and calls queued while offline. Safe to call often. */
+  flush(): Promise<void> {
+    // A flush already running is followed by one more, so `await flush()` means "everything
+    // spooled until now was sent, if the hub could be reached".
+    if (this.current) {
+      this.again ??= this.current.then(() => {
+        this.again = undefined;
+        return this.flush();
+      });
+      return this.again;
+    }
+    const c = this.credentials();
+    if (!c || this.status === "auth-failed") return Promise.resolve();
+    this.current = this.doFlush(c).finally(() => {
+      this.current = undefined;
+    });
+    return this.current;
+  }
+
+  private async doFlush(c: Credentials): Promise<void> {
+    try {
+      if (!(await this.probe(c))) return;
       const all = this.deps.sessions();
       const counts: Record<string, number> = {};
       for (const s of all) if (s.state !== "ended") counts[s.state] = (counts[s.state] ?? 0) + 1;
       for (;;) {
         const batch = this.deps.store.outboxPeek(200);
         const sessions = all.filter((s) => s.step !== undefined);
-        await this.rpc("POST", "/v1/sync", { events: batch.map((b) => b.value), sessions, counts });
+        await this.rpc("POST", "/v1/sync", { events: batch.map((b) => b.value), sessions, counts }, undefined, { probe: true });
         this.deps.store.outboxRemove(batch.map((b) => b.id));
         if (batch.length < 200) break;
       }
+      await this.replay();
     } catch (e) {
       if (!(e instanceof HubRpcError)) this.deps.log(`sync error: ${String(e)}`);
-    } finally {
-      this.flushing = false;
+    }
+  }
+
+  /** Queue a call made while offline; it is sent once, in order, when the hub is back. */
+  queue(call: PendingCall): void {
+    this.deps.store.queueCall(call);
+  }
+
+  private async replay(): Promise<void> {
+    for (const call of this.deps.store.pendingCalls()) {
+      try {
+        const r = await this.rpc(call.method, call.path, call.body, call.key, { probe: true });
+        this.deps.store.removeCall(call.key);
+        this.deps.onReplayed?.(call, r);
+      } catch (e) {
+        if (!(e instanceof HubRpcError) || e.status === 503 || e.status === 401) return;
+        // Refused by the hub (e.g. someone else holds the step now): never lost, never retried forever.
+        this.deps.store.removeCall(call.key);
+        this.deps.log(`queued ${call.label} refused by the hub: ${e.message}`);
+        this.deps.onRejected?.(call, e);
+      }
     }
   }
 
   async pullInbox(): Promise<void> {
-    if (!this.credentials() || this.status === "auth-failed") return;
+    if (!this.credentials() || this.status === "auth-failed" || this.status === "offline") return;
     try {
       const { messages } = await this.rpc<{ messages: InboxMessage[] }>("GET", "/v1/inbox");
       for (const m of messages) {
@@ -155,7 +276,7 @@ export class HubLink {
       let backoff = 2_000;
       while (!this.stopped) {
         const c = this.credentials();
-        if (!c || this.status === "auth-failed") {
+        if (!c || this.status === "auth-failed" || this.status === "offline") {
           await sleep(5_000);
           continue;
         }

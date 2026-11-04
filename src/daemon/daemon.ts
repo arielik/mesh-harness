@@ -1,20 +1,26 @@
-// mesh up: the local daemon (plan §6). Receives the five hooks, reconciles with
-// `claude agents --json`, tracks transcript activity, delivers messages and notifies.
+// mesh up: the local daemon (plan §6). Receives the hooks, reconciles with `claude agents --json`,
+// tracks transcript activity, delivers messages and notifies. M4: works without the hub (local-first)
+// and captures workflow programmes (subagent hooks + Claude Code's workflow files).
 
-import { randomUUID, timingSafeEqual } from "node:crypto";
-import { hostname } from "node:os";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { homedir, hostname } from "node:os";
 import { statSync } from "node:fs";
+import { join } from "node:path";
+import { claudeVersion, computeHarness, readAgentFiles, scanWorkflowRuns } from "../claude/index.ts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   applyHook,
   applyObservation,
   applyTick,
+  agentRecords,
   applyTranscriptMtime,
   decide,
+  parseLabel,
   DEFAULT_RULES,
   findSession,
   needsLabel,
   sessionLabel,
+  type FactEvent,
   type Result,
   type Rules,
 } from "../core/index.ts";
@@ -27,6 +33,10 @@ import {
   toHookEvent,
   ToolCall,
   TOOL_NAMES,
+  type AgentRun,
+  type Credentials,
+  type DoneResult,
+  type Harness,
   type InboxMessage,
   type ToolName,
   type AgentEntry,
@@ -40,10 +50,11 @@ import {
 } from "../protocol/index.ts";
 import type { DaemonStore } from "../store/index.ts";
 import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
-import { repoForCwd } from "./git.ts";
-import { HubLink, type LinkStatus } from "./hub-link.ts";
+import { commonDir, findGitDir, findRepoRoot, headCommit, repoForCwd } from "./git.ts";
+import { HubLink, type HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
-import { writeTrail } from "./trail.ts";
+import { writePending, writeTrail } from "./trail.ts";
+import type { PendingCall } from "../store/index.ts";
 
 export interface DaemonDeps {
   listAgents(): Promise<AgentEntry[] | null>;
@@ -57,7 +68,17 @@ export interface DaemonDeps {
   log(line: string): void;
   /** fetch used for the hub (tests inject one). */
   fetch?: typeof fetch;
+  /** Provenance of a session's work (M4): harness hash, Claude Code version. */
+  harness?(cwd: string, meshVersion: string): Harness | undefined;
+  claudeVersion?(): Promise<string | undefined>;
+  /** Claude Code's own records of a subagent, and of workflow runs since a time (backfill). */
+  readAgent?(transcriptPath: string, agentId: string): ReturnType<typeof readAgentFiles>;
+  scanRuns?(since: number): AgentRun[];
+  /** Hub call timeout (tests use a short one). */
+  hubTimeoutMs?: number;
 }
+
+const claudeHome = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 
 export const defaultDeps = (overrides: Partial<DaemonDeps> & Pick<DaemonDeps, "listAgents" | "paste" | "wakeBackground" | "notify">): DaemonDeps => ({
   now: () => Date.now(),
@@ -71,8 +92,30 @@ export const defaultDeps = (overrides: Partial<DaemonDeps> & Pick<DaemonDeps, "l
     }
   },
   log: (line) => process.stderr.write(`${new Date().toISOString()} ${line}\n`),
+  harness: (cwd, meshVersion) => computeHarness({ repoRoot: findRepoRoot(cwd), claudeHome: claudeHome(), meshVersion }),
+  claudeVersion: () => claudeVersion(),
+  readAgent: (path, id) => readAgentFiles(path, id),
+  scanRuns: (since) => scanWorkflowRuns(claudeHome(), since),
   ...overrides,
 });
+
+/** A stable event id for a subagent, so a re-capture never duplicates its hub event. */
+function agentEventId(agentId: string): string {
+  const h = createHash("sha256").update(`agent:${agentId}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** Scalar fields of a typed result, for the hub event (the full result is in the record). */
+function scalars(v: unknown): Record<string, unknown> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (typeof x === "number" || typeof x === "boolean") out[k] = x;
+    else if (typeof x === "string" && x.length <= 120) out[k] = x;
+    else if (Array.isArray(x)) out[`${k}_count`] = x.length;
+  }
+  return out;
+}
 
 export interface Intervals {
   reconcileMs: number;
@@ -112,13 +155,28 @@ export class Daemon {
   readonly rules: Rules;
   readonly intervals: Intervals;
   readonly link: HubLink | undefined;
+  readonly version: string;
+  private claudeCode: string | undefined;
+  private provenanceSent = new Set<string>();
+  private agentEvents = new Set<string>();
 
-  constructor(opts: { config: DaemonConfig; store: DaemonStore; deps: DaemonDeps; rules?: Rules; intervals?: Partial<Intervals>; credentialsPath?: string }) {
+  constructor(opts: {
+    config: DaemonConfig;
+    store: DaemonStore;
+    deps: DaemonDeps;
+    rules?: Rules;
+    intervals?: Partial<Intervals>;
+    credentialsPath?: string;
+    /** The local hub's credentials, used when no team hub is configured (Solo). */
+    solo?: () => Credentials | undefined;
+    version?: string;
+  }) {
     this.config = opts.config;
     this.store = opts.store;
     this.deps = opts.deps;
     this.rules = opts.rules ?? DEFAULT_RULES;
     this.intervals = { ...DEFAULT_INTERVALS, ...opts.intervals };
+    this.version = opts.version ?? "dev";
     if (opts.credentialsPath) {
       this.link = new HubLink({
         credentialsPath: opts.credentialsPath,
@@ -128,7 +186,32 @@ export class Daemon {
         log: (l) => this.deps.log(l),
         now: () => this.deps.now(),
         ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
+        ...(opts.solo ? { solo: opts.solo } : {}),
+        ...(this.deps.hubTimeoutMs ? { timeoutMs: this.deps.hubTimeoutMs } : {}),
+        onReplayed: (call, r) => this.replayed(call, r),
+        onRejected: (call, e) => this.rejected(call, e),
       });
+    }
+  }
+
+  /** A call queued while offline went through: write the hub's fuller record over the local one. */
+  private replayed(call: PendingCall, result: unknown): void {
+    this.deps.log(`sent ${call.label} (queued while the hub was offline)`);
+    if (!call.cwd || !call.path.endsWith("/done")) return;
+    const r = result as Partial<DoneResult>;
+    const files = [...(r.record ? [r.record] : []), ...(r.files ?? [])];
+    if (files.length) writeTrail(call.cwd, files);
+  }
+
+  /** The hub refused a queued call (e.g. the step was taken over meanwhile): tell the person, keep both. */
+  private rejected(call: PendingCall, e: HubRpcError): void {
+    if (this.config.notify) void this.deps.notify("mesh", `${call.label} (made offline) was refused by the hub: ${e.message}`).catch(() => undefined);
+    const m = /^\/v1\/steps\/([^/]+)\/done$/.exec(call.path);
+    if (m && this.link) {
+      const summary = String(call.body.summary ?? "");
+      void this.link
+        .rpc("POST", `/v1/steps/${m[1]}/note`, { text: `Result recorded offline and refused by the hub (${e.message}): ${summary}`.slice(0, 7900) }, `${call.key}:note`)
+        .catch(() => undefined);
     }
   }
 
@@ -149,10 +232,16 @@ export class Daemon {
     every(this.intervals.tickMs, () => this.tick());
     every(this.intervals.deliveryMs, () => this.deliverPending());
     every(this.intervals.deliveryMs * 3, () => this.link?.pullInbox());
+    every(this.intervals.tickMs * 40, () => this.backfill());
     if (this.link) {
       this.link.credentials();
       if (this.intervals.reconcileMs > 0) this.link.startStream();
     }
+    void this.deps
+      .claudeVersion?.()
+      .then((v) => (this.claudeCode = v))
+      .catch(() => undefined);
+    if (this.intervals.reconcileMs > 0) setTimeout(() => this.backfill(), 2_000).unref();
     void this.reconcile().catch((e) => this.deps.log(`error: ${String(e)}`));
     this.deps.log(`mesh daemon listening on 127.0.0.1:${this.port}`);
   }
@@ -194,15 +283,155 @@ export class Daemon {
     const at = this.deps.now();
     const base = { sid: s.sid, ...(s.step ? { step: s.step } : {}) };
     const add = (type: string, payload: Record<string, unknown> = {}) => this.link?.enqueue({ id: randomUUID(), at, type, ...base, payload: { repo: s.repo?.name, ...payload } });
+    if (s.step && !this.provenanceSent.has(`${s.sid}:${s.step}`)) {
+      this.provenanceSent.add(`${s.sid}:${s.step}`);
+      add("session.provenance", this.provenance(s));
+    }
     if (prev && s.claudeSessionIds.length > prev.claudeSessionIds.length) add("session.rebound");
     // Turns are counted from the session's turn counter, so a pasted prompt (state already
     // "working") still counts; delivered = no new human prompt.
     if (s.turns > (prev?.turns ?? 0)) add("session.turn_started", { delivered: s.humanPrompts === (prev?.humanPrompts ?? 0), ...(s.model ? { model: s.model } : {}) });
     if (prev?.state === s.state && prev?.needs === s.needs) return;
-    if (s.state === "idle" && prev?.state === "working") add("session.turn_stopped");
-    else if (s.state === "needs_you") add("session.waiting", { needs: s.needs });
+    if ((s.state === "idle" || s.state === "needs_you") && prev?.state === "working") add("session.turn_stopped", { ...(s.effort ? { effort: s.effort } : {}), ...(s.permissionMode ? { permission_mode: s.permissionMode } : {}) });
+    if (s.state === "needs_you") add("session.waiting", { needs: s.needs });
     else if (s.state === "stalled") add("session.stalled");
     else if (s.state === "ended") add("session.ended", { reason: s.endedReason });
+  }
+
+  /** Where this session's work came from (M4, R2): hashes and versions, never file contents. */
+  provenance(s: Session): Record<string, unknown> {
+    let harness: Harness | undefined;
+    try {
+      harness = this.deps.harness?.(s.cwd, this.version);
+    } catch (e) {
+      this.deps.log(`harness hash failed for ${s.cwd}: ${String(e)}`);
+    }
+    const commit = headCommit(s.cwd);
+    return {
+      ...(this.claudeCode ? { claude_code: this.claudeCode } : {}),
+      ...(harness ? { harness } : {}),
+      ...(commit ? { repo_commit: commit } : {}),
+      mesh: this.version,
+      ...(s.model ? { model: s.model } : {}),
+    };
+  }
+
+  // ---------- workflow capture (M4, decision 11) ----------
+
+  private captureSubagent(kind: "SubagentStart" | "SubagentStop", ev: HookEvent): void {
+    const id = ev.agentId;
+    if (!id) return;
+    const s = this.sessions.find((x) => x.claudeSessionIds.includes(ev.claudeSessionId));
+    const prev = this.store.agentRun(id);
+    const run: AgentRun = {
+      ...(prev ?? {}),
+      agentId: id,
+      claudeSessionId: ev.claudeSessionId,
+      cwd: ev.cwd || prev?.cwd || s?.cwd || "",
+      role: ev.agentType || prev?.role || "agent",
+      ...(s ? { sid: s.sid } : {}),
+    };
+    if (kind === "SubagentStart") {
+      if (run.startedAt === undefined) run.startedAt = ev.at;
+      this.store.saveAgentRun(run, prev ? parseLabel(prev.label, prev.role)?.key : undefined, ev.at);
+      return;
+    }
+    run.finishedAt = ev.at;
+    this.store.saveAgentRun(run, parseLabel(run.label, run.role)?.key, ev.at);
+    const path = ev.agentTranscriptPath;
+    if (!path) return;
+    this.enrichAgent(id, path);
+    // Claude Code may write the journal's result line just after the hook; look again shortly.
+    for (const ms of [2_000, 15_000]) setTimeout(() => this.enrichAgent(id, path), ms).unref();
+  }
+
+  enrichAgent(id: string, transcriptPath: string): void {
+    const run = this.store.agentRun(id);
+    if (!run || !this.deps.readAgent) return;
+    let f: ReturnType<typeof readAgentFiles>;
+    try {
+      f = this.deps.readAgent(transcriptPath, id);
+    } catch (e) {
+      this.deps.log(`could not read Claude Code's files for agent ${id}: ${String(e)}`);
+      return;
+    }
+    const { roleFromMeta, ...fields } = f;
+    const merged: AgentRun = { ...run, ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) };
+    // The hooks' times are on mesh's clock; keep them.
+    if (run.startedAt !== undefined) merged.startedAt = run.startedAt;
+    if (run.finishedAt !== undefined) merged.finishedAt = run.finishedAt;
+    if ((run.role === "agent" || !run.role) && roleFromMeta) merged.role = roleFromMeta;
+    this.saveAndRender(merged, JSON.stringify(merged) !== JSON.stringify(run));
+  }
+
+  private saveAndRender(run: AgentRun, changed: boolean): void {
+    const key = parseLabel(run.label, run.role)?.key;
+    this.store.saveAgentRun(run, key, this.deps.now());
+    if (!key) return;
+    if (changed) this.renderAgentKey(key, run.cwd);
+    if (!this.agentEvents.has(run.agentId) && run.finishedAt !== undefined) {
+      this.agentEvents.add(run.agentId);
+      const result = scalars(run.result);
+      this.link?.enqueue({
+        id: agentEventId(run.agentId),
+        at: run.finishedAt,
+        type: "agent.finished",
+        ...(run.sid ? { sid: run.sid } : {}),
+        payload: {
+          key,
+          role: run.role,
+          label: run.label,
+          ...(run.model ? { model: run.model } : {}),
+          ...(run.workflowName ? { workflow: run.workflowName } : {}),
+          ...(run.workflowRun ? { workflow_run: run.workflowRun } : {}),
+          ...(run.startedAt !== undefined ? { started: run.startedAt } : {}),
+          finished: run.finishedAt,
+          ...(result ? { result } : {}),
+          repo: this.deps.repoForCwd(run.cwd)?.name,
+        },
+      });
+    }
+  }
+
+  /** Re-render the pending records of one key for the repo `cwd` belongs to. */
+  private renderAgentKey(key: string, cwd: string): void {
+    const git = findGitDir(cwd);
+    if (!git) return;
+    const common = commonDir(git);
+    const runs = this.store.agentRunsFor(key).filter((r) => {
+      const g = findGitDir(r.cwd);
+      return g !== undefined && commonDir(g) === common;
+    });
+    writePending(cwd, key, agentRecords(runs));
+  }
+
+  /** Import workflow runs Claude Code recorded while the daemon was down or missed a hook. */
+  backfill(): void {
+    if (!this.deps.scanRuns) return;
+    const now = this.deps.now();
+    const since = Number(this.store.getKv("backfill_at") ?? now - 7 * 86_400_000);
+    let runs: AgentRun[];
+    try {
+      runs = this.deps.scanRuns(since);
+    } catch (e) {
+      this.deps.log(`backfill failed: ${String(e)}`);
+      return;
+    }
+    const keys = new Map<string, string>();
+    for (const r of runs) {
+      const prev = this.store.agentRun(r.agentId);
+      const merged: AgentRun = prev ? { ...r, ...Object.fromEntries(Object.entries(prev).filter(([, v]) => v !== undefined)), result: prev.result ?? r.result } : r;
+      if (merged.result === undefined) delete merged.result;
+      const changed = JSON.stringify(merged) !== JSON.stringify(prev);
+      if (!changed) continue;
+      this.saveAndRender(merged, false);
+      const key = parseLabel(merged.label, merged.role)?.key;
+      if (key) keys.set(`${key}\u0000${merged.cwd}`, merged.cwd);
+    }
+    for (const [k, cwd] of keys) this.renderAgentKey(k.split("\u0000")[0] as string, cwd);
+    if (runs.length) this.deps.log(`backfill: ${runs.length} workflow agent(s) checked, ${keys.size} record set(s) updated`);
+    // Overlap two hours: runs still writing their files are looked at again.
+    this.store.setKv("backfill_at", String(Math.max(since, now - 2 * 3_600_000)));
   }
 
   /** Change a session outside the reducers (tool calls, autopilot). */
@@ -235,7 +464,7 @@ export class Daemon {
       if (s.step === `${goal}.design`) this.update(s.sid, { clearStep: true });
       void this.link
         ?.rpc<{ files: { path: string; text: string }[] }>("GET", `/v1/goals/${encodeURIComponent(goal)}/files`)
-        .then(({ files }) => writeTrail(s.cwd, files.filter((f) => f.path.endsWith(`plan.v${String(m.data?.version)}.yaml`))))
+        .then(({ files }) => writeTrail(s.cwd, files.filter((f) => f.path.endsWith(`plan.v${String(m.data?.version)}.yaml`) || f.path.endsWith("/steps/design.md"))))
         .catch((e) => this.deps.log(`could not write the approved plan for ${goal}: ${String(e)}`));
     }
     this.store.queueMessage(s.sid, m.text, this.deps.now(), m.id);
@@ -255,8 +484,16 @@ export class Daemon {
 
   private toolHost(): ToolHost {
     if (!this.link) throw new HttpError(409, "this daemon has no hub configured; run: mesh login");
+    const store = this.store;
     return {
       link: this.link,
+      local: {
+        now: () => this.deps.now(),
+        cache: (ctx) => store.cacheStep(ctx, this.deps.now()),
+        cached: (step) => store.cachedStep(step),
+        events: (step) => store.eventLogFor(step) as FactEvent[],
+        queueCall: (call) => this.link?.queue(call),
+      },
       update: (sid, patch) => this.update(sid, patch),
       queue: (sid, text) => void this.store.queueMessage(sid, text, this.deps.now()),
       autopilotOf: (s) => this.autopilotOf(s),
@@ -291,10 +528,28 @@ export class Daemon {
     return this.update(s.sid, { autopilot: level }) as Session;
   }
 
-  status(): { hub: LinkStatus; user?: string | undefined; outbox: number; error?: string | undefined } {
-    if (!this.link) return { hub: "not-logged-in", outbox: 0 };
-    this.link.credentials();
-    return { hub: this.link.status, user: this.link.user, outbox: this.store.outboxSize(), error: this.link.lastError };
+  status(): {
+    hub: LinkStatus;
+    mode: LinkMode;
+    user?: string | undefined;
+    outbox: number;
+    queued: number;
+    offlineSince?: number | undefined;
+    hubUrl?: string | undefined;
+    error?: string | undefined;
+  } {
+    if (!this.link) return { hub: "not-logged-in", mode: "none", outbox: 0, queued: 0 };
+    const c = this.link.credentials();
+    return {
+      hub: this.link.status,
+      mode: this.link.mode,
+      user: this.link.user,
+      outbox: this.store.outboxSize(),
+      queued: this.store.pendingCallCount(),
+      ...(this.link.offlineSince ? { offlineSince: this.link.offlineSince } : {}),
+      ...(c ? { hubUrl: c.hub } : {}),
+      error: this.link.lastError,
+    };
   }
 
   private maybeNotify(prev: Session | undefined, s: Session): void {
@@ -316,6 +571,15 @@ export class Daemon {
   handleHook(kind: HookKind, input: HookInput, headers: { claudePid?: string; tmuxPane?: string; tmux?: string; autopilot?: string; step?: string }): object {
     const now = this.deps.now();
     const ev: HookEvent = toHookEvent(kind, input, headers, now);
+    if (kind === "SubagentStart" || kind === "SubagentStop") {
+      // A subagent never changes its session's state; it is captured for the ledger only.
+      try {
+        this.captureSubagent(kind, ev);
+      } catch (e) {
+        this.deps.log(`subagent capture failed: ${String(e)}`);
+      }
+      return {};
+    }
     if (kind === "UserPromptSubmit" && input.prompt !== undefined) {
       this.typed = this.typed.filter((t) => now - t.at < 120_000);
       const i = this.typed.findIndex((t) => t.text.trim() === input.prompt?.trim());
@@ -383,6 +647,9 @@ export class Daemon {
     this.sessions = this.sessions.filter((s) => s.state !== "ended" || now - (s.endedAt ?? 0) < 24 * 60 * 60_000);
     this.store.pruneSessions(now - 7 * 24 * 60 * 60_000);
     this.store.pruneHookEvents(now - 30 * 24 * 60 * 60_000);
+    this.store.pruneEventLog(now - 30 * 24 * 60 * 60_000);
+    this.store.pruneStepCache(now - 30 * 24 * 60 * 60_000);
+    this.store.pruneAgentRuns(now - 60 * 24 * 60 * 60_000);
   }
 
   /** Nudge stalled sessions, escalate after two nudges (plan §3.6). */

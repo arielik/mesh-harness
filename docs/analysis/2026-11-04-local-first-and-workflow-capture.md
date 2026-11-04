@@ -1,6 +1,6 @@
 # Local-first mesh and capturing workflow programmes
 
-Date: 2026-11-04. Status: **design, for approval before M4 starts**. Follows [the mesh development cycle](2026-11-04-mesh-development-cycle.md).
+Date: 2026-11-04. Status: **implemented in M4** (see the M4 status in the [plan](../plan/implementation-plan.md) for how it was built and where it differs). Follows [the mesh development cycle](2026-11-04-mesh-development-cycle.md).
 
 ## Owner decisions (2026-11-04, second round)
 
@@ -109,6 +109,13 @@ The canonical `define-rows.js` and `build-rows.js` in `architecture-and-standard
 | T7 | Real Claude e2e `pnpm spike e2e-offline`. Run the canonical-style programme (spec, review, plans, build, verify, haiku) 4 times: (a) no daemon; (b) daemon, hub blackholed; (c) hub restored mid-run; (d) Solo. | (a)–(d) all finish; (b)–(d) leave identical records apart from timestamps; (c) syncs everything once; run time with mesh is within a few seconds of (a) |
 
 Only when T1–T7 are green is "mesh is optional, the process never falls apart" claimed as done.
+
+**Result (M4):** all seven are green. T1 is in `src/daemon/hub-link.test.ts`; T2–T4 and workflow capture are in `test/m4-local-first.test.ts`; T5 is in `src/core/agent-ledger.test.ts` and `src/claude/workflow.test.ts`; T6 is `pnpm test:claude`; T7 is `pnpm spike e2e-offline`. In T7 a five-agent programme finished in 11–12 s every way, the same as with no daemon.
+
+How the design was built:
+- **§4.1 Solo:** a local hub process inside `mesh up`.
+- **§4.1 Team offline:** a cache of held steps plus queued calls, not full replication of goals.
+- **§4.2 fail fast:** a 10 s first-call timeout, then a 5–60 s probe.
 
 ## 6. Open points
 

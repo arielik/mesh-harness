@@ -63,7 +63,19 @@ export class DaemonClient {
     return ((await this.call("GET", "/local/goals")) as { goals: { id: string; title: string; state: string; owner: string; done: number; total: number; holders: string[] }[] }).goals;
   }
 
-  async status(): Promise<{ hub: string; user?: string; outbox: number; error?: string; host: string }> {
-    return (await this.call("GET", "/local/status")) as { hub: string; user?: string; outbox: number; error?: string; host: string };
+  async status(): Promise<DaemonStatus> {
+    return (await this.call("GET", "/local/status")) as DaemonStatus;
   }
+}
+
+export interface DaemonStatus {
+  hub: string;
+  mode?: "team" | "solo" | "none";
+  user?: string;
+  outbox: number;
+  queued?: number;
+  offlineSince?: number;
+  hubUrl?: string;
+  error?: string;
+  host: string;
 }

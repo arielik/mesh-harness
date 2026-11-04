@@ -34,6 +34,8 @@ export const TOOLS = {
       mr: z.string().optional().describe("merge request or pull request reference, e.g. !88"),
       outcome: z.enum(["done", "fail"]).optional(),
       reopen: z.array(z.string()).optional().describe("step ids to reopen when outcome is fail, e.g. ['dplane']"),
+      model: z.string().optional().describe("the model you are running as, e.g. claude-opus-5-5"),
+      artifacts: z.array(z.string()).optional().describe("repo-relative paths of files this step produced (spec, review, plan, evidence)"),
     },
   },
   mesh_ask: {
@@ -68,6 +70,7 @@ export const CLAUDE_MD_BLOCK = [
   "## mesh",
   "If you hold a mesh step, or are told one is assigned, start with the `mesh_context` tool.",
   "Use `mesh_note` for progress others may need, and push your branch before long pauses.",
-  "Finish a step with `mesh_done`; ask your person with `mesh_ask`, then end your turn.",
+  "Finish a step with `mesh_done` (pass `model`, the model you run as, and `artifacts`, the files you produced); ask your person with `mesh_ask`, then end your turn.",
+  "If a mesh tool says the hub is offline, keep working on the step you hold: mesh records it locally and sends it later.",
   "<!-- mesh:end -->",
 ].join("\n");

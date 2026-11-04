@@ -1,0 +1,198 @@
+{
+  "$id": "https://mesh.local/schemas/ledger-goal.json",
+  "title": "mesh.ledger.v1 goal record (.mesh/goals/<G>/goal.yaml)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "mesh.ledger.v1"
+    },
+    "record": {
+      "type": "string",
+      "const": "goal"
+    },
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "primary_repo": {
+      "type": "string"
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "issue": {
+      "type": "string"
+    },
+    "refs": {
+      "description": "the team's own ids, e.g. {spec: '771', backlog: 'NA-1054'}",
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "created": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+    },
+    "done": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+    },
+    "rollup": {
+      "description": "totals, written when the goal is done",
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "done": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "dropped": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "fix_cycles": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "plan_versions": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "design_rounds": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "plan versions a person sent back (revised); superseded ones do not count"
+        },
+        "people": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "human_prompts": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "nudges": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "wait_minutes": {
+          "type": "number"
+        },
+        "active_minutes": {
+          "type": "number"
+        },
+        "lead_time_hours": {
+          "type": "number"
+        },
+        "by_kind": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "steps": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "rounds": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "fix_cycles": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "minutes": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "steps",
+              "rounds",
+              "fix_cycles",
+              "minutes"
+            ]
+          }
+        }
+      },
+      "required": [
+        "steps",
+        "done",
+        "dropped",
+        "rounds",
+        "fix_cycles",
+        "plan_versions",
+        "design_rounds",
+        "people",
+        "models",
+        "harnesses",
+        "human_prompts",
+        "nudges",
+        "wait_minutes",
+        "active_minutes",
+        "by_kind"
+      ],
+      "additionalProperties": {}
+    }
+  },
+  "required": [
+    "schema",
+    "record",
+    "id",
+    "title",
+    "owner"
+  ],
+  "additionalProperties": {}
+}

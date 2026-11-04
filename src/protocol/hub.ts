@@ -12,7 +12,7 @@ export const SESSION_COOKIE = "mesh_session";
 export const SyncEvent = z.object({
   id: z.string().uuid(),
   at: z.number(),
-  type: z.string().regex(/^(session|message)\.[a-z_]+$/),
+  type: z.string().regex(/^(session|message|agent)\.[a-z_]+$/),
   sid: z.string().optional(),
   step: z.string().optional(),
   payload: z.record(z.string(), z.unknown()).default({}),
@@ -39,6 +39,7 @@ export const NewGoal = z.object({
   primaryRepo: z.string().optional(),
   issueUrl: z.string().url().optional(),
   repos: z.array(z.string()).max(20).optional(),
+  refs: z.record(z.string().max(40), z.string().max(200)).optional(),
   priority: z.number().int().min(0).max(9).default(3),
 });
 
@@ -57,6 +58,10 @@ export const DoneRequest = z.object({
   mr: z.string().max(200).optional(),
   reopen: z.array(z.string()).default([]),
   sid: z.string().optional(),
+  model: z.string().max(100).optional(),
+  artifacts: z.array(z.object({ path: z.string().min(1).max(500), sha: z.string().max(64).optional() })).max(50).optional(),
+  /** When the daemon finished it (offline replays keep the real time). */
+  at: z.number().optional(),
 });
 export const AskRequest = z.object({ text: z.string().min(1).max(4000), sid: z.string().optional(), step: z.string().optional() });
 export const AnswerRequest = z.object({ text: z.string().min(1).max(4000) });
@@ -109,6 +114,8 @@ export interface DoneResult {
   goalDone: boolean;
   /** The step record to commit with the work (`.mesh/goals/<G>/steps/<id>.md`). */
   record?: TrailFile | undefined;
+  /** Other trail files to write now, e.g. goal.yaml with its roll-up when the goal finished. */
+  files?: TrailFile[] | undefined;
 }
 
 export interface GoalDetail {

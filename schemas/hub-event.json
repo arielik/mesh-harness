@@ -1,0 +1,50 @@
+{
+  "$id": "https://mesh.local/schemas/hub-event.json",
+  "title": "one hub event (GET /v1/events)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "id": {
+      "type": "string"
+    },
+    "at": {
+      "type": "number",
+      "description": "milliseconds since the epoch, hub clock (or the daemon's for synced events)"
+    },
+    "type": {
+      "type": "string",
+      "description": "see docs/events.md"
+    },
+    "user": {
+      "type": "string"
+    },
+    "sid": {
+      "type": "string"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "step": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
+    }
+  },
+  "required": [
+    "seq",
+    "id",
+    "at",
+    "type",
+    "payload"
+  ]
+}
