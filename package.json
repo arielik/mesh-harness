@@ -12,7 +12,8 @@
     "mesh": "./dist/main.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "assets"
   ],
   "scripts": {
     "build": "tsdown && vite build --config web/vite.config.ts --logLevel warn",

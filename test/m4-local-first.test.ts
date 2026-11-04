@@ -196,14 +196,14 @@ describe("workflow capture", () => {
     // A subagent never changes its session's state.
     expect(w.session(alice, 100).state).toBe("idle");
 
-    const pending = join(alice.repoDir, ".git", "mesh", "pending", "NA-1054");
+    const pending = join(alice.repoDir, ".git", "mesh", "pending", "ROW-42");
     expect(readdirSync(pending).sort()).toEqual(["reviewer.md", "spec-writer.md"]);
     const rev = front(readFileSync(join(pending, "reviewer.md"), "utf8"));
     expect(LedgerRecord.safeParse(rev).success).toBe(true);
-    expect(rev).toMatchObject({ record: "agent-step", key: "NA-1054", role: "reviewer", workflow: "define-rows", models: ["claude-opus-5-5"] });
-    expect((rev.rounds as Record<string, unknown>[])[0]).toMatchObject({ label: "reviewer:NA-1054:r1", duration_s: 1.3, result: { verdict: "APPROVED" } });
+    expect(rev).toMatchObject({ record: "agent-step", key: "ROW-42", role: "reviewer", workflow: "sdd-programme", models: ["claude-opus-5-5"] });
+    expect((rev.rounds as Record<string, unknown>[])[0]).toMatchObject({ label: "reviewer:ROW-42:r1", duration_s: 1.3, result: { verdict: "APPROVED" } });
 
-    expect(stage(alice.repoDir, "NA-1054")).toEqual([".mesh/goals/NA-1054/steps/reviewer.md", ".mesh/goals/NA-1054/steps/spec-writer.md"]);
+    expect(stage(alice.repoDir, "ROW-42")).toEqual([".mesh/goals/ROW-42/steps/reviewer.md", ".mesh/goals/ROW-42/steps/spec-writer.md"]);
     expect(stage(alice.repoDir, "NO-SUCH")).toEqual([]);
 
     await w.flush();
@@ -211,8 +211,8 @@ describe("workflow capture", () => {
     void events;
     const all = w.hub.svc.events(0, 1000).filter((e) => e.type === "agent.finished");
     expect(all.map((e) => [e.payload.key, e.payload.role, (e.payload.result as Record<string, unknown> | undefined)?.verdict])).toEqual([
-      ["NA-1054", "spec-writer", undefined],
-      ["NA-1054", "reviewer", "APPROVED"],
+      ["ROW-42", "spec-writer", undefined],
+      ["ROW-42", "reviewer", "APPROVED"],
     ]);
     // Re-capturing the same agent never duplicates its hub event.
     sub("SubagentStop", "ad3d5cc636df29ba5", "reviewer");
@@ -228,8 +228,8 @@ describe("workflow capture", () => {
     }
     (bob.daemon.deps as { scanRuns?: (since: number) => unknown }).scanRuns = (since: number) => scanWorkflowRuns(home, since);
     bob.daemon.backfill();
-    expect(readdirSync(join(bob.repoDir, ".git", "mesh", "pending", "NA-1054")).sort()).toEqual(["reviewer.md", "spec-writer.md"]);
-    const spec = front(readFileSync(join(bob.repoDir, ".git", "mesh", "pending", "NA-1054", "spec-writer.md"), "utf8"));
+    expect(readdirSync(join(bob.repoDir, ".git", "mesh", "pending", "ROW-42")).sort()).toEqual(["reviewer.md", "spec-writer.md"]);
+    const spec = front(readFileSync(join(bob.repoDir, ".git", "mesh", "pending", "ROW-42", "spec-writer.md"), "utf8"));
     expect((spec.rounds as Record<string, unknown>[])[0]).toMatchObject({ result: { acceptance_criteria: ["AC-01", "AC-02"] }, tool_calls: 3 });
   });
 });

@@ -2,7 +2,7 @@
 
 **Session.** A Claude Code session the daemon knows about: interactive in tmux, background, or `claude -p`. Its state is one of *working*, *needs you* (permission, question, dialog, input), *idle*, *stalled* or *ended*. `claude agents --json` is the authority for its status; hooks make it fast.
 
-**Goal.** A piece of work for the team, with an owner. It starts with a *design* step. Optional `refs` hold the team's own ids (`--refs spec=771,backlog=NA-1054`).
+**Goal.** A piece of work for the team, with an owner. It starts with a *design* step. Optional `refs` hold the team's own ids (`--refs spec=SPEC-7,backlog=ROW-42`).
 
 **Plan.** A versioned list of steps with dependencies (a DAG), proposed by the design session with `mesh_plan` and approved by the owner, an approver or an admin. Each version is decided once:
 - *approved*;
@@ -51,8 +51,8 @@ The decision, rule and inputs are recorded.
 - repo commit;
 - turns, human prompts, nudges, waits and active minutes.
 
-**Programme.** One Claude session whose workflow script runs many subagents (`agent()` calls), as in the canonical `define-rows.js` / `build-rows.js`.
-- Labels follow `<role>:<key>[:<round>]`, e.g. `reviewer:NA-1054:r2`.
+**Programme.** One Claude session whose workflow script runs many subagents (`agent()` calls), as in the kit's `.claude/workflows/sdd-programme.js` (`mesh assets install`), or any workflow of your own that follows the label format.
+- Labels follow `<role>:<key>[:<round>]`, e.g. `reviewer:ROW-42:r2`.
 - mesh records each role under the key, with one round per run, the model actually used, timing and the agent's typed result.
 - Nothing in the workflow calls mesh.
 

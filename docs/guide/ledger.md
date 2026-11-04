@@ -27,7 +27,7 @@ record: step
 goal: G17
 step: dplane
 kind: implement
-repo: frr-dplane-ovs
+repo: payments-api
 plan: v2
 holders: [{ user: ariel, from: 2026-11-03T09:12Z, to: 2026-11-03T10:12Z }, …]
 models: [claude-opus-5-5, claude-sonnet-5]
@@ -78,14 +78,14 @@ Added v6 underlay next-hop programming.
 ---
 schema: mesh.ledger.v1
 record: agent-step
-key: NA-1054                 # the team's id, from the label
+key: ROW-42                 # the team's id, from the label
 role: reviewer
 name: reviewer               # reviewer-diff for diff reviews, gate-advisor-r3 for gate tokens
-workflow: define-rows
+workflow: sdd-programme
 models: [claude-opus-5-5]
 rounds:
   - n: 1
-    label: reviewer:NA-1054:r1
+    label: reviewer:ROW-42:r1
     agent_id: a1b2…
     workflow_run: wf_…
     phase: Define
@@ -100,7 +100,7 @@ rounds:
 ---
 ```
 
-Labels follow the canonical workflows' `<role>:<key>[:<round>]`:
+Labels follow `<role>:<key>[:<round>]` (the kit's `sdd-programme.js` uses it; so can any workflow):
 - `r<n>`, `c<n>`, `v<n>`, `fix<n>` and `rfix<n>` are rounds of the same record, numbered in the order they ran.
 - `diff<n>` makes a separate `-diff` record.
 - Other tokens (e.g. `R3`) name a separate record.

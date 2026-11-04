@@ -117,7 +117,7 @@ function readPlan(file: string): PlanInput {
 export function goalCommand(c: CliEnv): Command {
   const usage = [
     "usage:",
-    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--refs spec=771,backlog=NA-1054] [--preset sdd-split] [--reworks G3] [--issue URL] [--priority 0-9]',
+    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--refs spec=SPEC-7,backlog=ROW-42] [--preset sdd-split] [--reworks G3] [--issue URL] [--priority 0-9]',
     "  mesh goal ls",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",

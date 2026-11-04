@@ -264,7 +264,7 @@ export function forgetProject(cwd: string): void {
   if (dir.includes("mesh-spike")) rmSync(dir, { recursive: true, force: true });
 }
 
-/** Agents and a workflow script shaped like the canonical programme workflows (labels <role>:<key>[:<round>]). */
+/** Agents and a small workflow script with labelled agents (<role>:<key>[:<round>]), like the shipped kit. */
 export function writeProgramme(dir: string, key: string): void {
   mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
   const agent = (name: string, reply: string) =>

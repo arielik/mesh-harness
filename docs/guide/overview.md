@@ -4,7 +4,7 @@ mesh gives a person and a team **one place to see and steer every Claude Code se
 
 - **For you:** one list of all your sessions, ordered by what needs you. Jump to one, send it a message, or let autopilot nudge a stalled one.
 - **For the team:** a shared backlog of goals. A design session proposes a plan of steps, a person approves it, and people (or their agents) take steps in parallel or continue each other's work.
-- **For analysis:** every step, plan and goal leaves a generated record in the repo (`mesh.ledger.v1`). Workflow programmes are captured per subagent. `mesh ledger export` turns all of it into JSONL for mesh-ai, to answer questions like "does this model need more fix cycles since the last harness change?".
+- **For analysis:** every step, plan and goal leaves a generated record in the repo (`mesh.ledger.v1`). Workflow programmes are captured per subagent. `mesh ledger export` turns all of it into JSONL for any analysis tool (for example mesh-ai, or `jq`), to answer questions like "does this model need more fix cycles since the last harness change?".
 
 ## The pieces
 

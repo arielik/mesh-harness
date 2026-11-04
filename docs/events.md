@@ -1,6 +1,6 @@
 # Hub events
 
-The hub keeps every change and observation as an event: `GET /v1/events?after=<seq>&limit=<n>` with a service token (`mesh hub token --service mesh-ai`), or `mesh ledger export --events`. The JSON Schema of one event is in [`schemas/hub-event.json`](../schemas/hub-event.json).
+The hub keeps every change and observation as an event: `GET /v1/events?after=<seq>&limit=<n>` with a service token (`mesh hub token --service analytics`), or `mesh ledger export --events`. The JSON Schema of one event is in [`schemas/hub-event.json`](../schemas/hub-event.json).
 
 The events are the **live, precise channel**. They keep exact times and things only visible live, such as waits, stalls and abandoned work. The hub deletes them after `events_retention_days` (default 180). The **durable summary** of every step, plan and goal is the ledger committed in the repos (`.mesh/goals/**`, format `mesh.ledger.v1`, see [ledger.md](guide/ledger.md)). Nothing in the ledger is typed by hand.
 

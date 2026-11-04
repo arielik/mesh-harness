@@ -1029,7 +1029,7 @@ export class HubService {
     });
   }
 
-  /** Mint a service token (mesh-ai). */
+  /** Mint a service token (analysis tools reading the event feed). */
   serviceToken(name: string): string {
     const user = this.store.upsertIdentity({ provider: "service", subject: name, name, groups: ["service"] }, this.now());
     this.store.setUserRoles(user.id, ["service"]);

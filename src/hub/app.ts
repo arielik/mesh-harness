@@ -1,5 +1,5 @@
 // mesh hub HTTP API (plan §5.6). Every route declares an authorization rule in ROUTES; a test
-// checks none is missing. Bearer tokens (CLI, daemon, mesh-ai) or the web session cookie.
+// checks none is missing. Bearer tokens (CLI, daemon, service) or the web session cookie.
 
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";

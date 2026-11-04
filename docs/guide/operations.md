@@ -33,12 +33,12 @@ People keep working:
 - When the hub is back, each daemon's probe (backing off from 5 s up to 60 s) finds it and sends everything once.
 - Refused results are kept as notes.
 
-## The ledger feed for mesh-ai
+## The ledger feed for analysis tools
 
 ```bash
-mesh hub token --service mesh-ai --config mesh-hub.yaml
-mesh ledger export --repo ~/src/frr-dplane-ovs --repo ~/src/vpc-node-agent \
-  --ref origin/HEAD --events --hub https://mesh.example --token "$MESH_AI_TOKEN" --out ledger.jsonl
+mesh hub token --service analytics --config mesh-hub.yaml
+mesh ledger export --repo ~/src/payments-api --repo ~/src/payments-web \
+  --ref origin/HEAD --events --hub https://mesh.example --token "$ANALYTICS_TOKEN" --out ledger.jsonl
 ```
 
 Each line is a validated `mesh.ledger.v1` record or a hub event (`schemas/ledger-line.json`). Invalid records are reported on stderr and make the exit code 1.

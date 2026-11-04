@@ -28,6 +28,7 @@ import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./con
 export type { CliEnv } from "./context.ts";
 import { HubClient, loadCredentials } from "./hub-client.ts";
 import { hubCommands } from "./hub-commands.ts";
+import { assetsCommand } from "./assets.ts";
 import { ledgerCommand } from "./ledger.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
 import { age, groupOf, ordered } from "./tui/render.ts";
@@ -399,5 +400,5 @@ export function statusCommand(c: CliEnv): Command {
 }
 
 export function meshCommands(c: CliEnv): Command[] {
-  return [setupCommand(c), doctorCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), ...hubCommands(c)];
+  return [setupCommand(c), doctorCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), assetsCommand(c), ...hubCommands(c)];
 }

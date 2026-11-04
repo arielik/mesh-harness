@@ -1,5 +1,5 @@
 // `mesh ledger`: stage a programme's pending records into the tree that commits them, and export the
-// committed ledger (.mesh/goals/** across repos, at a ref) as JSONL for mesh-ai (M4, R5).
+// committed ledger (.mesh/goals/** across repos, at a ref) as JSONL for any analysis tool (M4, R5).
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";

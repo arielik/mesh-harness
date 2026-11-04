@@ -19,11 +19,11 @@ describe("Claude Code workflow files", () => {
   it("reads label, phase, model, timing and the typed result", () => {
     const r = readAgentFiles(transcript("ad3d5cc636df29ba5"), "ad3d5cc636df29ba5");
     expect(r).toMatchObject({
-      label: "reviewer:NA-1054:r1",
+      label: "reviewer:ROW-42:r1",
       phase: "Define",
       model: "claude-opus-5-5",
       workflowRun: "wf_1e81d3e1-027",
-      workflowName: "define-rows",
+      workflowName: "sdd-programme",
       startedAt: 1793820203860,
       durationMs: 1255,
       attempt: 1,
@@ -50,8 +50,8 @@ describe("Claude Code workflow files", () => {
   it("backfills runs recorded since a time", () => {
     const runs = scanWorkflowRuns(HOME, 0);
     expect(runs.map((r) => [r.label, r.role, r.cwd, r.finishedAt])).toEqual([
-      ["spec-writer:NA-1054", "spec-writer", "/work/repo", 1793820202645 + 1178],
-      ["reviewer:NA-1054:r1", "reviewer", "/work/repo", 1793820203860 + 1255],
+      ["spec-writer:ROW-42", "spec-writer", "/work/repo", 1793820202645 + 1178],
+      ["reviewer:ROW-42:r1", "reviewer", "/work/repo", 1793820203860 + 1255],
     ]);
     expect(runs[0]?.result).toMatchObject({ acceptance_criteria: ["AC-01", "AC-02"] });
     expect(scanWorkflowRuns(HOME, Date.now() + 60_000)).toEqual([]);

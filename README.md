@@ -1,13 +1,19 @@
 # mesh-harness
 
-One place to see and steer all your Claude Code sessions, across repos and people.
+One place to see and steer all your Claude Code sessions, across repos and people, and a ledger in git of how the work went.
 
-- Proposal: [docs/analysis/2026-11-03-mesh-harness-proposal.md](docs/analysis/2026-11-03-mesh-harness-proposal.md)
-- Journeys, dashboard and analysis: [docs/analysis/2026-11-03-journeys-dashboard-and-analysis.md](docs/analysis/2026-11-03-journeys-dashboard-and-analysis.md)
-- Implementation plan (leads development): [docs/plan/implementation-plan.md](docs/plan/implementation-plan.md)
-- Claude Code spike results: [docs/spikes/README.md](docs/spikes/README.md)
+**Self-contained.** Everything needed is in this repo:
+- the tool;
+- an example spec-driven development kit (`assets/sdd`: agents, a programme workflow, a spec template; `mesh assets install`);
+- plan templates;
+- the docs.
+
+It needs Claude Code on a subscription login, Node and git. It needs no other repository, no API keys and no Agent SDK, and none of its parts depends on a particular identity provider, issue tracker or analysis tool.
+
 - Guide: [overview](docs/guide/overview.md) · [concepts](docs/guide/concepts.md) · [the development cycle](docs/guide/cycle.md) · [install](docs/guide/install.md) · [auth](docs/guide/auth.md) · [operations](docs/guide/operations.md) · [the ledger](docs/guide/ledger.md) · [events](docs/events.md)
 - How it works, in pictures: [docs/explainer/how-mesh-harness-works.html](docs/explainer/how-mesh-harness-works.html)
+- The SDD kit: [assets/sdd/README.md](assets/sdd/README.md)
+- Design history (optional reading): [docs/analysis/](docs/analysis/README.md) · [implementation plan](docs/plan/implementation-plan.md) · [Claude Code spike results](docs/spikes/README.md)
 
 ## Use it (M1: local)
 
@@ -20,7 +26,7 @@ mesh up             # the daemon, with its own local hub (Solo) until you log in
 mesh status         # team, Solo, or "hub offline, working locally"
 mesh doctor         # checks claude, curl, tmux, hooks, daemon
 
-mesh run frr-dplane-ovs vpc-node-agent   # tmux session "mesh": window 0 = list, one claude per repo
+mesh run payments-api payments-web   # tmux session "mesh": window 0 = list, one claude per repo
 mesh                # the list: ⏎ jump · s say · r refresh · q quit (prefix + m comes back)
 mesh ls             # same list, plain text (--json)
 mesh say <session> "continue with the tests"
@@ -43,25 +49,25 @@ mesh hub --config mesh-hub.yaml                          # the shared hub + web 
 mesh login --hub http://hub:7700 --token <token>         # each person, once (OIDC: --provider kanidm)
 mesh setup                                               # re-run after upgrading: adds the MCP server
 
-mesh goal new "IPv6 underlay" --repo frr-dplane-ovs --repos vpc-node-agent
+mesh goal new "IPv6 underlay" --repo payments-api --repos payments-web
 mesh run --design G1                                     # a design session: writes the design, proposes the plan (mesh_plan)
 mesh show G1                                             # the goal and its step DAG; a pending plan shows its changes
 mesh goal revise G1 "split out the dplane tests"         # the design session gets the comment and re-proposes
 mesh goal approve G1                                     # or approve in the web dashboard (Goals → G1 → Design)
 mesh goal plan G1 --file plan.yaml                       # alternatively: write the plan yourself (approved at once)
 mesh next                                                # ready steps
-mesh run frr-dplane-ovs --step G1.dplane --auto chain    # a Claude session that holds the step
+mesh run payments-api --step G1.dplane --auto chain    # a Claude session that holds the step
 mesh take G1.agent                                       # continue someone's paused step
 mesh answer 3 "yes, keep the v4 fallback"
 mesh autopilot <session> off|nudge|chain
-mesh goal plan G1 --preset sdd-split --repo frr-dplane-ovs --acs acs.yaml   # the SDD cycle as a template (docs/guide/cycle.md)
+mesh goal plan G1 --preset sdd-split --repo payments-api --acs acs.yaml   # the SDD cycle as a template (docs/guide/cycle.md)
 mesh step approve G1.r2                                  # gates; reject --reopen a,b; resume a parked step
-mesh run frr-dplane-ovs --step G1.write-tests --worktree # one worktree and branch per step
+mesh run payments-api --step G1.write-tests --worktree # one worktree and branch per step
 ```
 
 Every run leaves a trail in the repos, written by mesh and committed by the agents, in the `mesh.ledger.v1` format ([the ledger](docs/guide/ledger.md)): `.mesh/goals/<G>/goal.yaml` (with a roll-up when done), `plan.vN.yaml` (with the approval) and one `steps/<id>.md` record per step (segments with model, effort, Claude Code version and harness hash; rounds; holders, turns, human prompts, nudges, waits, fix cycles, artefacts). Nothing in it is typed by hand.
 
-Workflow programmes (one Claude session whose workflow runs subagents, labelled `<role>:<key>[:<round>]`) are captured too: mesh reads the subagent hooks and Claude Code's workflow files, writes one record per role under `<git dir>/mesh/pending/<key>/`, and `mesh ledger stage <key>` copies them into the tree that commits the ledger. `mesh ledger export --repo A --repo B [--events] --out ledger.jsonl` gives mesh-ai one validated JSONL file.
+Workflow programmes (one Claude session whose workflow runs subagents, labelled `<role>:<key>[:<round>]`) are captured too: mesh reads the subagent hooks and Claude Code's workflow files, writes one record per role under `<git dir>/mesh/pending/<key>/`, and `mesh ledger stage <key>` copies them into the tree that commits the ledger. `mesh ledger export --repo A --repo B [--events] --out ledger.jsonl` gives an analysis tool one validated JSONL file.
 
 Agents use eight MCP tools (`mesh_context`, `mesh_next`, `mesh_claim`, `mesh_release`, `mesh_note`, `mesh_done`, `mesh_ask`, `mesh_plan`). With `--auto chain`, finishing a step claims the next ready one in the same repo and hands it over when the turn ends. With `nudge` (default), a session that stops mid-step gets "continue" twice, then mesh notifies you.
 
@@ -87,6 +93,7 @@ pnpm spike e2e-m2              # M2 end to end: hub, login, MCP tools, chain aut
 pnpm spike e2e-m3              # M3 end to end: design → revise → approve → two people, two repos → records
 pnpm spike e2e-offline         # M4: a programme four ways: no daemon, hub cut, hub restored mid-run, Solo
 pnpm spike e2e-m45             # M4.5: criteria, blind sides, a routed impl-bug fix, an R3 gate (two people)
+pnpm spike e2e-kit             # the shipped SDD kit: mesh assets install, one Claude session runs the whole cycle
 pnpm test:claude               # contract suite: every Claude Code behaviour mesh relies on (run after upgrading Claude Code)
 pnpm schemas                   # regenerate schemas/*.json after changing src/protocol
 pnpm test:web                  # Playwright smoke test of the dashboard (after pnpm build)

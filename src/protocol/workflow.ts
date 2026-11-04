@@ -11,7 +11,7 @@ export const AgentRun = z.object({
   cwd: z.string(),
   /** agent_type: the role (spec-writer, reviewer, ...). */
   role: z.string(),
-  /** The workflow's label, e.g. "reviewer:NA-1054:r2", or a Task description. */
+  /** The workflow's label, e.g. "reviewer:ROW-42:r2", or a Task description. */
   label: z.string().optional(),
   phase: z.string().optional(),
   workflowRun: z.string().optional(),

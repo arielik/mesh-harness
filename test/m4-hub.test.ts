@@ -28,8 +28,8 @@ const steps = [
 
 describe("plans", () => {
   it("marks a pending plan replaced by a new proposal as superseded, not revised", async () => {
-    const g = (await w.api(alice, "POST", "/v1/goals", { title: "t", refs: { spec: "771", backlog: "NA-1054" } })).json;
-    expect(g.refs).toEqual({ spec: "771", backlog: "NA-1054" });
+    const g = (await w.api(alice, "POST", "/v1/goals", { title: "t", refs: { spec: "771", backlog: "ROW-42" } })).json;
+    expect(g.refs).toEqual({ spec: "771", backlog: "ROW-42" });
     await w.api(alice, "POST", `/v1/goals/${g.id}/plan`, { steps });
     await w.api(alice, "POST", `/v1/goals/${g.id}/revise`, { comment: "split it" });
     await w.api(alice, "POST", `/v1/goals/${g.id}/plan`, { steps });

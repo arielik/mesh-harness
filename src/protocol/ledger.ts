@@ -24,7 +24,7 @@ export const LedgerGoal = z.looseObject({
   primary_repo: z.string().optional(),
   repos: z.array(z.string()).optional(),
   issue: z.string().optional(),
-  refs: z.record(z.string(), z.string()).optional().describe("the team's own ids, e.g. {spec: '771', backlog: 'NA-1054'}"),
+  refs: z.record(z.string(), z.string()).optional().describe("the team's own ids, e.g. {spec: 'SPEC-7', backlog: 'ROW-42'}"),
   reworks: z.array(z.string()).optional().describe("goals this one redoes"),
   preset: z.string().optional().describe("the plan template the design followed"),
   created: time.optional(),
@@ -155,7 +155,7 @@ export const LedgerStep = z.looseObject({
 export const LedgerAgentStep = z.looseObject({
   ...base,
   record: z.literal("agent-step"),
-  key: z.string().describe("the team's id from the label, e.g. NA-1054"),
+  key: z.string().describe("the team's id from the label, e.g. ROW-42"),
   role: z.string(),
   name: z.string(),
   workflow: z.string().optional(),

@@ -14,7 +14,7 @@
     },
     "key": {
       "type": "string",
-      "description": "the team's id from the label, e.g. NA-1054"
+      "description": "the team's id from the label, e.g. ROW-42"
     },
     "role": {
       "type": "string"

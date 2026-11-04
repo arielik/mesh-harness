@@ -37,7 +37,7 @@
       "type": "string"
     },
     "refs": {
-      "description": "the team's own ids, e.g. {spec: '771', backlog: 'NA-1054'}",
+      "description": "the team's own ids, e.g. {spec: 'SPEC-7', backlog: 'ROW-42'}",
       "type": "object",
       "propertyNames": {
         "type": "string"

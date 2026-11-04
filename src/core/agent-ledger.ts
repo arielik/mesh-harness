@@ -1,5 +1,5 @@
-// Ledger records for workflow programmes (one Claude session, many subagents). Labels follow the
-// canonical workflows' format <role>:<key>[:<round>] (e.g. reviewer:NA-1054:r2); the key is the
+// Ledger records for workflow programmes (one Claude session, many subagents). Labels follow
+// <role>:<key>[:<round>] (the shipped kit's sdd-programme.js uses it) (e.g. reviewer:ROW-42:r2); the key is the
 // team's own id, used as written (owner decision 15). Pure.
 
 import { stringify } from "yaml";

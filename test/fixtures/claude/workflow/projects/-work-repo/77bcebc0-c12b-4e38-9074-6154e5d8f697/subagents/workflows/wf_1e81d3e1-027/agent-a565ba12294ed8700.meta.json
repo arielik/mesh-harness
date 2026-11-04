@@ -1,1 +1,1 @@
-{"agentType":"spec-writer","isBuiltIn":false,"description":"spec-writer:NA-1054","workflowPhase":"Define","spawnDepth":1,"requestShape":"foreground","requestNonInteractive":true,"pickedEffortModel":"claude-opus-5-5"}
+{"agentType":"spec-writer","isBuiltIn":false,"description":"spec-writer:ROW-42","workflowPhase":"Define","spawnDepth":1,"requestShape":"foreground","requestNonInteractive":true,"pickedEffortModel":"claude-opus-5-5"}

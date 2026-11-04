@@ -24,7 +24,7 @@ export const Goal = z.object({
   reworks: z.array(z.string()).optional(),
   /** Plan template the design should follow (name and text), from `mesh goal new --preset`. */
   preset: z.object({ name: z.string(), text: z.string() }).optional(),
-  /** Ids the team's own process uses for this work, e.g. {spec: "771", backlog: "NA-1054"}. */
+  /** Ids the team's own process uses for this work, e.g. {spec: "SPEC-7", backlog: "ROW-42"}. */
   refs: z.record(z.string(), z.string()).optional(),
   priority: z.number().int(),
   createdAt: z.number(),

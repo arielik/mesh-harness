@@ -41,6 +41,6 @@ Roles come from provider groups (`roles:` mappings) and `bootstrap_admins`.
 **Tokens.**
 - Device tokens (CLI and daemon) and web sessions expire as configured.
 - `mesh hub revoke --user alice` or `--machine m-…` revokes them.
-- `mesh hub token --service mesh-ai` mints a token for `GET /v1/events` and `mesh ledger export --events`.
+- `mesh hub token --service analytics` mints a token for `GET /v1/events` and `mesh ledger export --events`.
 
 A daemon whose token expired keeps working locally and shows "hub login expired"; `mesh login` again.

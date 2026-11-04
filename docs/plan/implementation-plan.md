@@ -661,6 +661,20 @@ Notes and deviations:
 - **Found by the real-Claude re-runs.** In `e2e-m3`, whose plan has no criteria, a haiku agent read the new `mesh_done` fields and passed made-up criterion ids. The hub refused every call with an obscure error. Now criteria are kept only when the plan defines them, unknown ids are dropped (never an error), and the tool describes the fields as "only if your brief lists acceptance criteria". `e2e-m2`, `e2e-m3`, `e2e-offline` and `e2e-m45` were re-run green after the fix.
 - **Templates.** `sdd-split` and `sdd-collapse` are built in; repos add `.mesh/presets/<name>.yaml`. `mesh goal new --preset` puts the template in the design brief; `mesh goal plan --preset --repo --acs` fills it in. Differences from the template are warnings in `mesh_plan`'s answer.
 
+### Self-contained (2026-11-04)
+
+mesh-harness is meant to be handed to other teams that may have no access to the repositories it was first designed with. Everything they need now ships here:
+
+- **The SDD kit, `assets/sdd`.** It has:
+  - agents for spec-writer, reviewer, impl-planner, test-planner, developer, test-writer, merger and test-executor;
+  - `.claude/workflows/sdd-programme.js`, the whole cycle unattended with labelled, typed agents and the optional `mesh ledger stage` step;
+  - `templates/spec.md`.
+
+  `mesh assets ls|install [--target DIR] [--force]` copies it into a repo without overwriting the team's own files. The package publishes `assets/` next to `dist/`.
+- **Plan templates** `sdd-split` / `sdd-collapse` are built in, as before.
+- **The user-facing docs** (README, guide, explainer, events) use neutral names, and present analysis tools as optional (mesh-ai is one example). `docs/analysis/README.md` marks those documents as design history, which mentions the first team's repos as input, not as dependencies.
+- **Tested.** `test/assets.test.ts` checks four things: every role has an agent, every `agent()` call has a label mesh can parse, the workflow runs in the Workflow runtime's shape, and installing keeps the team's files. `pnpm spike e2e-kit` ran it for real: a toy Node repo, `mesh assets install`, one Claude Code session (haiku) running `sdd-programme.js`, and a Solo daemon recording it. The row ended "ready to land" in 3 minutes, with nine roles recorded (models and typed results) and the records committed by the workflow's ledger step.
+
 ### M5. Optional (later)
 
 GitLab issue import and comments (`gitlab/`), plus **CI ingest** (pipeline and test results per MR/step, joined into the ledger export; or joined from mesh-ai's Prometheus CI data). Export adapters for existing machine ledgers such as `evidence/lane/verdicts.json` (C10). Node SEA binaries and a hub container image. Design contributors, critical-path rendering, `--lane`. Claude Code channels as a delivery path once out of research preview. Everything else in `docs/later.md`.

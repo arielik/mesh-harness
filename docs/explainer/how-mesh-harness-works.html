@@ -121,13 +121,13 @@
   <div class="card"><h4>Faces</h4><p>Terminal: <code>mesh</code> (TUI), <code>mesh show G1</code>. Web: Live page, Goals board, Goal page with the step graph, Design tab to approve, Timeline.</p></div>
   <div class="card"><h4>Git repos (the ledger)</h4><p><code>.mesh/goals/&lt;G&gt;/</code>: <code>goal.yaml</code>, <code>plan.vN.yaml</code>, <code>steps/&lt;id&gt;.md</code>. Committed by the agent with its work, so they show up in the MR.</p></div>
   <div class="card"><h4>Ledger export <span class="tag done">done</span></h4><p><code>mesh ledger export</code> reads <code>.mesh/goals/**</code> from your checkouts, validates them and writes JSONL, one line per record.</p></div>
-  <div class="card"><h4>mesh-ai</h4><p>The analysis plane. Imports the JSONL in batch and builds the Flow, Quality, Models and People views. It is not in the live path.</p></div>
+  <div class="card"><h4>Analysis tool (optional)</h4><p>Any tool that reads JSONL, for example mesh-ai, or <code>jq</code>. It reads the JSONL in batch and builds whatever views you need: flow, quality, models, people. It is not in the live path.</p></div>
 </div>
 
 <!-- ============================================================ -->
 <h2 id="flow">4. How data flows</h2>
 
-<div class="simple">There are three lanes. <strong>Live</strong> (seconds): hooks → daemon → hub → screens. <strong>Durable</strong> (per step): mesh writes a record into the repo, the agent commits it. <strong>Analysis</strong> (batch, whenever you like): export reads git, mesh-ai reads the export. The live lane can lose its history after N days; the durable lane never does.</div>
+<div class="simple">There are three lanes. <strong>Live</strong> (seconds): hooks → daemon → hub → screens. <strong>Durable</strong> (per step): mesh writes a record into the repo, the agent commits it. <strong>Analysis</strong> (batch, whenever you like): export reads git, an analysis tool reads the export. The live lane can lose its history after N days; the durable lane never does.</div>
 
 <svg viewBox="0 0 960 520" role="img" aria-label="data flow diagram">
   <defs>
@@ -212,7 +212,7 @@
     <text x="600" y="440" text-anchor="middle" fill="#656d76">1 line / record</text>
 
     <rect x="740" y="390" width="195" height="70" rx="8" fill="#fff" stroke="#9a6700"/>
-    <text x="837" y="415" text-anchor="middle" font-weight="600">mesh-ai</text>
+    <text x="837" y="415" text-anchor="middle" font-weight="600">analysis tool</text>
     <text x="837" y="433" text-anchor="middle" fill="#656d76">Flow · Quality ·</text>
     <text x="837" y="449" text-anchor="middle" fill="#656d76">Models · People</text>
   </g>
@@ -234,7 +234,7 @@
   <tr><td><strong>Daemon ↔ hub</strong></td><td>Session events for sessions holding a step; claims, done, plans; messages for your sessions</td><td>HTTP with an opaque hub token. Events go up through a local outbox (survives restarts). Messages come down by pull + ack; SSE only wakes the daemon to pull. Sessions not holding a step stay private to your laptop.</td></tr>
   <tr><td><strong>Hub → screens</strong></td><td>Who is online, which sessions need someone, goals, step graph, timeline</td><td>Web (React + Vite, hash routing, plain SVG graph) and CLI read the hub's HTTP API; the web refreshes on SSE <code>changed</code> events.</td></tr>
   <tr><td><strong>Hub → repo</strong></td><td>Step records, plan files, goal file</td><td>The hub renders the files (<code>src/core/trail.ts</code>) from its state and events; the daemon writes them into the session's git checkout under <code>.mesh/</code> only; the tool result tells the agent to <code>git add</code> them with its work.</td></tr>
-  <tr><td><strong>Repo → analysis</strong> <span class="tag done">done</span></td><td>All records across repos</td><td><code>mesh ledger export</code> reads <code>.mesh/goals/**</code> at a ref (default <code>origin/HEAD</code>), validates against <code>mesh.ledger.v1</code>, writes JSONL; can join <code>/v1/events</code> for precise timings. mesh-ai imports the file.</td></tr>
+  <tr><td><strong>Repo → analysis</strong> <span class="tag done">done</span></td><td>All records across repos</td><td><code>mesh ledger export</code> reads <code>.mesh/goals/**</code> at a ref (default <code>origin/HEAD</code>), validates against <code>mesh.ledger.v1</code>, writes JSONL; can join <code>/v1/events</code> for precise timings. any analysis tool imports the file.</td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -243,7 +243,7 @@
 <p>This is the flow the real-Claude test <code>pnpm spike e2e-m3</code> runs, with two people and two repos. Everything here is <span class="tag done">done</span> unless tagged.</p>
 
 <ol class="flow">
-  <li><strong>Create.</strong> <code>mesh goal new "IPv6 underlay" --repo frr-dplane-ovs --repos vpc-node-agent</code> (or the web Goals board). The hub creates goal <code>G1</code> with one step, <code>G1.design</code>. <span class="small">Event: <code>goal.created</code>.</span></li>
+  <li><strong>Create.</strong> <code>mesh goal new "IPv6 underlay" --repo payments-api --repos payments-web</code> (or the web Goals board). The hub creates goal <code>G1</code> with one step, <code>G1.design</code>. <span class="small">Event: <code>goal.created</code>.</span></li>
   <li><strong>Design.</strong> <code>mesh run --design G1</code> claims the design step and starts Claude with the other repos added (<code>--add-dir</code>). The agent reads the brief via <code>mesh_context</code>, writes <code>docs/design/g1-….md</code>, and proposes steps with <code>mesh_plan</code>. mesh writes <code>goal.yaml</code> and <code>plan.v1.yaml</code> (decision: pending) into the repo. <span class="small">Events: <code>step.claimed</code>, <code>plan.proposed</code>.</span></li>
   <li><strong>Review the plan.</strong> The owner or an approver sees it in <code>mesh show G1</code> or the web Design tab, with what changed since the last approved version.
     <ul>
@@ -255,7 +255,7 @@
   <li><strong>Finish a step.</strong> The agent calls <code>mesh_done</code> with a summary (and MR, branch). The hub computes the step's facts from its events and returns the record; the daemon writes <code>.mesh/goals/G1/steps/dplane.md</code>; the agent commits it with the code. Dependent steps become ready. A review or test step can reopen an earlier step (fix cycle +1). <span class="small">Events: <code>step.done</code>, <code>step.reopened</code>.</span></li>
   <li><strong>Replan if needed.</strong> <code>mesh goal replan G1 "agent needs a migration"</code> reopens the design; a new plan replaces only steps not yet done. <span class="small">Event: <code>goal.replan</code>.</span></li>
   <li><strong>Done.</strong> When all steps are done the goal is done. The trail is now in the repos' history, reviewed in the MRs. <span class="small">Event: <code>goal.done</code>.</span></li>
-  <li><strong>Analyse later</strong> <span class="tag done">done</span>. Run <code>mesh ledger export</code> over the checkouts; mesh-ai imports the JSONL.</li>
+  <li><strong>Analyse later</strong> <span class="tag done">done</span>. Run <code>mesh ledger export</code> over the checkouts; an analysis tool (for example mesh-ai, or <code>jq</code>) reads the JSONL.</li>
 </ol>
 
 <!-- ============================================================ -->
@@ -274,8 +274,8 @@ design → spec → cold spec review → implementation plan and test plan writt
 </div>
 
 <p><strong>Built (M4.5).</strong> Run it with the <code>sdd-split</code> template. Commands, what each agent reports and what mesh does with it are in <code>docs/guide/cycle.md</code>; in short:</p>
-<pre>mesh goal plan G7 --preset sdd-split --repo frr-dplane-ovs --acs acs.yaml
-mesh run frr-dplane-ovs --step G7.write-tests     <span class="c"># its own worktree and branch</span>
+<pre>mesh goal plan G7 --preset sdd-split --repo payments-api --acs acs.yaml
+mesh run payments-api --step G7.write-tests     <span class="c"># its own worktree and branch</span>
 mesh step approve G7.r2                           <span class="c"># gates; reject --reopen; resume a parked step</span></pre>
 <p class="small">Tested against real Claude Code (<code>pnpm spike e2e-m45</code>):
 <ul class="small">
@@ -285,13 +285,13 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
   <li>The records hold the verdicts, criteria, bucket and blind separation.</li>
 </ul></p>
 
-<h3>What the team does today, and what it loses</h3>
-<p class="small">Studied in <code>architecture-and-standards</code> (canonical agents and workflows) and <code>vpc-node-agent</code>: 742 specs, 1,452 review files, 1,019 plans, 108 programme ledgers, 8,250 evidence files, 22,042 commits. Full write-up: <code>docs/analysis/2026-11-04-mesh-development-cycle.md</code>.</p>
+<h3>Why: what a typical SDD process loses without it</h3>
+<p class="small">From studying a team running this kind of cycle with Claude Code workflows over hundreds of specs (design history in <code>docs/analysis/</code>).</p>
 <div class="grid">
-  <div class="card"><h4>The cycle is strong</h4><p>Cold reviewer, warm on the record (3 rounds, churn breaker). Implementation and test plans written in parallel. Fail-first tests at the pre-change baseline. Read-only executor with failure buckets (spec-gap / impl-bug / test-bug / infra), 3 cycles. Mutations. Gate rule GATE-1 with an advisor.</p></div>
-  <div class="card"><h4>The data is thrown away</h4><p><code>programme.js</code> gets typed results back from each agent (<code>REVIEW{verdict, blockers}</code>, <code>EXEC{failures[{bucket}]}</code>) and keeps only prose. Rounds and verdicts live in file names, in 16+ spellings. Plans are overwritten. <code>Gate:</code> lines are free text.</p></div>
-  <div class="card"><h4>Model per role is unknown</h4><p>Spec 771: 28 commits from <em>one</em> Claude session and one model cover writer, reviewer, developer and tester. The agent files say the developer runs on sonnet; the commits say opus.</p></div>
-  <div class="card"><h4>Isolation is on trust</h4><p>The test-planner writes in the tree where the impl plan is being committed. The test-writer's base holds the impl plan. Test fixes run in the developer's worktree. The only proof is a self-declared <code>Source read: none</code>.</p></div>
+  <div class="card"><h4>The cycle itself works</h4><p>Cold reviewer, warm on the record (3 rounds, churn breaker). Implementation and test plans written in parallel. Fail-first tests at the pre-change baseline. Read-only executor with failure buckets (spec-gap / impl-bug / test-bug / infra), 3 cycles. Mutations. A gate rule with an advisor.</p></div>
+  <div class="card"><h4>The data is thrown away</h4><p>The workflow script gets typed results back from each agent (verdict, blockers, failure buckets) and keeps only prose. Rounds and verdicts end up in file names, in many spellings. Plans are overwritten. Gate lines are free text.</p></div>
+  <div class="card"><h4>Model per role is unknown</h4><p>Every commit of a spec comes from <em>one</em> Claude session and one model, covering writer, reviewer, developer and tester. Agent files and commits disagree on which model ran.</p></div>
+  <div class="card"><h4>Isolation is on trust</h4><p>The test-planner writes in the tree where the implementation plan is being committed. The test-writer's base holds that plan. Test fixes run in the developer's worktree. The only proof is a self-declared "source read: none".</p></div>
 </div>
 
 <h3>The graph</h3>
@@ -377,10 +377,10 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
   <tr><td>Combine</td><td><code>merge</code></td><td>—</td><td>head, conflict</td><td>a conflict means one side touched the other's files → park</td></tr>
   <tr><td>Verify</td><td><code>verify</code> / test-executor, read-only, ≤3 cycles</td><td>impl plan</td><td>verdict, <strong>per AC: met / not met / unrun</strong>, surfaces not run, failures with bucket, evidence file</td><td>per-AC result per cycle; routing by bucket; parks after 3 cycles with no new AC met</td></tr>
   <tr><td>Diff review</td><td><code>review</code>, ≤2 rounds</td><td>anyone who held develop or write tests</td><td>verdict, findings split code / tests</td><td>rounds; findings reopen the right side</td></tr>
-  <tr><td>R3 gate</td><td><code>gate</code></td><td>—</td><td>approve, or rule GATE-1 evaluated from recorded data</td><td>rule inputs, <strong>CI result</strong> (the authority for tests), final AC table</td></tr>
+  <tr><td>R3 gate</td><td><code>gate</code></td><td>—</td><td>approve, or a recorded rule with its inputs</td><td>rule inputs, <strong>CI result</strong> (the authority for tests), final AC table</td></tr>
   <tr><td>Roll-up</td><td>automatic</td><td>—</td><td>—</td><td>goal totals: rounds, cycles, buckets, parks, people, models, harness hashes, lead time</td></tr>
 </table>
-<p class="small">The spec id (<code>771</code>) and backlog row (<code>NA-1054</code>) are kept as <code>refs</code> on the goal, and <code>reserve-id.mjs</code> stays as it is. A test-only spec uses a "collapse" variant of the template, not an engine flag.</p>
+<p class="small">The team's own ids (e.g. spec <code>SPEC-7</code>, backlog row <code>ROW-42</code>) are kept as <code>refs</code> on the goal; mesh allocates none of them. A test-only spec uses a "collapse" variant of the template, not an engine flag.</p>
 
 <h3>How "no shared context" is enforced</h3>
 <table>
@@ -396,7 +396,7 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
 <h3>Retrofit: lessons back into the harness</h3>
 <ol class="flow">
   <li><strong>Every goal</strong> ends with a roll-up record: a per-goal retro with no agent and no prose.</li>
-  <li><strong>Weekly</strong>, <code>mesh ledger export</code> feeds a retrofit analysis (mesh-ai, or an agent routine like today's <code>harness-efficiency</code>). It compares cohorts by model, harness hash, role and stage: review rounds and churn, reconcile and fail-first misses, verify cycles and bucket mix, ACs met per cycle, time per AC, parks, human help, rework after merge, gate overturns.</li>
+  <li><strong>Weekly</strong>, <code>mesh ledger export</code> feeds a retrofit analysis (an analysis tool such as mesh-ai, or a scheduled agent routine). It compares cohorts by model, harness hash, role and stage: review rounds and churn, reconcile and fail-first misses, verify cycles and bucket mix, ACs met per cycle, time per AC, parks, human help, rework after merge, gate overturns.</li>
   <li><strong>Findings become goals</strong> that change the harness: agents, skills, <code>CLAUDE.md</code>. The harness hash changes.</li>
   <li><strong>The next cohort</strong> shows whether the change helped. Keep it or revert it, based on evidence.</li>
 </ol>
@@ -404,9 +404,9 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
 <h3>Today vs with mesh</h3>
 <table>
   <tr><th>Today (hand-written or in a file name)</th><th>With mesh (generated)</th></tr>
-  <tr><td><code>reviews/771/r-post1-CHANGES_REQUESTED.md</code></td><td><code>rounds[3] = {verdict: changes_requested, findings: {new: 1}, model, harness, at}</code></td></tr>
+  <tr><td><code>reviews/SPEC-7/r-post1-CHANGES_REQUESTED.md</code></td><td><code>rounds[3] = {verdict: changes_requested, findings: {new: 1}, model, harness, at}</code></td></tr>
   <tr><td><code># Runner: test-executor (claude-opus-5-5), cycle 3</code></td><td><code>segments[].model</code>, <code>model_source</code>, <code>effort</code>; cycle = round</td></tr>
-  <tr><td><code>Gate: R3 | by: default-rule GATE-1 | gate-run: …(300 chars)</code></td><td>gate record from structured inputs: rule, D1–D6, CI run</td></tr>
+  <tr><td><code>Gate: R3 | by: default-rule | gate-run: …(300 chars)</code></td><td>gate record from structured inputs: rule, D1–D6, CI run</td></tr>
   <tr><td>Failure buckets in progress prose</td><td><code>failures[].bucket</code> per cycle</td></tr>
   <tr><td>Plans overwritten; status rewinds only in git</td><td>rounds keep each revision's sha; state history in events</td></tr>
   <tr><td><code>Source read: none</code> (self-declared)</td><td><code>blind.separated</code>, holders, worktree base</td></tr>
@@ -446,10 +446,10 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
       <li><code>workflows/&lt;run&gt;.json</code>: start, duration, attempt.</li>
     </ul>
   </li>
-  <li>The label says which step and round it is. The canonical workflows already use <code>&lt;role&gt;:&lt;row&gt;[:&lt;round&gt;]</code>, e.g. <code>reviewer:NA-1054:r2</code> or <code>test-executor:NA-1054:c3</code>. The typed result becomes that round's data.</li>
-  <li>Records wait in <code>&lt;git-common-dir&gt;/mesh/pending/</code>, shared by all worktrees and never in the working tree. The workflow's final ledger commit runs one optional line, <code>mesh ledger stage NA-1054</code>, so they are committed with the closing commit. Without mesh the line is skipped.</li>
+  <li>The label says which step and round it is. Labels follow <code>&lt;role&gt;:&lt;key&gt;[:&lt;round&gt;]</code>, e.g. <code>reviewer:ROW-42:r2</code> or <code>test-executor:ROW-42:c3</code>. The typed result becomes that round's data.</li>
+  <li>Records wait in <code>&lt;git-common-dir&gt;/mesh/pending/</code>, shared by all worktrees and never in the working tree. The workflow's final ledger commit runs one optional line, <code>mesh ledger stage ROW-42</code>, so they are committed with the closing commit. Without mesh the line is skipped.</li>
 </ol>
-<p class="small">The canonical workflows in <code>claude-assets</code> already label every agent and give each a <code>schema:</code>. The change only adds optional result fields (criteria covered, a result per criterion, finding counts per class) and one optional <code>mesh ledger stage</code> line. There is no mesh call and no network access. Design: <code>docs/analysis/2026-11-04-local-first-and-workflow-capture.md</code>.</p>
+<p class="small">The SDD kit that ships with mesh-harness (<code>mesh assets install</code>: agents, the <code>sdd-programme.js</code> workflow and a spec template) already labels every agent and gives each a typed result, and its last step runs the optional <code>mesh ledger stage</code>. Any other workflow that follows the label format is recorded the same way. Nothing in it calls mesh or needs the network. Tested for real with <code>pnpm spike e2e-kit</code>: a toy repo, one Claude session, nine roles recorded with models and typed results, the row ready to land in 3 minutes.</p>
 
 <h3>How it is tested</h3>
 <p>Blackholed-hub tests for the fail-fast link, offline-then-reconnect sync with no duplicates, a complete Solo goal, a conflicting claim made while offline, and parser tests against real Claude Code files. A contract suite catches Claude Code upgrades that change those files. A real-Claude run of a programme four ways must finish every time with the same records: no daemon, hub cut, hub restored mid-run, Solo.</p>
@@ -464,7 +464,7 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
   <tr><td><strong>Daemon DB</strong> (your laptop)</td><td>Your sessions and their state, recent hook events (no prompt text), queued messages, outbox to the hub</td><td>Local, short</td><td>You</td></tr>
   <tr><td><strong>Hub DB</strong> (team)</td><td>Users, machines, sessions holding steps, goals, plan versions, steps and claims, notes, questions, messages, the <strong>event log</strong></td><td>State: until deleted. Events: 180 days by default (<code>events_retention_days</code>). Backup: <code>mesh hub backup</code></td><td>Signed-in team members</td></tr>
   <tr><td><strong>Git ledger</strong> (each repo)</td><td><code>goal.yaml</code>, <code>plan.vN.yaml</code>, <code>steps/&lt;id&gt;.md</code></td><td>Forever (repo history)</td><td>Anyone with repo access; plain names and models (owner decision 5)</td></tr>
-  <tr><td><strong>Ledger JSONL</strong> <span class="tag done">done</span></td><td>All records from many repos, validated, one per line</td><td>Regenerate any time</td><td>Whoever runs the export / mesh-ai</td></tr>
+  <tr><td><strong>Ledger JSONL</strong> <span class="tag done">done</span></td><td>All records from many repos, validated, one per line</td><td>Regenerate any time</td><td>Whoever runs the export</td></tr>
 </table>
 
 <h3>Hub events (the live channel)</h3>
@@ -491,7 +491,7 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
   <tr><td><code>segments[]</code></td><td>Per stretch of work (a session, or a subagent of a programme: role, agent id, label): sid, user, from/to, <strong>model</strong> + <code>model_source</code> (hook, workflow or agent), <strong>effort</strong>, permission mode, Claude Code version, <strong>harness hash</strong>, repo commit, mesh version, turns, prompts, nudges, waits</td><td><code>SessionStart</code>, <code>Stop</code>, <code>SubagentStart/Stop</code> + Claude Code's workflow files, daemon</td><td><span class="tag done">done</span></td></tr>
   <tr><td><code>rounds[]</code></td><td>One entry per <code>mesh_done</code>, so a reopened step keeps its history</td><td><code>mesh_done</code></td><td><span class="tag done">done</span></td></tr>
   <tr><td>decision <code>superseded</code></td><td>A pending plan replaced by a new proposal, not counted as a human "revise"</td><td>Hub</td><td><span class="tag done">done</span> (bug fix)</td></tr>
-  <tr><td><code>artifacts[{path, sha}], refs</code></td><td>The team's files this step produced (spec, review, plan, evidence) and ids (spec 771, NA-1054)</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>artifacts[{path, sha}], refs</code></td><td>The team's files this step produced (spec, review, plan, evidence) and ids (spec SPEC-7, row ROW-42)</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
   <tr><td>goal roll-up</td><td>Totals per stage at goal done: rounds, cycles, buckets, parks, people, models, harness hashes, lead time</td><td>Hub, from the step records</td><td><span class="tag done">done</span></td></tr>
   <tr><td><code>verdict, findings{new, repeat, regression}, blockers</code></td><td>Review result and the finding classes the team's reviewer already uses</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
   <tr><td><code>failures[{test, ac, bucket}]</code></td><td>Verify failures by bucket: spec-gap / impl-bug / test-bug / infra / unclear; the hub routes the fix</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
@@ -515,7 +515,7 @@ mesh step approve G7.r2                           <span class="c"># gates; rejec
 goal: G17
 step: dplane
 kind: implement
-repo: frr-dplane-ovs
+repo: payments-api
 plan: v2
 holders:
   - user: ariel
@@ -552,7 +552,7 @@ kind: verify
 <span class="n">role: test-executor              # M4.5, free text
 blind: [dplane]                  # M4.5, cannot see dplane's summary/branch
 acs: [AC1, AC2]</span>
-repo: frr-dplane-ovs
+repo: payments-api
 <span class="n">plan: { version: 2, approved_by: sara, approved_at: 2026-11-03T09:42Z }
 segments:
   - sid: s3
@@ -605,10 +605,10 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
   <div class="card"><h4>Split build, unbiased testing <span class="tag done">done</span></h4>
     <p>The <code>sdd-split</code> template (<a href="#cycle">section 6</a>): spec, cold review, split plans, developer and test-writer apart, read-only verify per AC, diff review, gates. mesh enforces the separation and the caps.</p></div>
   <div class="card"><h4>Programme owner <span class="tag done">done</span></h4>
-    <p>Run many backlog rows as goals with the template, unattended. Parks show up in "needs you" with their reason; gates wait in the web. No <code>programme.js</code> bookkeeping, and no typed results lost.</p></div>
+    <p>Run many backlog rows as goals with the template, unattended. Parks show up in "needs you" with their reason; gates wait in the web. No workflow-script bookkeeping, and no typed results lost.</p></div>
   <div class="card"><h4>Harness maintainer <span class="tag done">done</span>+</h4>
-    <p>Change an agent or skill in <code>claude-assets</code>; its harness hash changes; compare the next weeks' cohort with the last on rounds, cycles and ACs met. Keep or revert on evidence.</p></div>
-  <div class="card"><h4>Analyst / mesh-ai <span class="tag done">done</span></h4>
+    <p>Change an agent or skill in your repo or your shared assets; its harness hash changes; compare the next weeks' cohort with the last on rounds, cycles and ACs met. Keep or revert on evidence.</p></div>
+  <div class="card"><h4>Analyst <span class="tag done">done</span></h4>
     <p>Export the ledger and slice by model, harness hash, effort, repo, step kind, person, week. See <a href="#regress">section 11</a>.</p></div>
   <div class="card"><h4>Quality per acceptance criterion <span class="tag done">done</span></h4>
     <p>Which ACs fail first time, how many rounds until met, which failure class (impl, test, spec) dominates, which steps get reworked later.</p></div>

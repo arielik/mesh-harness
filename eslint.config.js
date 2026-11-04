@@ -3,7 +3,8 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/", "node_modules/", "coverage/", "test/fixtures/**", "spikes/out/**"] },
+  // Claude Code Workflow scripts (globals agent/parallel/phase, top-level return) are run in their real shape by test/assets.test.ts.
+  { ignores: ["dist/", "node_modules/", "coverage/", "test/fixtures/**", "spikes/out/**", "assets/**/.claude/workflows/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
