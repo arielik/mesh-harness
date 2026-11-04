@@ -1,7 +1,7 @@
 // The M1 commands: setup, doctor, ls, say, jump, run, tui (plan §6.2, §7, §9).
 
-import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
   claudeMdInstalled,
   claudeVersion,
@@ -13,13 +13,14 @@ import {
   mcpInstalled,
   MIN_CLAUDE_VERSION,
   run as runProgram,
+  type Runner,
   uninstallClaudeMd,
   uninstallMcp,
   uninstallSettingsFile,
 } from "../claude/index.ts";
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { CLAUDE_MD_BLOCK, HOOK_KINDS, type DaemonConfig, type GoalDetail, type Session } from "../protocol/index.ts";
+import { CLAUDE_MD_BLOCK, HOOK_KINDS, type DaemonConfig, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -228,9 +229,9 @@ export function tuiCommand(c: CliEnv): Command {
 export function runCommand(c: CliEnv): Command {
   return {
     name: "run",
-    summary: "start claude in tmux, one window per repo: mesh run <repo…> [--step S | --design G] [--auto L] [--bg --prompt P]",
+    summary: "start claude in tmux, one window per repo: mesh run <repo…> [--step S [--worktree] [--base REF] | --design G] [--auto L] [--bg --prompt P]",
     async run(args) {
-      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design"]);
+      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design", "base"]);
       const designGoal = a.str("design");
       let design: GoalDetail | undefined;
       if (designGoal) {
@@ -255,6 +256,7 @@ export function runCommand(c: CliEnv): Command {
       }
       const roots = defaultRoots(c.cwd, config?.workspaceRoots ?? []);
       const dirs = a.positional.map((r) => resolveRepo(r, roots));
+      const extraArgv: string[] = [];
       const model = a.str("model");
       const step = a.str("step") ?? (design ? `${design.goal.id}.design` : undefined);
       const addDirs: string[] = [];
@@ -276,8 +278,27 @@ export function runCommand(c: CliEnv): Command {
       }
       if (step) {
         // Claim first so nobody else takes it while Claude starts; the session re-binds on start.
-        const claimed = await HubClient.from(c.paths).post<{ id: string }>(`/v1/steps/${encodeURIComponent(step)}/claim`, {});
+        const claimed = await HubClient.from(c.paths).post<Step>(`/v1/steps/${encodeURIComponent(step)}/claim`, {});
         c.io.out(`Claimed ${claimed.id}.`);
+        const runner = c.runner ?? runProgram;
+        // M4.5: one worktree and branch per step (the plan's `worktree`, or --worktree).
+        if (a.has("worktree") || claimed.policy?.worktree) {
+          const wt = await stepWorktree(runner, dirs[0] as string, claimed, a.str("base"));
+          if (!wt.ok) {
+            c.io.err(wt.error);
+            return 1;
+          }
+          dirs[0] = wt.path;
+          c.io.out(`${wt.created ? "Created" : "Using"} worktree ${wt.path} on branch ${wt.branch}${wt.created ? ` from ${wt.base}` : ""}.`);
+        }
+        // Paths the step must not read become Claude Code deny rules for its session (best effort).
+        if (claimed.policy?.forbid?.length) {
+          const file = join(c.paths.stateDir, "step-settings", `${claimed.id}.json`);
+          mkdirSync(dirname(file), { recursive: true });
+          writeFileSync(file, `${JSON.stringify({ permissions: { deny: claimed.policy.forbid.flatMap((p) => [`Read(${p})`, `Edit(${p})`]) } }, null, 2)}\n`);
+          extraArgv.push("--settings", file);
+          c.io.out(`The session may not read: ${claimed.policy.forbid.join(", ")} (Claude Code deny rules; shell commands are not covered).`);
+        }
       }
       const prompt =
         a.str("prompt") ??
@@ -313,7 +334,7 @@ export function runCommand(c: CliEnv): Command {
       const tmux = { ...server, runner };
       const created = !(await hasSession(sessionName, tmux));
       // The prompt goes first: --add-dir takes a variable number of values.
-      const claudeArgv = (name: string) => ["claude", ...(prompt ? [prompt] : []), "-n", name, ...(model ? ["--model", model] : []), ...addDirs.flatMap((d) => ["--add-dir", d])];
+      const claudeArgv = (name: string) => ["claude", ...(prompt ? [prompt] : []), "-n", name, ...(model ? ["--model", model] : []), ...extraArgv, ...addDirs.flatMap((d) => ["--add-dir", d])];
       const windows: string[] = [];
       let first = true;
       if (created) {
@@ -338,6 +359,27 @@ export function runCommand(c: CliEnv): Command {
       return 0;
     },
   };
+}
+
+/**
+ * The worktree of a step: <repo>/.claude/worktrees/<goal>-<step> on branch mesh/<goal>-<step>, made
+ * from `base` (default HEAD) the first time, reused after (a fix round continues on the same branch).
+ */
+export async function stepWorktree(
+  runner: Runner,
+  repoDir: string,
+  step: Pick<Step, "id" | "goal">,
+  base: string | undefined,
+): Promise<{ ok: true; path: string; branch: string; created: boolean; base: string } | { ok: false; error: string }> {
+  const slug = step.id.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const path = join(repoDir, ".claude", "worktrees", slug);
+  const branch = `mesh/${slug}`;
+  if (existsSync(path)) return { ok: true, path, branch, created: false, base: base ?? "HEAD" };
+  const git = (args: string[]) => runner("git", ["-C", repoDir, ...args], { timeoutMs: 60_000 });
+  const exists = (await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).code === 0;
+  const r = exists ? await git(["worktree", "add", path, branch]) : await git(["worktree", "add", "-b", branch, path, base ?? "HEAD"]);
+  if (r.code !== 0) return { ok: false, error: `could not create the worktree for ${step.id}: ${(r.stderr || r.stdout).trim()}` };
+  return { ok: true, path, branch, created: true, base: exists ? branch : (base ?? "HEAD") };
 }
 
 export function statusCommand(c: CliEnv): Command {

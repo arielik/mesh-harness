@@ -42,6 +42,59 @@
         "by"
       ]
     },
+    "role": {
+      "type": "string"
+    },
+    "acs": {
+      "description": "criteria this step covers",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "gate": {
+      "type": "string"
+    },
+    "reworks": {
+      "type": "string"
+    },
+    "contract": {
+      "type": "string"
+    },
+    "blind": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "separated": {
+          "type": "boolean",
+          "description": "no person worked on both sides"
+        }
+      },
+      "required": [
+        "steps",
+        "separated"
+      ]
+    },
+    "parked": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
+        }
+      },
+      "required": [
+        "reason"
+      ]
+    },
     "holders": {
       "type": "array",
       "items": {
@@ -324,6 +377,126 @@
             }
           },
           "summary": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "changes_requested",
+              "blocked",
+              "pass",
+              "fail"
+            ]
+          },
+          "findings": {
+            "type": "object",
+            "properties": {
+              "new": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "repeat": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "regression": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "new",
+              "repeat",
+              "regression"
+            ]
+          },
+          "blockers": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "test": {
+                  "type": "string"
+                },
+                "ac": {
+                  "type": "string"
+                },
+                "bucket": {
+                  "type": "string"
+                },
+                "assertion": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "bucket"
+              ],
+              "additionalProperties": {}
+            }
+          },
+          "acs": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "met",
+                "not_met",
+                "unrun"
+              ]
+            }
+          },
+          "acs_addressed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reconcile": {
+            "type": "object",
+            "properties": {
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "missing"
+            ]
+          },
+          "gate": {
+            "type": "object",
+            "properties": {
+              "by": {
+                "type": "string"
+              },
+              "rule": {
+                "type": "string"
+              },
+              "comment": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "by"
+            ],
+            "additionalProperties": {}
+          },
+          "parked": {
+            "description": "the rule that parked the step after this round",
             "type": "string"
           }
         },

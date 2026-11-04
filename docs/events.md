@@ -23,8 +23,12 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.paused` | the holder's session ended or machine went offline | `reason` |
 | `step.taken_over` | `mesh take` | `from` |
 | `step.noted` | `mesh_note` | — |
-| `step.done` / `step.failed` | `mesh_done` | `summary`, `mr`, `reopen`, `round`, `model` |
-| `step.reopened` | a test or review step failed it | `by`, `reason`, `fixCycles` |
+| `step.done` / `step.failed` | `mesh_done` | `summary`, `mr`, `reopen`, `round`, `model`, `verdict`, `buckets` |
+| `step.rejected` | `mesh_done` not accepted (reconcile: criteria not covered); the holder keeps the step | `reason`, `missing` |
+| `step.parked` | a rule stopped the step (round cap, churn, stall, a bucket routed to a person, reconcile after a retry) | `reason`, `round` |
+| `step.resumed` | a person resumed a parked or failed step | `comment`, `was` |
+| `gate.approved` / `gate.rejected` | a person (or a recorded rule) decided a gate step | `gate`, `rule`, `comment`, `reopen` |
+| `step.reopened` | a test, verify or review step failed it, or a gate was rejected | `by`, `reason` (bucket, criterion and assertion when given, never the tester's prose), `fixCycles`, `buckets` |
 | `step.dropped` | a new plan removed it | — |
 | `question.asked` / `question.answered` | `mesh_ask` / an answer | `question` |
 | `message.sent` | a person messaged a session | `id` |

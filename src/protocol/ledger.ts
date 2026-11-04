@@ -25,6 +25,8 @@ export const LedgerGoal = z.looseObject({
   repos: z.array(z.string()).optional(),
   issue: z.string().optional(),
   refs: z.record(z.string(), z.string()).optional().describe("the team's own ids, e.g. {spec: '771', backlog: 'NA-1054'}"),
+  reworks: z.array(z.string()).optional().describe("goals this one redoes"),
+  preset: z.string().optional().describe("the plan template the design followed"),
   created: time.optional(),
   done: time.optional(),
   rollup: z
@@ -45,6 +47,10 @@ export const LedgerGoal = z.looseObject({
       active_minutes: z.number(),
       lead_time_hours: z.number().optional(),
       by_kind: z.record(z.string(), z.object({ steps: int, rounds: int, fix_cycles: int, minutes: z.number() })),
+      parks: int.optional(),
+      buckets: z.record(z.string(), int).optional().describe("failures by bucket across all rounds"),
+      acs: z.record(z.string(), z.object({ met: z.boolean(), first_met: z.object({ step: z.string(), round: int }).optional() })).optional(),
+      gates: z.array(z.object({ step: z.string(), by: z.string(), rule: z.string().optional() })).optional(),
     })
     .optional()
     .describe("totals, written when the goal is done"),
@@ -59,7 +65,12 @@ export const LedgerPlan = z.looseObject({
   proposed: z.object({ by: z.string(), at: time }).optional(),
   decision: z.enum(["pending", "approved", "revised", "superseded"]),
   decided: z.object({ by: z.string().optional(), at: time.optional(), comment: z.string().optional() }).optional(),
-  steps: z.array(z.looseObject({ id: z.string(), kind: z.string(), repo: z.string().optional(), title: z.string().optional(), deps: z.array(z.string()).optional(), brief: z.string().optional() })),
+  acs: z.array(z.looseObject({ id: z.string(), text: z.string(), surface: z.string().optional(), fails_when: z.string().optional() })).optional(),
+  steps: z.array(
+    z
+      .looseObject({ id: z.string(), kind: z.string(), repo: z.string().optional(), title: z.string().optional(), deps: z.array(z.string()).optional(), brief: z.string().optional() })
+      .describe("plus the step's optional rules: role, acs, blind, reads, forbid, contract, max_rounds, park_on, route, target, must_cover, worktree, reworks, gate"),
+  ),
 });
 
 const segment = z.looseObject({
@@ -93,6 +104,15 @@ const round = z.looseObject({
   reopen: z.array(z.string()).optional(),
   artifacts: z.array(artifact).optional(),
   summary: z.string().optional(),
+  verdict: z.enum(["approved", "changes_requested", "blocked", "pass", "fail"]).optional(),
+  findings: z.object({ new: int, repeat: int, regression: int }).optional(),
+  blockers: int.optional(),
+  failures: z.array(z.looseObject({ test: z.string().optional(), ac: z.string().optional(), bucket: z.string(), assertion: z.string().optional() })).optional(),
+  acs: z.record(z.string(), z.enum(["met", "not_met", "unrun"])).optional(),
+  acs_addressed: z.array(z.string()).optional(),
+  reconcile: z.object({ missing: z.array(z.string()) }).optional(),
+  gate: z.looseObject({ by: z.string(), rule: z.string().optional(), comment: z.string().optional() }).optional(),
+  parked: z.string().optional().describe("the rule that parked the step after this round"),
 });
 
 export const LedgerStep = z.looseObject({
@@ -104,6 +124,13 @@ export const LedgerStep = z.looseObject({
   repo: z.string().optional(),
   plan: z.string().optional(),
   plan_approved: z.object({ by: z.string(), at: time.optional() }).optional(),
+  role: z.string().optional(),
+  acs: z.array(z.string()).optional().describe("criteria this step covers"),
+  gate: z.string().optional(),
+  reworks: z.string().optional(),
+  contract: z.string().optional(),
+  blind: z.object({ steps: z.array(z.string()), separated: z.boolean().describe("no person worked on both sides") }).optional(),
+  parked: z.object({ reason: z.string(), at: time.optional() }).optional(),
   holders: z.array(z.object({ user: z.string(), from: time, to: time.optional() })).optional(),
   sessions: z.array(z.string()).optional(),
   models: z.array(z.string()).optional(),

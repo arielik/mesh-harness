@@ -3,11 +3,13 @@
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stringify, parse as parseYaml } from "yaml";
+import { z } from "zod";
 import { sha256 } from "../auth/index.ts";
-import { repoMatches } from "../core/index.ts";
-import { PlanInput, type Goal, type GoalDetail, type Step, type TrailFile } from "../protocol/index.ts";
+import { BUILTIN_PRESETS, instantiate, parsePreset, presetText, repoMatches, type Preset } from "../core/index.ts";
+import { PlanAc, PlanInput, type Goal, type GoalDetail, type Step, type TrailFile } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
@@ -85,6 +87,27 @@ export function whoamiCommand(c: CliEnv): Command {
   };
 }
 
+/** A template by name: the repo's .mesh/presets/<name>.yaml first, then the built-in ones. */
+export function findPreset(cwd: string, name: string): Preset {
+  for (let dir = resolve(cwd); ; ) {
+    const f = join(dir, ".mesh", "presets", `${name}.yaml`);
+    if (existsSync(f)) return parsePreset(name, readFileSync(f, "utf8"));
+    if (existsSync(join(dir, ".git"))) break;
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  const b = BUILTIN_PRESETS.find((p) => p.name === name);
+  if (!b) throw new Error(`no template "${name}" (built in: ${BUILTIN_PRESETS.map((p) => p.name).join(", ")}; or .mesh/presets/${name}.yaml in this repo)`);
+  return b;
+}
+
+function readAcs(file: string | undefined): PlanAc[] | undefined {
+  if (!file) return undefined;
+  const raw = parseYaml(readFileSync(file, "utf8")) as unknown;
+  return z.array(PlanAc).parse(Array.isArray(raw) ? raw : (raw as { acs?: unknown }).acs);
+}
+
 function readPlan(file: string): PlanInput {
   const text = readFileSync(file, "utf8");
   const raw = file.endsWith(".json") ? JSON.parse(text) : parseYaml(text);
@@ -94,10 +117,11 @@ function readPlan(file: string): PlanInput {
 export function goalCommand(c: CliEnv): Command {
   const usage = [
     "usage:",
-    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--refs spec=771,backlog=NA-1054] [--issue URL] [--priority 0-9]',
+    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--refs spec=771,backlog=NA-1054] [--preset sdd-split] [--reworks G3] [--issue URL] [--priority 0-9]',
     "  mesh goal ls",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",
+    "  mesh goal plan <G> --preset sdd-split --repo R [--acs acs.yaml] [--no-approve]",
     '  mesh goal approve <G> [--comment "…"]',
     '  mesh goal revise <G> "<comment>"',
     '  mesh goal replan <G> ["<comment>"]',
@@ -108,7 +132,7 @@ export function goalCommand(c: CliEnv): Command {
     summary: "goals and plans: new, ls, show, plan, approve, revise",
     async run(args) {
       const [sub, ...rest] = args;
-      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment"]);
+      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "new": {
@@ -121,6 +145,8 @@ export function goalCommand(c: CliEnv): Command {
             ...(a.str("refs") ? { refs: Object.fromEntries((a.str("refs") as string).split(",").map((kv) => kv.split("=").map((x) => x.trim())).filter((kv) => kv.length === 2 && kv[0] && kv[1])) } : {}),
             ...(a.str("issue") ? { issueUrl: a.str("issue") } : {}),
             ...(a.str("priority") ? { priority: Number(a.str("priority")) } : {}),
+            ...(a.str("reworks") ? { reworks: (a.str("reworks") as string).split(",").map((r) => r.trim()).filter(Boolean) } : {}),
+            ...(a.str("preset") ? { preset: { name: a.str("preset") as string, text: presetText(findPreset(c.cwd, a.str("preset") as string)) } } : {}),
           });
           c.io.out(`Created ${g.id} "${g.title}". Start the design with: mesh run --design ${g.id}`);
           return 0;
@@ -141,8 +167,13 @@ export function goalCommand(c: CliEnv): Command {
         case "plan": {
           const id = a.positional[0];
           const file = a.str("file");
-          if (!id || !file) break;
-          const plan = readPlan(file);
+          const presetName = a.str("preset");
+          if (!id || (!file && !presetName)) break;
+          if (presetName && !a.str("repo")) {
+            c.io.err("--preset needs --repo (the repo the template's steps work in)");
+            return 2;
+          }
+          const plan = file ? readPlan(file) : instantiate(findPreset(c.cwd, presetName as string), { repo: a.str("repo") as string, goal: id, acs: readAcs(a.str("acs")) });
           const r = await hub().post<{ plan: { version: number }; detail?: GoalDetail }>(`/v1/goals/${encodeURIComponent(id)}/plan`, { ...plan, approve: !a.has("no-approve") });
           c.io.out(r.detail ? `Plan v${r.plan.version} approved; ${r.detail.steps.filter((s) => s.state === "ready").length} step(s) ready.` : `Plan v${r.plan.version} proposed; waiting for approval.`);
           return 0;
@@ -309,6 +340,67 @@ export function hubInit(path: string, users: string[], listen: string): { tokens
   return { tokens, text };
 }
 
+export function stepCommand(c: CliEnv): Command {
+  const usage = [
+    "usage:",
+    '  mesh step approve <step> [--comment "…"] [--rule GATE-1]   a gate step',
+    '  mesh step reject <step> --reopen a,b [--comment "…"]         a gate step, reopening steps',
+    '  mesh step resume <step> [--comment "…"]                      a parked (or failed) step',
+  ].join("\n");
+  return {
+    name: "step",
+    summary: "decide gates and resume parked steps: mesh step approve|reject|resume <step>",
+    async run(args) {
+      const [sub, id, ...rest] = args;
+      const a = parseArgs(rest, ["comment", "rule", "reopen"]);
+      if (!id || !["approve", "reject", "resume"].includes(sub ?? "")) {
+        c.io.err(usage);
+        return 2;
+      }
+      const hub = HubClient.from(c.paths);
+      const path = `/v1/steps/${encodeURIComponent(id)}/${sub as string}`;
+      const comment = a.str("comment") ?? (a.positional.length ? a.positional.join(" ") : undefined);
+      if (sub === "resume") {
+        const s = await hub.post<Step>(path, comment ? { comment } : {});
+        c.io.out(`${s.id} is ${s.state} again.`);
+        return 0;
+      }
+      const reopen = a.str("reopen")?.split(",").map((x) => x.trim()).filter(Boolean);
+      if (sub === "reject" && !reopen?.length) {
+        c.io.err("mesh step reject needs --reopen a,b (the steps to fix)");
+        return 2;
+      }
+      const r = await hub.post<{ step: Step; nowReady: string[]; goalDone: boolean; record?: TrailFile; files?: TrailFile[] }>(path, { ...(comment ? { comment } : {}), ...(a.str("rule") ? { rule: a.str("rule") } : {}), ...(reopen ? { reopen } : {}) });
+      // The gate's record (and goal.yaml when the goal finished) go into this checkout, if it is one.
+      const written = writeTrailHere(c.cwd, [...(r.record ? [r.record] : []), ...(r.files ?? [])]);
+      if (written.length) c.io.out(`Wrote ${written.join(", ")}; commit them with the landing.`);
+      c.io.out(sub === "approve" ? `${r.step.id} approved.${r.nowReady.length ? ` Ready: ${r.nowReady.join(", ")}.` : ""}${r.goalDone ? ` Goal ${r.step.goal} is done.` : ""}` : `${r.step.id} rejected; reopened ${reopen?.join(", ")}.`);
+      return 0;
+    },
+  };
+}
+
+export function presetCommand(c: CliEnv): Command {
+  return {
+    name: "preset",
+    summary: "plan templates: mesh preset ls | show <name>",
+    async run(args) {
+      const [sub, name] = args;
+      if (sub === "ls" || sub === undefined) {
+        for (const p of BUILTIN_PRESETS) c.io.out(`${p.name.padEnd(14)} ${p.description}`);
+        c.io.out("Repo templates: .mesh/presets/<name>.yaml (a description and steps, repo \"{repo}\").");
+        return 0;
+      }
+      if (sub === "show" && name) {
+        c.io.out(presetText(findPreset(c.cwd, name)).trimEnd());
+        return 0;
+      }
+      c.io.err("usage: mesh preset ls | show <name>");
+      return 2;
+    },
+  };
+}
+
 export function hubCommands(c: CliEnv): Command[] {
-  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), showCommand(c), nextCommand(c), takeCommand(c), answerCommand(c), autopilotCommand(c)];
+  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), showCommand(c), nextCommand(c), takeCommand(c), stepCommand(c), presetCommand(c), answerCommand(c), autopilotCommand(c)];
 }

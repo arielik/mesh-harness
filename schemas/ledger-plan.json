@@ -63,6 +63,31 @@
         }
       }
     },
+    "acs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string"
+          },
+          "fails_when": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "additionalProperties": {}
+      }
+    },
     "steps": {
       "type": "array",
       "items": {
@@ -94,7 +119,8 @@
           "id",
           "kind"
         ],
-        "additionalProperties": {}
+        "additionalProperties": {},
+        "description": "plus the step's optional rules: role, acs, blind, reads, forbid, contract, max_rounds, park_on, route, target, must_cover, worktree, reworks, gate"
       }
     }
   },

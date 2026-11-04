@@ -1,6 +1,6 @@
 # mesh-harness implementation plan
 
-Status: **v2.6, reviewed; M0–M4 done; M4.5 next** ([analysis](../analysis/2026-11-04-team-value-metrics-and-ledger.md#owner-decisions-2026-11-04)). Date: 2026-11-04. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
+Status: **v2.7, reviewed; M0–M4.5 done** ([analysis](../analysis/2026-11-04-team-value-metrics-and-ledger.md#owner-decisions-2026-11-04)). Date: 2026-11-04. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
 
 Sources:
 
@@ -612,7 +612,7 @@ Notes and deviations:
   - `docs/events.md`;
   - `mesh ledger export` (validated JSONL, `--events`).
 - **Docs.** `docs/guide/` has overview, concepts, install, auth, operations and the ledger.
-- **Not in this repo.** 4.0.6, the canonical workflow change, is a local branch `chore/mesh-ledger-capture` in `architecture-and-standards`; pushing it is the owner's call.
+- **Not in this repo.** 4.0.6, the canonical workflow change, is on branch `chore/mesh-ledger-capture` in `architecture-and-standards` (commit `7523301`, author and committer Ghost <ghost@writer.com>), pushed for review; merging it is the owner's call.
 - **Found on the way.**
   - `e2e-m2`'s goal-done check still matched the pre-M3 `goal show` format; fixed.
   - A device token that expires during a long offline stretch puts the link in `auth-failed`; `mesh login` fixes it.
@@ -638,6 +638,28 @@ Optional plan fields and guards only: no roles engine and no workflow engine. A 
 | 4.5.13 | **Plan presets** (R14, C9, moved from M5) including `sdd-split` and its collapse variant | S–M | A design session proposes from the preset |
 
 Dropped: agent-reported test counts (R8; CI only) and token usage (R19).
+
+**Status: done (2026-11-04).** All M4.5 tasks are built. The checks:
+- `pnpm check`: 317 tests, including the stage-table property test and `test/m45-cycle.test.ts`, the full `sdd-split` goal with three people;
+- the Playwright web tests (a gate decided on the Goal page, a parked step resumed);
+- `pnpm spike e2e-m45` against real Claude Code. Two people, criteria, blind sides refused at claim, a verify round that failed with an impl-bug routed back to the developer (who saw only the bucket and assertion), round 2 passing, R3 approved with `mesh step approve`, and records with verdicts, criteria, buckets, separation and the goal roll-up. All green on the first run.
+
+Notes and deviations:
+
+- **Rules.** Steps carry the plan's optional rules as `policy`; one pure module (`src/core/policy.ts`) decides what finishing means. `parked` is a new step state; `mesh step resume` (or the web) lets it go on, and caps count again from there.
+- **Reopen re-runs downstream work.** Done steps downstream of a reopened step wait again: a review after a spec fix, a combine after a code fix, a gate after either. Without this a verify would pass on the old combine.
+- **Reconcile** rejects the `mesh_done`, so the holder keeps the step and fixes it. The second miss parks.
+- **Blind guard scope.** `blind_guard: person` (team hub default) or `session` (the Solo hub). In Solo one person may play both sides, never from the same session. The template's spec review is blind to the spec, so the writer can't review their own spec.
+- **Gates** are decided only by the goal owner, approvers or admins, through `mesh step approve|reject`, the web, or the API with a `rule` and `inputs`. A recorded rule closing a gate unattended is possible through the API, but nothing evaluates GATE-1 by itself (owner question 2 in the cycle doc). Gate and design records are served with the goal's files; `mesh step approve` writes them, and `goal.yaml` when the goal finished, into the current checkout.
+- **Plans on their own branch** come from the template's briefs plus worktrees per step (`mesh run --step --worktree`, or the plan's `worktree`). The worktree lives in `<repo>/.claude/worktrees/<step>` on branch `mesh/<step>`; add `.claude/worktrees` to the repo's `.gitignore`.
+- **Stage table** (`src/core/stages.ts`): sessions, steps and messages. Users:
+  - the TUI groups sessions by it and lists failed deliveries;
+  - `mesh show` prints step counts from it;
+  - the Goal page shows the stage counts.
+  
+  The web Live page still lists sessions by state; it has no grouped panel to convert.
+- **Found by the real-Claude re-runs.** In `e2e-m3`, whose plan has no criteria, a haiku agent read the new `mesh_done` fields and passed made-up criterion ids. The hub refused every call with an obscure error. Now criteria are kept only when the plan defines them, unknown ids are dropped (never an error), and the tool describes the fields as "only if your brief lists acceptance criteria". `e2e-m2`, `e2e-m3`, `e2e-offline` and `e2e-m45` were re-run green after the fix.
+- **Templates.** `sdd-split` and `sdd-collapse` are built in; repos add `.mesh/presets/<name>.yaml`. `mesh goal new --preset` puts the template in the design brief; `mesh goal plan --preset --repo --acs` fills it in. Differences from the template are warnings in `mesh_plan`'s answer.
 
 ### M5. Optional (later)
 

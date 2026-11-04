@@ -75,3 +75,41 @@ test("create a goal from the board", async ({ page }) => {
   await page.getByRole("button", { name: "Create" }).click();
   await expect(page.locator(".column", { hasText: "Backlog" })).toContainText("Made in the browser");
 });
+
+test("decide a gate step and resume a parked one on the Goal page", async ({ page, request }) => {
+  const auth = await bobApi(request);
+  const goal = await (await request.post("/v1/goals", { headers: auth, data: { title: "Gates", primaryRepo: "frr" } })).json();
+  const plan = await request.post(`/v1/goals/${goal.id}/plan`, {
+    headers: auth,
+    data: {
+      approve: true,
+      steps: [
+        { id: "build", repo: "frr", kind: "implement", title: "build", brief: "b" },
+        { id: "verify", repo: "frr", kind: "verify", title: "verify", brief: "v", deps: ["build"], route: { infra: "park" } },
+        { id: "r3", repo: "frr", kind: "gate", gate: "R3", title: "R3", brief: "approve", deps: ["build"] },
+      ],
+    },
+  });
+  expect(plan.ok()).toBeTruthy();
+  for (const [id, body] of [
+    ["build", { summary: "built" }],
+    ["verify", { summary: "lane down", verdict: "fail", failures: [{ bucket: "infra" }] }],
+  ] as const) {
+    expect((await request.post(`/v1/steps/${goal.id}.${id}/claim`, { headers: auth, data: {} })).ok()).toBeTruthy();
+    expect((await request.post(`/v1/steps/${goal.id}.${id}/done`, { headers: auth, data: body })).ok()).toBeTruthy();
+  }
+  await signIn(page);
+  await page.goto(`/#/goal/${goal.id}`);
+  await expect(page.getByLabel("step stages")).toContainText("needs a person 2");
+  await page.locator(`[data-step="${goal.id}.r3"]`).click();
+  await page.getByLabel("Gate comment").fill("landing looks good");
+  // Alice is an admin here, so she may decide Bob's gate.
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByLabel("rounds")).toContainText("gate by @alice");
+  await expect(page.getByLabel("step stages")).toContainText("needs a person 1");
+  await page.locator(`[data-step="${goal.id}.verify"]`).click();
+  await expect(page.getByLabel("parked")).toContainText("infra: routed to a person");
+  await expect(page.getByLabel("rounds")).toContainText("infra");
+  await page.getByRole("button", { name: "Resume" }).click();
+  await expect(page.locator(`[data-step="${goal.id}.verify"]`)).toContainText("ready");
+});

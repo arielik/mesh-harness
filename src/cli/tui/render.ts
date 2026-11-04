@@ -1,17 +1,14 @@
 // Pure rendering of the session list (plan §9). No I/O, so it can be snapshot-tested.
 
-import { needsLabel, sessionLabel } from "../../core/index.ts";
+import { messageStage, needsLabel, SESSION_STAGES, sessionLabel, sessionStage, type SessionStage } from "../../core/index.ts";
 import type { Message, Session } from "../../protocol/index.ts";
 
-export type Group = "NEEDS YOU" | "WORKING" | "STALLED / QUIET" | "IDLE" | "ENDED";
-export const GROUP_ORDER: Group[] = ["NEEDS YOU", "WORKING", "STALLED / QUIET", "IDLE", "ENDED"];
+/** Session groups come from the stage table in core (one source for every panel). */
+export type Group = SessionStage;
+export const GROUP_ORDER: readonly Group[] = SESSION_STAGES;
 
 export function groupOf(s: Session): Group {
-  if (s.state === "needs_you") return "NEEDS YOU";
-  if (s.state === "stalled" || (s.state === "working" && s.quiet)) return "STALLED / QUIET";
-  if (s.state === "working") return "WORKING";
-  if (s.state === "ended") return "ENDED";
-  return "IDLE";
+  return sessionStage(s);
 }
 
 /** Sessions in display order (the order the cursor moves through). */
@@ -83,7 +80,8 @@ export function render(v: View): string[] {
   lines.push("");
 
   const pendingBySid = new Map<string, number>();
-  for (const m of v.messages) if (m.state === "pending") pendingBySid.set(m.sid, (pendingBySid.get(m.sid) ?? 0) + 1);
+  for (const m of v.messages) if (messageStage(m) === "waiting") pendingBySid.set(m.sid, (pendingBySid.get(m.sid) ?? 0) + 1);
+  const failedDeliveries = v.messages.filter((m) => messageStage(m) === "failed delivery");
 
   const list = ordered(v.sessions);
   if (list.length === 0) {
@@ -113,6 +111,7 @@ export function render(v: View): string[] {
   const footer: string[] = [];
   if (v.input) footer.push(paint(C.bold, `${v.input.label}${v.input.value}▌`));
   else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · n next step · g goals · r refresh · ↑↓ move · q quit"));
+  if (failedDeliveries.length) footer.push(paint(C.red, fit(`${failedDeliveries.length} message(s) could not be delivered: ${failedDeliveries.map((m) => m.error ?? "?").slice(0, 2).join("; ")}`, v.width)));
   if (v.status) footer.push(fit(v.status, v.width));
   const room = v.height - footer.length - 1;
   const body = lines.length > room ? [...lines.slice(0, Math.max(0, room - 1)), paint(C.dim, "  …")] : lines;

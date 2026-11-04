@@ -1,6 +1,6 @@
 # The mesh development cycle: design → spec → split plans → blind build → evaluate → retrofit
 
-Date: 2026-11-04. Status: **proposal for discussion**. Follows the owner decisions in [2026-11-04-team-value-metrics-and-ledger.md](2026-11-04-team-value-metrics-and-ledger.md#owner-decisions-2026-11-04).
+Date: 2026-11-04. Status: **implemented in M4 (capture) and M4.5 (rules, gates, templates)**. See the plan's M4.5 status for where the build differs; how to run it is in [docs/guide/cycle.md](../guide/cycle.md). Follows the owner decisions in [2026-11-04-team-value-metrics-and-ledger.md](2026-11-04-team-value-metrics-and-ledger.md#owner-decisions-2026-11-04).
 
 Sources studied (read-only):
 - `architecture-and-standards`: the canonical assets in `claude-assets/` (agents, workflows `define-rows.js`, `build-rows.js`, `gate-rule.js`, blocks, hooks, `sync-manifest.json`) and the templates.

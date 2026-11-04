@@ -51,11 +51,10 @@
 <main>
 
 <h1>mesh-harness: how it works</h1>
-<p class="sub">What is built, how a team uses it, how data flows, what data is kept and what you can do with it, and the proposed development cycle (design → spec → split plans → blind build → evaluate → retrofit). Written 2026-11-04 and updated after M4 (plan v2.6): local-first, programme capture and the ledger are built.</p>
+<p class="sub">What is built, how a team uses it, how data flows, what data is kept and what you can do with it, and the development cycle (design → spec → split plans → blind build → evaluate → retrofit). Written 2026-11-04 and updated after M4.5 (plan v2.7): local-first, programme capture, the ledger, and the cycle's rules, gates and templates are built.</p>
 
 <p class="legend small">
-  <span><span class="tag done">done</span> built, tested and pushed (M0–M4)</span>
-  <span><span class="tag m45">M4.5</span> next milestone</span>
+  <span><span class="tag done">done</span> built, tested and pushed (M0–M4.5)</span>
   <span><span class="tag later">later</span> M5 or beyond</span>
 </p>
 
@@ -66,7 +65,7 @@
   <li><a href="#pieces">The pieces</a></li>
   <li><a href="#flow">How data flows</a></li>
   <li><a href="#life">A goal from start to finish</a></li>
-  <li><a href="#cycle">The development cycle on mesh (proposed)</a></li>
+  <li><a href="#cycle">The development cycle on mesh</a></li>
   <li><a href="#offline">Works without the hub, and without mesh</a></li>
   <li><a href="#data">What data is kept, and where</a></li>
   <li><a href="#record">What a step record looks like</a></li>
@@ -104,7 +103,7 @@
   <tr><td><strong>M2</strong> hub, sign-in, team tools</td><td>Shared <code>mesh hub</code>, login (none / token / OIDC), goals and steps with claims, 8 MCP tools for agents, autopilot (nudge / chain), web Live page.</td><td><span class="tag done">done</span></td></tr>
   <tr><td><strong>M3</strong> design → approval → step graph</td><td><code>mesh run --design</code>, plan proposal and approval, replan, step records and plan files written into repos, <code>mesh show</code>, web Goals board and Goal page.</td><td><span class="tag done">done</span></td></tr>
   <tr><td><strong>M4</strong> local-first, capture, ledger, hardening</td><td><strong>Local-first</strong> (local hub in the daemon, Solo mode, fail-fast hub link, replication) and <strong>programme capture</strong> through subagent hooks and Claude Code's workflow files. Then: versioned record format <code>mesh.ledger.v1</code>, provenance per stretch of work (model, effort, harness hash…), round history, a record for every stage, links to the team's files (spec, reviews, evidence), a goal roll-up, <code>mesh ledger export</code> to JSONL, events feed, backup, retention, docs.</td><td><span class="tag done">done</span></td></tr>
-  <tr><td><strong>M4.5</strong> lifecycle data, all optional</td><td>Everything the <a href="#cycle">development cycle</a> needs, as optional fields: verdicts, finding classes and failure buckets, acceptance criteria and the reconcile check, round caps and park rules, gate steps, new step kinds, blind steps with <code>reads</code>/<code>forbid</code>, worktree per step, plan templates (<code>sdd-split</code>), rework links, roles, one state table for every panel.</td><td><span class="tag m45">M4.5</span> ~2 weeks</td></tr>
+  <tr><td><strong>M4.5</strong> lifecycle data, all optional</td><td>Everything the <a href="#cycle">development cycle</a> needs, as optional fields: verdicts, finding classes and failure buckets, acceptance criteria and the reconcile check, round caps and park rules, gate steps, new step kinds, blind steps with <code>reads</code>/<code>forbid</code>, worktree per step, plan templates (<code>sdd-split</code>), rework links, roles, one state table for every panel.</td><td><span class="tag done">done</span></td></tr>
   <tr><td><strong>M5</strong></td><td>GitLab issues and <strong>CI ingest</strong> (test results per step), adapters for existing machine ledgers (e.g. <code>evidence/lane/verdicts.json</code>), packaging.</td><td><span class="tag later">later</span></td></tr>
 </table>
 
@@ -260,7 +259,7 @@
 </ol>
 
 <!-- ============================================================ -->
-<h2 id="cycle">6. The development cycle on mesh <span class="tag m45">capture done · M4.5 for the rest</span></h2>
+<h2 id="cycle">6. The development cycle on mesh <span class="tag done">done</span></h2>
 
 <div class="simple">
 <p><strong>In short:</strong> mesh runs the team's existing SDD cycle as a <em>plan template</em>:
@@ -273,6 +272,18 @@ design → spec → cold spec review → implementation plan and test plan writt
 </ul>
 <p>The team keeps its own spec, review, plan and evidence files.</p>
 </div>
+
+<p><strong>Built (M4.5).</strong> Run it with the <code>sdd-split</code> template. Commands, what each agent reports and what mesh does with it are in <code>docs/guide/cycle.md</code>; in short:</p>
+<pre>mesh goal plan G7 --preset sdd-split --repo frr-dplane-ovs --acs acs.yaml
+mesh run frr-dplane-ovs --step G7.write-tests     <span class="c"># its own worktree and branch</span>
+mesh step approve G7.r2                           <span class="c"># gates; reject --reopen; resume a parked step</span></pre>
+<p class="small">Tested against real Claude Code (<code>pnpm spike e2e-m45</code>):
+<ul class="small">
+  <li>The blind guard refused the developer on the test side.</li>
+  <li>Verify failed AC-02 with an impl-bug. mesh reopened the developer's step, and the developer saw "impl-bug AC-02: FIXED marker missing", not the tester's summary.</li>
+  <li>The developer fixed it; verify passed in round 2; a person approved R3.</li>
+  <li>The records hold the verdicts, criteria, bucket and blind separation.</li>
+</ul></p>
 
 <h3>What the team does today, and what it loses</h3>
 <p class="small">Studied in <code>architecture-and-standards</code> (canonical agents and workflows) and <code>vpc-node-agent</code>: 742 specs, 1,452 review files, 1,019 plans, 108 programme ledgers, 8,250 evidence files, 22,042 commits. Full write-up: <code>docs/analysis/2026-11-04-mesh-development-cycle.md</code>.</p>
@@ -482,13 +493,13 @@ design → spec → cold spec review → implementation plan and test plan writt
   <tr><td>decision <code>superseded</code></td><td>A pending plan replaced by a new proposal, not counted as a human "revise"</td><td>Hub</td><td><span class="tag done">done</span> (bug fix)</td></tr>
   <tr><td><code>artifacts[{path, sha}], refs</code></td><td>The team's files this step produced (spec, review, plan, evidence) and ids (spec 771, NA-1054)</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
   <tr><td>goal roll-up</td><td>Totals per stage at goal done: rounds, cycles, buckets, parks, people, models, harness hashes, lead time</td><td>Hub, from the step records</td><td><span class="tag done">done</span></td></tr>
-  <tr><td><code>verdict, findings{new, repeat, regression}, blockers</code></td><td>Review result and the finding classes the team's reviewer already uses</td><td><code>mesh_done</code> arguments</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td><code>failures[{test, ac, bucket}]</code></td><td>Verify failures by bucket: spec-gap / impl-bug / test-bug / infra / unclear; the hub routes the fix</td><td><code>mesh_done</code> arguments</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td><code>fail_first{red, not_red}</code>, <code>mutations{killed, survived}</code></td><td>Tests that failed at the baseline, and mutation results</td><td><code>mesh_done</code> arguments</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td><code>reconcile{missing_acs}</code></td><td>ACs the test plan didn't cover</td><td>Hub check</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td>gate record</td><td>R1/R2/R3: by, rule, rule inputs, verdict reference, CI result</td><td>Gate step (web/CLI) or recorded rule</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td><code>acs</code></td><td>Acceptance criteria: plan defines them; test/review steps record met / not met; implementers list those addressed</td><td>Plan + <code>mesh_done</code></td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td><code>reworks, role, blind, reads, forbid, max_rounds</code></td><td>Link to the step this redoes; free-text role; steps this one must not see; artefacts it may read; paths it must not read; round cap</td><td>Plan (template)</td><td><span class="tag m45">M4.5</span></td></tr>
+  <tr><td><code>verdict, findings{new, repeat, regression}, blockers</code></td><td>Review result and the finding classes the team's reviewer already uses</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>failures[{test, ac, bucket}]</code></td><td>Verify failures by bucket: spec-gap / impl-bug / test-bug / infra / unclear; the hub routes the fix</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>fail_first{red, not_red}</code>, <code>mutations{killed, survived}</code></td><td>Tests that failed at the baseline, and mutation results</td><td><code>mesh_done</code> arguments</td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>reconcile{missing_acs}</code></td><td>ACs the test plan didn't cover</td><td>Hub check</td><td><span class="tag done">done</span></td></tr>
+  <tr><td>gate record</td><td>R1/R2/R3: by, rule, rule inputs, verdict reference, CI result</td><td>Gate step (web/CLI) or recorded rule</td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>acs</code></td><td>Acceptance criteria: plan defines them; test/review steps record met / not met; implementers list those addressed</td><td>Plan + <code>mesh_done</code></td><td><span class="tag done">done</span></td></tr>
+  <tr><td><code>reworks, role, blind, reads, forbid, max_rounds</code></td><td>Link to the step this redoes; free-text role; steps this one must not see; artefacts it may read; paths it must not read; round cap</td><td>Plan (template)</td><td><span class="tag done">done</span></td></tr>
   <tr><td>CI results</td><td>Tests run / failed per step</td><td>GitLab CI ingest (not the agent)</td><td><span class="tag later">M5</span></td></tr>
 </table>
 
@@ -531,8 +542,8 @@ Added v6 underlay next-hop programming.
 Notes:
 - ariel: v4 fallback stays on (decided with owner)</pre>
 
-<h3>With M4 and M4.5 <span class="tag done">done</span> <span class="tag m45">M4.5</span></h3>
-<p class="small">The M4 fields (schema, record, segments, rounds, artifacts, refs) are final: see <code>docs/guide/ledger.md</code> and <code>schemas/ledger-step.json</code>. The M4.5 fields (role, blind, acs, verdicts, failures) are still a draft. New parts highlighted.</p>
+<h3>With M4 and M4.5 <span class="tag done">done</span></h3>
+<p class="small">The M4 fields (schema, record, segments, rounds, artifacts, refs) are final: see <code>docs/guide/ledger.md</code> and <code>schemas/ledger-step.json</code>. The M4.5 fields (role, blind, acs, verdicts, failures) are final too: see <code>schemas/ledger-step.json</code>. New parts highlighted.</p>
 <pre><span class="n">schema: mesh.ledger.v1
 record: step</span>
 goal: G17
@@ -591,15 +602,15 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
     <p>Going home mid-step: release or let it pause. A colleague runs <code>mesh take G1.dplane</code>; the notes and summary come with it, and the record shows both holders.</p></div>
   <div class="card"><h4>Reviewer of an MR <span class="tag done">done</span></h4>
     <p>The step record is in the diff: which plan it belongs to, who approved the plan, how many fix cycles, how much human help it needed.</p></div>
-  <div class="card"><h4>Split build, unbiased testing <span class="tag m45">M4.5</span></h4>
+  <div class="card"><h4>Split build, unbiased testing <span class="tag done">done</span></h4>
     <p>The <code>sdd-split</code> template (<a href="#cycle">section 6</a>): spec, cold review, split plans, developer and test-writer apart, read-only verify per AC, diff review, gates. mesh enforces the separation and the caps.</p></div>
-  <div class="card"><h4>Programme owner <span class="tag m45">M4.5</span></h4>
+  <div class="card"><h4>Programme owner <span class="tag done">done</span></h4>
     <p>Run many backlog rows as goals with the template, unattended. Parks show up in "needs you" with their reason; gates wait in the web. No <code>programme.js</code> bookkeeping, and no typed results lost.</p></div>
   <div class="card"><h4>Harness maintainer <span class="tag done">done</span>+</h4>
     <p>Change an agent or skill in <code>claude-assets</code>; its harness hash changes; compare the next weeks' cohort with the last on rounds, cycles and ACs met. Keep or revert on evidence.</p></div>
   <div class="card"><h4>Analyst / mesh-ai <span class="tag done">done</span></h4>
     <p>Export the ledger and slice by model, harness hash, effort, repo, step kind, person, week. See <a href="#regress">section 11</a>.</p></div>
-  <div class="card"><h4>Quality per acceptance criterion <span class="tag m45">M4.5</span></h4>
+  <div class="card"><h4>Quality per acceptance criterion <span class="tag done">done</span></h4>
     <p>Which ACs fail first time, how many rounds until met, which failure class (impl, test, spec) dominates, which steps get reworked later.</p></div>
   <div class="card"><h4>Ops <span class="tag done">done</span></h4>
     <p><code>mesh hub backup</code>, event retention, docs; <code>pnpm test:claude</code> re-checks mesh's assumptions after a Claude Code upgrade.</p></div>
@@ -616,12 +627,12 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
   <tr><td>More human help (prompts, waits, nudges)</td><td><code>human_prompts</code>, <code>waits</code>, <code>nudges</code> per segment</td><td><span class="tag done">today</span> per step; per model/person in <span class="tag done">done</span></td></tr>
   <tr><td>More time per step / per spec</td><td><code>started</code>/<code>finished</code>, segment from/to; design records</td><td><span class="tag done">today</span> per step; per design stage in <span class="tag done">done</span></td></tr>
   <tr><td>More design rounds</td><td>Plan versions with decision <code>revised</code> (not <code>superseded</code>)</td><td><span class="tag done">done</span> (after the bug fix)</td></tr>
-  <tr><td>More review rounds, failure types</td><td><code>rounds[]</code>, <code>verdict</code>, <code>reopen.class</code></td><td><span class="tag done">done</span> rounds, <span class="tag m45">M4.5</span> verdicts</td></tr>
-  <tr><td>More review churn (regressions of the writer's own fixes)</td><td><code>findings.regression</code> per round</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td>Weaker tests (didn't fail first, mutations survived, ACs missed in the test plan)</td><td><code>fail_first.not_red</code>, <code>mutations.survived</code>, <code>reconcile.missing_acs</code></td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td>More fix cycles of one type (impl-bug vs spec-gap)</td><td><code>failures[].bucket</code> per verify cycle</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td>More time / rounds per acceptance criterion</td><td>per-round <code>acs</code> outcomes</td><td><span class="tag m45">M4.5</span></td></tr>
-  <tr><td>Rework after merge</td><td><code>reworks:</code> links</td><td><span class="tag m45">M4.5</span></td></tr>
+  <tr><td>More review rounds, failure types</td><td><code>rounds[]</code>, <code>verdict</code>, <code>reopen.class</code></td><td><span class="tag done">done</span> rounds, <span class="tag done">done</span> verdicts</td></tr>
+  <tr><td>More review churn (regressions of the writer's own fixes)</td><td><code>findings.regression</code> per round</td><td><span class="tag done">done</span></td></tr>
+  <tr><td>Weaker tests (didn't fail first, mutations survived, ACs missed in the test plan)</td><td><code>fail_first.not_red</code>, <code>mutations.survived</code>, <code>reconcile.missing_acs</code></td><td><span class="tag done">done</span></td></tr>
+  <tr><td>More fix cycles of one type (impl-bug vs spec-gap)</td><td><code>failures[].bucket</code> per verify cycle</td><td><span class="tag done">done</span></td></tr>
+  <tr><td>More time / rounds per acceptance criterion</td><td>per-round <code>acs</code> outcomes</td><td><span class="tag done">done</span></td></tr>
+  <tr><td>Rework after merge</td><td><code>reworks:</code> links</td><td><span class="tag done">done</span></td></tr>
   <tr><td>More test failures</td><td>CI results joined in the export</td><td><span class="tag later">M5</span> (CI only; agent-reported counts were rejected)</td></tr>
   <tr><td>Token usage / cost</td><td>—</td><td>Not planned (owner decision 9)</td></tr>
 </table>
@@ -651,12 +662,12 @@ v6 programming covered; AC2 failed on round 1 (missing ECMP), fixed in dplane ro
   <tr><td><strong>Round</strong> <span class="tag done">done</span></td><td>One <code>mesh_done</code> on a step; a reopened step has several rounds.</td></tr>
   <tr><td><strong>Trail / ledger</strong></td><td>The files mesh writes under <code>.mesh/goals/</code> and the agent commits.</td></tr>
   <tr><td><strong>Autopilot</strong></td><td><code>off</code>, <code>nudge</code> (poke stalled sessions), <code>chain</code> (hand the next ready step to an idle session).</td></tr>
-  <tr><td><strong>Gate</strong> <span class="tag m45">M4.5</span></td><td>An approval step (R1 ADR, R2 spec, R3 landing) done by a person or by a recorded rule.</td></tr>
-  <tr><td><strong>Reconcile</strong> <span class="tag m45">M4.5</span></td><td>The hub's check that every acceptance criterion appears in the test plan.</td></tr>
+  <tr><td><strong>Gate</strong> <span class="tag done">done</span></td><td>An approval step (R1 ADR, R2 spec, R3 landing) done by a person or by a recorded rule.</td></tr>
+  <tr><td><strong>Reconcile</strong> <span class="tag done">done</span></td><td>The hub's check that every acceptance criterion appears in the test plan.</td></tr>
   <tr><td><strong>Fail-first</strong></td><td>A test must fail on the code before the change; otherwise it proves nothing.</td></tr>
   <tr><td><strong>Bucket</strong></td><td>The type of a verify failure: spec-gap, impl-bug, test-bug, infra. It decides which step is reopened.</td></tr>
-  <tr><td><strong>Template (preset)</strong> <span class="tag m45">M4.5</span></td><td>A ready-made plan shape such as <code>sdd-split</code>. The process is data, not engine code.</td></tr>
-  <tr><td><strong>Blind step</strong> <span class="tag m45">M4.5</span></td><td>A step that must not see listed other steps' summaries and branches, nor be done by the same session or person.</td></tr>
+  <tr><td><strong>Template (preset)</strong> <span class="tag done">done</span></td><td>A ready-made plan shape such as <code>sdd-split</code>. The process is data, not engine code.</td></tr>
+  <tr><td><strong>Blind step</strong> <span class="tag done">done</span></td><td>A step that must not see listed other steps' summaries and branches, nor be done by the same session or person.</td></tr>
 </table>
 
 <p class="small" style="margin-top:40px">Sources: <code>docs/analysis/2026-11-04-mesh-development-cycle.md</code>, <code>docs/plan/implementation-plan.md</code> (v2.5), <code>docs/analysis/2026-11-04-team-value-metrics-and-ledger.md</code> (with owner decisions), <code>src/core/trail.ts</code>, <code>src/hub/service.ts</code>, <code>src/claude/installer.ts</code>, <code>src/protocol/*</code>.</p>

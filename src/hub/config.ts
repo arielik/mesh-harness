@@ -59,6 +59,8 @@ export const HubConfigFile = z.object({
   db: z.string().default("mesh-hub.db"),
   /** Hub events older than this are deleted (the durable summaries are in git). 0 keeps them forever. */
   events_retention_days: z.number().int().min(0).default(180),
+  /** Blind steps (M4.5): refuse anyone who worked on the other side ("person"), or only the same session ("session", for one person on their own). */
+  blind_guard: z.enum(["person", "session"]).default("person"),
   auth: z
     .object({
       providers: z.array(ProviderConfig).min(1),
@@ -93,6 +95,7 @@ export interface HubConfig {
   policies: SessionPolicies;
   thresholds: { takeoverAfterMs: number; pauseGraceMs: number; machineOfflineMs: number };
   eventsRetentionDays: number;
+  blindGuard: "person" | "session";
 }
 
 export function isLoopback(host: string): boolean {
@@ -154,6 +157,7 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     policies,
     thresholds: { takeoverAfterMs: file.thresholds.takeover_after, pauseGraceMs: file.thresholds.pause_grace, machineOfflineMs: file.thresholds.machine_offline },
     eventsRetentionDays: file.events_retention_days,
+    blindGuard: file.blind_guard,
   };
 }
 

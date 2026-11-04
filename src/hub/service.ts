@@ -4,8 +4,16 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
 import {
+  agentContext,
+  blindConflict,
+  parsePreset,
+  presetWarnings,
+  blindSeparated,
   canApprove,
   claim,
+  judgeDone,
+  reopenText,
+  validatePolicies,
   goalFile,
   goalRollup,
   planFile,
@@ -26,7 +34,11 @@ import {
   type Role,
 } from "../core/index.ts";
 import type {
+  AcState,
   Attention,
+  Failure,
+  Round,
+  Verdict,
   DoneResult,
   Goal,
   GoalDetail,
@@ -259,7 +271,19 @@ export class HubService {
 
   // ---------- goals and plans ----------
 
-  createGoal(actor: Actor, input: { title: string; primaryRepo?: string | undefined; repos?: string[] | undefined; issueUrl?: string | undefined; refs?: Record<string, string> | undefined; priority: number }): Goal {
+  createGoal(
+    actor: Actor,
+    input: {
+      title: string;
+      primaryRepo?: string | undefined;
+      repos?: string[] | undefined;
+      issueUrl?: string | undefined;
+      refs?: Record<string, string> | undefined;
+      reworks?: string[] | undefined;
+      preset?: { name: string; text: string } | undefined;
+      priority: number;
+    },
+  ): Goal {
     return this.store.tx(() => {
       const now = this.now();
       const goal = this.store.createGoal({
@@ -270,6 +294,8 @@ export class HubService {
         ...(input.repos?.length ? { repos: input.repos } : {}),
         ...(input.issueUrl ? { issueUrl: input.issueUrl } : {}),
         ...(input.refs && Object.keys(input.refs).length ? { refs: input.refs } : {}),
+        ...(input.reworks?.length ? { reworks: input.reworks } : {}),
+        ...(input.preset ? { preset: input.preset } : {}),
         priority: input.priority,
         createdAt: now,
         updatedAt: now,
@@ -286,6 +312,13 @@ export class HubService {
           `1. Read the relevant code${input.repos?.length ? ` (also in: ${input.repos.join(", ")})` : ""} and write a design document, e.g. docs/design/${goal.id.toLowerCase()}-<slug>.md, with the approach, risks and how it will be tested.`,
           "2. Split the work into steps (implement / test / review / docs), one repo each, with dependencies where order matters; steps without dependencies on each other can be done in parallel by other people.",
           "3. Propose them with mesh_plan (design_ref = where the document is). A person approves or asks for changes; you get a message either way. Then end your turn.",
+          ...(input.preset
+            ? [
+                "",
+                `Follow the plan template "${input.preset.name}": keep its step ids, kinds and rules (blind, target, route, gates); fill in repo, title and brief per step, and the acceptance criteria (acs) from the design. Template:`,
+                input.preset.text,
+              ]
+            : []),
         ].join("\n"),
         deps: [],
         state: "ready",
@@ -322,8 +355,9 @@ export class HubService {
   goalFiles(id: string): TrailFile[] {
     const goal = this.goalOr404(id);
     const files = [this.goalYaml(goal), ...this.store.listPlans(goal.id).map(planFile)];
-    const design = this.store.getStep(`${goal.id}.design`);
-    if (design?.state === "done") files.push(this.recordOf(design));
+    const steps = this.store.listSteps({ goal: goal.id });
+    // Steps no agent session closes: the design (on approval) and gates (a person decides).
+    for (const st of steps) if ((st.kind === "design" || st.kind === "gate") && (st.rounds?.length ?? 0) > 0 && st.state !== "dropped") files.push(this.recordOf(st, steps));
     return files;
   }
 
@@ -336,9 +370,9 @@ export class HubService {
     return goalFile(goal, goalRollup(goal, steps, this.store.listPlans(goal.id), facts, doneAt), doneAt);
   }
 
-  private recordOf(step: Step): TrailFile {
+  private recordOf(step: Step, steps: readonly Step[] = this.store.listSteps({ goal: step.goal })): TrailFile {
     const plan = this.store.listPlans(step.goal).find((p) => p.version === step.planVersion);
-    return stepRecord(step, stepFacts(step, this.store.eventsFor({ step: step.id })), this.store.listNotes(step.id).filter((n) => !n.text.startsWith("Reopened by")), plan);
+    return stepRecord(step, stepFacts(step, this.store.eventsFor({ step: step.id })), this.store.listNotes(step.id).filter((n) => !n.text.startsWith("Reopened by")), plan, blindSeparated(step, steps));
   }
 
   stepView(id: string): StepView {
@@ -380,11 +414,11 @@ export class HubService {
     return this.goalDetail(goalId);
   }
 
-  proposePlan(actor: Actor, goalId: string, input: PlanInput & { approve: boolean }): { plan: Plan; detail?: GoalDetail } {
+  proposePlan(actor: Actor, goalId: string, input: PlanInput & { approve: boolean }): { plan: Plan; detail?: GoalDetail; warnings?: string[] } {
     const result = this.store.tx(() => {
       const goal = this.goalOr404(goalId);
       if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
-      const errors = validatePlan(input.steps);
+      const errors = [...validatePlan(input.steps), ...validatePolicies(input.steps, input.acs)];
       if (errors.length) throw new HubError(422, `the plan has ${errors.length} problem(s): ${errors.join("; ")}`, errors);
       const plans = this.store.listPlans(goal.id);
       const now = this.now();
@@ -393,6 +427,7 @@ export class HubService {
         version: (plans.at(-1)?.version ?? 0) + 1,
         ...(input.design_ref ? { designRef: input.design_ref } : {}),
         steps: input.steps,
+        ...(input.acs?.length ? { acs: input.acs } : {}),
         proposedBy: actor.userId,
         proposedAt: now,
         decision: "pending",
@@ -405,8 +440,18 @@ export class HubService {
       this.emit({ type: "plan.proposed", user: actor.userId, goal: goal.id, payload: { version: plan.version, steps: plan.steps.length } });
       return plan;
     });
-    if (input.approve) return { plan: result, detail: this.approvePlan(actor, goalId, result.version) };
-    return { plan: result };
+    const goal = this.goalOr404(goalId);
+    let warnings: string[] = [];
+    if (goal.preset) {
+      try {
+        warnings = presetWarnings(parsePreset(goal.preset.name, goal.preset.text), input.steps);
+      } catch {
+        warnings = [`template ${goal.preset.name} could not be read; not compared`];
+      }
+    }
+    const w = warnings.length ? { warnings } : {};
+    if (input.approve) return { plan: result, detail: this.approvePlan(actor, goalId, result.version), ...w };
+    return { plan: result, ...w };
   }
 
   approvePlan(actor: Actor, goalId: string, version?: number, comment?: string): GoalDetail {
@@ -488,19 +533,23 @@ export class HubService {
     return steps;
   }
 
-  context(stepId: string): StepContext {
+  /** A step's context. `forAgent`: what the agent holding it may see (blind and reads rules, M4.5). */
+  context(stepId: string, forAgent = false): StepContext {
     const step = this.stepOr404(stepId);
     const goal = this.goalOr404(step.goal);
     const plan = this.store.listPlans(goal.id).filter((p) => p.decision === "approved").at(-1);
     const deps = step.deps.map((d) => this.store.getStep(d)).filter((s): s is Step => !!s);
-    return {
+    const acs = plan?.acs?.length ? (step.policy?.acs?.length ? plan.acs.filter((a) => step.policy?.acs?.includes(a.id)) : plan.acs) : undefined;
+    const ctx: StepContext = {
       step,
       goal,
       designRef: plan?.designRef,
       deps: deps.map((d) => ({ id: d.id, title: d.title, state: d.state, summary: d.summary, branch: d.branch, mr: d.mr })),
       notes: this.store.listNotes(step.id),
       openQuestions: this.store.openQuestions().filter((q) => q.step === step.id),
+      ...(acs ? { acs } : {}),
     };
+    return forAgent ? agentContext(ctx, this.store.listSteps({ goal: goal.id })) : ctx;
   }
 
   private machineOf(actor: Actor, sid: string | undefined): string | undefined {
@@ -510,6 +559,10 @@ export class HubService {
   claimStep(actor: Actor, stepId: string, sid: string | undefined): Step {
     return this.store.tx(() => {
       const step = this.stepOr404(stepId);
+      if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it (mesh step approve ${step.id}, or the web dashboard)`);
+      if (step.state === "parked") throw new HubError(409, `${step.id} is parked (${step.parkedReason ?? "by a rule"}); a person resumes it (mesh step resume ${step.id})`);
+      const blind = blindConflict(step, this.store.listSteps({ goal: step.goal }), { userId: actor.userId, sid }, this.config.blindGuard);
+      if (blind) throw new HubError(409, blind);
       const r = claim(step, { userId: actor.userId, sid, machine: this.machineOf(actor, sid) }, this.now());
       if (!r.ok) throw new HubError(r.status, r.error);
       const claimed: Step = r.step.roundStartedAt === undefined ? { ...r.step, roundStartedAt: this.now() } : r.step;
@@ -557,54 +610,114 @@ export class HubService {
       artifacts?: { path: string; sha?: string | undefined }[] | undefined;
       /** When the daemon finished it; offline replays keep the real time. */
       at?: number | undefined;
+      verdict?: Verdict | undefined;
+      findings?: { new: number; repeat: number; regression: number } | undefined;
+      blockers?: number | undefined;
+      failures?: Failure[] | undefined;
+      acs?: Record<string, AcState> | undefined;
+      acs_addressed?: string[] | undefined;
     },
   ): DoneResult {
     return this.store.tx(() => {
       const step = this.stepOr404(stepId);
       const goal = this.goalOr404(step.goal);
+      if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it (mesh step approve ${step.id})`);
       const now = input.at !== undefined && input.at <= this.now() && input.at > this.now() - 30 * 86_400_000 ? input.at : this.now();
-      const full = input.reopen.map((r) => (r.includes(".") ? r : `${step.goal}.${r}`));
+      const explicit = input.reopen.map((r) => (r.includes(".") ? r : `${step.goal}.${r}`));
       const all = this.store.listSteps({ goal: step.goal });
-      for (const id of full) {
+      for (const id of explicit) {
         const s = all.find((x) => x.id.toLowerCase() === id.toLowerCase());
         if (!s) throw new HubError(404, `cannot reopen ${id}: no such step`);
         if (s.state !== "done") throw new HubError(409, `cannot reopen ${id}: it is ${s.state}, not done`);
       }
-      if (input.outcome === "done" && full.length) throw new HubError(400, "reopen only makes sense with outcome fail");
-      const fin = finish(step, { userId: actor.userId, sid: input.sid }, input, full.length > 0, actor.roles.includes("admin"), now);
-      if (!fin.ok) throw new HubError(fin.status, fin.error);
-      const round = {
+      // A verdict decides the outcome when given (a review that requests changes failed).
+      const outcome = input.verdict ? (["changes_requested", "blocked", "fail"].includes(input.verdict) ? "fail" : "done") : input.outcome;
+      if (outcome === "done" && explicit.length) throw new HubError(400, "reopen only makes sense with outcome fail");
+      if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; claim it first`);
+      if (step.holderUser !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      // Criteria exist only when the plan defines them: ids the plan doesn't know are dropped, and a
+      // wrong id never fails the call.
+      const plan = this.store.listPlans(step.goal).find((p) => p.version === step.planVersion);
+      const known = new Set((plan?.acs ?? []).map((a) => a.id));
+      const okAc = (id: string) => known.has(id);
+      const acs = Object.fromEntries(Object.entries(input.acs ?? {}).filter(([k]) => okAc(k)));
+      const addressed = (input.acs_addressed ?? []).filter(okAc);
+      const failures = (input.failures ?? []).map((f) => {
+        const { ac, ...rest } = f;
+        return ac && okAc(ac) ? f : rest;
+      });
+      const round: Round = {
         n: (step.rounds?.length ?? 0) + 1,
         user: actor.userId,
         ...(input.sid ? { sid: input.sid } : {}),
         ...(step.roundStartedAt ?? step.claimedAt ? { startedAt: (step.roundStartedAt ?? step.claimedAt) as number } : {}),
         finishedAt: now,
-        outcome: input.outcome,
+        outcome,
         summary: input.summary,
         ...(input.model ? { model: input.model } : {}),
         ...(input.artifacts?.length ? { artifacts: input.artifacts.map((a) => ({ path: a.path, ...(a.sha ? { sha: a.sha } : {}) })) } : {}),
-        ...(full.length ? { reopen: full } : {}),
         ...(input.branch ? { branch: input.branch } : {}),
         ...(input.mr ? { mr: input.mr } : {}),
+        ...(input.verdict ? { verdict: input.verdict } : {}),
+        ...(input.findings ? { findings: input.findings } : {}),
+        ...(input.blockers !== undefined ? { blockers: input.blockers } : {}),
+        ...(failures.length ? { failures } : {}),
+        ...(Object.keys(acs).length ? { acs } : {}),
+        ...(addressed.length ? { acsAddressed: addressed } : {}),
       };
+      const decision = judgeDone(step, round, explicit, plan?.acs);
+
+      if (decision.action === "reject") {
+        // Not accepted: the holder keeps the step, the attempt is a round (a second miss parks).
+        const kept: Step = { ...step, rounds: [...(step.rounds ?? []), { ...round, outcome: "fail", reconcile: { missing: decision.missing } }], roundStartedAt: now, updatedAt: now };
+        this.store.saveSteps([kept]);
+        this.emit({ at: now, type: "step.rejected", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { reason: decision.reason, missing: decision.missing } });
+        return { step: kept, reopened: [], nowReady: [], goalDone: false, rejected: decision.reason };
+      }
+      if (decision.action === "park") {
+        const parked: Step = { ...step, state: "parked", parkedReason: decision.reason, parkedAt: now, summary: input.summary, outcome: "fail", rounds: [...(step.rounds ?? []), { ...round, parked: decision.reason }], updatedAt: now };
+        delete parked.holderUser;
+        delete parked.holderSid;
+        delete parked.holderMachine;
+        delete parked.claimedAt;
+        delete parked.roundStartedAt;
+        this.store.saveSteps([parked]);
+        this.emit({ at: now, type: "step.parked", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { reason: decision.reason, round: round.n } });
+        return { step: parked, reopened: [], nowReady: [], goalDone: false, parked: decision.reason, record: this.recordOf(parked, all) };
+      }
+
+      const routed = decision.action === "reopen" ? decision.reopen.filter((id) => all.some((x) => x.id === id && x.state === "done")) : [];
+      const toReopen = [...new Set([...explicit, ...routed])];
+      const fin = finish(step, { userId: actor.userId, sid: input.sid }, { ...input, outcome }, toReopen.length > 0, actor.roles.includes("admin"), now);
+      if (!fin.ok) throw new HubError(fin.status, fin.error);
+      if (toReopen.length) round.reopen = toReopen;
       const finished: Step = { ...fin.step, rounds: [...(step.rounds ?? []), round] };
       delete finished.roundStartedAt;
       const r = { step: finished };
       let steps = all.map((s) => (s.id === r.step.id ? r.step : s));
-      const reopenChanges = reopen(steps, full, now);
-      const wanted = new Set(full.map((f) => f.toLowerCase()));
+      const reopenChanges = reopen(steps, toReopen, now);
+      const wanted = new Set(toReopen.map((f) => f.toLowerCase()));
       const reopened = reopenChanges.filter((x) => wanted.has(x.id.toLowerCase()));
       steps = steps.map((s) => reopenChanges.find((x) => x.id === s.id) ?? s);
       const ready = recomputeReady(steps, now);
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[r.step.id, r.step], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
       this.store.saveSteps([...changed.values()]);
-      this.emit({ at: now, type: input.outcome === "done" ? "step.done" : "step.failed", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { summary: input.summary, mr: input.mr, reopen: full, round: round.n, ...(input.model ? { model: input.model } : {}) } });
+      this.emit({
+        at: now,
+        type: outcome === "done" ? "step.done" : "step.failed",
+        user: actor.userId,
+        sid: input.sid,
+        goal: step.goal,
+        step: step.id,
+        payload: { summary: input.summary, mr: input.mr, reopen: toReopen, round: round.n, ...(input.model ? { model: input.model } : {}), ...(input.verdict ? { verdict: input.verdict } : {}), ...(input.failures?.length ? { buckets: input.failures.map((f) => f.bucket) } : {}) },
+      });
+      const why = reopenText(step, round, input.summary);
       for (const s of reopened) {
         const before = all.find((x) => x.id === s.id);
-        this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: input.summary, fixCycles: s.fixCycles } });
-        this.store.addNote({ step: s.id, user: actor.userId, text: `Reopened by ${step.id}: ${input.summary}`, at: now });
-        this.message(before?.holderSid, actor.userId, "reopened", `MESH: step ${s.id} was reopened by ${step.id}: ${input.summary}. Claim it again with mesh_claim to fix it.`);
+        this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: why, fixCycles: s.fixCycles, ...(input.failures?.length ? { buckets: input.failures.map((f) => f.bucket) } : {}) } });
+        this.store.addNote({ step: s.id, user: actor.userId, text: `Reopened by ${step.id}: ${why}`, at: now });
+        this.message(before?.holderSid, actor.userId, "reopened", `MESH: step ${s.id} was reopened by ${step.id}: ${why}. Claim it again with mesh_claim to fix it.`);
       }
       const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
       for (const id of nowReady) this.emit({ type: "step.ready", goal: step.goal, step: id });
@@ -616,8 +729,81 @@ export class HubService {
         this.emit({ at: now, type: "goal.done", goal: goal.id });
         files = [this.goalYaml(doneGoal)];
       }
-      const record = this.recordOf(r.step);
+      const record = this.recordOf(r.step, steps);
       return { step: r.step, reopened: reopened.map((s) => s.id), nowReady, goalDone, record, ...(files ? { files } : {}) };
+    });
+  }
+
+  /** A person (or a recorded rule) decides a gate step (M4.5). */
+  decideGate(actor: Actor, stepId: string, input: { approve: boolean; comment?: string | undefined; rule?: string | undefined; inputs?: Record<string, unknown> | undefined; reopen?: string[] | undefined }): DoneResult {
+    return this.store.tx(() => {
+      const step = this.stepOr404(stepId);
+      const goal = this.goalOr404(step.goal);
+      if (step.kind !== "gate") throw new HubError(409, `${step.id} is not a gate step`);
+      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins decide ${step.id}`);
+      if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}; a gate is decided when its dependencies are done`);
+      const now = this.now();
+      const all = this.store.listSteps({ goal: step.goal });
+      const explicit = (input.reopen ?? []).map((r) => (r.includes(".") ? r : `${step.goal}.${r}`));
+      if (!input.approve && explicit.length === 0) throw new HubError(400, "rejecting a gate needs the steps to reopen (reopen: [...])");
+      for (const id of explicit) if (!all.some((x) => x.id === id && x.state === "done")) throw new HubError(409, `cannot reopen ${id}: no such done step`);
+      const round: Round = {
+        n: (step.rounds?.length ?? 0) + 1,
+        user: actor.userId,
+        finishedAt: now,
+        outcome: input.approve ? "done" : "fail",
+        verdict: input.approve ? "approved" : "changes_requested",
+        gate: { by: actor.userId, ...(input.rule ? { rule: input.rule } : {}), ...(input.inputs ? { inputs: input.inputs } : {}), ...(input.comment ? { comment: input.comment } : {}) },
+        ...(input.comment ? { summary: input.comment } : {}),
+        ...(explicit.length ? { reopen: explicit } : {}),
+      };
+      const decided: Step = { ...step, state: input.approve ? "done" : "blocked", outcome: input.approve ? "done" : "fail", summary: input.comment ?? (input.approve ? "approved" : "changes requested"), rounds: [...(step.rounds ?? []), round], updatedAt: now };
+      let steps = all.map((s) => (s.id === step.id ? decided : s));
+      const reopenChanges = reopen(steps, explicit, now);
+      steps = steps.map((s) => reopenChanges.find((x) => x.id === s.id) ?? s);
+      const ready = recomputeReady(steps, now);
+      steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
+      const changed = new Map<string, Step>([[decided.id, decided], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
+      this.store.saveSteps([...changed.values()]);
+      this.emit({ type: input.approve ? "gate.approved" : "gate.rejected", user: actor.userId, goal: step.goal, step: step.id, payload: { gate: step.policy?.gate, rule: input.rule, comment: input.comment, reopen: explicit } });
+      for (const s of reopenChanges.filter((x) => explicit.includes(x.id))) {
+        this.store.addNote({ step: s.id, user: actor.userId, text: `Reopened by gate ${step.id}: ${input.comment ?? "changes requested"}`, at: now });
+        this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: input.comment, fixCycles: s.fixCycles } });
+      }
+      const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
+      for (const id of nowReady) this.emit({ type: "step.ready", goal: step.goal, step: id });
+      const goalDone = steps.every((s) => s.state === "done" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
+      let files: TrailFile[] | undefined;
+      if (goalDone && goal.state !== "done") {
+        const doneGoal: Goal = { ...goal, state: "done", updatedAt: now };
+        this.store.saveGoal(doneGoal);
+        this.emit({ type: "goal.done", goal: goal.id });
+        files = [this.goalYaml(doneGoal)];
+      }
+      return { step: decided, reopened: explicit, nowReady, goalDone, record: this.recordOf(decided, steps), ...(files ? { files } : {}) };
+    });
+  }
+
+  /** A person lets a parked step go on: it waits for its dependencies again, rounds are kept. */
+  resumeStep(actor: Actor, stepId: string, comment: string | undefined): Step {
+    return this.store.tx(() => {
+      const step = this.stepOr404(stepId);
+      const goal = this.goalOr404(step.goal);
+      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins resume ${step.id}`);
+      if (step.state !== "parked" && step.state !== "failed") throw new HubError(409, `${step.id} is ${step.state}, not parked or failed`);
+      const now = this.now();
+      const next: Step = { ...step, state: "blocked", updatedAt: now };
+      delete next.parkedReason;
+      delete next.parkedAt;
+      delete next.outcome;
+      const all = this.store.listSteps({ goal: step.goal }).map((s) => (s.id === step.id ? next : s));
+      const ready = recomputeReady(all, now);
+      const final = ready.find((x) => x.id === step.id) ?? next;
+      this.store.saveSteps([final, ...ready.filter((x) => x.id !== step.id)]);
+      this.store.addNote({ step: step.id, user: actor.userId, text: `Resumed by ${actor.userId}${comment ? `: ${comment}` : ""} (was: ${step.parkedReason ?? step.state})`, at: now });
+      this.emit({ type: "step.resumed", user: actor.userId, goal: step.goal, step: step.id, payload: { comment, was: step.parkedReason } });
+      if (final.state === "ready") this.emit({ type: "step.ready", goal: step.goal, step: step.id });
+      return final;
     });
   }
 
@@ -737,6 +923,10 @@ export class HubService {
         out.push({ kind: "approval", text: `Plan v${plan?.version ?? "?"} for ${g.id} "${g.title}" awaits approval`, goal: g.id, at: plan?.proposedAt ?? g.updatedAt });
       }
     }
+    for (const s of this.store.listSteps({ state: "ready" })) {
+      const g = goals.find((x) => x.id === s.goal);
+      if (s.kind === "gate" && g && canApprove(viewer, g.ownerId)) out.push({ kind: "approval", text: `Gate ${s.policy?.gate ?? s.id} for ${s.goal} "${g.title}" waits for a decision`, goal: s.goal, step: s.id, at: s.updatedAt });
+    }
     for (const q of this.store.openQuestions()) {
       if (q.toUsers.includes(viewer.userId)) out.push({ kind: "question", text: `${q.fromUser} asks: ${q.text}`, step: q.step, sid: q.sid, question: q.id, at: q.at });
     }
@@ -746,6 +936,7 @@ export class HubService {
       if (!mine) continue;
       if (s.state === "failed") out.push({ kind: "failed", text: `${s.id} failed: ${s.summary ?? ""}`, goal: s.goal, step: s.id, at: s.updatedAt });
       if (s.state === "paused") out.push({ kind: "paused", text: `${s.id} is paused (holder ${s.holderUser} went away)`, goal: s.goal, step: s.id, at: s.pausedAt ?? s.updatedAt });
+      if (s.state === "parked") out.push({ kind: "parked", text: `${s.id} is parked: ${s.parkedReason ?? ""}`, goal: s.goal, step: s.id, at: s.parkedAt ?? s.updatedAt });
       const hs = this.sessionOf(s.holderSid);
       if (s.state === "claimed" && hs?.state === "stalled") out.push({ kind: "stalled", text: `${s.id} stalled in ${s.holderUser}'s session`, goal: s.goal, step: s.id, sid: hs.sid, at: hs.lastStopAt ?? hs.lastEventAt });
     }

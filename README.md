@@ -6,7 +6,7 @@ One place to see and steer all your Claude Code sessions, across repos and peopl
 - Journeys, dashboard and analysis: [docs/analysis/2026-11-03-journeys-dashboard-and-analysis.md](docs/analysis/2026-11-03-journeys-dashboard-and-analysis.md)
 - Implementation plan (leads development): [docs/plan/implementation-plan.md](docs/plan/implementation-plan.md)
 - Claude Code spike results: [docs/spikes/README.md](docs/spikes/README.md)
-- Guide: [overview](docs/guide/overview.md) · [concepts](docs/guide/concepts.md) · [install](docs/guide/install.md) · [auth](docs/guide/auth.md) · [operations](docs/guide/operations.md) · [the ledger](docs/guide/ledger.md) · [events](docs/events.md)
+- Guide: [overview](docs/guide/overview.md) · [concepts](docs/guide/concepts.md) · [the development cycle](docs/guide/cycle.md) · [install](docs/guide/install.md) · [auth](docs/guide/auth.md) · [operations](docs/guide/operations.md) · [the ledger](docs/guide/ledger.md) · [events](docs/events.md)
 - How it works, in pictures: [docs/explainer/how-mesh-harness-works.html](docs/explainer/how-mesh-harness-works.html)
 
 ## Use it (M1: local)
@@ -54,6 +54,9 @@ mesh run frr-dplane-ovs --step G1.dplane --auto chain    # a Claude session that
 mesh take G1.agent                                       # continue someone's paused step
 mesh answer 3 "yes, keep the v4 fallback"
 mesh autopilot <session> off|nudge|chain
+mesh goal plan G1 --preset sdd-split --repo frr-dplane-ovs --acs acs.yaml   # the SDD cycle as a template (docs/guide/cycle.md)
+mesh step approve G1.r2                                  # gates; reject --reopen a,b; resume a parked step
+mesh run frr-dplane-ovs --step G1.write-tests --worktree # one worktree and branch per step
 ```
 
 Every run leaves a trail in the repos, written by mesh and committed by the agents, in the `mesh.ledger.v1` format ([the ledger](docs/guide/ledger.md)): `.mesh/goals/<G>/goal.yaml` (with a roll-up when done), `plan.vN.yaml` (with the approval) and one `steps/<id>.md` record per step (segments with model, effort, Claude Code version and harness hash; rounds; holders, turns, human prompts, nudges, waits, fix cycles, artefacts). Nothing in it is typed by hand.
@@ -83,6 +86,7 @@ pnpm build && pnpm spike e2e   # M1 end to end
 pnpm spike e2e-m2              # M2 end to end: hub, login, MCP tools, chain autopilot
 pnpm spike e2e-m3              # M3 end to end: design → revise → approve → two people, two repos → records
 pnpm spike e2e-offline         # M4: a programme four ways: no daemon, hub cut, hub restored mid-run, Solo
+pnpm spike e2e-m45             # M4.5: criteria, blind sides, a routed impl-bug fix, an R3 gate (two people)
 pnpm test:claude               # contract suite: every Claude Code behaviour mesh relies on (run after upgrading Claude Code)
 pnpm schemas                   # regenerate schemas/*.json after changing src/protocol
 pnpm test:web                  # Playwright smoke test of the dashboard (after pnpm build)

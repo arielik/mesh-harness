@@ -36,5 +36,8 @@ export const api = {
   approve: (id: string, comment?: string) => call<GoalDetail>("POST", `${g(id)}/approve`, comment ? { comment } : {}),
   revise: (id: string, comment: string) => call<GoalDetail>("POST", `${g(id)}/revise`, { comment }),
   replan: (id: string, comment?: string) => call<GoalDetail>("POST", `${g(id)}/replan`, comment ? { comment } : {}),
+  approveStep: (id: string, comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/approve`, comment ? { comment } : {}),
+  rejectStep: (id: string, reopen: string[], comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/reject`, { reopen, ...(comment ? { comment } : {}) }),
+  resumeStep: (id: string, comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/resume`, comment ? { comment } : {}),
   newGoal: (title: string, primaryRepo?: string) => call<Goal>("POST", "/v1/goals", { title, ...(primaryRepo ? { primaryRepo } : {}) }),
 };

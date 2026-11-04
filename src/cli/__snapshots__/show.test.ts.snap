@@ -3,6 +3,7 @@
 exports[`mesh show > renders the goal DAG by level (snapshot) 1`] = `
 "G17 · IPv6 underlay
 in progress · owner @ariel · 2/7 steps done · frr-dplane-ovs
+steps: 2 in progress · 1 ready · 2 waiting · 2 done · 1 dropped
 plan v2 approved by @sara · design frr@main:docs/design/g17.md
 
 start

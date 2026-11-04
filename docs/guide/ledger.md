@@ -60,6 +60,14 @@ rounds:                   # one per mesh_done; a reopened step has several
   - { n: 1, user: ariel, started: …, finished: …, minutes: 40, outcome: done, summary: first cut }
   - { n: 2, user: tom, started: …, finished: …, minutes: 55, outcome: done, model: claude-sonnet-5 }
 recorded_offline: true    # only when the daemon wrote it while the hub was away
+# M4.5 (all optional):
+role: test-executor
+acs: [AC-01, AC-02]       # criteria this step covers
+blind: { steps: [impl-plan], separated: true }   # nobody worked on both sides
+parked: { reason: "stall: no new acceptance criterion met in 2 rounds", at: … }
+# and per round: verdict, findings {new, repeat, regression}, blockers,
+# failures [{ac, bucket, assertion}], acs {AC-01: met}, acs_addressed, reconcile {missing},
+# gate {by, rule, inputs, comment}, parked
 ---
 Added v6 underlay next-hop programming.
 ```
@@ -106,7 +114,10 @@ When a goal is done, `goal.yaml` gets totals:
 - people, models and harness hashes;
 - human prompts, nudges, minutes waiting and active;
 - lead time;
-- per step kind: steps, rounds, fix cycles, minutes.
+- per step kind: steps, rounds, fix cycles, minutes;
+- with M4.5: parks, failures per bucket, per criterion whether it was met and in which step and round it first was, and the gates with who decided them and by which rule.
+
+Plan files carry the plan's `acs` and each step's rules (role, blind, route, …).
 
 This is the per-goal retro, written with no agent.
 

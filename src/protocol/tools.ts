@@ -2,7 +2,7 @@
 // stdio shim (`mesh mcp`) and the daemon that executes them.
 
 import { z } from "zod";
-import { PlanStep } from "./goal.ts";
+import { AcState, Failure, Findings, PlanAc, PlanStep, Verdict } from "./goal.ts";
 
 export const TOOLS = {
   mesh_context: {
@@ -36,6 +36,12 @@ export const TOOLS = {
       reopen: z.array(z.string()).optional().describe("step ids to reopen when outcome is fail, e.g. ['dplane']"),
       model: z.string().optional().describe("the model you are running as, e.g. claude-opus-5-5"),
       artifacts: z.array(z.string()).optional().describe("repo-relative paths of files this step produced (spec, review, plan, evidence)"),
+      verdict: Verdict.optional().describe("reviews: approved | changes_requested | blocked; verify/test runs: pass | fail"),
+      findings: Findings.optional().describe("reviews: how many findings are new, repeat, or regressions of the writer's own repairs"),
+      blockers: z.number().int().min(0).optional().describe("reviews: blocking findings still open"),
+      failures: z.array(Failure).optional().describe("verify/test runs: each failure with its bucket (spec-gap, impl-bug, test-bug, infra, unclear), criterion and the failing assertion"),
+      acs: z.record(z.string(), AcState).optional().describe("only if your brief lists acceptance criteria (verify/test/review steps): each one by its id as met, not_met or unrun"),
+      acs_addressed: z.array(z.string()).optional().describe("only if your brief lists acceptance criteria: the ids your work covers, e.g. ['AC-01']"),
     },
   },
   mesh_ask: {
@@ -48,6 +54,7 @@ export const TOOLS = {
       goal: z.string().describe("goal id, e.g. G17"),
       design_ref: z.string().optional().describe("where the design document is, e.g. repo@branch:path"),
       steps: z.array(PlanStep).min(1),
+      acs: z.array(PlanAc).optional().describe("the acceptance criteria (id, text, surface, fails_when), if the design defines them"),
     },
   },
 } as const;

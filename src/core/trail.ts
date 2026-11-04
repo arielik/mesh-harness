@@ -194,7 +194,14 @@ function segmentDoc(s: Segment): Record<string, unknown> {
 }
 
 /** The step record: YAML front matter plus the summary (and notes) as the body. */
-export function stepRecord(step: Step, facts: StepFacts, notes: readonly { user: string; text: string }[] = [], plan?: Plan): TrailFile {
+export function stepRecord(
+  step: Step,
+  facts: StepFacts,
+  notes: readonly { user: string; text: string }[] = [],
+  plan?: Plan,
+  blind?: { steps: string[]; separated: boolean },
+): TrailFile {
+  const pol = step.policy;
   const rounds = step.rounds ?? [];
   const last = rounds.at(-1);
   const front: Record<string, unknown> = {
@@ -205,6 +212,13 @@ export function stepRecord(step: Step, facts: StepFacts, notes: readonly { user:
     repo: step.repo,
     plan: `v${step.planVersion}`,
     ...(plan?.decision === "approved" && plan.decidedBy ? { plan_approved: { by: plan.decidedBy, at: iso(plan.decidedAt) } } : {}),
+    ...(pol?.role ? { role: pol.role } : {}),
+    ...(pol?.acs?.length ? { acs: pol.acs } : {}),
+    ...(pol?.gate ? { gate: pol.gate } : {}),
+    ...(pol?.reworks ? { reworks: pol.reworks } : {}),
+    ...(pol?.contract ? { contract: pol.contract } : {}),
+    ...(blind ? { blind } : {}),
+    ...(step.state === "parked" ? { parked: { reason: step.parkedReason ?? "", at: iso(step.parkedAt) } } : {}),
     holders: facts.holders.map((h) => ({ user: h.user, from: iso(h.from), ...(h.to !== undefined ? { to: iso(h.to) } : {}) })),
     sessions: facts.sessions,
     models: facts.models,
@@ -231,6 +245,15 @@ export function stepRecord(step: Step, facts: StepFacts, notes: readonly { user:
             ...(r.startedAt !== undefined ? { minutes: minutes(r.finishedAt - r.startedAt) } : {}),
             outcome: r.outcome,
             ...(r.model ? { model: r.model } : {}),
+            ...(r.verdict ? { verdict: r.verdict } : {}),
+            ...(r.findings ? { findings: r.findings } : {}),
+            ...(r.blockers !== undefined ? { blockers: r.blockers } : {}),
+            ...(r.failures?.length ? { failures: r.failures } : {}),
+            ...(r.acs ? { acs: r.acs } : {}),
+            ...(r.acsAddressed?.length ? { acs_addressed: r.acsAddressed } : {}),
+            ...(r.reconcile ? { reconcile: r.reconcile } : {}),
+            ...(r.gate ? { gate: r.gate } : {}),
+            ...(r.parked ? { parked: r.parked } : {}),
             ...(r.reopen?.length ? { reopen: r.reopen } : {}),
             ...(r.artifacts?.length ? { artifacts: r.artifacts } : {}),
             ...(r.summary ? { summary: r.summary.length > 300 ? `${r.summary.slice(0, 297)}...` : r.summary } : {}),
@@ -260,6 +283,11 @@ export interface GoalRollup {
   activeMinutes: number;
   leadTimeHours?: number | undefined;
   byKind: Record<string, { steps: number; rounds: number; fixCycles: number; minutes: number }>;
+  /** M4.5: parks, failure buckets, and per criterion the round it was first met in (by step). */
+  parks: number;
+  buckets: Record<string, number>;
+  acs: Record<string, { met: boolean; firstMet?: { step: string; round: number } | undefined }>;
+  gates: { step: string; by: string; rule?: string | undefined }[];
 }
 
 export function goalRollup(goal: Goal, steps: readonly Step[], plans: readonly Plan[], facts: ReadonlyMap<string, StepFacts>, doneAt: number | undefined): GoalRollup {
@@ -304,7 +332,26 @@ export function goalRollup(goal: Goal, steps: readonly Step[], plans: readonly P
     activeMinutes: Math.round(activeMinutes * 10) / 10,
     ...(doneAt !== undefined ? { leadTimeHours: Math.round((doneAt - goal.createdAt) / 360_000) / 10 } : {}),
     byKind,
+    parks: live.reduce((n, s) => n + (s.rounds ?? []).filter((r) => r.parked).length, 0),
+    buckets: live.flatMap((s) => (s.rounds ?? []).flatMap((r) => (r.failures ?? []).map((f) => f.bucket))).reduce<Record<string, number>>((m, b) => ({ ...m, [b]: (m[b] ?? 0) + 1 }), {}),
+    acs: acRollup(live, plans),
+    gates: live.flatMap((s) => (s.rounds ?? []).filter((r) => r.gate && r.outcome === "done").map((r) => ({ step: s.id.slice(s.goal.length + 1), by: r.gate?.by ?? r.user, ...(r.gate?.rule ? { rule: r.gate.rule } : {}) }))),
   };
+}
+
+function acRollup(steps: readonly Step[], plans: readonly Plan[]): GoalRollup["acs"] {
+  const plan = plans.filter((p) => p.decision === "approved").at(-1);
+  const out: GoalRollup["acs"] = {};
+  for (const a of plan?.acs ?? []) out[a.id] = { met: false };
+  const judged = steps.flatMap((s) => (s.rounds ?? []).filter((r) => r.acs).map((r) => ({ s, r }))).sort((x, y) => x.r.finishedAt - y.r.finishedAt);
+  for (const { s, r } of judged) {
+    for (const [ac, state] of Object.entries(r.acs ?? {})) {
+      const cur = (out[ac] ??= { met: false });
+      if (state === "met" && !cur.firstMet) cur.firstMet = { step: s.id.slice(s.goal.length + 1), round: r.n };
+      cur.met = state === "met";
+    }
+  }
+  return out;
 }
 
 export function goalFile(goal: Goal, rollup?: GoalRollup, doneAt?: number): TrailFile {
@@ -318,6 +365,8 @@ export function goalFile(goal: Goal, rollup?: GoalRollup, doneAt?: number): Trai
     ...(goal.repos?.length ? { repos: goal.repos } : {}),
     ...(goal.issueUrl ? { issue: goal.issueUrl } : {}),
     ...(goal.refs && Object.keys(goal.refs).length ? { refs: goal.refs } : {}),
+    ...(goal.reworks?.length ? { reworks: goal.reworks } : {}),
+    ...(goal.preset ? { preset: goal.preset.name } : {}),
     created: iso(goal.createdAt),
     ...(doneAt !== undefined ? { done: iso(doneAt) } : {}),
     ...(rollup
@@ -339,6 +388,12 @@ export function goalFile(goal: Goal, rollup?: GoalRollup, doneAt?: number): Trai
             active_minutes: rollup.activeMinutes,
             ...(rollup.leadTimeHours !== undefined ? { lead_time_hours: rollup.leadTimeHours } : {}),
             by_kind: Object.fromEntries(Object.entries(rollup.byKind).map(([k, v]) => [k, { steps: v.steps, rounds: v.rounds, fix_cycles: v.fixCycles, minutes: v.minutes }])),
+            ...(rollup.parks ? { parks: rollup.parks } : {}),
+            ...(Object.keys(rollup.buckets).length ? { buckets: rollup.buckets } : {}),
+            ...(Object.keys(rollup.acs).length
+              ? { acs: Object.fromEntries(Object.entries(rollup.acs).map(([k, v]) => [k, { met: v.met, ...(v.firstMet ? { first_met: v.firstMet } : {}) }])) }
+              : {}),
+            ...(rollup.gates.length ? { gates: rollup.gates } : {}),
           },
         }
       : {}),
@@ -358,7 +413,12 @@ export function planFile(plan: Plan): TrailFile {
     ...(plan.decidedBy || plan.decidedAt !== undefined
       ? { decided: { ...(plan.decidedBy ? { by: plan.decidedBy } : {}), at: iso(plan.decidedAt), ...(plan.comment ? { comment: plan.comment } : {}) } }
       : {}),
-    steps: plan.steps.map((s) => ({ id: s.id, repo: s.repo, kind: s.kind, title: s.title, ...(s.deps.length ? { deps: s.deps } : {}), brief: s.brief })),
+    ...(plan.acs?.length ? { acs: plan.acs } : {}),
+    steps: plan.steps.map((s) => {
+      const { id, repo, kind, title, deps, brief, ...policy } = s;
+      const extra = Object.fromEntries(Object.entries(policy).filter(([, v]) => v !== undefined));
+      return { id, repo, kind, title, ...(deps.length ? { deps } : {}), ...extra, brief };
+    }),
   };
   return { path: `${goalDir(plan.goal)}/plan.v${plan.version}.yaml`, text: stringify(doc, YAML_OPTS) };
 }

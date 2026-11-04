@@ -1,8 +1,8 @@
 // Hub HTTP API request schemas and response shapes (plan §5.3–§5.6).
 
 import { z } from "zod";
-import type { Goal, Note, Plan, Question, Step, StepFacts, TrailFile } from "./goal.ts";
-import { PlanInput } from "./goal.ts";
+import type { Goal, Note, Plan, PlanAc, Question, Step, StepFacts, TrailFile } from "./goal.ts";
+import { AcState, Failure, Findings, PlanInput, Verdict } from "./goal.ts";
 import { Session } from "./session.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
@@ -40,6 +40,8 @@ export const NewGoal = z.object({
   issueUrl: z.string().url().optional(),
   repos: z.array(z.string()).max(20).optional(),
   refs: z.record(z.string().max(40), z.string().max(200)).optional(),
+  reworks: z.array(z.string().max(100)).max(20).optional(),
+  preset: z.object({ name: z.string().min(1).max(60), text: z.string().min(1).max(20_000) }).optional(),
   priority: z.number().int().min(0).max(9).default(3),
 });
 
@@ -62,7 +64,15 @@ export const DoneRequest = z.object({
   artifacts: z.array(z.object({ path: z.string().min(1).max(500), sha: z.string().max(64).optional() })).max(50).optional(),
   /** When the daemon finished it (offline replays keep the real time). */
   at: z.number().optional(),
+  verdict: Verdict.optional(),
+  findings: Findings.optional(),
+  blockers: z.number().int().min(0).optional(),
+  failures: z.array(Failure).max(100).optional(),
+  acs: z.record(z.string(), AcState).optional(),
+  acs_addressed: z.array(z.string().max(40)).max(100).optional(),
 });
+export const GateDecision = z.object({ comment: z.string().max(4000).optional(), rule: z.string().max(60).optional(), inputs: z.record(z.string(), z.unknown()).optional(), reopen: z.array(z.string()).max(50).optional() });
+export const ResumeRequest = z.object({ comment: z.string().max(4000).optional() });
 export const AskRequest = z.object({ text: z.string().min(1).max(4000), sid: z.string().optional(), step: z.string().optional() });
 export const AnswerRequest = z.object({ text: z.string().min(1).max(4000) });
 export const MessageRequest = z.object({ toSid: z.string().optional(), toStep: z.string().optional(), text: z.string().min(1).max(8000) }).refine((m) => m.toSid || m.toStep, "toSid or toStep is required");
@@ -105,6 +115,8 @@ export interface StepContext {
   deps: Pick<Step, "id" | "title" | "state" | "summary" | "branch" | "mr">[];
   notes: Note[];
   openQuestions: Question[];
+  /** The plan's acceptance criteria this step covers (all of them when it names none). */
+  acs?: PlanAc[] | undefined;
 }
 
 export interface DoneResult {
@@ -116,6 +128,10 @@ export interface DoneResult {
   record?: TrailFile | undefined;
   /** Other trail files to write now, e.g. goal.yaml with its roll-up when the goal finished. */
   files?: TrailFile[] | undefined;
+  /** The step was parked by a rule; a person decides how to go on. */
+  parked?: string | undefined;
+  /** Not accepted (reconcile): the session still holds the step and should fix it. */
+  rejected?: string | undefined;
 }
 
 export interface GoalDetail {
@@ -162,7 +178,7 @@ export interface LiveMachine {
 }
 
 export interface Attention {
-  kind: "approval" | "question" | "failed" | "stalled" | "paused" | "needs_you";
+  kind: "approval" | "question" | "failed" | "stalled" | "paused" | "parked" | "needs_you";
   text: string;
   goal?: string | undefined;
   step?: string | undefined;

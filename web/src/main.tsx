@@ -74,11 +74,12 @@ function AttentionList({ items, now, onApprove }: { items: Attention[]; now: num
           <span className="kind">{a.kind.replace("_", " ")}</span>
           <span className="text">{a.text}</span>
           <span className="age">{ago(now, a.at)}</span>
-          {a.kind === "approval" && a.goal && (
+          {a.kind === "approval" && a.goal && !a.step && (
             <button className="small" onClick={() => onApprove(a.goal as string)}>
               Approve
             </button>
           )}
+          {(a.kind === "approval" || a.kind === "parked") && a.goal && a.step && <a href={`#/goal/${a.goal}`}>open {a.step}</a>}
           {a.kind === "question" && a.question !== undefined && <code className="hint">mesh answer {a.question} …</code>}
         </li>
       ))}

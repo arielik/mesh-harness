@@ -47,7 +47,16 @@ export function brief(ctx: StepContext): string {
     `Kind: ${ctx.step.kind}. Repo: ${ctx.step.repo || "(any)"}. State: ${ctx.step.state}.${ctx.step.fixCycles ? ` Fix cycle ${ctx.step.fixCycles}.` : ""}`,
   ];
   if (ctx.designRef) lines.push(`Design: ${ctx.designRef}`);
+  const p = ctx.step.policy;
+  if (p?.role) lines.push(`Role: ${p.role}.`);
+  if (p?.contract) lines.push(`Contract (your only shared interface): ${p.contract}`);
+  if (p?.blind?.length) lines.push(`Blind: you must not read the work of ${p.blind.join(", ")} (branches, plans, summaries); work from the spec and the contract.`);
+  if (p?.forbid?.length) lines.push(`Do not read: ${p.forbid.join(", ")}.`);
   lines.push("", "Brief:", ctx.step.brief);
+  if (ctx.acs?.length) {
+    lines.push("", "Acceptance criteria:");
+    for (const a of ctx.acs) lines.push(`- ${a.id}: ${a.text}${a.surface ? ` (surface: ${a.surface})` : ""}${a.fails_when ? ` — fails when: ${a.fails_when}` : ""}`);
+  }
   if (ctx.deps.length) {
     lines.push("", "Dependencies:");
     for (const d of ctx.deps) lines.push(`- ${d.id} [${d.state}] ${d.title}${d.summary ? ` — ${d.summary}` : ""}${d.branch ? ` (branch ${d.branch})` : ""}${d.mr ? ` (${d.mr})` : ""}`);
@@ -60,7 +69,15 @@ export function brief(ctx: StepContext): string {
     lines.push("", "Open questions:");
     for (const q of ctx.openQuestions) lines.push(`- ${q.fromUser}: ${q.text}`);
   }
-  lines.push("", "When finished call mesh_done (outcome fail + reopen if you found problems in earlier steps). Use mesh_note for progress.");
+  const kind = ctx.step.kind;
+  const judge = kind === "verify" || kind === "test" || kind === "review";
+  lines.push(
+    "",
+    judge
+      ? `When finished call mesh_done with verdict (${kind === "review" ? "approved | changes_requested | blocked, plus findings and blockers" : "pass | fail"})${ctx.acs?.length ? ", acs (each criterion met | not_met | unrun)" : ""} and, for failures, failures [{ac, bucket: spec-gap | impl-bug | test-bug | infra | unclear, assertion}]. mesh routes the fixes.`
+      : `When finished call mesh_done${ctx.acs?.length ? " with acs_addressed (the criteria your work covers)" : ""} (outcome fail + reopen if you found problems in earlier steps).`,
+    "Use mesh_note for progress.",
+  );
   return lines.join("\n");
 }
 
@@ -103,7 +120,7 @@ async function orQueue<T>(host: ToolHost, path: string, body: Record<string, unk
 
 async function contextOf(host: ToolHost, step: string): Promise<{ ctx: StepContext; offlineSince?: number }> {
   try {
-    const ctx = await host.link.rpc<StepContext>("GET", `/v1/steps/${encodeURIComponent(step)}/context`);
+    const ctx = await host.link.rpc<StepContext>("GET", `/v1/steps/${encodeURIComponent(step)}/context?agent=1`);
     host.local.cache(ctx);
     return { ctx };
   } catch (e) {
@@ -182,6 +199,7 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
         at: now,
         ...(typeof args.model === "string" && args.model ? { model: args.model } : {}),
         ...(artifacts ? { artifacts } : {}),
+        ...Object.fromEntries((["verdict", "findings", "blockers", "failures", "acs", "acs_addressed"] as const).filter((k) => args[k] !== undefined).map((k) => [k, args[k]])),
       };
       let r: DoneResult | undefined;
       try {
@@ -190,8 +208,10 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
         if (!isOffline(e)) throw e;
         return doneOffline(host, s, s.step, body, key);
       }
+      if (r.rejected) return fail(`Not accepted: ${r.rejected}. You still hold ${r.step.id}.`);
       host.update(s.sid, { clearStep: true });
       const lines = [`${r.step.id} is ${r.step.state}.`];
+      if (r.parked) lines.push(`It is parked: ${r.parked}. A person decides how to go on; end your turn.`);
       if (r.record) {
         const w = writeTrail(s.cwd, [r.record, ...(r.files ?? [])]);
         if (w.written.length) lines.push(`mesh wrote ${w.written.length === 1 ? "the step record" : "the step record and goal file"} ${w.written.join(", ")}. ${commitHint(w.written)}`);
@@ -199,7 +219,7 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
       }
       if (r.reopened.length) lines.push(`Reopened for fixing: ${r.reopened.join(", ")}.`);
       if (r.goalDone) lines.push(`Goal ${r.step.goal} is done.`);
-      if (outcome === "done" && host.autopilotOf(s) === "chain") {
+      if (r.step.state === "done" && host.autopilotOf(s) === "chain") {
         const ready = await readySteps(host, repoId).catch(() => [] as Step[]);
         const sameRepo = (repo: string) => !repo || !s.repo || repoMatches(s.repo, repo);
         const next = pickNext(r.step, ready, sameRepo);
@@ -223,16 +243,16 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
     }
     case "mesh_plan": {
       const steps = z.array(PlanStep).parse(args.steps);
-      const r = await host.link.rpc<{ plan: { version: number; goal: string } }>(
+      const r = await host.link.rpc<{ plan: { version: number; goal: string }; warnings?: string[] }>(
         "POST",
         `/v1/goals/${encodeURIComponent(String(args.goal))}/plan`,
-        { design_ref: args.design_ref, steps, approve: false },
+        { design_ref: args.design_ref, steps, approve: false, ...(args.acs ? { acs: args.acs } : {}) },
         key,
       );
       const { files } = await host.link.rpc<{ files: TrailFile[] }>("GET", `/v1/goals/${encodeURIComponent(r.plan.goal)}/files`);
       const w = writeTrail(s.cwd, files.filter((f) => f.path.endsWith("goal.yaml") || f.path.endsWith(`plan.v${r.plan.version}.yaml`)));
       return ok(
-        `Plan v${r.plan.version} for ${r.plan.goal} proposed with ${steps.length} steps. ${w.written.length ? `mesh wrote ${w.written.join(" and ")}. ${commitHint(w.written)} together with the design document. ` : ""}It waits for approval; you'll get a message when it is approved or needs changes. End your turn.`,
+        `Plan v${r.plan.version} for ${r.plan.goal} proposed with ${steps.length} steps. ${w.written.length ? `mesh wrote ${w.written.join(" and ")}. ${commitHint(w.written)} together with the design document. ` : ""}${r.warnings?.length ? `Differences from the goal's template (advisory): ${r.warnings.join("; ")}. ` : ""}It waits for approval; you'll get a message when it is approved or needs changes. End your turn.`,
       );
     }
   }

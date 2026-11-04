@@ -46,6 +46,17 @@
         "type": "string"
       }
     },
+    "reworks": {
+      "description": "goals this one redoes",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "preset": {
+      "description": "the plan template the design followed",
+      "type": "string"
+    },
     "created": {
       "type": "string",
       "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d(:\\d\\d)?Z$"
@@ -163,6 +174,78 @@
               "rounds",
               "fix_cycles",
               "minutes"
+            ]
+          }
+        },
+        "parks": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "buckets": {
+          "description": "failures by bucket across all rounds",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "acs": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "met": {
+                "type": "boolean"
+              },
+              "first_met": {
+                "type": "object",
+                "properties": {
+                  "step": {
+                    "type": "string"
+                  },
+                  "round": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "step",
+                  "round"
+                ]
+              }
+            },
+            "required": [
+              "met"
+            ]
+          }
+        },
+        "gates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "step": {
+                "type": "string"
+              },
+              "by": {
+                "type": "string"
+              },
+              "rule": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "by"
             ]
           }
         }

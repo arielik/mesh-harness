@@ -1,6 +1,7 @@
 // Step DAG rules (plan §3.4): plan validation, materializing steps, readiness, reopen.
 
 import type { PlanStep, Step } from "../protocol/index.ts";
+import { policyOf } from "./policy.ts";
 
 export const MAX_STEPS = 50;
 
@@ -111,13 +112,15 @@ export function materialize(goal: string, version: number, plan: readonly PlanSt
   for (const p of plan) {
     const id = full(p.id);
     const old = current.get(id);
-    const fields = { kind: p.kind, repo: p.repo, title: p.title, brief: p.brief, deps: p.deps.map(full), planVersion: version };
+    const policy = policyOf(p);
+    const fields = { kind: p.kind, repo: p.repo, title: p.title, brief: p.brief, deps: p.deps.map(full), planVersion: version, ...(policy ? { policy } : {}) };
     if (old) {
       if (old.state === "done") {
         out.set(id, { ...old, planVersion: version });
         continue;
       }
       const next: Step = { ...old, ...fields, state: old.state === "dropped" ? "blocked" : old.state, updatedAt: now };
+      if (!policy) delete next.policy;
       if (old.brief !== p.brief && (old.state === "claimed" || old.state === "paused")) changedForHolder.push(next);
       out.set(id, next);
     } else {
@@ -139,7 +142,11 @@ export function materialize(goal: string, version: number, plan: readonly PlanSt
   return { upserts: [...out.values()], changedForHolder };
 }
 
-/** Reopen done steps after a dependent failed: they become ready again (fix cycle). */
+/**
+ * Reopen done steps after a dependent failed: they become ready again (fix cycle). Done steps
+ * downstream of a reopened step wait again too (M4.5): work built on the old result is redone
+ * (a review after a spec fix, a combine after a code fix, a gate after either).
+ */
 export function reopen(steps: readonly Step[], ids: readonly string[], now: number): Step[] {
   const all = new Map(steps.map((s) => [s.id, s]));
   const changed = new Map<string, Step>();
@@ -151,6 +158,18 @@ export function reopen(steps: readonly Step[], ids: readonly string[], now: numb
     delete next.holderSid;
     all.set(id, next);
     changed.set(id, next);
+  }
+  const queue = [...changed.keys()];
+  while (queue.length) {
+    const id = queue.shift() as string;
+    for (const d of [...all.values()].filter((x) => x.deps.includes(id) && x.state === "done")) {
+      const next: Step = { ...d, state: "blocked", updatedAt: now };
+      delete next.outcome;
+      delete next.holderSid;
+      all.set(d.id, next);
+      changed.set(d.id, next);
+      queue.push(d.id);
+    }
   }
   // Ready dependents of a reopened step wait again.
   for (const s of recomputeReady([...all.values()], now)) {

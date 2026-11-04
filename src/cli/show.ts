@@ -1,9 +1,9 @@
 // `mesh show <goal>`: the goal and its step DAG in the terminal (plan §5.3). Pure, snapshot-tested.
 
-import { diffPlans, levels } from "../core/index.ts";
+import { diffPlans, levels, stageSummary, STEP_STAGES, stepStage } from "../core/index.ts";
 import type { GoalDetail, Step } from "../protocol/index.ts";
 
-const MARK: Record<Step["state"], string> = { done: "✓", claimed: "◐", paused: "◌", ready: "○", blocked: "·", failed: "✗", dropped: "–" };
+const MARK: Record<Step["state"], string> = { done: "✓", claimed: "◐", paused: "◌", ready: "○", blocked: "·", failed: "✗", parked: "⏸", dropped: "–" };
 
 function local(id: string): string {
   return id.slice(id.indexOf(".") + 1);
@@ -24,6 +24,7 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
   const done = visible.filter((s) => s.state === "done").length;
   lines.push(paint("1", `${g.id} · ${g.title}`));
   lines.push(`${g.state.replace(/_/g, " ")} · owner @${g.ownerId} · ${done}/${visible.length} steps done${g.primaryRepo ? ` · ${g.primaryRepo}` : ""}`);
+  lines.push(`steps: ${stageSummary(d.steps, stepStage, STEP_STAGES)}`);
   const plans = d.plans;
   const latest = plans.at(-1);
   if (latest) {
@@ -43,8 +44,11 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
     lines.push(paint("2", i === 0 ? "start" : `then (after ${[...new Set(level.flatMap((s) => s.deps.map(local)))].join(", ")})`));
     for (const s of level) {
       const mark = MARK[s.state];
-      const color = s.state === "done" ? "32" : s.state === "failed" ? "31" : s.state === "claimed" ? "34" : s.state === "paused" ? "33" : "0";
-      const extras = [who(s, d), s.fixCycles ? `fix cycle ${s.fixCycles}` : "", s.mr ?? "", s.state === "done" && s.summary ? `— ${s.summary}` : ""].filter(Boolean).join("  ");
+      const color = s.state === "done" ? "32" : s.state === "failed" || s.state === "parked" ? "31" : s.state === "claimed" ? "34" : s.state === "paused" ? "33" : "0";
+      const gate = s.kind === "gate" && s.state === "ready" ? `waits for a decision: mesh step approve ${s.id}` : "";
+      const parked = s.state === "parked" ? `parked: ${s.parkedReason ?? ""} (mesh step resume ${s.id})` : "";
+      const role = s.policy?.role ? `[${s.policy.role}]` : "";
+      const extras = [role, who(s, d), gate, parked, s.fixCycles ? `fix cycle ${s.fixCycles}` : "", s.mr ?? "", s.state === "done" && s.summary ? `— ${s.summary}` : ""].filter(Boolean).join("  ");
       lines.push(`  ${paint(color, mark)} ${local(s.id).padEnd(idW)}  ${s.kind.padEnd(9)} ${(s.repo || "-").padEnd(16)} ${s.state.padEnd(8)} ${extras}`.trimEnd());
     }
   });

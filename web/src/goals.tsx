@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { levels } from "../../src/core/dag.ts";
+import { partition, STEP_STAGES, stepStage } from "../../src/core/stages.ts";
 import type { Goal, Plan, Step } from "../../src/protocol/goal.ts";
 import type { GoalDetail, StepView, TimelineEntry } from "../../src/protocol/hub.ts";
 import { api } from "./api.ts";
@@ -153,13 +154,27 @@ function Dag({ detail, selected, onSelect }: { detail: GoalDetail; selected?: st
   );
 }
 
-function StepPanel({ id, now }: { id: string; now: number }) {
+function StepPanel({ id, now, onChange }: { id: string; now: number; onChange: () => void }) {
   const [view, setView] = useState<StepView>();
   const [error, setError] = useState<string>();
-  useEffect(() => {
-    setView(undefined);
+  const [comment, setComment] = useState("");
+  const [reopenIds, setReopenIds] = useState("");
+  const reload = useCallback(() => {
     api.step(id).then(setView, (e: Error) => setError(e.message));
   }, [id]);
+  useEffect(() => {
+    setView(undefined);
+    reload();
+  }, [reload]);
+  const act = (p: Promise<unknown>) =>
+    p.then(
+      () => {
+        setComment("");
+        reload();
+        onChange();
+      },
+      (e: Error) => setError(e.message),
+    );
   if (error) return <div className="card panel error">{error}</div>;
   if (!view) return <div className="card panel muted">Loading…</div>;
   const { step, deps, notes } = view.context;
@@ -212,7 +227,72 @@ function StepPanel({ id, now }: { id: string; now: number }) {
           </ul>
         </>
       )}
-      {step.state === "ready" && <code className="hint">mesh run {step.repo || "<repo>"} --step {step.id}</code>}
+      {step.policy && (
+        <p className="muted small-text" aria-label="step rules">
+          {[
+            step.policy.role && `role ${step.policy.role}`,
+            step.policy.acs?.length && `covers ${step.policy.acs.join(", ")}`,
+            step.policy.blind?.length && `blind to ${step.policy.blind.join(", ")}`,
+            step.policy.reads && `reads ${step.policy.reads.join(", ") || "nothing"}`,
+            step.policy.max_rounds && `max ${step.policy.max_rounds} rounds`,
+            step.policy.park_on?.length && `parks on ${step.policy.park_on.join(", ")}`,
+            step.policy.route && `routes ${Object.entries(step.policy.route).map(([b, t]) => `${b}→${t}`).join(", ")}`,
+            step.policy.target && `reviews ${step.policy.target}`,
+            step.policy.must_cover && `must cover ${step.policy.must_cover === "all" ? "all criteria" : step.policy.must_cover.join(", ")}`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      )}
+      {(step.rounds?.length ?? 0) > 0 && (
+        <>
+          <h4>Rounds</h4>
+          <table className="facts" aria-label="rounds">
+            <tbody>
+              {step.rounds?.map((r) => (
+                <tr key={r.n}>
+                  <td>#{r.n}</td>
+                  <td>@{r.user}</td>
+                  <td>{r.verdict ?? r.outcome}</td>
+                  <td>
+                    {r.acs ? Object.entries(r.acs).map(([a, v]) => `${a}:${v === "met" ? "✓" : v === "not_met" ? "✗" : "–"}`).join(" ") : ""}
+                    {r.failures?.length ? ` ${r.failures.map((f) => f.bucket).join(", ")}` : ""}
+                    {r.reconcile ? ` missing ${r.reconcile.missing.join(", ")}` : ""}
+                    {r.parked ? ` parked: ${r.parked}` : ""}
+                    {r.gate ? ` gate by @${r.gate.by}${r.gate.rule ? ` (${r.gate.rule})` : ""}` : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+      {step.kind === "gate" && step.state === "ready" && (
+        <div className="decide" aria-label="gate decision">
+          <p>
+            <strong>{step.policy?.gate ?? "Gate"}</strong> waits for your decision.
+          </p>
+          <textarea aria-label="Gate comment" placeholder="comment" value={comment} onChange={(e) => setComment(e.target.value)} />
+          <input aria-label="Steps to reopen" placeholder="steps to reopen when rejecting, e.g. spec,develop" value={reopenIds} onChange={(e) => setReopenIds(e.target.value)} />
+          <div className="row">
+            <button onClick={() => act(api.approveStep(step.id, comment.trim() || undefined))}>Approve</button>
+            <button className="small" disabled={!reopenIds.trim()} onClick={() => act(api.rejectStep(step.id, reopenIds.split(",").map((x) => x.trim()).filter(Boolean), comment.trim() || undefined))}>
+              Reject and reopen
+            </button>
+          </div>
+        </div>
+      )}
+      {(step.state === "parked" || step.state === "failed") && (
+        <div className="decide" aria-label="parked">
+          <p>
+            <strong>{step.state === "parked" ? "Parked" : "Failed"}:</strong> {step.parkedReason ?? step.summary ?? ""}
+          </p>
+          <textarea aria-label="Resume comment" placeholder="what to do differently (optional)" value={comment} onChange={(e) => setComment(e.target.value)} />
+          <button onClick={() => act(api.resumeStep(step.id, comment.trim() || undefined))}>Resume</button>
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+      {step.state === "ready" && step.kind !== "gate" && <code className="hint">mesh run {step.repo || "<repo>"} --step {step.id}</code>}
       {step.state === "paused" && <code className="hint">mesh take {step.id}</code>}
     </div>
   );
@@ -353,6 +433,15 @@ export function GoalPage({ id }: { id: string }) {
         )}
       </p>
       {error && <p className="error">{error}</p>}
+      <p className="stages" aria-label="step stages">
+        {partition(detail.steps, stepStage, STEP_STAGES)
+          .filter((p) => p.items.length)
+          .map((p) => (
+            <span key={p.stage} className={`stage st-${p.stage.replace(/ /g, "-")}`}>
+              {p.stage} <strong>{p.items.length}</strong>
+            </span>
+          ))}
+      </p>
       <nav className="tabs">
         {(["steps", "design", "timeline"] as const).map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
@@ -365,7 +454,7 @@ export function GoalPage({ id }: { id: string }) {
           <div className="dagwrap">
             <Dag detail={detail} selected={selected} onSelect={setSelected} />
           </div>
-          {selected ? <StepPanel id={selected} now={now} /> : <p className="muted">Click a step for its brief, holder, notes and facts.</p>}
+          {selected ? <StepPanel id={selected} now={now} onChange={load} /> : <p className="muted">Click a step for its brief, holder, notes and facts.</p>}
         </div>
       )}
       {tab === "design" && <DesignTab detail={detail} onDecide={decide} />}

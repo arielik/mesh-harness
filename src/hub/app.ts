@@ -26,6 +26,8 @@ import {
   NoteRequest,
   ProposePlan,
   ReleaseRequest,
+  GateDecision,
+  ResumeRequest,
   Replan,
   SESSION_COOKIE,
   SyncRequest,
@@ -183,7 +185,7 @@ export function buildRoutes(svc: HubService): Route[] {
         }),
       }),
     ),
-    r("GET", "/v1/steps/:id/context", "member", (c) => c.json(svc.context(param(c, "id")))),
+    r("GET", "/v1/steps/:id/context", "member", (c) => c.json(svc.context(param(c, "id"), c.req.query("agent") === "1"))),
     r("GET", "/v1/steps/:id", "member", (c) => c.json(svc.stepView(param(c, "id")))),
     r("POST", "/v1/steps/:id/claim", "member", async (c, a) => c.json(svc.claimStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     r("POST", "/v1/steps/:id/release", "member", async (c, a) => c.json(svc.releaseStep(a, param(c, "id"), (await body(c, ReleaseRequest)).note))),
@@ -192,6 +194,9 @@ export function buildRoutes(svc: HubService): Route[] {
       return c.json(svc.noteStep(a, param(c, "id"), b.text, b.sid));
     }),
     r("POST", "/v1/steps/:id/done", "member", async (c, a) => c.json(svc.doneStep(a, param(c, "id"), await body(c, DoneRequest)))),
+    r("POST", "/v1/steps/:id/approve", "member", async (c, a) => c.json(svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: true }))),
+    r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false }))),
+    r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
     r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
 
     // ---------- questions, messages ----------
