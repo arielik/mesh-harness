@@ -4,7 +4,7 @@
   "private": true,
   "description": "mesh-harness: one place to see and steer all your Claude Code sessions",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {
     "node": "^22.13.0 || >=24"
   },
@@ -13,7 +13,9 @@
   },
   "files": [
     "dist",
-    "assets"
+    "assets",
+    "LICENSE.md",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsdown && vite build --config web/vite.config.ts --logLevel warn",

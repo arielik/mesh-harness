@@ -10,6 +10,7 @@ One place to see and steer all your Claude Code sessions, across repos and peopl
 
 It needs Claude Code on a subscription login, Node and git. It needs no other repository, no API keys and no Agent SDK, and none of its parts depends on a particular identity provider, issue tracker or analysis tool.
 
+- Documentation: [docs/README.md](docs/README.md) · [how-to with examples](docs/guide/howto.md)
 - Guide: [overview](docs/guide/overview.md) · [concepts](docs/guide/concepts.md) · [the development cycle](docs/guide/cycle.md) · [install](docs/guide/install.md) · [auth](docs/guide/auth.md) · [operations](docs/guide/operations.md) · [the ledger](docs/guide/ledger.md) · [events](docs/events.md)
 - How it works, in pictures: [docs/explainer/how-mesh-harness-works.html](docs/explainer/how-mesh-harness-works.html)
 - The SDD kit: [assets/sdd/README.md](assets/sdd/README.md)
@@ -98,3 +99,7 @@ pnpm test:claude               # contract suite: every Claude Code behaviour mes
 pnpm schemas                   # regenerate schemas/*.json after changing src/protocol
 pnpm test:web                  # Playwright smoke test of the dashboard (after pnpm build)
 ```
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md): free to use, change and share for any noncommercial purpose (personal, research, education, nonprofit and public institutions). Commercial use needs a separate license from the author. See [NOTICE](NOTICE).

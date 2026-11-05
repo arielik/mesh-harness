@@ -28,4 +28,4 @@ mesh gives a person and a team **one place to see and steer every Claude Code se
 - **Team:** `mesh login --hub <url>`. Shared goals, claims across people, the web dashboard. If the hub is unreachable, the steps you hold keep working and everything syncs once when it is back.
 - **Without mesh:** your process runs as before. mesh is never needed to get work done.
 
-Next: [concepts](concepts.md) · [install](install.md) · [auth](auth.md) · [operations](operations.md) · [the ledger](ledger.md) · [events](../events.md)
+Next: [how-to with examples](howto.md) · [concepts](concepts.md) · [install](install.md) · [auth](auth.md) · [operations](operations.md) · [the ledger](ledger.md) · [events](../events.md)
