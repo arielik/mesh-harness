@@ -9,7 +9,7 @@ These items are deliberately left out of [the implementation plan](plan/implemen
 | Design contributors (several sessions co-writing a design) | Notes on the design step cover the first need |
 | Replan matching by brief hash | Matching by step id is simpler and predictable |
 | Push export sinks (webhook, JSONL) | mesh-ai pulls `GET /v1/events?after=` |
-| Node SEA single binaries, hub container image | The npm package is enough to start |
+| Node SEA single binaries | The npm package is enough to start (the hub image moved to M4.6) |
 | Claude Code channels as a delivery path | Research preview; revisit once stable |
 | GitLab issue import, comments, MR guard | Optional integration (M5) |
 | JWT/JWKS for other services | The hub's opaque tokens plus service tokens are enough |

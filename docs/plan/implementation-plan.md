@@ -675,9 +675,13 @@ mesh-harness is meant to be handed to other teams that may have no access to the
 - **The user-facing docs** (README, guide, explainer, events) use neutral names, and present analysis tools as optional (mesh-ai is one example). `docs/analysis/README.md` marks those documents as design history, which mentions the first team's repos as input, not as dependencies.
 - **Tested.** `test/assets.test.ts` checks four things: every role has an agent, every `agent()` call has a label mesh can parse, the workflow runs in the Workflow runtime's shape, and installing keeps the team's files. `pnpm spike e2e-kit` ran it for real: a toy Node repo, `mesh assets install`, one Claude Code session (haiku) running `sdd-programme.js`, and a Solo daemon recording it. The row ended "ready to land" in 3 minutes, with nine roles recorded (models and typed results) and the records committed by the workflow's ledger step.
 
+### M4.6. Hub scale-out (proposed)
+
+Several hub replicas on Postgres behind a load balancer; SQLite stays the default. Async `Db` interface with SQLite and Postgres drivers, OIDC device state in the database, `HintBus` over `LISTEN/NOTIFY`, tick leadership and event-sequence ordering by advisory locks, `/healthz` and `/readyz`, a hub OCI image, a generic `deploy/kubernetes/` example, `mesh hub migrate`. Acceptance: `pnpm spike e2e-scale` (claim race, cross-replica hints and login, tick failover, gap-free event cursor) and the store contract suite on both drivers. Design: [hub scale-out](../analysis/2026-11-06-hub-scale-out.md).
+
 ### M5. Optional (later)
 
-GitLab issue import and comments (`gitlab/`), plus **CI ingest** (pipeline and test results per MR/step, joined into the ledger export; or joined from mesh-ai's Prometheus CI data). Export adapters for existing machine ledgers such as `evidence/lane/verdicts.json` (C10). Node SEA binaries and a hub container image. Design contributors, critical-path rendering, `--lane`. Claude Code channels as a delivery path once out of research preview. Everything else in `docs/later.md`.
+GitLab issue import and comments (`gitlab/`), plus **CI ingest** (pipeline and test results per MR/step, joined into the ledger export; or joined from mesh-ai's Prometheus CI data). Export adapters for existing machine ledgers such as `evidence/lane/verdicts.json` (C10). Node SEA binaries. Design contributors, critical-path rendering, `--lane`. Claude Code channels as a delivery path once out of research preview. Everything else in `docs/later.md`.
 
 ---
 
@@ -699,7 +703,7 @@ GitLab issue import and comments (`gitlab/`), plus **CI ingest** (pipeline and t
 ## 12. ADRs (only these)
 
 1. One package and one binary; module boundaries enforced.
-2. `node:sqlite` behind a thin wrapper (fallback `better-sqlite3`).
+2. `node:sqlite` behind a thin wrapper (fallback `better-sqlite3`); from M4.6 an async `Db` interface with a second driver, Postgres, for several hub replicas.
 3. Auth: hub-mediated provider login; opaque hub tokens; no JWT or refresh.
 4. Hooks: four async command hooks plus a synchronous Stop HTTP hook replying with `additionalContext`. `agents --json` as the status authority.
 5. Session identity: a stable `sid` with rebinding by Claude pid.
