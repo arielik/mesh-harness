@@ -3,7 +3,7 @@
 // (M4.6): within a transaction they are awaited in order, so events keep their order.
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
+import { AuthError, loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
 import {
   agentContext,
   blindConflict,
@@ -60,7 +60,7 @@ import type {
   UserView,
 } from "../protocol/index.ts";
 import type { HubStore, NewEvent, UserRow } from "../store/index.ts";
-import { Bus } from "./bus.ts";
+import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
 export class HubError extends Error {
@@ -90,6 +90,14 @@ interface LoginAttempt {
   hostname?: string | undefined;
 }
 
+interface DeviceAttempt {
+  provider: string;
+  hostname?: string | undefined;
+  client: "cli" | "web";
+  /** The provider's own state for `complete` (see `StartResult`). */
+  state: Record<string, unknown>;
+}
+
 interface CliCode {
   userId: string;
   roles: Role[];
@@ -103,14 +111,16 @@ export class HubService {
   readonly store: HubStore;
   readonly config: HubConfig;
   readonly tokens: Tokens;
-  readonly bus = new Bus();
+  /** SSE hints; across replicas when the hub runs on Postgres (see bus.ts). */
+  readonly bus: HintBus;
   now: () => number;
 
-  constructor(store: HubStore, config: HubConfig, now: () => number = () => Date.now()) {
+  constructor(store: HubStore, config: HubConfig, now: () => number = () => Date.now(), opts: { bus?: HintBus } = {}) {
     this.store = store;
     this.config = config;
     this.tokens = new Tokens(store, config.policies);
     this.now = now;
+    this.bus = opts.bus ?? new LocalHintBus();
   }
 
   // ---------- helpers ----------
@@ -257,16 +267,33 @@ export class HubService {
     if (!p.flows().includes("device")) throw new HubError(400, `provider ${providerId} has no device login`);
     const r = await p.start("device", { state: "", nonce: "", pkceChallenge: "", redirectUri: "" });
     if (r.kind !== "device") throw new HubError(500, "provider did not start a device login");
-    await this.store.putLoginAttempt(`device:${r.pollId}`, { provider: providerId, hostname, client }, this.now());
-    return r;
+    // The provider's state (the device code) lives in the database, not in this process, so the
+    // CLI's polls can land on any replica. It never goes back to the client.
+    const { state, ...shown } = r;
+    const attempt: DeviceAttempt = { provider: providerId, hostname, client, state };
+    await this.store.putLoginAttempt(`device:${r.pollId}`, attempt as unknown as Record<string, unknown>, this.now());
+    return shown;
   }
 
   async devicePoll(providerId: string, pollId: string, hostname: string | undefined): Promise<LoginResult | "pending"> {
-    const rec = await this.store.getLoginAttempt<{ provider: string; hostname?: string; client: "cli" | "web" }>(`device:${pollId}`, this.now(), LOGIN_TTL);
+    const key = `device:${pollId}`;
+    const rec = await this.store.getLoginAttempt<DeviceAttempt>(key, this.now(), LOGIN_TTL);
     if (!rec || rec.provider !== providerId) throw new HubError(404, "unknown or expired device login");
-    const id = await this.provider(providerId).complete({ flow: "device", pollId });
-    if (id === "pending") return "pending";
-    await this.store.deleteLoginAttempt(`device:${pollId}`);
+    let id: Identity | "pending";
+    try {
+      id = await this.provider(providerId).complete({ flow: "device", pollId, state: rec.state });
+    } catch (e) {
+      // A refusal or expiry ends the attempt; an unreachable identity provider may come back.
+      if (!(e instanceof AuthError && e.status >= 500)) await this.store.deleteLoginAttempt(key);
+      throw e;
+    }
+    if (id === "pending") {
+      // Keep the provider's poll pacing (interval, slow_down); a no-op if the attempt is gone.
+      await this.store.updateLoginAttempt(key, rec as unknown as Record<string, unknown>);
+      return "pending";
+    }
+    // The identity provider hands out the tokens only once, so only one poll gets here.
+    await this.store.deleteLoginAttempt(key);
     return await this.issue(id, rec.client, hostname ?? rec.hostname);
   }
 
@@ -1050,8 +1077,9 @@ export class HubService {
         const machine = s.holderMachine ? await this.store.getMachine(s.holderMachine) : undefined;
         const ended = hs?.session.state === "ended" && hs.session.endedReason !== "clear" && now - (hs.session.endedAt ?? 0) > this.config.thresholds.pauseGraceMs;
         const offline = machine !== undefined && now - machine.lastSeen > this.config.thresholds.machineOfflineMs;
-        if (ended || offline) {
-          await this.store.saveSteps([pause(s, now)]);
+        // Conditional: if another replica's tick (a leadership handover) or a request changed the
+        // step since it was read, this tick leaves it alone. So running tick twice pauses once.
+        if ((ended || offline) && (await this.store.saveStepIf(pause(s, now), s))) {
           await this.emit({ type: "step.paused", goal: s.goal, step: s.id, payload: { reason: ended ? "holder session ended" : "holder machine offline" } });
         }
       }

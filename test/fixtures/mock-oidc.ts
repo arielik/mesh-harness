@@ -19,6 +19,10 @@ export class MockOidc {
   /** Put groups in userinfo only (not in the ID token). */
   groupsInUserinfo = false;
   device = true;
+  /** Device-code token requests seen (pacing tests). */
+  deviceTokenRequests = 0;
+  /** Answer the next device-code token request with slow_down. */
+  slowDownOnce = false;
   private server: Server;
   private key: KeyObject;
   private jwk: Record<string, unknown>;
@@ -139,6 +143,11 @@ export class MockOidc {
           return { status: 200, body: { access_token: "at-" + b64(randomBytes(8)), token_type: "Bearer", expires_in: 300, id_token: this.idToken(c.clientId, c.nonce) } };
         }
         if (grant === "urn:ietf:params:oauth:grant-type:device_code") {
+          this.deviceTokenRequests++;
+          if (this.slowDownOnce) {
+            this.slowDownOnce = false;
+            return { status: 400, body: { error: "slow_down" } };
+          }
           const d = this.devices.get(form.get("device_code") ?? "");
           if (!d) return { status: 400, body: { error: "expired_token" } };
           if (!d.approved) return { status: 400, body: { error: "authorization_pending" } };

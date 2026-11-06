@@ -26,10 +26,26 @@ export const PRESETS: Record<string, Partial<OidcConfig>> = {
   gitlab: { label: "GitLab", scopes: ["openid", "profile", "email"], groupsClaim: "groups_direct", groupNormalize: [] },
 };
 
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+
+/**
+ * A device login in progress (RFC 8628). Held by the hub between polls, not by this object, so the
+ * provider is stateless and any hub replica can answer a poll.
+ */
 interface DeviceState {
-  result?: Identity;
-  error?: string;
+  deviceCode: string;
   expiresAt: number;
+  /** Seconds between token requests; raised by `slow_down`. */
+  interval: number;
+  /** Polls before this answer "pending" without asking the identity provider. */
+  nextPollAt: number;
+}
+
+function deviceState(s: Record<string, unknown>): DeviceState {
+  if (typeof s.deviceCode !== "string" || typeof s.expiresAt !== "number" || typeof s.interval !== "number" || typeof s.nextPollAt !== "number") {
+    throw new AuthError("unknown or expired device login", 404);
+  }
+  return s as unknown as DeviceState;
 }
 
 export class OidcProvider implements AuthProvider {
@@ -38,10 +54,12 @@ export class OidcProvider implements AuthProvider {
   readonly label: string;
   private cfg: OidcConfig;
   private config: Promise<client.Configuration> | undefined;
-  private devices = new Map<string, DeviceState>();
+  /** Clock for device-flow expiry and pacing (tests). */
+  private readonly now: () => number;
 
-  constructor(cfg: OidcConfig) {
+  constructor(cfg: OidcConfig, now: () => number = () => Date.now()) {
     this.cfg = cfg;
+    this.now = now;
     this.id = cfg.id;
     this.label = cfg.label ?? cfg.id;
   }
@@ -88,22 +106,18 @@ export class OidcProvider implements AuthProvider {
     if (flow === "device") {
       if (!(await this.supportsDevice())) throw new AuthError(`${this.cfg.issuer} does not offer the device flow`, 400);
       const resp = await client.initiateDeviceAuthorization(c, { scope });
-      const pollId = randomUUID();
-      const state: DeviceState = { expiresAt: Date.now() + resp.expires_in * 1000 };
-      this.devices.set(pollId, state);
-      client
-        .pollDeviceAuthorizationGrant(c, resp)
-        .then((tokens) => this.identityFrom(c, tokens))
-        .then((id) => (state.result = id))
-        .catch((e: unknown) => (state.error = e instanceof Error ? e.message : String(e)));
+      const interval = resp.interval ?? 5;
+      const now = this.now();
+      const state: DeviceState = { deviceCode: resp.device_code, expiresAt: now + resp.expires_in * 1000, interval, nextPollAt: now + interval * 1000 };
       return {
         kind: "device",
         userCode: resp.user_code,
         verifyUrl: resp.verification_uri,
         verifyUrlComplete: resp.verification_uri_complete,
-        pollId,
-        interval: resp.interval ?? 5,
+        pollId: randomUUID(),
+        interval,
         expiresIn: resp.expires_in,
+        state: state as unknown as Record<string, unknown>,
       };
     }
     throw new AuthError(`provider ${this.id} does not support the ${flow} flow`, 400);
@@ -124,20 +138,34 @@ export class OidcProvider implements AuthProvider {
       }
       return this.identityFrom(c, tokens);
     }
-    if (input.flow === "device") {
-      const state = this.devices.get(input.pollId);
-      if (!state) throw new AuthError("unknown or expired device login", 404);
-      if (state.result) {
-        this.devices.delete(input.pollId);
-        return state.result;
-      }
-      if (state.error || Date.now() > state.expiresAt) {
-        this.devices.delete(input.pollId);
-        throw new AuthError(`device login failed: ${state.error ?? "expired"}`);
-      }
-      return "pending";
-    }
+    if (input.flow === "device") return this.pollDevice(c, deviceState(input.state));
     throw new AuthError(`provider ${this.id} does not support the ${input.flow} flow`, 400);
+  }
+
+  /**
+   * One token request for a device login (not the library's polling loop: the next poll may land
+   * on another replica). Paced by the issuer's interval, so a fast-polling client cannot make the
+   * hub hammer the identity provider. Updates `s` in place.
+   */
+  private async pollDevice(c: client.Configuration, s: DeviceState): Promise<Identity | "pending"> {
+    const now = this.now();
+    if (now > s.expiresAt) throw new AuthError("device login failed: expired");
+    if (now < s.nextPollAt) return "pending";
+    let tokens: Awaited<ReturnType<typeof client.genericGrantRequest>>;
+    try {
+      tokens = await client.genericGrantRequest(c, DEVICE_GRANT, { device_code: s.deviceCode });
+    } catch (e) {
+      if (e instanceof client.ResponseBodyError) {
+        if (e.error === "authorization_pending" || e.error === "slow_down") {
+          if (e.error === "slow_down") s.interval += 5;
+          s.nextPollAt = now + s.interval * 1000;
+          return "pending";
+        }
+        throw new AuthError(`device login failed: ${e.error}${e.error_description ? ` (${e.error_description})` : ""}`);
+      }
+      throw new AuthError(`device login failed: cannot reach the identity provider ${this.cfg.issuer}: ${e instanceof Error ? e.message : String(e)}`, 502);
+    }
+    return this.identityFrom(c, tokens);
   }
 
   private async identityFrom(c: client.Configuration, tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers): Promise<Identity> {

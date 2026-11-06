@@ -99,14 +99,57 @@ describe("oidc specifics", () => {
     const p = oidc();
     const start = await p.start("device", { state: "", nonce: "", pkceChallenge: "", redirectUri: "" });
     if (start.kind !== "device") throw new Error("expected device");
-    expect(await p.complete({ flow: "device", pollId: start.pollId })).toBe("pending");
+    expect(await p.complete({ flow: "device", pollId: start.pollId, state: start.state })).toBe("pending");
     expect(mock.approveDevice(start.userCode)).toBe(true);
     let r: Identity | "pending" = "pending";
     for (let i = 0; i < 40 && r === "pending"; i++) {
       await new Promise((ok) => setTimeout(ok, 150));
-      r = await p.complete({ flow: "device", pollId: start.pollId });
+      r = await p.complete({ flow: "device", pollId: start.pollId, state: start.state });
     }
     expect(r).toMatchObject({ subject: "u-1" });
+  });
+
+  it("keeps no device state itself: another provider instance (another replica) finishes the login", async () => {
+    let now = 1_000_000;
+    const make = () =>
+      new OidcProvider({ id: "kanidm", issuer: mock.issuer, clientId: "mesh", scopes: ["openid"], groupsClaim: "groups", groupNormalize: [], allowInsecure: true }, () => now);
+    const start = await make().start("device", { state: "", nonce: "", pkceChallenge: "", redirectUri: "" });
+    if (start.kind !== "device") throw new Error("expected device");
+    // The state is plain data the hub can store as JSON.
+    const saved = JSON.parse(JSON.stringify(start.state)) as Record<string, unknown>;
+    mock.approveDevice(start.userCode);
+    now += start.interval * 1000;
+    expect(await make().complete({ flow: "device", pollId: start.pollId, state: saved })).toMatchObject({ subject: "u-1" });
+  });
+
+  it("paces device polls by the issuer's interval and honours slow_down", async () => {
+    let now = 1_000_000;
+    const p = new OidcProvider({ id: "kanidm", issuer: mock.issuer, clientId: "mesh", scopes: ["openid"], groupsClaim: "groups", groupNormalize: [], allowInsecure: true }, () => now);
+    const start = await p.start("device", { state: "", nonce: "", pkceChallenge: "", redirectUri: "" });
+    if (start.kind !== "device") throw new Error("expected device");
+    const poll = () => p.complete({ flow: "device", pollId: start.pollId, state: start.state });
+    const before = mock.deviceTokenRequests;
+    // Too early: answered without asking the issuer.
+    expect(await poll()).toBe("pending");
+    expect(mock.deviceTokenRequests).toBe(before);
+    now += 1000;
+    mock.slowDownOnce = true;
+    expect(await poll()).toBe("pending");
+    expect(mock.deviceTokenRequests).toBe(before + 1);
+    expect(start.state.interval).toBe(start.interval + 5);
+    now += 1000; // the old interval is no longer enough
+    expect(await poll()).toBe("pending");
+    expect(mock.deviceTokenRequests).toBe(before + 1);
+    now += 5000;
+    expect(await poll()).toBe("pending");
+    expect(mock.deviceTokenRequests).toBe(before + 2);
+    // Past expires_in (60 s at the mock): a failed login, not pending forever.
+    now += 61_000;
+    await expect(poll()).rejects.toThrow(/expired/);
+  });
+
+  it("rejects device state it did not create", async () => {
+    await expect(oidc().complete({ flow: "device", pollId: "x", state: { deviceCode: 1 } })).rejects.toMatchObject({ status: 404 });
   });
 
   it("explains a missing device endpoint and an unreachable issuer", async () => {

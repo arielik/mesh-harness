@@ -219,7 +219,14 @@ function contract(d: Driver) {
       await s.putLoginAttempt("old", { v: 0 }, T0 - 1000);
       expect(await s.getLoginAttempt("a", T0 + 20, 500)).toEqual({ v: 2 });
       expect(await s.getLoginAttempt("old", T0 + 20, 500)).toBeUndefined();
-      await s.deleteLoginAttempt("a");
+      // An update keeps the attempt's age: polling a device login does not keep it alive forever.
+      expect(await s.updateLoginAttempt("a", { v: 3 })).toBe(true);
+      expect(await s.getLoginAttempt("a", T0 + 20, 500)).toEqual({ v: 3 });
+      expect(await s.getLoginAttempt("a", T0 + 600, 500)).toBeUndefined();
+      expect(await s.updateLoginAttempt("a", { v: 4 })).toBe(false);
+      await s.putLoginAttempt("a", { v: 2 }, T0 + 10);
+      expect(await s.deleteLoginAttempt("a")).toBe(true);
+      expect(await s.deleteLoginAttempt("a")).toBe(false);
       expect(await s.getLoginAttempt("a", T0 + 20, 500)).toBeUndefined();
     });
 
@@ -327,6 +334,44 @@ function contract(d: Driver) {
       expect((await s.events(0, 10)).map((e) => e.seq)).toEqual([b, c]);
     });
 
+    it("keeps the event cursor gap-free: concurrent writers never commit a seq behind a reader's cursor", async () => {
+      // Two store handles on one database stand for two replicas (on SQLite, two processes).
+      const target = await d.fresh();
+      const w1 = track(await HubStore.open(target));
+      const w2 = d.name === "sqlite" ? w1 : track(await HubStore.open(target));
+      const reader = d.name === "sqlite" ? w1 : track(await HubStore.open(target));
+      let writing = true;
+      const seen: number[] = [];
+      const read = async () => {
+        let cursor = 0;
+        for (let more = true; more; ) {
+          more = writing;
+          for (const e of await reader.events(cursor, 1000)) {
+            seen.push(e.seq);
+            cursor = e.seq;
+          }
+          await new Promise((ok) => setTimeout(ok, 1));
+        }
+      };
+      const write = async (s: HubStore, w: number) => {
+        for (let i = 0; i < 8; i++) {
+          // A slow transaction: it appends, works a little longer, then commits.
+          await s.tx(async () => {
+            await s.appendEvent({ at: T0, type: "t", payload: { w, i } });
+            await new Promise((ok) => setTimeout(ok, Math.random() * 6));
+            await s.appendEvent({ at: T0, type: "t", payload: { w, i, second: true } });
+          });
+        }
+      };
+      const reading = read();
+      await Promise.all([0, 1, 2, 3, 4, 5].map((w) => write(w % 2 ? w2 : w1, w)));
+      writing = false;
+      await reading;
+      const all = (await reader.events(0, 1000)).map((e) => e.seq);
+      expect(all).toHaveLength(96);
+      expect(seen).toEqual(all);
+    });
+
     it("keeps the first response for an idempotency key", async () => {
       const s = await store();
       await s.putIdem("k", "ada", { ok: 1 }, T0);
@@ -353,6 +398,76 @@ function contract(d: Driver) {
 
 describe("store contract: sqlite", () => contract(sqlite));
 describe.skipIf(!PG_URL)(`store contract: postgres${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => contract(postgres));
+
+describe.skipIf(!PG_URL)(`postgres only${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => {
+  const opened: { close(): Promise<void> }[] = [];
+  const track = <T extends { close(): Promise<void> }>(x: T): T => (opened.push(x), x);
+  afterEach(async () => {
+    for (const x of opened.splice(0)) await x.close().catch(() => undefined);
+    await postgres.cleanup();
+  });
+
+  it("runs a deadlock victim's transaction again, so both transactions commit once", async () => {
+    const db = track(await openPgDb(await postgres.fresh(), ["CREATE TABLE a (id INTEGER PRIMARY KEY, n INTEGER NOT NULL); INSERT INTO a VALUES (1, 0), (2, 0);"]));
+    let firstUpdates = 0;
+    let bothIn!: () => void;
+    const barrier = new Promise<void>((ok) => (bothIn = ok));
+    let attempts = 0;
+    // Opposite lock order: 1 then 2, and 2 then 1. Postgres aborts one as the deadlock victim.
+    const cross = (first: number, second: number) =>
+      db.transaction(async () => {
+        attempts++;
+        await db.run("UPDATE a SET n = n + 1 WHERE id = ?", first);
+        if (++firstUpdates === 2) bothIn();
+        await barrier;
+        await db.run("UPDATE a SET n = n + 1 WHERE id = ?", second);
+      });
+    await Promise.all([cross(1, 2), cross(2, 1)]);
+    expect(attempts).toBe(3);
+    expect(await db.all("SELECT id, n FROM a ORDER BY id")).toEqual([
+      { id: 1, n: 2 },
+      { id: 2, n: 2 },
+    ]);
+  });
+
+  it("does not retry other errors", async () => {
+    const db = track(await openPgDb(await postgres.fresh(), ["CREATE TABLE a (id INTEGER PRIMARY KEY)"]));
+    let attempts = 0;
+    await expect(
+      db.transaction(async () => {
+        attempts++;
+        await db.run("INSERT INTO a VALUES (1), (1)");
+      }),
+    ).rejects.toThrow(/duplicate key/);
+    expect(attempts).toBe(1);
+  });
+
+  it("carries channel messages between two connections to one database", async () => {
+    const target = await postgres.fresh();
+    const one = track(await HubStore.open(target));
+    const two = track(await HubStore.open(target));
+    const tx = track(one.channel("mesh_test") as NonNullable<ReturnType<HubStore["channel"]>>);
+    const rx = track(two.channel("mesh_test") as NonNullable<ReturnType<HubStore["channel"]>>);
+    const got: string[] = [];
+    await rx.listen({ message: (p) => got.push(p) });
+    await tx.publish("hello");
+    for (let i = 0; i < 200 && got.length === 0; i++) await tick();
+    expect(got).toEqual(["hello"]);
+    expect(() => one.channel("Bad-Name")).toThrow(/channel name/);
+  });
+
+  it("gives the tick lead to one store at a time", async () => {
+    const target = await postgres.fresh();
+    const one = track(await HubStore.open(target)).leader("tick");
+    const two = track(await HubStore.open(target)).leader("tick");
+    expect(await one.acquire()).toBe(true);
+    expect(await two.acquire()).toBe(false);
+    await one.release();
+    expect(await two.acquire()).toBe(true);
+    expect(await one.acquire()).toBe(false);
+    await two.release();
+  });
+});
 
 describe("dialect helpers", () => {
   it("rewrites ? placeholders for Postgres, leaving quoted text and comments alone", () => {

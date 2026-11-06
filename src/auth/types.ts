@@ -23,14 +23,28 @@ export interface StartContext {
 
 export type StartResult =
   | { kind: "redirect"; url: string }
-  | { kind: "device"; userCode: string; verifyUrl: string; verifyUrlComplete?: string | undefined; pollId: string; interval: number; expiresIn: number }
+  | {
+      kind: "device";
+      userCode: string;
+      verifyUrl: string;
+      verifyUrlComplete?: string | undefined;
+      pollId: string;
+      interval: number;
+      expiresIn: number;
+      /**
+       * Provider state the hub keeps (in its database, so any replica can finish the login) and
+       * passes back to `complete`. It may hold secrets (the device code): never shown to clients.
+       */
+      state: Record<string, unknown>;
+    }
   | { kind: "immediate" };
 
 export type CompleteInput =
   | { flow: "none" }
   | { flow: "token"; token: string }
   | { flow: "redirect"; callbackUrl: string; pkceVerifier: string; state: string; nonce: string; redirectUri: string }
-  | { flow: "device"; pollId: string };
+  /** `state` is the one from `start`; the provider may update it in place and the hub saves it back. */
+  | { flow: "device"; pollId: string; state: Record<string, unknown> };
 
 export class AuthError extends Error {
   status: number;

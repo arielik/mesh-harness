@@ -9,7 +9,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { SQLITE, type Dialect } from "./dialect.ts";
+import { SQLITE, type Dialect, type LockKey } from "./dialect.ts";
 
 export type SqlValue = string | number | bigint | null | Uint8Array;
 
@@ -34,8 +34,41 @@ export interface Db {
   transaction<T>(fn: () => Promise<T>): Promise<T>;
   /** Run `fn` once the current transaction commits (dropped on rollback); outside one, soon. */
   afterCommit(fn: () => void): void;
+  /**
+   * A notification channel shared by every process on this database (Postgres LISTEN/NOTIFY).
+   * Absent where one process owns the database (SQLite): in-process fan-out is all there is.
+   */
+  channel?(name: string): Channel;
+  /** Leadership among the processes on this database. Absent on SQLite, where there is one. */
+  leader?(key: LockKey): Leader;
   close(): Promise<void>;
 }
+
+/** Cross-process messages. Delivery is at most once, so a payload is only ever a hint. */
+export interface Channel {
+  /** Send to every listener, this process included (call it after commit). */
+  publish(payload: string): Promise<void>;
+  /**
+   * Listen (once per channel). Resolves when listening. If the connection drops it reconnects by
+   * itself with backoff and then calls `resync`: messages sent meanwhile were lost.
+   */
+  listen(handlers: { message(payload: string): void; resync?(): void }): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** One leader among several processes; whoever holds the lock leads until its connection ends. */
+export interface Leader {
+  /** True while this process leads; otherwise tries to take the lead. Never throws. */
+  acquire(): Promise<boolean>;
+  /** Give up the lead (shutdown). */
+  release(): Promise<void>;
+}
+
+/** The leader where there is only one process (SQLite). */
+export const SOLE_LEADER: Leader = {
+  acquire: () => Promise.resolve(true),
+  release: () => Promise.resolve(),
+};
 
 interface Statement {
   run(...params: SqlValue[]): { changes: number | bigint; lastInsertRowid: number | bigint };

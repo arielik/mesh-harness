@@ -29,6 +29,10 @@ export const LOCKS = {
   migrate: 0x6d657368_0001,
   goals: 0x6d657368_0002,
   users: 0x6d657368_0003,
+  /** Held by every transaction that appends events, from the append to its commit (gap-free seq). */
+  events: 0x6d657368_0004,
+  /** Session lock held by the one replica that runs the periodic `tick` (see `Leader`). */
+  tick: 0x6d657368_0005,
 } as const;
 export type LockKey = keyof typeof LOCKS;
 

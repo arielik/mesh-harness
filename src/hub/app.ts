@@ -137,7 +137,13 @@ export function buildRoutes(svc: HubService): Route[] {
         let wake: (() => void) | undefined;
         const unsubscribe = svc.bus.subscribe((h) => {
           if (h.type === "wake" && h.machine !== a.machineId) return;
-          queue.push(JSON.stringify(h));
+          if (h.type === "resync") {
+            // Hints from other replicas may have been lost: say everything changed.
+            queue.push(JSON.stringify({ type: "changed", seq: 0 }));
+            if (a.machineId) queue.push(JSON.stringify({ type: "wake", machine: a.machineId }));
+          } else {
+            queue.push(JSON.stringify(h));
+          }
           wake?.();
         });
         stream.onAbort(() => {

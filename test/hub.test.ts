@@ -215,6 +215,7 @@ describe("OIDC through the hub (task 2.8)", () => {
   it("device login through the hub", async () => {
     const start = await call("POST", "/auth/kanidm/device", undefined, { hostname: "box" });
     expect(start.status).toBe(200);
+    expect(start.json.state).toBeUndefined(); // the device code stays on the hub
     expect((await call("POST", "/auth/kanidm/device/poll", undefined, { pollId: start.json.pollId })).status).toBe(202);
     mock.approveDevice(start.json.userCode);
     let r = { status: 202, json: {} as Json };

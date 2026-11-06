@@ -2,7 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Goal, Plan, Question, Session, Step, type Note } from "../protocol/index.ts";
-import { openDb, type Db } from "./db.ts";
+import { openDb, SOLE_LEADER, type Channel, type Db, type Leader } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
 
@@ -237,8 +237,23 @@ export class HubStore {
     return this.db.close();
   }
 
-  /** Serialise the rest of the current transaction with others taking `key` (no-op on SQLite). */
-  private async lock(key: LockKey): Promise<void> {
+  /** Cross-replica notifications (Postgres); undefined on SQLite, where in-process fan-out is enough. */
+  channel(name: string): Channel | undefined {
+    return this.db.channel?.(name);
+  }
+
+  /** Leadership among replicas for periodic work; on SQLite this process always leads. */
+  leader(key: "tick"): Leader {
+    return this.db.leader?.(key) ?? SOLE_LEADER;
+  }
+
+  /**
+   * Serialise the rest of the current transaction with others taking `key` (no-op on SQLite).
+   * Lock order is fixed: `events` first, so a transaction that appends events and also takes
+   * `goals` or `users` cannot deadlock with one taking them the other way round.
+   */
+  private async lock(key: Exclude<LockKey, "migrate" | "tick">): Promise<void> {
+    if (key !== "events") await this.lock("events");
     const sql = this.db.dialect.lock(key);
     if (sql) await this.db.exec(sql);
   }
@@ -339,8 +354,14 @@ export class HubStore {
     });
   }
 
-  async deleteLoginAttempt(id: string): Promise<void> {
-    await this.db.run("DELETE FROM login_attempt WHERE id = ?", id);
+  /** Replace an attempt's value, keeping its age; false when it is gone (expired or consumed). */
+  async updateLoginAttempt(id: string, value: Record<string, unknown>): Promise<boolean> {
+    return (await this.db.run("UPDATE login_attempt SET value = ? WHERE id = ?", json(value), id)).changes > 0;
+  }
+
+  /** True when this call removed it (a concurrent caller finds it gone). */
+  async deleteLoginAttempt(id: string): Promise<boolean> {
+    return (await this.db.run("DELETE FROM login_attempt WHERE id = ?", id)).changes > 0;
   }
 
   // ---------- machines and sessions ----------
@@ -452,7 +473,12 @@ export class HubStore {
    * conditional UPDATE, so of several replicas claiming the same step exactly one wins. False when
    * someone else changed it first.
    */
-  async claimStep(next: Step, prev: Pick<Step, "state" | "holderUser">): Promise<boolean> {
+  claimStep(next: Step, prev: Pick<Step, "state" | "holderUser">): Promise<boolean> {
+    return this.saveStepIf(next, prev);
+  }
+
+  /** Save `next` only if the step still has `prev`'s state and holder (see `claimStep`). */
+  async saveStepIf(next: Step, prev: Pick<Step, "state" | "holderUser">): Promise<boolean> {
     const r = await this.db.run(
       "UPDATE step SET state = ?, holder_user = ?, value = ?, updated_at = ? WHERE id = ? AND state = ? AND holder_user IS NOT DISTINCT FROM ?",
       next.state,
@@ -564,8 +590,20 @@ export class HubStore {
 
   // ---------- events and idempotency ----------
 
-  /** Append an event; returns its seq, or undefined when an event with the same id exists (dedupe). */
-  async appendEvent(e: NewEvent): Promise<number | undefined> {
+  /**
+   * Append an event; returns its seq, or undefined when an event with the same id exists (dedupe).
+   * On Postgres the transaction holds the `events` lock from here to its commit, so seqs become
+   * visible in order and a reader's `after=` cursor never skips an event committed later with a
+   * smaller seq. (SQLite serialises every write transaction already.)
+   */
+  appendEvent(e: NewEvent): Promise<number | undefined> {
+    return this.tx(async () => {
+      await this.lock("events");
+      return this.insertEvent(e);
+    });
+  }
+
+  private async insertEvent(e: NewEvent): Promise<number | undefined> {
     const r = await this.db.get<{ seq: number }>(
       "INSERT INTO event (id, at, type, user_id, sid, goal, step, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING RETURNING seq",
       e.id ?? randomUUID(),
