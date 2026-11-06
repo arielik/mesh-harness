@@ -34,7 +34,7 @@ The database user needs to create tables in its database (the first replica to s
 
 ## How the pieces fit
 
-- **Probes.** `/healthz` (liveness) answers as long as the process does; it never touches the database, so a database outage does not restart the pods. `/readyz` (readiness) answers 200 when Postgres replies within 3 seconds and has this release's schema, and 503 otherwise, so traffic only reaches replicas that can serve it. The hub starts listening only after its migrations, which is why the startup probe allows two minutes.
+- **Probes.** `/healthz` (liveness) answers as long as the process does; it never touches the database, so a database outage does not restart the pods. `/readyz` (readiness) answers 200 when Postgres replies within 3 seconds and has this release's schema or a newer one, and 503 otherwise, so traffic only reaches replicas that can serve it. The hub starts listening only after its migrations, which is why the startup probe allows two minutes.
 - **No sticky sessions.** Any request can go to any replica: device logins, idempotency keys and SSE hints work across them. Hints travel over Postgres `LISTEN/NOTIFY`.
 - **Periodic work** (retention, pausing abandoned claims) runs on one replica at a time, chosen by an advisory lock. If that replica goes away, another takes over at its next 30-second interval once Postgres has seen the old connection close (at once for a pod that stops cleanly).
 - **Rolling upgrades.** mesh's rule is that a release only adds to the schema (tables, nullable columns), so old and new replicas run side by side during the rollout. The `preStop` sleep lets the Service drop a pod before it stops.

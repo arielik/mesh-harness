@@ -147,10 +147,31 @@ export class HubService {
     return g;
   }
 
+  /**
+   * A transaction that reads a goal's plans or steps and then writes from what it read. It is
+   * serialised against every other such transaction before its first read (`HubStore.serialize`),
+   * so with several replicas on Postgres it decides from current state, as on SQLite.
+   */
+  private goalTx<T>(fn: () => Promise<T>): Promise<T> {
+    return this.store.tx(async () => {
+      await this.store.serialize();
+      return await fn();
+    });
+  }
+
   private async stepOr404(id: string): Promise<Step> {
     const s = await this.store.getStep(id);
     if (!s) throw new HubError(404, `no step ${id}`);
     return s;
+  }
+
+  /**
+   * Save a step's transition from the state it was read in (`prev`). A claim does not wait for
+   * `goalTx`'s lock, so if one changed the step since the read, this answers 409 instead of
+   * overwriting it.
+   */
+  private async saveStepFrom(next: Step, prev: Step): Promise<void> {
+    if (!(await this.store.saveStepIf(next, prev))) throw new HubError(409, `${prev.id} changed just now; try again`);
   }
 
   private async sessionOf(sid: string | undefined): Promise<Session | undefined> {
@@ -239,7 +260,8 @@ export class HubService {
     const attempt = await this.store.tx(async () => {
       const a = await this.store.getLoginAttempt<LoginAttempt>(`state:${state}`, this.now(), LOGIN_TTL);
       if (!a || a.provider !== providerId) throw new HubError(400, "unknown or expired login; start again");
-      await this.store.deleteLoginAttempt(`state:${state}`);
+      // Another replica may have read it too: only the caller whose delete removed it goes on.
+      if (!(await this.store.deleteLoginAttempt(`state:${state}`))) throw new HubError(400, "unknown or expired login; start again");
       return a;
     });
     const id = await this.provider(providerId).complete({ flow: "redirect", callbackUrl, pkceVerifier: attempt.verifier, state, nonce: attempt.nonce, redirectUri: attempt.redirectUri });
@@ -255,7 +277,8 @@ export class HubService {
     // Read and burn the code in one transaction, so it is used at most once.
     const rec = await this.store.tx(async () => {
       const r = await this.store.getLoginAttempt<{ identity: Identity; cliChallenge: string; hostname?: string } & Partial<CliCode>>(`code:${code}`, this.now(), 2 * 60_000);
-      await this.store.deleteLoginAttempt(`code:${code}`);
+      // Another replica may have read it too: only the caller whose delete removed it goes on.
+      if (!r || !(await this.store.deleteLoginAttempt(`code:${code}`))) return undefined;
       return r;
     });
     if (!rec || pkceChallenge(verifier) !== rec.cliChallenge) throw new HubError(401, "invalid or expired login code");
@@ -435,7 +458,7 @@ export class HubService {
 
   /** Reopen the design (plan §3.4 replan): a new plan version replaces steps not yet done. */
   async replan(actor: Actor, goalId: string, comment: string | undefined): Promise<GoalDetail> {
-    await this.store.tx(async () => {
+    await this.goalTx(async () => {
       const goal = await this.goalOr404(goalId);
       if (!isOwnerOrAdmin(actor, goal.ownerId) && !actor.roles.includes("approver")) throw new HubError(403, `only the goal owner, approvers or admins can replan ${goal.id}`);
       if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
@@ -449,7 +472,7 @@ export class HubService {
       delete reopened.holderSid;
       delete reopened.holderMachine;
       delete reopened.claimedAt;
-      await this.store.saveSteps([reopened]);
+      await this.saveStepFrom(reopened, design);
       await this.store.addNote({ step: reopened.id, user: actor.userId, text: `Replan requested${comment ? `: ${comment}` : ""}`, at: now });
       await this.store.saveGoal({ ...goal, state: "design", updatedAt: now });
       await this.message(previousSid, actor.userId, "replan", `MESH: ${actor.userId} asked to replan ${goal.id}${comment ? `: ${comment}` : ""}. Claim ${reopened.id} with mesh_claim, update the design and propose a new plan with mesh_plan.`);
@@ -460,7 +483,7 @@ export class HubService {
   }
 
   async proposePlan(actor: Actor, goalId: string, input: PlanInput & { approve: boolean }): Promise<{ plan: Plan; detail?: GoalDetail; warnings?: string[] }> {
-    const result = await this.store.tx(async () => {
+    const result = await this.goalTx(async () => {
       const goal = await this.goalOr404(goalId);
       if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
       const errors = [...validatePlan(input.steps), ...validatePolicies(input.steps, input.acs)];
@@ -500,7 +523,7 @@ export class HubService {
   }
 
   async approvePlan(actor: Actor, goalId: string, version?: number, comment?: string): Promise<GoalDetail> {
-    await this.store.tx(async () => {
+    await this.goalTx(async () => {
       const goal = await this.goalOr404(goalId);
       if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins can approve ${goal.id}`);
       const plans = await this.store.listPlans(goal.id);
@@ -552,7 +575,7 @@ export class HubService {
   }
 
   async revisePlan(actor: Actor, goalId: string, comment: string | undefined): Promise<GoalDetail> {
-    await this.store.tx(async () => {
+    await this.goalTx(async () => {
       const goal = await this.goalOr404(goalId);
       if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins can revise ${goal.id}`);
       const plan = (await this.store.listPlans(goal.id)).filter((p) => p.decision === "pending").at(-1);
@@ -627,12 +650,12 @@ export class HubService {
   }
 
   async releaseStep(actor: Actor, stepId: string, note: string | undefined): Promise<Step> {
-    return await this.store.tx(async () => {
+    return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
       const r = release(step, { userId: actor.userId }, isOwnerOrAdmin(actor, goal.ownerId), this.now());
       if (!r.ok) throw new HubError(r.status, r.error);
-      await this.store.saveSteps([r.step]);
+      await this.saveStepFrom(r.step, step);
       if (note) await this.store.addNote({ step: step.id, user: actor.userId, text: note, at: this.now() });
       await this.emit({ type: "step.released", user: actor.userId, goal: step.goal, step: step.id, payload: { note } });
       return r.step;
@@ -670,7 +693,7 @@ export class HubService {
       acs_addressed?: string[] | undefined;
     },
   ): Promise<DoneResult> {
-    return await this.store.tx(async () => {
+    return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
       if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it (mesh step approve ${step.id})`);
@@ -722,7 +745,7 @@ export class HubService {
       if (decision.action === "reject") {
         // Not accepted: the holder keeps the step, the attempt is a round (a second miss parks).
         const kept: Step = { ...step, rounds: [...(step.rounds ?? []), { ...round, outcome: "fail", reconcile: { missing: decision.missing } }], roundStartedAt: now, updatedAt: now };
-        await this.store.saveSteps([kept]);
+        await this.saveStepFrom(kept, step);
         await this.emit({ at: now, type: "step.rejected", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { reason: decision.reason, missing: decision.missing } });
         return { step: kept, reopened: [], nowReady: [], goalDone: false, rejected: decision.reason };
       }
@@ -733,7 +756,7 @@ export class HubService {
         delete parked.holderMachine;
         delete parked.claimedAt;
         delete parked.roundStartedAt;
-        await this.store.saveSteps([parked]);
+        await this.saveStepFrom(parked, step);
         await this.emit({ at: now, type: "step.parked", user: actor.userId, sid: input.sid, goal: step.goal, step: step.id, payload: { reason: decision.reason, round: round.n } });
         return { step: parked, reopened: [], nowReady: [], goalDone: false, parked: decision.reason, record: await this.recordOf(parked, all) };
       }
@@ -754,7 +777,8 @@ export class HubService {
       const ready = recomputeReady(steps, now);
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[r.step.id, r.step], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
-      await this.store.saveSteps([...changed.values()]);
+      await this.saveStepFrom(r.step, step);
+      await this.store.saveSteps([...changed.values()].filter((s) => s.id !== r.step.id));
       await this.emit({
         at: now,
         type: outcome === "done" ? "step.done" : "step.failed",
@@ -788,7 +812,7 @@ export class HubService {
 
   /** A person (or a recorded rule) decides a gate step (M4.5). */
   async decideGate(actor: Actor, stepId: string, input: { approve: boolean; comment?: string | undefined; rule?: string | undefined; inputs?: Record<string, unknown> | undefined; reopen?: string[] | undefined }): Promise<DoneResult> {
-    return await this.store.tx(async () => {
+    return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
       if (step.kind !== "gate") throw new HubError(409, `${step.id} is not a gate step`);
@@ -816,7 +840,8 @@ export class HubService {
       const ready = recomputeReady(steps, now);
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[decided.id, decided], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
-      await this.store.saveSteps([...changed.values()]);
+      await this.saveStepFrom(decided, step);
+      await this.store.saveSteps([...changed.values()].filter((s) => s.id !== decided.id));
       await this.emit({ type: input.approve ? "gate.approved" : "gate.rejected", user: actor.userId, goal: step.goal, step: step.id, payload: { gate: step.policy?.gate, rule: input.rule, comment: input.comment, reopen: explicit } });
       for (const s of reopenChanges.filter((x) => explicit.includes(x.id))) {
         await this.store.addNote({ step: s.id, user: actor.userId, text: `Reopened by gate ${step.id}: ${input.comment ?? "changes requested"}`, at: now });
@@ -838,7 +863,7 @@ export class HubService {
 
   /** A person lets a parked step go on: it waits for its dependencies again, rounds are kept. */
   async resumeStep(actor: Actor, stepId: string, comment: string | undefined): Promise<Step> {
-    return await this.store.tx(async () => {
+    return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
       if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins resume ${step.id}`);
@@ -851,7 +876,8 @@ export class HubService {
       const all = (await this.store.listSteps({ goal: step.goal })).map((s) => (s.id === step.id ? next : s));
       const ready = recomputeReady(all, now);
       const final = ready.find((x) => x.id === step.id) ?? next;
-      await this.store.saveSteps([final, ...ready.filter((x) => x.id !== step.id)]);
+      await this.saveStepFrom(final, step);
+      await this.store.saveSteps(ready.filter((x) => x.id !== step.id));
       await this.store.addNote({ step: step.id, user: actor.userId, text: `Resumed by ${actor.userId}${comment ? `: ${comment}` : ""} (was: ${step.parkedReason ?? step.state})`, at: now });
       await this.emit({ type: "step.resumed", user: actor.userId, goal: step.goal, step: step.id, payload: { comment, was: step.parkedReason } });
       if (final.state === "ready") await this.emit({ type: "step.ready", goal: step.goal, step: step.id });
@@ -860,7 +886,7 @@ export class HubService {
   }
 
   async takeStep(actor: Actor, stepId: string, sid: string | undefined): Promise<Step> {
-    return await this.store.tx(async () => {
+    return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
       const holder = await this.sessionOf(step.holderSid);
@@ -874,7 +900,7 @@ export class HubService {
         rules: { takeoverAfterMs: this.config.thresholds.takeoverAfterMs },
       });
       if (!r.ok) throw new HubError(r.status, r.error);
-      await this.store.saveSteps([r.step]);
+      await this.saveStepFrom(r.step, step);
       if (previous && previous !== actor.userId) {
         await this.emit({ type: "step.taken_over", user: actor.userId, sid, goal: step.goal, step: step.id, payload: { from: previous } });
         await this.message(previousSid, actor.userId, "taken_over", `MESH: ${actor.userId} took over step ${step.id}. Stop working on it; your notes are kept.`);
@@ -1066,8 +1092,8 @@ export class HubService {
   draining = false;
 
   /**
-   * Readiness (`GET /readyz`): the database answers within `timeoutMs` and its schema is the one
-   * this mesh migrates to. Liveness (`/healthz`) asks nothing of the database.
+   * Readiness (`GET /readyz`): the database answers within `timeoutMs` and its schema is at least
+   * the one this mesh migrates to. Liveness (`/healthz`) asks nothing of the database.
    */
   async ready(timeoutMs = 3_000): Promise<{ ok: boolean; schema?: number; error?: string }> {
     if (this.draining) return { ok: false, error: "shutting down" };
@@ -1078,7 +1104,9 @@ export class HubService {
     try {
       const schema = await Promise.race([this.store.schemaVersion(), timeout]);
       const want = HubStore.SCHEMA_VERSION;
-      return schema === want ? { ok: true, schema } : { ok: false, schema, error: `schema version ${schema}, this hub needs ${want}` };
+      // Releases only add to the schema, so a newer one (a rolling upgrade has begun) still serves this
+      // release; an older one means migrations have not run.
+      return schema >= want ? { ok: true, schema } : { ok: false, schema, error: `schema version ${schema}, this hub needs ${want}` };
     } catch (e) {
       return { ok: false, error: `database unreachable: ${e instanceof Error ? e.message : String(e)}` };
     } finally {
@@ -1095,7 +1123,7 @@ export class HubService {
       const n = await this.pruneEvents();
       if (n) await this.emit({ type: "hub.events_pruned", payload: { count: n, days: this.config.eventsRetentionDays } });
     }
-    await this.store.tx(async () => {
+    await this.goalTx(async () => {
       for (const s of await this.store.listSteps({ state: "claimed" })) {
         const hs = s.holderSid ? await this.store.getSession(s.holderSid) : undefined;
         const machine = s.holderMachine ? await this.store.getMachine(s.holderMachine) : undefined;

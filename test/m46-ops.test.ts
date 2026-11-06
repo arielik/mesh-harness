@@ -68,12 +68,15 @@ describe("probes", () => {
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
   });
 
-  it("/readyz is 503 when the schema is not this hub's, and while shutting down; /healthz stays 200", async () => {
+  it("/readyz is 503 when the schema is older than this hub's, and while shutting down; /healthz stays 200", async () => {
     const hub = await start(":memory:");
     await hub.svc.store.db.run("UPDATE schema_version SET version = ?", HubStore.SCHEMA_VERSION - 1);
     const r = await call(hub, "GET", "/readyz");
     expect(r.status).toBe(503);
     expect(r.json.error).toMatch(/schema version/);
+    // A newer release migrated the shared database (rolling upgrade): this replica keeps serving.
+    await hub.svc.store.db.run("UPDATE schema_version SET version = ?", HubStore.SCHEMA_VERSION + 1);
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION + 1 } });
     await hub.svc.store.db.run("UPDATE schema_version SET version = ?", HubStore.SCHEMA_VERSION);
     hub.svc.draining = true;
     expect((await call(hub, "GET", "/readyz")).status).toBe(503);

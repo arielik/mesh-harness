@@ -41,10 +41,18 @@ export async function startHub(config: HubConfig, opts: { webRoot?: string | und
   const svc = new HubService(store, config, opts.now, { bus });
   const leader = store.leader("tick");
   const { app } = createApp(svc, { webRoot: opts.webRoot });
-  const server: ServerType = await new Promise((resolve, reject) => {
-    const s = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, () => resolve(s));
-    s.once("error", reject);
-  });
+  let server: ServerType;
+  try {
+    server = await new Promise((resolve, reject) => {
+      const s = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, () => resolve(s));
+      s.once("error", reject);
+    });
+  } catch (e) {
+    // The port is taken, say: free the LISTEN connection and the store, or they keep the process up.
+    await bus.close().catch(() => undefined);
+    if (!opts.store) await store.close().catch(() => undefined);
+    throw e;
+  }
   const port = (server.address() as AddressInfo).port;
   if (config.port === 0) {
     // Ephemeral port (tests): redirect URLs must use the real one.

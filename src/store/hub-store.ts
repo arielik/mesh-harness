@@ -252,6 +252,19 @@ export class HubStore {
    * Lock order is fixed: `events` first, so a transaction that appends events and also takes
    * `goals` or `users` cannot deadlock with one taking them the other way round.
    */
+  /**
+   * Serialise the rest of the current transaction with every other one that changes goals, plans
+   * or steps (Postgres: the `events` lock, taken before the first read; no-op on SQLite, where
+   * `BEGIN IMMEDIATE` already does this). A transaction that reads a goal's steps or plans and
+   * then writes from what it read calls this first: under READ COMMITTED, two replicas would
+   * otherwise both decide from the same stale read (two siblings finishing at once and neither
+   * marking their dependant ready, a retried call applied twice). Those transactions append
+   * events anyway, so they would hold this lock until commit regardless.
+   */
+  async serialize(): Promise<void> {
+    await this.lock("events");
+  }
+
   private async lock(key: Exclude<LockKey, "migrate" | "tick">): Promise<void> {
     if (key !== "events") await this.lock("events");
     const sql = this.db.dialect.lock(key);

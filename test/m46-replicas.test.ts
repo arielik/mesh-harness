@@ -43,10 +43,10 @@ function makeConfig(db: string): HubConfig {
   );
 }
 
-async function call(hub: RunningHub, method: string, path: string, token?: string, body?: unknown): Promise<{ status: number; json: Json }> {
+async function call(hub: RunningHub, method: string, path: string, token?: string, body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; json: Json }> {
   const res = await fetch(hub.url + path, {
     method,
-    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   const text = await res.text();
@@ -172,6 +172,42 @@ describe.skipIf(!PG_URL)(`two hub replicas on one Postgres${PG_URL ? "" : " (ski
     await b.stop();
     running.splice(running.indexOf(b), 1);
     expect(await a.runTick()).toBe(true);
+  });
+
+  /** A goal whose plan is approved: steps a and b open, c waits for both. Returns its id. */
+  async function goalWithJoin(token: string, n: number): Promise<string> {
+    const g = await call(a, "POST", "/v1/goals", token, { title: `join ${n}`, primaryRepo: "example/app" }, { "idempotency-key": `join-${n}` });
+    expect(g.status).toBe(201);
+    const steps = [
+      { id: "a", repo: "example/app", kind: "implement", title: "a", brief: "a" },
+      { id: "b", repo: "example/app", kind: "implement", title: "b", brief: "b" },
+      { id: "c", repo: "example/app", kind: "implement", title: "c", brief: "c", deps: ["a", "b"] },
+    ];
+    expect((await call(b, "POST", `/v1/goals/${g.json.id}/plan`, token, { steps, approve: true })).status).toBe(201);
+    return g.json.id as string;
+  }
+
+  it("readies a step whose two dependencies finish at the same time on different replicas", async () => {
+    const alice = await login(a);
+    for (let n = 0; n < 5; n++) {
+      const goal = await goalWithJoin(alice.token, n);
+      for (const s of ["a", "b"]) expect((await call(n % 2 ? a : b, "POST", `/v1/steps/${goal}.${s}/claim`, alice.token, {})).status).toBe(200);
+      const [ra, rb] = await Promise.all([call(a, "POST", `/v1/steps/${goal}.a/done`, alice.token, { summary: "a done" }), call(b, "POST", `/v1/steps/${goal}.b/done`, alice.token, { summary: "b done" })]);
+      expect([ra.status, rb.status]).toEqual([200, 200]);
+      // Exactly one of the two saw the other done and opened c.
+      expect([...ra.json.nowReady, ...rb.json.nowReady]).toEqual([`${goal}.c`]);
+      expect((await a.svc.store.getStep(`${goal}.c`))?.state).toBe("ready");
+    }
+  });
+
+  it("applies a done sent to both replicas at once only once", async () => {
+    const alice = await login(a);
+    const goal = await goalWithJoin(alice.token, 9);
+    expect((await call(a, "POST", `/v1/steps/${goal}.a/claim`, alice.token, {})).status).toBe(200);
+    const rs = await Promise.all([a, b, a, b].map((h) => call(h, "POST", `/v1/steps/${goal}.a/done`, alice.token, { summary: "a done" })));
+    expect(rs.map((r) => r.status).sort()).toEqual([200, 409, 409, 409]);
+    expect((await a.svc.store.getStep(`${goal}.a`))?.rounds).toHaveLength(1);
+    expect((await a.svc.store.events(0, 1000)).filter((e) => e.type === "step.done" && e.step === `${goal}.a`)).toHaveLength(1);
   });
 
   it("pauses an abandoned claim once when both replicas tick at the same time", async () => {

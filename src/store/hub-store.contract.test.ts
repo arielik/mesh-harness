@@ -168,7 +168,9 @@ function contract(d: Driver) {
       release();
       await expect(failing).rejects.toThrow("boom");
       await outsideWrite;
-      expect(await outsideRead).toEqual([]);
+      // The rolled-back row is never seen. (On Postgres the outside read and write run on separate
+      // pool connections, so the read may or may not see the committed 2.)
+      expect((await outsideRead).map((r) => r.x)).not.toContain(1);
       expect(await x.all("SELECT x FROM a")).toEqual([{ x: 2 }]);
     });
 

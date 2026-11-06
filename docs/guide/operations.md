@@ -40,7 +40,7 @@ The startup line prints the database with its password hidden.
 Both answer without a login.
 
 - `GET /healthz`: liveness. 200 while the process answers. It does not touch the database, so a database outage does not get the hub restarted.
-- `GET /readyz`: readiness. 200 with `{"ok":true,"schema":N}` when the database answers within 3 s and has this release's schema; 503 with an `error` otherwise, and while the hub shuts down.
+- `GET /readyz`: readiness. 200 with `{"ok":true,"schema":N}` when the database answers within 3 s and has this release's schema or a newer one (a rolling upgrade has begun); 503 with an `error` otherwise, and while the hub shuts down.
 
 The hub listens only once its migrations are done.
 
@@ -90,7 +90,7 @@ What is lost without a backup:
 
 On SQLite: stop the hub, install the new version, start it. Migrations run at startup; back up first.
 
-On Postgres: roll the replicas one at a time. A release only adds to the schema (new tables, nullable columns) and removes things one release later, so old and new replicas run side by side during the rollout.
+On Postgres: roll the replicas one at a time. A release only adds to the schema (new tables, nullable columns) and removes things one release later, so old and new replicas run side by side during the rollout: once the first new replica migrates, the old ones stay ready on the newer schema.
 
 ## Retention
 
