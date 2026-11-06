@@ -127,7 +127,7 @@ describe("authorization", () => {
     const alice = await login("alice");
     expect((await call("GET", "/v1/admin/users", alice.token)).status).toBe(403);
     expect((await call("GET", "/v1/events", alice.token)).status).toBe(403);
-    const svcToken = hub.svc.serviceToken("mesh-ai");
+    const svcToken = await hub.svc.serviceToken("mesh-ai");
     expect((await call("GET", "/v1/events?after=0", svcToken)).status).toBe(200);
     expect((await call("GET", "/v1/goals", svcToken)).status).toBe(403);
     const root = await login("root");
@@ -308,7 +308,7 @@ describe("goals, plans and steps", () => {
     }
     expect(last.goalDone).toBe(true);
     expect(last.reopened).toEqual([]);
-    expect(hub.svc.store.events(0, 1000).filter((e) => e.type === "step.reopened")).toEqual([]);
+    expect((await hub.svc.store.events(0, 1000)).filter((e) => e.type === "step.reopened")).toEqual([]);
     expect((await call("GET", `/v1/goals/${id}`, alice.token)).json.goal.state).toBe("done");
   });
 
@@ -330,7 +330,7 @@ describe("sync, pause, take-over, messages", () => {
     expect((await call("POST", "/v1/sync", alice.token, { events: [ev], sessions: [session("s1")], counts: { working: 1 } })).json.accepted).toBe(1);
     expect((await call("POST", "/v1/sync", alice.token, { events: [ev], sessions: [], counts: {} })).json.accepted).toBe(0);
     await call("POST", "/v1/sync", bob.token, { sessions: [session("s1", { state: "idle", cwd: "/bob" })] });
-    expect(hub.svc.store.getSession("s1")?.session.cwd).toBe("/w");
+    expect((await hub.svc.store.getSession("s1"))?.session.cwd).toBe("/w");
     const live = await call("GET", "/v1/live", alice.token);
     const me = live.json.people.find((p: Json) => p.user.id === "alice");
     expect(me.online).toBe(true);
@@ -346,8 +346,8 @@ describe("sync, pause, take-over, messages", () => {
     expect((await call("POST", `/v1/steps/${id}.proto/take`, bob.token, {})).status).toBe(409);
     await call("POST", "/v1/sync", alice.token, { sessions: [session("s1", { step: `${id}.proto`, state: "ended", endedAt: clock, endedReason: "prompt_input_exit" })] });
     clock += 3 * 60_000;
-    hub.svc.tick();
-    expect(hub.svc.store.getStep(`${id}.proto`)?.state).toBe("paused");
+    await hub.svc.tick();
+    expect((await hub.svc.store.getStep(`${id}.proto`))?.state).toBe("paused");
     expect((await call("POST", `/v1/steps/${id}.proto/take`, bob.token, {})).json.error).toMatch(/can be taken over in/);
     clock += 4 * 3_600_000;
     const t = await call("POST", `/v1/steps/${id}.proto/take`, bob.token, {});
@@ -359,8 +359,8 @@ describe("sync, pause, take-over, messages", () => {
     const id = await goalWithPlan(alice);
     await call("POST", `/v1/steps/${id}.proto/claim`, alice.token, {});
     clock += 16 * 60_000;
-    hub.svc.tick();
-    expect(hub.svc.store.getStep(`${id}.proto`)?.state).toBe("paused");
+    await hub.svc.tick();
+    expect((await hub.svc.store.getStep(`${id}.proto`))?.state).toBe("paused");
   });
 
   it("routes messages to the session's machine inbox, wakes it over SSE, and acks", async () => {

@@ -104,14 +104,14 @@ describe("events: retention, backup, feed", () => {
     await w.api(alice, "POST", "/v1/goals", { title: "old" });
     w.clock += 200 * 86_400_000;
     // (Alice's device token has expired by now; act as her directly.)
-    svc.createGoal({ userId: "alice", roles: ["member"], tokenHash: "", tokenKind: "device" }, { title: "new", priority: 3 });
-    const before = svc.events(0, 1000).length;
-    expect(svc.pruneEvents()).toBeGreaterThan(0);
-    expect(svc.events(0, 1000).length).toBeLessThan(before);
-    expect(svc.events(0, 1000).length).toBeGreaterThan(1);
-    expect(svc.events(0, 1000).every((e) => e.at > w.clock - 180 * 86_400_000)).toBe(true);
+    await svc.createGoal({ userId: "alice", roles: ["member"], tokenHash: "", tokenKind: "device" }, { title: "new", priority: 3 });
+    const before = (await svc.events(0, 1000)).length;
+    expect(await svc.pruneEvents()).toBeGreaterThan(0);
+    expect((await svc.events(0, 1000)).length).toBeLessThan(before);
+    expect((await svc.events(0, 1000)).length).toBeGreaterThan(1);
+    expect((await svc.events(0, 1000)).every((e) => e.at > w.clock - 180 * 86_400_000)).toBe(true);
 
-    const token = svc.serviceToken("mesh-ai");
+    const token = await svc.serviceToken("mesh-ai");
     const feed = await fetch(`${w.hub.url}/v1/events?after=0&limit=2`, { headers: { authorization: `Bearer ${token}` } });
     expect(feed.status).toBe(200);
     const body = (await feed.json()) as Json;
@@ -121,11 +121,11 @@ describe("events: retention, backup, feed", () => {
     const dir = mkdtempSync(join(tmpdir(), "mesh-backup-"));
     try {
       const file = join(dir, "hub.backup.db");
-      w.hubStore.backup(file);
+      await w.hubStore.backup(file);
       expect(existsSync(file)).toBe(true);
       const copy = await HubStore.open(file);
-      expect(copy.listGoals().map((g) => g.title)).toEqual(["old", "new"]);
-      copy.close();
+      expect((await copy.listGoals()).map((g) => g.title)).toEqual(["old", "new"]);
+      await copy.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

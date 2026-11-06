@@ -1,7 +1,9 @@
 // Local daemon persistence: sessions, hook events (never prompt text) and the message queue.
+// It stays on the synchronous SQLite wrapper: the store is per machine (never shared between hub
+// replicas, never on Postgres) and the hook hot path reads and writes it inline.
 
 import { AgentRun, Message, Session, type HookEvent, type StepContext } from "../protocol/index.ts";
-import { openDb, type Db } from "./db.ts";
+import { openSyncDb, type SyncDb } from "./db.ts";
 
 export const DAEMON_MIGRATIONS: readonly string[] = [
   `CREATE TABLE session (
@@ -83,14 +85,14 @@ function toMessage(r: MessageRow): Message {
 }
 
 export class DaemonStore {
-  readonly db: Db;
+  readonly db: SyncDb;
 
-  constructor(db: Db) {
+  constructor(db: SyncDb) {
     this.db = db;
   }
 
   static async open(path: string): Promise<DaemonStore> {
-    return new DaemonStore(await openDb(path, DAEMON_MIGRATIONS));
+    return new DaemonStore(await openSyncDb(path, DAEMON_MIGRATIONS));
   }
 
   loadSessions(): Session[] {

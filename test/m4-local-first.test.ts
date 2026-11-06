@@ -209,7 +209,7 @@ describe("workflow capture", () => {
     await w.flush();
     const events = (await w.api(alice, "GET", "/v1/live")).json;
     void events;
-    const all = w.hub.svc.events(0, 1000).filter((e) => e.type === "agent.finished");
+    const all = (await w.hub.svc.events(0, 1000)).filter((e) => e.type === "agent.finished");
     expect(all.map((e) => [e.payload.key, e.payload.role, (e.payload.result as Record<string, unknown> | undefined)?.verdict])).toEqual([
       ["ROW-42", "spec-writer", undefined],
       ["ROW-42", "reviewer", "APPROVED"],
@@ -217,7 +217,7 @@ describe("workflow capture", () => {
     // Re-capturing the same agent never duplicates its hub event.
     sub("SubagentStop", "ad3d5cc636df29ba5", "reviewer");
     await w.flush();
-    expect(w.hub.svc.events(0, 1000).filter((e) => e.type === "agent.finished")).toHaveLength(2);
+    expect((await w.hub.svc.events(0, 1000)).filter((e) => e.type === "agent.finished")).toHaveLength(2);
   });
 
   it("backfills runs Claude Code recorded while the daemon was not watching", async () => {

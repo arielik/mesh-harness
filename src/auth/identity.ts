@@ -17,10 +17,10 @@ export interface LoggedIn {
 }
 
 /** Upsert identity + user at login and compute roles (re-evaluated at every login). */
-export function loginIdentity(store: HubStore, id: Identity, policy: IdentityPolicy, now: number): LoggedIn {
-  const user = store.upsertIdentity(id, now);
+export async function loginIdentity(store: HubStore, id: Identity, policy: IdentityPolicy, now: number): Promise<LoggedIn> {
+  const user = await store.upsertIdentity(id, now);
   const bootstrap = policy.bootstrapAdmins.includes(`${id.provider}:${id.subject}`);
   const roles = rolesFor(id.groups, policy.roleMappings[id.provider] ?? {}, user.rolesExtra as Role[], bootstrap);
-  store.setUserRoles(user.id, roles);
+  await store.setUserRoles(user.id, roles);
   return { user: { ...user, roles }, roles };
 }

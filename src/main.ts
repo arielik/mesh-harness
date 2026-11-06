@@ -132,9 +132,9 @@ const hub: Command = {
       if (existsSync(file)) throw new Error(`${file} exists; pick a new file name`);
       const store = await HubStore.open(config.db);
       try {
-        store.backup(file);
+        await store.backup(file);
       } finally {
-        store.close();
+        await store.close();
       }
       stdio.out(`Backed up ${config.db} to ${file}. Restore: stop the hub, copy it over the db file, start the hub.`);
       return 0;
@@ -146,13 +146,13 @@ const hub: Command = {
         if (sub === "token") {
           const name = a.str("service");
           if (!name) throw new Error("usage: mesh hub token --service <name>");
-          stdio.out(svc.serviceToken(name));
+          stdio.out(await svc.serviceToken(name));
         } else {
-          const n = store.revokeTokens({ ...(a.str("user") ? { userId: a.str("user") } : {}), ...(a.str("machine") ? { machineId: a.str("machine") } : {}) });
+          const n = await store.revokeTokens({ ...(a.str("user") ? { userId: a.str("user") } : {}), ...(a.str("machine") ? { machineId: a.str("machine") } : {}) });
           stdio.out(`Revoked ${n} token(s).`);
         }
       } finally {
-        store.close();
+        await store.close();
       }
       return 0;
     }

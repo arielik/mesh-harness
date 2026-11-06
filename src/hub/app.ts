@@ -95,7 +95,7 @@ export function buildRoutes(svc: HubService): Route[] {
     }),
     r("POST", "/auth/cli/exchange", "public", async (c) => {
       const b = await body(c, CliExchange);
-      return c.json(svc.cliExchange(b.code, b.verifier, b.hostname));
+      return c.json(await svc.cliExchange(b.code, b.verifier, b.hostname));
     }),
     r("POST", "/auth/:id/device", "public", async (c) => {
       const b = await body(c, LoginDirect);
@@ -112,24 +112,24 @@ export function buildRoutes(svc: HubService): Route[] {
       }
       return c.json(res);
     }),
-    r("POST", "/auth/logout", "member", (c, a) => {
-      svc.logout(a);
+    r("POST", "/auth/logout", "member", async (c, a) => {
+      await svc.logout(a);
       deleteCookie(c, SESSION_COOKIE, { path: "/" });
       return c.json({ ok: true });
     }),
 
     // ---------- me, daemon ----------
-    r("GET", "/v1/me", "member", (c, a) => c.json(svc.me(a))),
-    r("POST", "/v1/sync", "member", async (c, a) => c.json(svc.sync(a, await body(c, SyncRequest)))),
-    r("GET", "/v1/inbox", "member", (c, a) => c.json({ messages: svc.inbox(a) })),
+    r("GET", "/v1/me", "member", async (c, a) => c.json(await svc.me(a))),
+    r("POST", "/v1/sync", "member", async (c, a) => c.json(await svc.sync(a, await body(c, SyncRequest)))),
+    r("GET", "/v1/inbox", "member", async (c, a) => c.json({ messages: await svc.inbox(a) })),
     r("POST", "/v1/inbox/:id/ack", "member", async (c, a) => {
       const b = await body(c, AckRequest);
-      return c.json({ ok: svc.ack(a, Number(param(c, "id")), b.state, b.method) });
+      return c.json({ ok: await svc.ack(a, Number(param(c, "id")), b.state, b.method) });
     }),
 
     // ---------- dashboard ----------
-    r("GET", "/v1/live", "member", (c, a) => c.json(svc.live(a))),
-    r("GET", "/v1/attention", "member", (c, a) => c.json({ attention: svc.attentionFor(a) })),
+    r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a))),
+    r("GET", "/v1/attention", "member", async (c, a) => c.json({ attention: await svc.attentionFor(a) })),
     r("GET", "/v1/stream", "member", (c, a) =>
       streamSSE(c, async (stream) => {
         let open = true;
@@ -161,23 +161,23 @@ export function buildRoutes(svc: HubService): Route[] {
     ),
 
     // ---------- goals ----------
-    r("GET", "/v1/goals", "member", (c) => c.json({ goals: svc.listGoals() })),
-    r("POST", "/v1/goals", "member", async (c, a) => c.json(svc.createGoal(a, await body(c, NewGoal)), 201)),
-    r("GET", "/v1/goals/:id", "member", (c) => c.json(svc.goalDetail(param(c, "id")))),
-    r("POST", "/v1/goals/:id/plan", "member", async (c, a) => c.json(svc.proposePlan(a, param(c, "id"), await body(c, ProposePlan)), 201)),
+    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals() })),
+    r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201)),
+    r("GET", "/v1/goals/:id", "member", async (c) => c.json(await svc.goalDetail(param(c, "id")))),
+    r("POST", "/v1/goals/:id/plan", "member", async (c, a) => c.json(await svc.proposePlan(a, param(c, "id"), await body(c, ProposePlan)), 201)),
     r("POST", "/v1/goals/:id/approve", "member", async (c, a) => {
       const b = await body(c, Approve);
-      return c.json(svc.approvePlan(a, param(c, "id"), b.version, b.comment));
+      return c.json(await svc.approvePlan(a, param(c, "id"), b.version, b.comment));
     }),
-    r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment))),
-    r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
-    r("GET", "/v1/goals/:id/files", "member", (c) => c.json({ files: svc.goalFiles(param(c, "id")) })),
-    r("GET", "/v1/goals/:id/timeline", "member", (c) => c.json({ timeline: svc.timeline(param(c, "id")) })),
+    r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(await svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment))),
+    r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
+    r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) })),
+    r("GET", "/v1/goals/:id/timeline", "member", async (c) => c.json({ timeline: await svc.timeline(param(c, "id")) })),
 
     // ---------- steps ----------
-    r("GET", "/v1/steps", "member", (c, a) =>
+    r("GET", "/v1/steps", "member", async (c, a) =>
       c.json({
-        steps: svc.listSteps({
+        steps: await svc.listSteps({
           goal: c.req.query("goal"),
           ready: c.req.query("ready") === "1",
           repo: c.req.query("repo"),
@@ -185,31 +185,31 @@ export function buildRoutes(svc: HubService): Route[] {
         }),
       }),
     ),
-    r("GET", "/v1/steps/:id/context", "member", (c) => c.json(svc.context(param(c, "id"), c.req.query("agent") === "1"))),
-    r("GET", "/v1/steps/:id", "member", (c) => c.json(svc.stepView(param(c, "id")))),
-    r("POST", "/v1/steps/:id/claim", "member", async (c, a) => c.json(svc.claimStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
-    r("POST", "/v1/steps/:id/release", "member", async (c, a) => c.json(svc.releaseStep(a, param(c, "id"), (await body(c, ReleaseRequest)).note))),
+    r("GET", "/v1/steps/:id/context", "member", async (c) => c.json(await svc.context(param(c, "id"), c.req.query("agent") === "1"))),
+    r("GET", "/v1/steps/:id", "member", async (c) => c.json(await svc.stepView(param(c, "id")))),
+    r("POST", "/v1/steps/:id/claim", "member", async (c, a) => c.json(await svc.claimStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
+    r("POST", "/v1/steps/:id/release", "member", async (c, a) => c.json(await svc.releaseStep(a, param(c, "id"), (await body(c, ReleaseRequest)).note))),
     r("POST", "/v1/steps/:id/note", "member", async (c, a) => {
       const b = await body(c, NoteRequest);
-      return c.json(svc.noteStep(a, param(c, "id"), b.text, b.sid));
+      return c.json(await svc.noteStep(a, param(c, "id"), b.text, b.sid));
     }),
-    r("POST", "/v1/steps/:id/done", "member", async (c, a) => c.json(svc.doneStep(a, param(c, "id"), await body(c, DoneRequest)))),
-    r("POST", "/v1/steps/:id/approve", "member", async (c, a) => c.json(svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: true }))),
-    r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false }))),
-    r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
-    r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
+    r("POST", "/v1/steps/:id/done", "member", async (c, a) => c.json(await svc.doneStep(a, param(c, "id"), await body(c, DoneRequest)))),
+    r("POST", "/v1/steps/:id/approve", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: true }))),
+    r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false }))),
+    r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(await svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
+    r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(await svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
 
     // ---------- questions, messages ----------
-    r("POST", "/v1/questions", "member", async (c, a) => c.json(svc.ask(a, await body(c, AskRequest)), 201)),
-    r("POST", "/v1/questions/:id/answer", "member", async (c, a) => c.json(svc.answer(a, Number(param(c, "id")), (await body(c, AnswerRequest)).text))),
-    r("POST", "/v1/messages", "member", async (c, a) => c.json(svc.say(a, await body(c, MessageRequest)), 201)),
+    r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),
+    r("POST", "/v1/questions/:id/answer", "member", async (c, a) => c.json(await svc.answer(a, Number(param(c, "id")), (await body(c, AnswerRequest)).text))),
+    r("POST", "/v1/messages", "member", async (c, a) => c.json(await svc.say(a, await body(c, MessageRequest)), 201)),
 
     // ---------- analysis feed, admin ----------
-    r("GET", "/v1/events", "events", (c) => c.json({ events: svc.events(Number(c.req.query("after") ?? 0) || 0, Number(c.req.query("limit") ?? 500) || 500) })),
-    r("GET", "/v1/admin/users", "admin", (c) => c.json({ users: svc.store.listUsers() })),
+    r("GET", "/v1/events", "events", async (c) => c.json({ events: await svc.events(Number(c.req.query("after") ?? 0) || 0, Number(c.req.query("limit") ?? 500) || 500) })),
+    r("GET", "/v1/admin/users", "admin", async (c) => c.json({ users: await svc.store.listUsers() })),
     r("POST", "/v1/admin/revoke", "admin", async (c) => {
       const b = (await c.req.json().catch(() => ({}))) as { userId?: string; machineId?: string };
-      return c.json({ revoked: svc.store.revokeTokens(b) });
+      return c.json({ revoked: await svc.store.revokeTokens(b) });
     }),
   ];
 }
@@ -240,11 +240,11 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
     const auth = c.req.header("authorization");
     let actor: Actor | undefined;
     let viaCookie = false;
-    if (auth?.startsWith("Bearer ")) actor = svc.authenticate(auth.slice(7).trim());
+    if (auth?.startsWith("Bearer ")) actor = await svc.authenticate(auth.slice(7).trim());
     else {
       const cookie = getCookie(c, SESSION_COOKIE);
       if (cookie) {
-        actor = svc.authenticate(cookie);
+        actor = await svc.authenticate(cookie);
         viaCookie = actor !== undefined;
       }
     }
@@ -263,13 +263,13 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
       if (!allowed(route.rule, actor)) return c.json({ error: actor ? "forbidden" : "login required" }, actor ? 403 : 401);
       const key = route.method === "POST" && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;
       if (key && actor) {
-        const prior = svc.store.getIdem(key, actor.userId) as { status: number; body: unknown } | undefined;
+        const prior = (await svc.store.getIdem(key, actor.userId)) as { status: number; body: unknown } | undefined;
         if (prior) return c.json(prior.body as object, prior.status as 200);
       }
       const res = await route.handler(c, actor as Actor);
       if (key && actor && res.status < 300 && res.headers.get("content-type")?.includes("json")) {
         const clone = res.clone();
-        svc.store.putIdem(key, actor.userId, { status: res.status, body: await clone.json() }, svc.now());
+        await svc.store.putIdem(key, actor.userId, { status: res.status, body: await clone.json() }, svc.now());
       }
       return res;
     });

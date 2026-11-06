@@ -40,27 +40,27 @@ export class Tokens {
     this.policies = policies;
   }
 
-  issue(kind: TokenKind, userId: string, now: number, opts: { machineId?: string | undefined; label?: string | undefined } = {}): Issued {
+  async issue(kind: TokenKind, userId: string, now: number, opts: { machineId?: string | undefined; label?: string | undefined } = {}): Promise<Issued> {
     const token = PREFIX[kind] + randomBytes(32).toString("base64url");
     const hash = sha256(token);
     const p = this.policies[kind];
     const expiresAt = now + p.maxAgeMs;
-    this.store.insertToken({ hash, userId, kind, machineId: opts.machineId, label: opts.label, createdAt: now, lastUsed: now, expiresAt, revoked: false });
+    await this.store.insertToken({ hash, userId, kind, machineId: opts.machineId, label: opts.label, createdAt: now, lastUsed: now, expiresAt, revoked: false });
     return { token, hash, expiresAt };
   }
 
   /** Validate a presented token; slides the idle window. */
-  verify(token: string, now: number): TokenRow | undefined {
+  async verify(token: string, now: number): Promise<TokenRow | undefined> {
     if (!/^mh_[dws]_[A-Za-z0-9_-]{20,}$/.test(token)) return undefined;
-    const row = this.store.getToken(sha256(token));
+    const row = await this.store.getToken(sha256(token));
     if (!row || row.revoked || now >= row.expiresAt) return undefined;
     const idle = this.policies[row.kind].idleMs;
     if (idle > 0 && now - row.lastUsed > idle) return undefined;
-    if (now - row.lastUsed > 60_000) this.store.touchToken(row.hash, now);
+    if (now - row.lastUsed > 60_000) await this.store.touchToken(row.hash, now);
     return row;
   }
 
-  revoke(token: string): void {
-    this.store.revokeToken(sha256(token));
+  async revoke(token: string): Promise<void> {
+    await this.store.revokeToken(sha256(token));
   }
 }

@@ -26,17 +26,33 @@ export async function startHub(config: HubConfig, opts: { webRoot?: string | und
     config.url = config.url.replace(/:0(?=$|\/)/, `:${port}`);
   }
   const tickMs = opts.tickMs ?? 30_000;
-  const timer = tickMs > 0 ? setInterval(() => svc.tick(), tickMs) : undefined;
+  // One tick at a time: a slow tick is skipped over, never run twice concurrently.
+  let ticking: Promise<void> | undefined;
+  const timer =
+    tickMs > 0
+      ? setInterval(() => {
+          if (ticking) return;
+          ticking = svc
+            .tick()
+            .catch((e: unknown) => {
+              process.stderr.write(`hub tick failed: ${String(e)}\n`);
+            })
+            .finally(() => {
+              ticking = undefined;
+            });
+        }, tickMs)
+      : undefined;
   return {
     url: config.url,
     port,
     svc,
     async stop() {
       if (timer) clearInterval(timer);
+      await ticking;
       const s = server as unknown as { closeAllConnections?: () => void; close(cb: () => void): void };
       s.closeAllConnections?.();
       await new Promise<void>((ok) => s.close(() => ok()));
-      if (!opts.store) store.close();
+      if (!opts.store) await store.close();
     },
   };
 }
