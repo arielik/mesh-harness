@@ -1,6 +1,6 @@
 # mesh-harness implementation plan
 
-Status: **v2.7, reviewed; M0–M4.5 done** ([analysis](../analysis/2026-11-04-team-value-metrics-and-ledger.md#owner-decisions-2026-11-04)). Date: 2026-11-04. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
+Status: **v2.7, reviewed; M0–M4.6 done** ([analysis](../analysis/2026-11-04-team-value-metrics-and-ledger.md#owner-decisions-2026-11-04)). Date: 2026-11-04. v2.1 applies the M0 spike results ([docs/spikes](../spikes/README.md)).
 
 Sources:
 
@@ -675,9 +675,20 @@ mesh-harness is meant to be handed to other teams that may have no access to the
 - **The user-facing docs** (README, guide, explainer, events) use neutral names, and present analysis tools as optional (mesh-ai is one example). `docs/analysis/README.md` marks those documents as design history, which mentions the first team's repos as input, not as dependencies.
 - **Tested.** `test/assets.test.ts` checks four things: every role has an agent, every `agent()` call has a label mesh can parse, the workflow runs in the Workflow runtime's shape, and installing keeps the team's files. `pnpm spike e2e-kit` ran it for real: a toy Node repo, `mesh assets install`, one Claude Code session (haiku) running `sdd-programme.js`, and a Solo daemon recording it. The row ended "ready to land" in 3 minutes, with nine roles recorded (models and typed results) and the records committed by the workflow's ledger step.
 
-### M4.6. Hub scale-out (proposed)
+### M4.6. Hub scale-out
 
 Several hub replicas on Postgres behind a load balancer; SQLite stays the default. Async `Db` interface with SQLite and Postgres drivers, OIDC device state in the database, `HintBus` over `LISTEN/NOTIFY`, tick leadership and event-sequence ordering by advisory locks, `/healthz` and `/readyz`, a hub OCI image, a generic `deploy/kubernetes/` example, `mesh hub migrate`. Acceptance: `pnpm spike e2e-scale` (claim race, cross-replica hints and login, tick failover, gap-free event cursor) and the store contract suite on both drivers. Design: [hub scale-out](../analysis/2026-11-06-hub-scale-out.md).
+
+**Status: done (2026-11-06).** All M4.6 tasks are built. The checks:
+- `pnpm check`: 383 tests with `MESH_TEST_PG_URL` set; without it the Postgres legs are skipped with a notice. This includes the store contract suite on both drivers (`src/store/hub-store.contract.test.ts`), two replicas in process (`test/m46-replicas.test.ts`) and the probes and `mesh hub migrate` (`test/m46-ops.test.ts`). CI runs the Postgres legs in a `postgres` job and smoke-tests the image in an `image` job.
+- `pnpm spike e2e-scale` (no Claude Code, needs `pnpm build` and `MESH_TEST_PG_URL`): two `mesh hub` processes on one Postgres behind a round-robin proxy. A claim race gave exactly one winner in each of 10 races, with the two claims on different replicas. An SSE subscriber on one replica got the hint for a write on the other. A device login started on one replica finished on the other. A reader polling `/v1/events?after=` during 120 concurrent writes on both replicas missed none of the 240 events. After the tick leader was killed with SIGKILL, the other replica took the lock and paused an abandoned claim within one 30 s interval. All green.
+
+Notes and deviations:
+
+- **Lost updates.** Claims and tick pauses are conditional updates, so exactly one wins. Other read-modify-write paths (done, release, take-over, plan approve) still save whole values; two replicas racing on the same step can lose one update.
+- **Event writes are serialised on Postgres.** Appending an event holds an advisory lock until commit, so writes that add events run one at a time across replicas. This follows the design's low-volume assumption.
+- **Retried transactions.** A deadlock or serialization failure retries the transaction up to 3 times, so transaction callbacks must be safe to run twice (database work only; hints go out after commit).
+- **Not done:** a test running release N−1's queries against release N's schema (the docs state the rule); a retry loop when Postgres is down at startup (the hub exits and the orchestrator restarts it).
 
 ### M5. Optional (later)
 

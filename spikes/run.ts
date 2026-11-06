@@ -7,6 +7,7 @@ import { runE2eM3 } from "./e2e-m3.ts";
 import { runE2eKit } from "./e2e-kit.ts";
 import { runE2eM45 } from "./e2e-m45.ts";
 import { runE2eOffline } from "./e2e-offline.ts";
+import { runE2eScale } from "./e2e-scale.ts";
 import { runInteractive } from "./interactive.ts";
 import { runPrint } from "./print.ts";
 
@@ -21,6 +22,7 @@ const spikes: Record<string, () => Promise<void>> = {
   "e2e-offline": runE2eOffline,
   "e2e-m45": runE2eM45,
   "e2e-kit": runE2eKit,
+  "e2e-scale": runE2eScale,
   contract: runContract,
 };
 

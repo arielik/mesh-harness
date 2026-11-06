@@ -104,6 +104,7 @@ pnpm spike e2e-m3              # M3 end to end: design → revise → approve �
 pnpm spike e2e-offline         # M4: a programme four ways: no daemon, hub cut, hub restored mid-run, Solo
 pnpm spike e2e-m45             # M4.5: criteria, blind sides, a routed impl-bug fix, an R3 gate (two people)
 pnpm spike e2e-kit             # the shipped SDD kit: mesh assets install, one Claude session runs the whole cycle
+MESH_TEST_PG_URL=postgres://… pnpm spike e2e-scale   # M4.6: two hubs on one Postgres behind a proxy (no Claude)
 pnpm test:claude               # contract suite: every Claude Code behaviour mesh relies on (run after upgrading Claude Code)
 pnpm schemas                   # regenerate schemas/*.json after changing src/protocol
 pnpm test:web                  # Playwright smoke test of the dashboard (after pnpm build)
