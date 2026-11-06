@@ -30,6 +30,33 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  # The store contract suite against Postgres (M4.6). The other jobs run it on SQLite only.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: mesh
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      MESH_TEST_PG_URL: postgres://postgres:mesh@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run src/store
+
   web:
     runs-on: ubuntu-latest
     steps:

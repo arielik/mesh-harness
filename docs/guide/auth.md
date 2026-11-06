@@ -12,7 +12,7 @@ The hub authenticates people through **providers**. A login gives the CLI or the
 # mesh-hub.yaml
 listen: 0.0.0.0:7700
 url: https://mesh.example
-db: mesh-hub.db
+db: mesh-hub.db          # or postgres://user:pass@db.example.com/mesh for several replicas; MESH_HUB_DB overrides
 events_retention_days: 180
 auth:
   providers:

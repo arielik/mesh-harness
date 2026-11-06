@@ -36,10 +36,10 @@ module.exports = {
     ...moduleRules,
     {
       name: "sqlite-only-in-store",
-      comment: "Only src/store touches SQLite.",
+      comment: "Only src/store touches SQLite or Postgres.",
       severity: "error",
       from: { path: "(^|/)src/", pathNot: at("store") },
-      to: { path: "^(node:)?sqlite$|better-sqlite3", dependencyTypes: ["core", "npm", "npm-dev", "unknown", "undetermined"] },
+      to: { path: "^(node:)?sqlite$|better-sqlite3|(^|/)node_modules/pg/", dependencyTypes: ["core", "npm", "npm-dev", "unknown", "undetermined"] },
     },
     {
       name: "processes-only-in-adapters",

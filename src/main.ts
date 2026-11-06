@@ -7,7 +7,7 @@ import { listAgents, wakeBackground } from "./claude/index.ts";
 import { dispatch, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
 import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } from "./hub/index.ts";
 import { runShim } from "./mcp/index.ts";
-import { HubStore } from "./store/index.ts";
+import { describeDbTarget, HubStore } from "./store/index.ts";
 import { Daemon, defaultDeps } from "./daemon/index.ts";
 import { desktopNotify, pasteToPane } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
@@ -159,7 +159,7 @@ const hub: Command = {
     if (sub !== undefined) throw new Error(`unknown hub subcommand "${sub}" (use: init, token, revoke, backup)`);
     const webRoot = join(dirname(self[1] as string), "web");
     const running = await startHub(config, { webRoot: existsSync(webRoot) ? webRoot : undefined });
-    stdio.out(`mesh hub on ${running.url} (providers: ${config.providers.map((x) => `${x.id}/${x.kind}`).join(", ")}; db ${config.db})`);
+    stdio.out(`mesh hub on ${running.url} (providers: ${config.providers.map((x) => `${x.id}/${x.kind}`).join(", ")}; db ${describeDbTarget(config.db)})`);
     await new Promise<void>((done) => {
       for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => done());
     });

@@ -3,7 +3,10 @@
 import { randomUUID } from "node:crypto";
 import { Goal, Plan, Question, Session, Step, type Note } from "../protocol/index.ts";
 import { openDb, type Db } from "./db.ts";
+import { isPostgresUrl, type LockKey } from "./dialect.ts";
+import { openPgDb } from "./pg.ts";
 
+/** SQLite schema. Queries quote "user" because Postgres reserves the word. */
 export const HUB_MIGRATIONS: readonly string[] = [
   `CREATE TABLE user (
      id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT,
@@ -37,6 +40,51 @@ export const HUB_MIGRATIONS: readonly string[] = [
      seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, at INTEGER NOT NULL, type TEXT NOT NULL,
      user_id TEXT, sid TEXT, goal TEXT, step TEXT, payload TEXT NOT NULL);
    CREATE TABLE idem (key TEXT NOT NULL, user_id TEXT NOT NULL, response TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (key, user_id));`,
+  `ALTER TABLE message ADD COLUMN data TEXT;
+   CREATE INDEX event_step ON event (step);
+   CREATE INDEX event_goal ON event (goal);`,
+];
+
+/**
+ * The same schema on Postgres, one entry per SQLite migration above (so both report the same
+ * version). Differences: millisecond times and ids are BIGINT, AUTOINCREMENT is an identity column,
+ * "user" is quoted, and `step.ord` stands in for SQLite's rowid (insertion order).
+ */
+export const HUB_MIGRATIONS_PG: readonly string[] = [
+  `CREATE TABLE "user" (
+     id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT,
+     roles TEXT NOT NULL DEFAULT '["member"]', roles_extra TEXT NOT NULL DEFAULT '[]', created_at BIGINT NOT NULL);
+   CREATE TABLE identity (
+     provider TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES "user"(id),
+     groups TEXT NOT NULL, last_login BIGINT NOT NULL, PRIMARY KEY (provider, subject));
+   CREATE TABLE token (
+     hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES "user"(id), kind TEXT NOT NULL, machine_id TEXT, label TEXT,
+     created_at BIGINT NOT NULL, last_used BIGINT NOT NULL, expires_at BIGINT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+   CREATE INDEX token_user ON token (user_id);
+   CREATE TABLE login_attempt (id TEXT PRIMARY KEY, value TEXT NOT NULL, created_at BIGINT NOT NULL);
+   CREATE TABLE machine (
+     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES "user"(id), hostname TEXT NOT NULL,
+     last_seen BIGINT NOT NULL, counts TEXT NOT NULL DEFAULT '{}');
+   CREATE TABLE hsession (sid TEXT PRIMARY KEY, user_id TEXT NOT NULL, machine_id TEXT NOT NULL, value TEXT NOT NULL, updated_at BIGINT NOT NULL);
+   CREATE TABLE goal (id TEXT PRIMARY KEY, num INTEGER NOT NULL UNIQUE, state TEXT NOT NULL, value TEXT NOT NULL, updated_at BIGINT NOT NULL);
+   CREATE TABLE plan (goal TEXT NOT NULL, version INTEGER NOT NULL, decision TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (goal, version));
+   CREATE TABLE step (
+     id TEXT PRIMARY KEY, goal TEXT NOT NULL, state TEXT NOT NULL, repo TEXT NOT NULL, holder_user TEXT,
+     value TEXT NOT NULL, updated_at BIGINT NOT NULL, ord BIGINT GENERATED ALWAYS AS IDENTITY);
+   CREATE INDEX step_goal ON step (lower(goal));
+   CREATE INDEX step_state ON step (state);
+   CREATE INDEX step_id_ci ON step (lower(id));
+   CREATE INDEX goal_id_ci ON goal (lower(id));
+   CREATE TABLE note (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, step TEXT NOT NULL, user_id TEXT NOT NULL, sid TEXT, text TEXT NOT NULL, at BIGINT NOT NULL);
+   CREATE TABLE question (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value TEXT NOT NULL, answered INTEGER NOT NULL DEFAULT 0, at BIGINT NOT NULL);
+   CREATE TABLE message (
+     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, to_machine TEXT NOT NULL, to_sid TEXT NOT NULL, from_user TEXT NOT NULL,
+     kind TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, method TEXT, created_at BIGINT NOT NULL, acked_at BIGINT);
+   CREATE INDEX message_inbox ON message (to_machine, state);
+   CREATE TABLE event (
+     seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, id TEXT NOT NULL UNIQUE, at BIGINT NOT NULL, type TEXT NOT NULL,
+     user_id TEXT, sid TEXT, goal TEXT, step TEXT, payload TEXT NOT NULL);
+   CREATE TABLE idem (key TEXT NOT NULL, user_id TEXT NOT NULL, response TEXT NOT NULL, at BIGINT NOT NULL, PRIMARY KEY (key, user_id));`,
   `ALTER TABLE message ADD COLUMN data TEXT;
    CREATE INDEX event_step ON event (step);
    CREATE INDEX event_goal ON event (goal);`,
@@ -170,8 +218,9 @@ export class HubStore {
     this.db = db;
   }
 
-  static async open(path: string): Promise<HubStore> {
-    return new HubStore(await openDb(path, HUB_MIGRATIONS));
+  /** Open the hub database: a SQLite file (or ":memory:"), or a postgres:// URL. */
+  static async open(target: string): Promise<HubStore> {
+    return new HubStore(isPostgresUrl(target) ? await openPgDb(target, HUB_MIGRATIONS_PG) : await openDb(target, HUB_MIGRATIONS));
   }
 
   /** Run `fn` atomically; store calls awaited inside it join the transaction. */
@@ -188,41 +237,48 @@ export class HubStore {
     return this.db.close();
   }
 
+  /** Serialise the rest of the current transaction with others taking `key` (no-op on SQLite). */
+  private async lock(key: LockKey): Promise<void> {
+    const sql = this.db.dialect.lock(key);
+    if (sql) await this.db.exec(sql);
+  }
+
   // ---------- users ----------
 
   async getUser(id: string): Promise<UserRow | undefined> {
-    const r = await this.db.get<UserDbRow>("SELECT * FROM user WHERE id = ?", id);
+    const r = await this.db.get<UserDbRow>('SELECT * FROM "user" WHERE id = ?', id);
     return r ? userFrom(r) : undefined;
   }
 
   async listUsers(): Promise<UserRow[]> {
-    return (await this.db.all<UserDbRow>("SELECT * FROM user ORDER BY id")).map(userFrom);
+    return (await this.db.all<UserDbRow>('SELECT * FROM "user" ORDER BY id')).map(userFrom);
   }
 
   upsertIdentity(id: { provider: string; subject: string; name?: string | undefined; email?: string | undefined; groups: string[] }, now: number): Promise<UserRow> {
     return this.tx(async () => {
+      await this.lock("users");
       const existing = await this.db.get<{ user_id: string }>("SELECT user_id FROM identity WHERE provider = ? AND subject = ?", id.provider, id.subject);
       let userId = existing?.user_id;
       if (!userId) {
         const base = slug(id.name ?? id.email ?? id.subject);
         userId = base;
         for (let n = 2; await this.getUser(userId); n++) userId = `${base}-${n}`;
-        await this.db.run("INSERT INTO user (id, name, email, created_at) VALUES (?, ?, ?, ?)", userId, id.name ?? id.subject, id.email ?? null, now);
+        await this.db.run('INSERT INTO "user" (id, name, email, created_at) VALUES (?, ?, ?, ?)', userId, id.name ?? id.subject, id.email ?? null, now);
         await this.db.run("INSERT INTO identity (provider, subject, user_id, groups, last_login) VALUES (?, ?, ?, ?, ?)", id.provider, id.subject, userId, json(id.groups), now);
       } else {
         await this.db.run("UPDATE identity SET groups = ?, last_login = ? WHERE provider = ? AND subject = ?", json(id.groups), now, id.provider, id.subject);
-        if (id.name) await this.db.run("UPDATE user SET name = ?, email = COALESCE(?, email) WHERE id = ?", id.name, id.email ?? null, userId);
+        if (id.name) await this.db.run('UPDATE "user" SET name = ?, email = COALESCE(?, email) WHERE id = ?', id.name, id.email ?? null, userId);
       }
       return (await this.getUser(userId)) as UserRow;
     });
   }
 
   async setUserRoles(userId: string, roles: string[]): Promise<void> {
-    await this.db.run("UPDATE user SET roles = ? WHERE id = ?", json(roles), userId);
+    await this.db.run('UPDATE "user" SET roles = ? WHERE id = ?', json(roles), userId);
   }
 
   async setRolesExtra(userId: string, roles: string[]): Promise<void> {
-    await this.db.run("UPDATE user SET roles_extra = ? WHERE id = ?", json(roles), userId);
+    await this.db.run('UPDATE "user" SET roles_extra = ? WHERE id = ?', json(roles), userId);
   }
 
   /** Move an identity to another user (admin `link-identity`). */
@@ -272,7 +328,7 @@ export class HubStore {
   // ---------- login attempts ----------
 
   async putLoginAttempt(id: string, value: Record<string, unknown>, now: number): Promise<void> {
-    await this.db.run("INSERT OR REPLACE INTO login_attempt (id, value, created_at) VALUES (?, ?, ?)", id, json(value), now);
+    await this.db.run("INSERT INTO login_attempt (id, value, created_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value, created_at = excluded.created_at", id, json(value), now);
   }
 
   getLoginAttempt<T>(id: string, now: number, ttlMs: number): Promise<T | undefined> {
@@ -339,6 +395,7 @@ export class HubStore {
 
   createGoal(g: Omit<Goal, "id">): Promise<Goal> {
     return this.tx(async () => {
+      await this.lock("goals");
       const num = ((await this.db.get<{ n: number | null }>("SELECT MAX(num) AS n FROM goal"))?.n ?? 0) + 1;
       const goal = Goal.parse({ ...g, id: `G${num}` });
       await this.db.run("INSERT INTO goal (id, num, state, value, updated_at) VALUES (?, ?, ?, ?, ?)", goal.id, num, goal.state, json(goal), goal.updatedAt);
@@ -351,7 +408,7 @@ export class HubStore {
   }
 
   async getGoal(id: string): Promise<Goal | undefined> {
-    const r = await this.db.get<{ value: string }>("SELECT value FROM goal WHERE id = ? COLLATE NOCASE", id);
+    const r = await this.db.get<{ value: string }>(`SELECT value FROM goal WHERE ${this.db.dialect.eqNoCase("id")}`, id);
     return r ? Goal.parse(JSON.parse(r.value)) : undefined;
   }
 
@@ -390,8 +447,27 @@ export class HubStore {
     });
   }
 
+  /**
+   * Save a claim of `next` only if the step is still in the state the claimer read (`prev`): a
+   * conditional UPDATE, so of several replicas claiming the same step exactly one wins. False when
+   * someone else changed it first.
+   */
+  async claimStep(next: Step, prev: Pick<Step, "state" | "holderUser">): Promise<boolean> {
+    const r = await this.db.run(
+      "UPDATE step SET state = ?, holder_user = ?, value = ?, updated_at = ? WHERE id = ? AND state = ? AND holder_user IS NOT DISTINCT FROM ?",
+      next.state,
+      next.holderUser ?? null,
+      json(next),
+      next.updatedAt,
+      next.id,
+      prev.state,
+      prev.holderUser ?? null,
+    );
+    return r.changes === 1;
+  }
+
   async getStep(id: string): Promise<Step | undefined> {
-    const r = await this.db.get<{ value: string }>("SELECT value FROM step WHERE id = ? COLLATE NOCASE", id);
+    const r = await this.db.get<{ value: string }>(`SELECT value FROM step WHERE ${this.db.dialect.eqNoCase("id")}`, id);
     return r ? Step.parse(JSON.parse(r.value)) : undefined;
   }
 
@@ -399,7 +475,7 @@ export class HubStore {
     const where: string[] = [];
     const args: string[] = [];
     if (filter.goal) {
-      where.push("goal = ? COLLATE NOCASE");
+      where.push(this.db.dialect.eqNoCase("goal"));
       args.push(filter.goal);
     }
     if (filter.state) {
@@ -410,15 +486,15 @@ export class HubStore {
       where.push("holder_user = ?");
       args.push(filter.holderUser);
     }
-    const sql = `SELECT value FROM step ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY rowid`;
+    const sql = `SELECT value FROM step ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${this.db.dialect.stepOrder}`;
     return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => Step.parse(JSON.parse(r.value)));
   }
 
   // ---------- notes and questions ----------
 
   async addNote(n: Omit<Note, "id">): Promise<Note> {
-    const { lastId } = await this.db.run("INSERT INTO note (step, user_id, sid, text, at) VALUES (?, ?, ?, ?, ?)", n.step, n.user, n.sid ?? null, n.text, n.at);
-    return { ...n, id: lastId };
+    const { id } = (await this.db.get<{ id: number }>("INSERT INTO note (step, user_id, sid, text, at) VALUES (?, ?, ?, ?, ?) RETURNING id", n.step, n.user, n.sid ?? null, n.text, n.at)) as { id: number };
+    return { ...n, id };
   }
 
   async listNotes(step: string): Promise<Note[]> {
@@ -434,9 +510,9 @@ export class HubStore {
 
   addQuestion(q: Omit<Question, "id">): Promise<Question> {
     return this.tx(async () => {
-      const { lastId } = await this.db.run("INSERT INTO question (value, at) VALUES (?, ?)", json(q), q.at);
-      const full = { ...q, id: lastId };
-      await this.db.run("UPDATE question SET value = ? WHERE id = ?", json(full), lastId);
+      const { id } = (await this.db.get<{ id: number }>("INSERT INTO question (value, at) VALUES (?, ?) RETURNING id", json(q), q.at)) as { id: number };
+      const full = { ...q, id };
+      await this.db.run("UPDATE question SET value = ? WHERE id = ?", json(full), id);
       return full;
     });
   }
@@ -458,8 +534,8 @@ export class HubStore {
 
   addMessage(m: { toMachine: string; toSid: string; fromUser: string; kind: string; text: string; data?: Record<string, unknown> | undefined }, now: number): Promise<MessageRow> {
     return this.tx(async () => {
-      const { lastId } = await this.db.run(
-        "INSERT INTO message (to_machine, to_sid, from_user, kind, text, state, created_at, data) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+      const { id } = (await this.db.get<{ id: number }>(
+        "INSERT INTO message (to_machine, to_sid, from_user, kind, text, state, created_at, data) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?) RETURNING id",
         m.toMachine,
         m.toSid,
         m.fromUser,
@@ -467,8 +543,8 @@ export class HubStore {
         m.text,
         now,
         m.data ? json(m.data) : null,
-      );
-      return (await this.getMessage(lastId)) as MessageRow;
+      )) as { id: number };
+      return (await this.getMessage(id)) as MessageRow;
     });
   }
 
@@ -490,8 +566,8 @@ export class HubStore {
 
   /** Append an event; returns its seq, or undefined when an event with the same id exists (dedupe). */
   async appendEvent(e: NewEvent): Promise<number | undefined> {
-    const r = await this.db.run(
-      "INSERT OR IGNORE INTO event (id, at, type, user_id, sid, goal, step, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    const r = await this.db.get<{ seq: number }>(
+      "INSERT INTO event (id, at, type, user_id, sid, goal, step, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING RETURNING seq",
       e.id ?? randomUUID(),
       e.at,
       e.type,
@@ -501,7 +577,7 @@ export class HubStore {
       e.step ?? null,
       json(e.payload ?? {}),
     );
-    return r.changes > 0 ? r.lastId : undefined;
+    return r?.seq;
   }
 
   async events(after: number, limit: number, filter: { goal?: string | undefined } = {}): Promise<EventRow[]> {
@@ -515,7 +591,7 @@ export class HubStore {
   async eventsFor(filter: { step?: string; goal?: string }): Promise<EventRow[]> {
     const rows = filter.step
       ? await this.db.all<EventDbRow>("SELECT * FROM event WHERE step = ? ORDER BY seq", filter.step)
-      : await this.db.all<EventDbRow>("SELECT * FROM event WHERE goal = ? OR step LIKE ? ORDER BY seq", filter.goal ?? "", `${filter.goal ?? ""}.%`);
+      : await this.db.all<EventDbRow>(`SELECT * FROM event WHERE goal = ? OR step ${this.db.dialect.like} ? ORDER BY seq`, filter.goal ?? "", `${filter.goal ?? ""}.%`);
     return rows.map(eventFrom);
   }
 
@@ -523,8 +599,9 @@ export class HubStore {
     return (await this.db.run("DELETE FROM event WHERE at < ?", before)).changes;
   }
 
-  /** A consistent copy of the whole database (VACUUM INTO), safe while the hub runs. */
+  /** A consistent copy of the whole database (VACUUM INTO), safe while the hub runs. SQLite only. */
   async backup(path: string): Promise<void> {
+    if (this.db.dialect.name !== "sqlite") throw new Error("mesh hub backup copies a SQLite hub; on Postgres use the database's own tools (pg_dump, snapshots)");
     await this.db.run("VACUUM INTO ?", path);
   }
 
@@ -542,7 +619,7 @@ export class HubStore {
 
   putIdem(key: string, userId: string, response: unknown, now: number): Promise<void> {
     return this.tx(async () => {
-      await this.db.run("INSERT OR IGNORE INTO idem (key, user_id, response, at) VALUES (?, ?, ?, ?)", key, userId, json(response), now);
+      await this.db.run("INSERT INTO idem (key, user_id, response, at) VALUES (?, ?, ?, ?) ON CONFLICT(key, user_id) DO NOTHING", key, userId, json(response), now);
       await this.db.run("DELETE FROM idem WHERE at < ?", now - 24 * 60 * 60_000);
     });
   }

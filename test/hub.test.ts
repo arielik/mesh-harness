@@ -425,4 +425,13 @@ describe("config", () => {
     expect(c.thresholds.takeoverAfterMs).toBe(90 * 60_000);
     expect(c.db).toBe("/srv/mesh-hub.db");
   });
+
+  it("takes db as a SQLite path or a postgres:// URL, and MESH_HUB_DB overrides it", () => {
+    const raw = { auth: { providers: [{ kind: "none" }] } };
+    const at = (db: string | undefined, env: Record<string, string> = {}) => buildHubConfig({ ...raw, ...(db ? { db } : {}) }, { baseDir: "/srv", env }).db;
+    expect(at("data/hub.db")).toBe("/srv/data/hub.db");
+    expect(at("postgres://mesh:pw@db.example.com:5432/mesh")).toBe("postgres://mesh:pw@db.example.com:5432/mesh");
+    expect(at("data/hub.db", { MESH_HUB_DB: "postgresql://db.example.com/mesh" })).toBe("postgresql://db.example.com/mesh");
+    expect(at(undefined, { MESH_HUB_DB: "/var/lib/mesh/hub.db" })).toBe("/var/lib/mesh/hub.db");
+  });
 });

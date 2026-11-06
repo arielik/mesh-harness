@@ -9,6 +9,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { SQLITE, type Dialect } from "./dialect.ts";
 
 export type SqlValue = string | number | bigint | null | Uint8Array;
 
@@ -23,6 +24,8 @@ export interface RunResult {
  * it never observe or join its uncommitted work.
  */
 export interface Db {
+  /** The SQL differences this driver needs (see dialect.ts). */
+  readonly dialect: Dialect;
   exec(sql: string): Promise<void>;
   run(sql: string, ...params: SqlValue[]): Promise<RunResult>;
   get<T>(sql: string, ...params: SqlValue[]): Promise<T | undefined>;
@@ -104,6 +107,7 @@ interface Tx {
  * callback (tracked with AsyncLocalStorage) run while it is open.
  */
 export class SqliteDb implements Db {
+  readonly dialect = SQLITE;
   readonly sync: SyncDb;
   private readonly scope = new AsyncLocalStorage<Tx>();
   private current: Tx | undefined;
@@ -151,7 +155,7 @@ export class SqliteDb implements Db {
     const tx: Tx = { after: [] };
     const out = await this.turn(async () => {
       this.current = tx;
-      this.sync.exec("BEGIN IMMEDIATE");
+      this.sync.exec(SQLITE.begin);
       try {
         const r = await this.scope.run(tx, fn);
         this.sync.exec("COMMIT");

@@ -6,6 +6,7 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { DEFAULT_POLICIES, NoneProvider, OidcProvider, PRESETS, TokenProvider, type AuthProvider, type SessionPolicies } from "../auth/index.ts";
 import type { RoleMapping } from "../core/index.ts";
+import { isPostgresUrl } from "../store/index.ts";
 
 export function parseDuration(text: string | number): number {
   if (typeof text === "number") return text;
@@ -56,6 +57,7 @@ export type ProviderConfig = z.infer<typeof ProviderConfig>;
 export const HubConfigFile = z.object({
   listen: z.string().default("127.0.0.1:7700"),
   url: z.string().optional(),
+  /** A SQLite file (relative to this file), or a postgres:// URL for several hub replicas on one database. */
   db: z.string().default("mesh-hub.db"),
   /** Hub events older than this are deleted (the durable summaries are in git). 0 keeps them forever. */
   events_retention_days: z.number().int().min(0).default(180),
@@ -150,7 +152,7 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     host,
     port,
     url: (opts.env.MESH_HUB_URL ?? file.url ?? `http://${host}:${port}`).replace(/\/+$/, ""),
-    db: db === ":memory:" || isAbsolute(db) ? db : resolve(opts.baseDir, db),
+    db: db === ":memory:" || isPostgresUrl(db) || isAbsolute(db) ? db : resolve(opts.baseDir, db),
     providers,
     roleMappings,
     bootstrapAdmins: file.auth.bootstrap_admins,

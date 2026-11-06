@@ -590,7 +590,8 @@ export class HubService {
       const r = claim(step, { userId: actor.userId, sid, machine: await this.machineOf(actor, sid) }, this.now());
       if (!r.ok) throw new HubError(r.status, r.error);
       const claimed: Step = r.step.roundStartedAt === undefined ? { ...r.step, roundStartedAt: this.now() } : r.step;
-      await this.store.saveSteps([claimed]);
+      // Conditional on the state read above: with several replicas, exactly one concurrent claim wins.
+      if (!(await this.store.claimStep(claimed, step))) throw new HubError(409, `${step.id} was claimed by someone else just now`);
       const goal = await this.store.getGoal(step.goal);
       if (goal && step.kind === "design" && goal.state === "backlog") await this.store.saveGoal({ ...goal, state: "design", updatedAt: this.now() });
       await this.emit({ type: "step.claimed", user: actor.userId, sid, goal: step.goal, step: step.id });
