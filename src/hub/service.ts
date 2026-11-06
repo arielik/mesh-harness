@@ -59,7 +59,7 @@ import type {
   TrailFile,
   UserView,
 } from "../protocol/index.ts";
-import type { HubStore, NewEvent, UserRow } from "../store/index.ts";
+import { HubStore, type NewEvent, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
@@ -1061,6 +1061,30 @@ export class HubService {
   }
 
   // ---------- time rules (plan §3.4) ----------
+
+  /** Set when the hub is shutting down, so `/readyz` takes it out of the load balancer first. */
+  draining = false;
+
+  /**
+   * Readiness (`GET /readyz`): the database answers within `timeoutMs` and its schema is the one
+   * this mesh migrates to. Liveness (`/healthz`) asks nothing of the database.
+   */
+  async ready(timeoutMs = 3_000): Promise<{ ok: boolean; schema?: number; error?: string }> {
+    if (this.draining) return { ok: false, error: "shutting down" };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, fail) => {
+      timer = setTimeout(() => fail(new Error(`database did not answer within ${timeoutMs} ms`)), timeoutMs);
+    });
+    try {
+      const schema = await Promise.race([this.store.schemaVersion(), timeout]);
+      const want = HubStore.SCHEMA_VERSION;
+      return schema === want ? { ok: true, schema } : { ok: false, schema, error: `schema version ${schema}, this hub needs ${want}` };
+    } catch (e) {
+      return { ok: false, error: `database unreachable: ${e instanceof Error ? e.message : String(e)}` };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   private lastPrune = 0;
 

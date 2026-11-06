@@ -1,0 +1,11 @@
+# A generic example: several mesh hub replicas on one Postgres you provide. Copy it into your own
+# repository and change the placeholders there (image, hostnames, issuer). See README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+  - ingress.yaml
+# The Secret is not listed: create it yourself (secret.example.yaml shows its keys).

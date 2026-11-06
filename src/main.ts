@@ -7,7 +7,7 @@ import { listAgents, wakeBackground } from "./claude/index.ts";
 import { dispatch, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
 import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } from "./hub/index.ts";
 import { runShim } from "./mcp/index.ts";
-import { describeDbTarget, HubStore } from "./store/index.ts";
+import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./store/index.ts";
 import { Daemon, defaultDeps } from "./daemon/index.ts";
 import { desktopNotify, pasteToPane } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
@@ -110,11 +110,11 @@ const hubConfigPath = (a: ReturnType<typeof parseArgs>) => {
 
 const hub: Command = {
   name: "hub",
-  summary: "run the shared hub (init | token | revoke | backup <file>): mesh hub [--config mesh-hub.yaml]",
+  summary: "run the shared hub (init | token | revoke | backup <file> | migrate): mesh hub [--config mesh-hub.yaml]",
   async run(args) {
     const sub = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
     const rest = sub ? args.slice(1) : args;
-    const a = parseArgs(rest, ["config", "users", "listen", "service", "user", "machine"]);
+    const a = parseArgs(rest, ["config", "users", "listen", "service", "user", "machine", "from", "to"]);
     if (sub === "init") {
       const path = resolve(a.str("config") ?? "mesh-hub.yaml");
       const users = (a.str("users") ?? process.env.USER ?? "me").split(",").map((u) => u.trim()).filter(Boolean);
@@ -122,6 +122,21 @@ const hub: Command = {
       stdio.out(`Wrote ${path}. Tokens (shown once; each person logs in with \`mesh login --hub <url> --token <token>\`):`);
       for (const [u, t] of Object.entries(tokens)) stdio.out(`  ${u}: ${t}`);
       stdio.out(`${users[0]} is the first admin. Start the hub with: mesh hub --config ${path}`);
+      return 0;
+    }
+    if (sub === "migrate") {
+      // The URL may come from the environment (MESH_HUB_DB) so its password stays off the command line.
+      const from = a.str("from");
+      const envDb = process.env.MESH_HUB_DB;
+      const to = a.str("to") ?? (envDb && isPostgresUrl(envDb) ? envDb : undefined);
+      if (!from || !to) throw new Error("usage: mesh hub migrate --from <sqlite file> --to postgres://… [--force] (--to defaults to MESH_HUB_DB)");
+      const file = resolve(from);
+      stdio.out(`Copying ${file} to ${describeDbTarget(to)} (stop every hub using either first)…`);
+      const report = await copyHubToPostgres(file, to, { force: a.has("force") });
+      for (const t of report.tables) stdio.out(`  ${t.name.padEnd(14)} ${t.rows}`);
+      const total = report.tables.reduce((n, t) => n + t.rows, 0);
+      stdio.out(`Copied ${total} rows; every table's row count matches${report.replaced ? " (the hub that was there is gone)" : ""}.`);
+      stdio.out("Now set db: (or MESH_HUB_DB) to the postgres:// URL and start the hub. Keep the SQLite file as a backup.");
       return 0;
     }
     const config = loadHubConfig(hubConfigPath(a), process.env, process.cwd());
@@ -156,7 +171,7 @@ const hub: Command = {
       }
       return 0;
     }
-    if (sub !== undefined) throw new Error(`unknown hub subcommand "${sub}" (use: init, token, revoke, backup)`);
+    if (sub !== undefined) throw new Error(`unknown hub subcommand "${sub}" (use: init, token, revoke, backup, migrate)`);
     const webRoot = join(dirname(self[1] as string), "web");
     const running = await startHub(config, { webRoot: existsSync(webRoot) ? webRoot : undefined });
     stdio.out(`mesh hub on ${running.url} (providers: ${config.providers.map((x) => `${x.id}/${x.kind}`).join(", ")}; db ${describeDbTarget(config.db)})`);

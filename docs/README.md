@@ -14,7 +14,7 @@ Everything is in this repository. You need Claude Code on a subscription login, 
 | learn the words (goal, step, round, segment, gate, blind, programme…) | [Concepts](guide/concepts.md) |
 | run a spec-driven development cycle | [The development cycle](guide/cycle.md) and [the SDD kit](../assets/sdd/README.md) |
 | set up sign-in for a team (none, tokens, OIDC) | [Auth](guide/auth.md) |
-| run the hub: backup, retention, upgrades, privacy switches | [Operations](guide/operations.md) |
+| run the hub: SQLite or several replicas on Postgres, probes, image, backup, retention, upgrades, privacy switches | [Operations](guide/operations.md) |
 | read or analyse the records mesh writes | [The ledger](guide/ledger.md), [events](events.md), [JSON Schemas](../schemas) |
 | see it all in pictures | [How mesh-harness works](explainer/how-mesh-harness-works.html) (open in a browser) |
 

@@ -66,6 +66,13 @@ export function buildRoutes(svc: HubService): Route[] {
   const r = (method: Route["method"], path: string, rule: RouteRule, handler: Handler): Route => ({ method, path, rule, handler });
   return [
     r("GET", "/health", "public", (c) => c.json({ ok: true })),
+    // Probes (M4.6), no auth. Liveness: the process answers. Readiness: the database answers and is
+    // migrated; a load balancer sends this replica no traffic until it is ready.
+    r("GET", "/healthz", "public", (c) => c.json({ ok: true })),
+    r("GET", "/readyz", "public", async (c) => {
+      const ready = await svc.ready();
+      return c.json(ready, ready.ok ? 200 : 503);
+    }),
 
     // ---------- auth ----------
     r("GET", "/auth/providers", "public", (c) => c.json({ providers: svc.providersInfo() })),

@@ -55,7 +55,25 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vitest run src/store test/m46-replicas.test.ts
+      - run: pnpm exec vitest run src/store test/m46-replicas.test.ts test/m46-ops.test.ts
+
+  # The hub image (Dockerfile): built and started once, not published.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t mesh-hub:ci .
+      - name: Smoke test (one replica on SQLite)
+        run: |
+          docker run -d --name hub -p 7700:7700 -e MESH_HUB_DB=/data/mesh-hub.db -e MESH_HUB_CONFIG=/tmp/mesh-hub.yaml \
+            --entrypoint sh mesh-hub:ci -c 'node dist/main.mjs hub init --config /tmp/mesh-hub.yaml --users ci >/dev/null && exec node dist/main.mjs hub'
+          for i in $(seq 30); do curl -fsS http://127.0.0.1:7700/readyz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:7700/readyz
+          curl -fsS http://127.0.0.1:7700/healthz
+          docker stop -t 10 hub
+          test "$(docker inspect hub --format '{{.State.ExitCode}}')" = 0
+      - if: failure()
+        run: docker logs hub || true
 
   web:
     runs-on: ubuntu-latest

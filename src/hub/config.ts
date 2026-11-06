@@ -1,4 +1,9 @@
-// mesh-hub.yaml (plan §4.2, §8). Environment overrides: MESH_HUB_LISTEN, MESH_HUB_URL, MESH_HUB_DB.
+// mesh-hub.yaml (plan §4.2, §8). Environment overrides (containers set these; see Dockerfile):
+//   MESH_HUB_CONFIG  where mesh-hub.yaml is (read by `mesh hub` in main.ts, instead of --config)
+//   MESH_HUB_LISTEN  listen:  host:port
+//   MESH_HUB_URL     url:     the public address
+//   MESH_HUB_DB      db:      a SQLite file, or a postgres:// URL for several replicas
+//   (an OIDC provider's client secret comes from the variable its client_secret_env names)
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";

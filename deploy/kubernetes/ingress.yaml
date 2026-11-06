@@ -1,0 +1,23 @@
+# TLS in front of the hub. The dashboard and daemons hold Server-Sent Events streams open (a ping
+# every 25 s): the ingress must not buffer responses, and its read timeout must exceed 25 s.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mesh-hub
+  labels:
+    app.kubernetes.io/name: mesh-hub
+spec:
+  tls:
+    - hosts: [mesh.example.com]
+      secretName: mesh-hub-tls
+  rules:
+    - host: mesh.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mesh-hub
+                port:
+                  name: http

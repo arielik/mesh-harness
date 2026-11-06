@@ -1,0 +1,27 @@
+# mesh-hub.yaml for every replica. The database URL and the OIDC client secret are not here: they
+# come from the mesh-hub Secret as environment variables (MESH_HUB_DB, MESH_OIDC_CLIENT_SECRET).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mesh-hub-config
+  labels:
+    app.kubernetes.io/name: mesh-hub
+data:
+  mesh-hub.yaml: |
+    listen: 0.0.0.0:7700
+    # The public address: OIDC redirects and secure cookies use it.
+    url: https://mesh.example.com
+    auth:
+      providers:
+        - id: sso
+          kind: oidc
+          label: Single sign-on
+          issuer: https://idp.example.com
+          client_id: mesh
+          client_secret_env: MESH_OIDC_CLIENT_SECRET
+          roles:
+            approver: [mesh-approvers]
+            admin: [mesh-admins]
+      # People who are admins before any group says so, as "<provider id>:<user name>".
+      bootstrap_admins: []
+    events_retention_days: 180

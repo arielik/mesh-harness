@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mesh-hub
+  labels:
+    app.kubernetes.io/name: mesh-hub
+spec:
+  # Any number of replicas works on Postgres: no sticky sessions, one runs the periodic work.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mesh-hub
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mesh-hub
+      annotations:
+        # Roll the pods when mesh-hub.yaml changes (or use a kustomize configMapGenerator).
+        mesh.example.com/config-revision: "1"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: mesh-hub
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: hub
+          image: registry.example.com/mesh-hub:0.0.0
+          args: ["hub"]
+          env:
+            - name: MESH_HUB_CONFIG
+              value: /etc/mesh/mesh-hub.yaml
+            - name: MESH_HUB_LISTEN
+              value: 0.0.0.0:7700
+            - name: MESH_HUB_DB
+              valueFrom:
+                secretKeyRef:
+                  name: mesh-hub
+                  key: db-url
+            - name: MESH_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: mesh-hub
+                  key: oidc-client-secret
+          ports:
+            - name: http
+              containerPort: 7700
+          # The hub listens once its migrations are done; the first replica migrates, the others
+          # wait for it, so give startup some room.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Ready when Postgres answers (within 3 s) and has this hub's schema.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+          lifecycle:
+            # Let the load balancer drop this pod before the hub stops taking requests.
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/mesh
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: mesh-hub-config
+        - name: tmp
+          emptyDir: {}

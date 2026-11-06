@@ -637,6 +637,14 @@ export class HubStore {
     return (await this.db.run("DELETE FROM event WHERE at < ?", before)).changes;
   }
 
+  /** The schema version this mesh migrates to (the same on both dialects). */
+  static readonly SCHEMA_VERSION = HUB_MIGRATIONS.length;
+
+  /** The database's schema version; a query that fails means the database is unreachable. */
+  async schemaVersion(): Promise<number> {
+    return (await this.db.get<{ version: number }>("SELECT version FROM schema_version"))?.version ?? 0;
+  }
+
   /** A consistent copy of the whole database (VACUUM INTO), safe while the hub runs. SQLite only. */
   async backup(path: string): Promise<void> {
     if (this.db.dialect.name !== "sqlite") throw new Error("mesh hub backup copies a SQLite hub; on Postgres use the database's own tools (pg_dump, snapshots)");

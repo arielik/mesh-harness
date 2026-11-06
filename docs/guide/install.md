@@ -22,6 +22,15 @@ mesh login --hub https://mesh.example --token <token>   # or --provider kanidm (
 mesh logout                                             # back to Solo
 ```
 
+## Installing a team hub
+
+The hub is the same `mesh` binary (`mesh hub`). Pick how to run it:
+
+- **One replica on SQLite** (the default). `mesh hub init` and `mesh hub --config mesh-hub.yaml` on any machine or VM, or the container image with the file in a volume. Back up with `mesh hub backup`.
+- **Several replicas on Postgres**. Set `db:` (or `MESH_HUB_DB`) to a `postgres://` URL and run as many replicas as you like behind a load balancer. Use the container image built from the `Dockerfile`, and `deploy/kubernetes/` as a starting point. Back up with the database's own tools (`pg_dump`, snapshots).
+
+A hub that started on SQLite moves to Postgres once with `mesh hub migrate`. Details in [operations](operations.md#running-the-hub).
+
 Uninstall: `mesh setup --uninstall` restores your settings file byte for byte and removes the MCP server and the CLAUDE.md block.
 
 ## Hooks

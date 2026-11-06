@@ -309,11 +309,11 @@ steps:
 mesh hub init --users alice,bob --listen 0.0.0.0:7700     # writes mesh-hub.yaml, prints one token per person
 mesh hub --config mesh-hub.yaml                            # behind TLS when it leaves your machine
 mesh hub token --service analytics --config mesh-hub.yaml  # read-only event feed for analysis
-mesh hub backup /backups/mesh-$(date +%F).db --config mesh-hub.yaml
+mesh hub backup /backups/mesh-$(date +%F).db --config mesh-hub.yaml   # SQLite; on Postgres use pg_dump
 mesh hub revoke --user bob --config mesh-hub.yaml
 ```
 
-For OIDC (Kanidm, Keycloak, GitLab, Google…), the roles (approver, admin), retention and the blind guard, see [auth](auth.md) and [operations](operations.md).
+For OIDC (Kanidm, Keycloak, GitLab, Google…), the roles (approver, admin), retention and the blind guard, see [auth](auth.md) and [operations](operations.md). For several replicas on Postgres (`mesh hub migrate`, the container image, `deploy/kubernetes/`), see [operations](operations.md#running-the-hub).
 
 ## 12. Troubleshooting
 

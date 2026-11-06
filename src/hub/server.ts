@@ -79,6 +79,7 @@ export async function startHub(config: HubConfig, opts: { webRoot?: string | und
     svc,
     runTick,
     async stop() {
+      svc.draining = true;
       if (timer) clearInterval(timer);
       await ticking?.catch(() => undefined);
       await leader.release();

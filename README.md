@@ -74,6 +74,15 @@ Agents use eight MCP tools (`mesh_context`, `mesh_next`, `mesh_claim`, `mesh_rel
 
 To add OIDC, see the commented example in the generated `mesh-hub.yaml` (Kanidm is a preset; any OIDC provider works).
 
+One hub process on a SQLite file is the default. For several replicas behind a load balancer (rolling upgrades, no sticky sessions), point `db:` or `MESH_HUB_DB` at Postgres:
+
+```bash
+mesh hub migrate --from mesh-hub.db --to postgres://…    # once, offline: copy a SQLite hub into Postgres
+docker build -t mesh-hub .                               # the hub image; deploy/kubernetes/ is a generic example
+```
+
+Probes: `GET /healthz` (liveness) and `GET /readyz` (database reachable and migrated). See [operations](docs/guide/operations.md).
+
 ## Development
 
 Requires pnpm and tmux. Node 24 is downloaded by pnpm (`devEngines`).

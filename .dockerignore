@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+coverage
+test-results
+playwright-report
+spikes/out
+*.log
+mesh-hub.db*
+mesh-hub.yaml
