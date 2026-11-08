@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { DaemonConfig, KEY_HEADER, TOOL_NAMES, TOOLS, type ToolName, type ToolResult } from "../protocol/index.ts";
+import { DaemonConfig, KEY_HEADER, MESH_MCP_INSTRUCTIONS, TOOL_NAMES, TOOLS, type ToolName, type ToolResult } from "../protocol/index.ts";
 
 export interface ShimOptions {
   daemonConfigPath: string;
@@ -43,7 +43,7 @@ export async function forward(opts: ShimOptions, tool: ToolName, args: Record<st
 }
 
 export function buildServer(opts: ShimOptions): McpServer {
-  const server = new McpServer({ name: "mesh", version: opts.version });
+  const server = new McpServer({ name: "mesh", version: opts.version }, { instructions: MESH_MCP_INSTRUCTIONS });
   for (const name of TOOL_NAMES) {
     const def = TOOLS[name];
     server.registerTool(name, { description: def.description, inputSchema: def.input }, async (args: Record<string, unknown>) => {

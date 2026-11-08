@@ -22,11 +22,9 @@ The examples use two repos, `payments-api` and `payments-web`, in `~/src`, and t
 ## 1. Start on your own (Solo)
 
 ```bash
-git clone https://github.com/arielik/mesh-harness && cd mesh-harness
-pnpm install && pnpm build
-alias mesh="node $PWD/dist/main.mjs"      # put this in your shell profile
+curl -fsSL https://github.com/arielik/mesh-harness/releases/latest/download/install.sh | sh
 
-mesh setup        # hooks + MCP server + a short block in ~/.claude/CLAUDE.md
+mesh setup        # hooks + MCP server + the mesh skill
 mesh up           # the daemon; it runs a local hub (Solo) until you log in to a team hub
 mesh doctor
 ```

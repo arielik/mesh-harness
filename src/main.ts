@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import pkg from "../package.json" with { type: "json" };
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { listAgents, wakeBackground } from "./claude/index.ts";
@@ -9,9 +9,9 @@ import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } 
 import { runShim } from "./mcp/index.ts";
 import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./store/index.ts";
 import { Daemon, defaultDeps } from "./daemon/index.ts";
-import { desktopNotify, pasteToPane } from "./mux/index.ts";
+import { desktopNotify, pasteToPane, terminalNotify } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
-import type { Credentials } from "./protocol/index.ts";
+import { notifyChannels, writeFileAtomic, type Credentials } from "./protocol/index.ts";
 
 
 // node:sqlite is still flagged experimental; keep that one warning out of the user's terminal.
@@ -63,7 +63,14 @@ const up: Command = {
         listAgents: () => listAgents(),
         paste: (pane, text, server) => pasteToPane(pane, text, server),
         wakeBackground: (t, text) => wakeBackground(t, text),
-        notify: (title, body) => desktopNotify(title, body),
+        notify: async (title, body, target) => {
+          const ch = notifyChannels(config);
+          const sent = await Promise.all([
+            ch.desktop ? desktopNotify(title, body) : false,
+            ch.terminal && target ? terminalNotify(target, title, body) : false,
+          ]);
+          return sent.some(Boolean);
+        },
         // MESH_BACKFILL=off: don't import past workflow runs (test daemons; privacy-minded setups).
         ...(process.env.MESH_BACKFILL === "off" ? { scanRuns: () => [] } : {}),
       }),
@@ -97,8 +104,7 @@ async function startSolo(): Promise<{ hub: RunningHub; creds: Credentials }> {
   const hub = await startHub(config, { webRoot: existsSync(webRoot) ? webRoot : undefined });
   const login = await hub.svc.loginDirect("local", { client: "cli", hostname: hostname() });
   const creds: Credentials = { hub: hub.url, token: login.token, user: login.user, ...(login.machine ? { machine: login.machine } : {}) };
-  writeFileSync(p.soloCredentials, `${JSON.stringify(creds, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(p.soloCredentials, 0o600);
+  writeFileAtomic(p.soloCredentials, `${JSON.stringify(creds, null, 2)}\n`, { mode: 0o600 });
   return { hub, creds };
 }
 

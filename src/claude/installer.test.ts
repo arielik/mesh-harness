@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { HOOKS_VERSION } from "../protocol/index.ts";
 import {
   hookCommand,
   inspectSettingsFile,
@@ -38,6 +39,7 @@ describe("hook installer", () => {
     expect(inspectSettingsFile(p, T)).toEqual({
       installed: ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd", "SubagentStart", "SubagentStop"],
       stale: [],
+      version: HOOKS_VERSION,
     });
   });
 
@@ -93,5 +95,28 @@ describe("hook installer", () => {
     expect(cmd).toContain('-H "X-Tmux-Pane: ${TMUX_PANE:-}"');
     expect(cmd).toContain("-m 2");
     expect(cmd.endsWith("http://127.0.0.1:27777/mesh/hook/session-start")).toBe(true);
+  });
+});
+
+describe("hook versions", () => {
+  it("reports hooks written before versioning as v1", () => {
+    const d = mkdtempSync(join(tmpdir(), "mesh-ver-"));
+    dirs.push(d);
+    const p = join(d, "settings.json");
+    installSettingsFile(p, T);
+    // Rewrite every mesh hook the way mesh 0.0.x wrote it: no version header, no send time.
+    const text = readFileSync(p, "utf8").replace(/ -H 'X-Mesh-Hooks: \d+'/g, "").replace(/ -H \\"X-Mesh-At: \$\(date \+%s%N\)\\"/g, "").replace(/,\n\s*"X-Mesh-Hooks": "\d+"/g, "");
+    writeFileSync(p, text);
+    const st = inspectSettingsFile(p, T);
+    expect(st.version).toBe(1);
+    expect(st.stale).toHaveLength(7);
+    installSettingsFile(p, T);
+    expect(inspectSettingsFile(p, T)).toMatchObject({ version: HOOKS_VERSION, stale: [] });
+  });
+
+  it("the hook command sends its version and the time it ran", () => {
+    const cmd = hookCommand(T, "UserPromptSubmit");
+    expect(cmd).toContain(`-H 'X-Mesh-Hooks: ${HOOKS_VERSION}'`);
+    expect(cmd).toContain('-H "X-Mesh-At: $(date +%s%N)"');
   });
 });

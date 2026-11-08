@@ -3,9 +3,9 @@
 // (timeout 3 s) whose reply may carry a message (spike S1). Uninstall restores the original
 // file byte for byte when nothing else changed meanwhile.
 
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { HOOK_KINDS, HOOK_SLUGS, type HookKind } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOK_SLUGS, HOOKS_VERSION, writeFileAtomic, type HookKind } from "../protocol/index.ts";
 
 export interface HookTarget {
   port: number;
@@ -27,6 +27,9 @@ export function hookCommand(t: HookTarget, kind: HookKind): string {
     "curl -s -m 2 -o /dev/null --data-binary @-",
     "-H 'Content-Type: application/json'",
     `-H 'X-Mesh-Key: ${t.key}'`,
+    `-H 'X-Mesh-Hooks: ${HOOKS_VERSION}'`,
+    // When the hook ran: async hooks can arrive out of order (GNU date: ns; BSD date: seconds).
+    '-H "X-Mesh-At: $(date +%s%N)"',
     '-H "X-Claude-Pid: ${CLAUDE_PID:-$PPID}"',
     '-H "X-Tmux-Pane: ${TMUX_PANE:-}"',
     '-H "X-Tmux: ${TMUX:-}"',
@@ -39,7 +42,7 @@ export function hookCommand(t: HookTarget, kind: HookKind): string {
 /** The matcher group mesh adds for one hook event. */
 export function meshHookGroup(t: HookTarget, kind: HookKind): Obj {
   if (kind === "Stop") {
-    return { hooks: [{ type: "http", url: hookUrl(t, kind), timeout: 3, headers: { "X-Mesh-Key": t.key } }] };
+    return { hooks: [{ type: "http", url: hookUrl(t, kind), timeout: 3, headers: { "X-Mesh-Key": t.key, "X-Mesh-Hooks": String(HOOKS_VERSION) } }] };
   }
   return { hooks: [{ type: "command", async: true, command: hookCommand(t, kind) }] };
 }
@@ -90,6 +93,19 @@ export interface HookStatus {
   installed: HookKind[];
   /** Mesh hooks pointing at another port or key than the current config. */
   stale: HookKind[];
+  /** Oldest hook-command version among the installed mesh hooks (1 = written before versioning). */
+  version?: number;
+}
+
+/** The hook-command version a mesh handler was written with (1 when it carries none). */
+export function handlerVersion(h: Json): number {
+  if (!isObj(h)) return 1;
+  if (typeof h.command === "string") {
+    const m = /X-Mesh-Hooks: (\d+)/.exec(h.command);
+    return m ? Number(m[1]) : 1;
+  }
+  const v = isObj(h.headers) ? h.headers["X-Mesh-Hooks"] : undefined;
+  return typeof v === "string" && /^\d+$/.test(v) ? Number(v) : 1;
 }
 
 export function inspect(settings: Obj, t: HookTarget): HookStatus {
@@ -101,6 +117,7 @@ export function inspect(settings: Obj, t: HookTarget): HookStatus {
     const mine = groups.flatMap((g) => (isObj(g) && Array.isArray(g.hooks) ? g.hooks.filter(isMeshHandler) : []));
     if (mine.length === 0) continue;
     status.installed.push(kind);
+    for (const h of mine) status.version = Math.min(status.version ?? Number.MAX_SAFE_INTEGER, handlerVersion(h));
     const want = JSON.stringify(meshHookGroup(t, kind).hooks);
     if (mine.length !== 1 || JSON.stringify(mine) !== want) status.stale.push(kind);
   }
@@ -121,12 +138,7 @@ function readSettings(path: string): { text: string | undefined; json: Obj } {
   return { text, json: parsed };
 }
 
-function writeAtomic(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.mesh-tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, path);
-}
+const writeAtomic = (path: string, text: string): void => writeFileAtomic(path, text);
 
 const format = (j: Obj) => `${JSON.stringify(j, null, 2)}\n`;
 

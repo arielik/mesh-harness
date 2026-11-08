@@ -17,6 +17,7 @@ export {
   type HookTarget,
 } from "./installer.ts";
 export { claudeVersion, compareVersions, MIN_CLAUDE_VERSION, parseVersion } from "./version.ts";
+export { installSkill, skillStatus, uninstallSkill, type SkillStatus } from "./skill.ts";
 export { claudeMdInstalled, installClaudeMd, installMcp, MCP_NAME, mcpInstalled, uninstallClaudeMd, uninstallMcp } from "./extras.ts";
 export { computeHarness } from "./harness.ts";
 export { agentPaths, readAgentFiles, scanWorkflowRuns } from "./workflow.ts";

@@ -78,4 +78,6 @@ export interface DaemonStatus {
   hubUrl?: string;
   error?: string;
   host: string;
+  /** Open sessions whose hooks come from an older mesh (missing from older daemons). */
+  oldHooks?: number;
 }

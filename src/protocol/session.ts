@@ -37,6 +37,13 @@ export const Session = z.object({
   permissionMode: z.string().optional(),
   startedAt: z.number(),
   lastEventAt: z.number(),
+  /**
+   * Earliest moment the hook that set the current state could have run. A late async hook that
+   * certainly ran before it does not change the state (hooks v2, X-Mesh-At).
+   */
+  stateAt: z.number().optional(),
+  /** Version of the hook commands this session's last hook came from (1 = before versioning). */
+  hooksVersion: z.number().int().optional(),
   lastTurnStartAt: z.number().optional(),
   lastStopAt: z.number().optional(),
   /** Short preview of the last assistant message (local only). */

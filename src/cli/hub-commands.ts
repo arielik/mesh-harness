@@ -2,14 +2,14 @@
 // and `mesh hub init` (writes a starter mesh-hub.yaml).
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stringify, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { sha256 } from "../auth/index.ts";
 import { BUILTIN_PRESETS, instantiate, parsePreset, presetText, repoMatches, type Preset } from "../core/index.ts";
-import { PlanAc, PlanInput, type Goal, type GoalDetail, type Step, type TrailFile } from "../protocol/index.ts";
+import { PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type Step, type TrailFile } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
@@ -336,7 +336,7 @@ export function hubInit(path: string, users: string[], listen: string): { tokens
     "",
   ].join("\n");
   const text = header + stringify(config);
-  writeFileSync(path, text, { mode: 0o600 });
+  writeFileAtomic(path, text, { mode: 0o600 });
   return { tokens, text };
 }
 

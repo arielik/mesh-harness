@@ -7,8 +7,10 @@ import {
   claudeVersion,
   compareVersions,
   inspectSettingsFile,
-  installClaudeMd,
   installMcp,
+  installSkill,
+  skillStatus,
+  uninstallSkill,
   installSettingsFile,
   mcpInstalled,
   MIN_CLAUDE_VERSION,
@@ -20,7 +22,7 @@ import {
 } from "../claude/index.ts";
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { CLAUDE_MD_BLOCK, HOOK_KINDS, type DaemonConfig, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -44,16 +46,23 @@ export function setupCommand(c: CliEnv): Command {
     name: "setup",
     summary: "install mesh's hooks into Claude Code (--uninstall to remove)",
     async run(args) {
-      const a = parseArgs(args, ["port"]);
+      const a = parseArgs(args, ["port", "notify"]);
+      const notifyArg = a.str("notify");
+      if (notifyArg !== undefined && !["desktop", "terminal", "both", "off"].includes(notifyArg)) {
+        c.io.err("--notify must be desktop, terminal, both or off");
+        return 2;
+      }
       const runner = c.runner ?? runProgram;
       if (a.has("uninstall")) {
         const r = uninstallSettingsFile(c.paths.claudeSettings);
         const md = uninstallClaudeMd(c.paths.claudeMd);
+        const skill = uninstallSkill(c.paths.claudeSkill);
         const mcp = await uninstallMcp(runner);
         c.io.out(
           [
             r.changed ? `Removed mesh hooks from ${c.paths.claudeSettings}.` : "No mesh hooks were installed.",
             md.changed ? `Removed the mesh block from ${c.paths.claudeMd}.` : "",
+            skill.changed ? `Removed the mesh skill ${c.paths.claudeSkill}.` : "",
             mcp ? "Removed the mesh MCP server." : "",
           ]
             .filter(Boolean)
@@ -67,25 +76,49 @@ export function setupCommand(c: CliEnv): Command {
         config = loadConfig(c.paths);
         if (port !== undefined) config = { ...config, port };
         if (a.has("no-notify")) config = { ...config, notify: false };
+        if (notifyArg) config = { ...config, notify: notifyArg as NotifyMode };
       } else {
         config = newConfig(port);
         if (a.has("no-notify")) config.notify = false;
+        if (notifyArg) config.notify = notifyArg as NotifyMode;
       }
       saveConfig(c.paths, config);
       const r = installSettingsFile(c.paths.claudeSettings, config);
       const mcp = a.has("no-mcp") ? { ok: true, skipped: true } : await installMcp([...c.self, "mcp"], runner);
-      if (!a.has("no-mcp")) installClaudeMd(c.paths.claudeMd, CLAUDE_MD_BLOCK);
+      // The skill replaces the CLAUDE.md block older versions wrote: remove that block if present.
+      const legacy = uninstallClaudeMd(c.paths.claudeMd);
+      const skill = a.has("no-mcp") ? undefined : installSkill(c.paths.claudeSkill);
       c.io.out(
         [
           `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
-          r.changed ? `Installed 5 hooks into ${c.paths.claudeSettings}.` : `Hooks already installed in ${c.paths.claudeSettings}.`,
-          "skipped" in mcp ? "Skipped the MCP server (--no-mcp)." : mcp.ok ? `Registered the mesh MCP server and added a short block to ${c.paths.claudeMd}.` : `Could not register the MCP server: ${"error" in mcp ? mcp.error : ""}`,
+          r.changed ? `Installed ${HOOK_KINDS.length} hooks (v${HOOKS_VERSION}) into ${c.paths.claudeSettings}.` : `Hooks (v${HOOKS_VERSION}) already installed in ${c.paths.claudeSettings}.`,
+          "skipped" in mcp ? "Skipped the MCP server and the skill (--no-mcp)." : mcp.ok ? "Registered the mesh MCP server." : `Could not register the MCP server: ${"error" in mcp ? mcp.error : ""}`,
+          skill?.foreign
+            ? `Left ${c.paths.claudeSkill} alone: mesh did not write it. Move it away and run mesh setup again to get the mesh skill.`
+            : skill
+              ? `${skill.changed ? "Installed" : "Kept"} the mesh skill ${c.paths.claudeSkill}.`
+              : "",
+          legacy.changed ? `Removed the old mesh block from ${c.paths.claudeMd} (the skill replaces it).` : "",
+          r.changed ? "Sessions that are already open keep their old hooks until you restart them." : "",
           "Claude sessions started from now on report to mesh. Next:",
           "  mesh up             # run the daemon here, or",
           "  mesh up --install   # run it as a user service",
           "  mesh                # the session list",
-        ].join("\n"),
+        ]
+          .filter(Boolean)
+          .join("\n"),
       );
+      return 0;
+    },
+  };
+}
+
+export function skillCommand(c: CliEnv): Command {
+  return {
+    name: "skill",
+    summary: "print the mesh skill for Claude Code (mesh setup installs it)",
+    async run() {
+      c.io.out(MESH_SKILL.trimEnd());
       return 0;
     },
   };
@@ -122,17 +155,24 @@ export function doctorCommand(c: CliEnv): Command {
       else warn("tmux not found: jump and typing into sessions need it");
       if (config) {
         const st = inspectSettingsFile(c.paths.claudeSettings, config);
-        if (st.installed.length === HOOK_KINDS.length && st.stale.length === 0) ok(`hooks installed in ${c.paths.claudeSettings}`);
+        if (st.installed.length === HOOK_KINDS.length && st.stale.length === 0) ok(`hooks v${HOOKS_VERSION} installed in ${c.paths.claudeSettings}`);
         else if (st.installed.length === 0) bad("hooks not installed; run: mesh setup");
+        else if ((st.version ?? HOOKS_VERSION) < HOOKS_VERSION) bad(`hooks are from an older mesh (v${st.version}, this mesh writes v${HOOKS_VERSION}); run: mesh setup`);
         else bad(`hooks out of date (${[...new Set([...st.stale])].join(", ") || "incomplete"}); run: mesh setup`);
         if (await mcpInstalled(runner)) ok("mesh MCP server registered");
         else warn("mesh MCP server not registered (agents can't use mesh tools); run: mesh setup");
-        if (!claudeMdInstalled(c.paths.claudeMd)) warn(`no mesh block in ${c.paths.claudeMd}; run: mesh setup`);
+        const sk = skillStatus(c.paths.claudeSkill);
+        if (sk === "current") ok(`mesh skill ${c.paths.claudeSkill}`);
+        else if (sk === "foreign") warn(`${c.paths.claudeSkill} was not written by mesh; agents get mesh's own instructions only from the MCP server`);
+        else warn(`mesh skill ${sk === "missing" ? "not installed" : "out of date"}; run: mesh setup`);
+        if (claudeMdInstalled(c.paths.claudeMd)) warn(`old mesh block in ${c.paths.claudeMd} (the skill replaces it); run: mesh setup`);
         try {
           const d = new DaemonClient(config);
           const h = await d.health();
           ok(`daemon running on 127.0.0.1:${config.port} (${h.sessions} live sessions)`);
           const st = await d.status();
+          const old = st.oldHooks ?? 0;
+          if (old > 0) warn(`${old} open session${old === 1 ? "" : "s"} started before the hooks were updated; restart ${old === 1 ? "it" : "them"} (exit, then claude --continue) to pick up the new hooks`);
           const creds = loadCredentials(c.paths);
           if (!creds) {
             if (st.mode === "solo") ok(`Solo: working on the local hub ${st.hubUrl ?? ""} (log in to a team hub with: mesh login --hub <url>)`);
@@ -400,5 +440,5 @@ export function statusCommand(c: CliEnv): Command {
 }
 
 export function meshCommands(c: CliEnv): Command[] {
-  return [setupCommand(c), doctorCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), assetsCommand(c), ...hubCommands(c)];
+  return [setupCommand(c), doctorCommand(c), skillCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), assetsCommand(c), ...hubCommands(c)];
 }

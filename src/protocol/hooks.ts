@@ -4,6 +4,13 @@ import { z } from "zod";
 export const HOOK_KINDS = ["SessionStart", "UserPromptSubmit", "Notification", "Stop", "SessionEnd", "SubagentStart", "SubagentStop"] as const;
 export type HookKind = (typeof HOOK_KINDS)[number];
 
+/**
+ * Version of the hook commands `mesh setup` writes. Bump it whenever the installed commands change,
+ * so `mesh doctor` can tell hooks written by an older mesh from current ones. v1 had no version
+ * header; v2 adds X-Mesh-Hooks and X-Mesh-At (the moment the hook ran, to order async hooks).
+ */
+export const HOOKS_VERSION = 2;
+
 /** URL path segment per hook, as used in the installed hook commands: /mesh/hook/<slug>. */
 export const HOOK_SLUGS: Record<HookKind, string> = {
   SessionStart: "session-start",
@@ -53,6 +60,10 @@ export interface HookHeaders {
   /** $MESH_AUTOPILOT and $MESH_STEP, set by `mesh run`. */
   autopilot?: string | undefined;
   step?: string | undefined;
+  /** X-Mesh-Hooks: the version of the installed hook command (absent before v2). */
+  hooks?: string | undefined;
+  /** X-Mesh-At: `date +%s%N` when the hook ran (nanoseconds; seconds where %N is unsupported). */
+  sentAt?: string | undefined;
 }
 
 /** A hook call normalised for the core. Never carries prompt text (only its length). */
@@ -77,6 +88,13 @@ export interface HookEvent {
   autopilot?: "off" | "nudge" | "chain";
   /** Step `mesh run --step` claimed for this session. */
   stepHint?: string;
+  /** Version of the hook command that sent this (1 when it sent none). */
+  hooksVersion?: number;
+  /**
+   * When the hook ran, as [earliest, latest] in ms, from X-Mesh-At. Async hooks can arrive out of
+   * order; the window lets the core ignore a state change that is certainly older than the current one.
+   */
+  sentWindow?: [number, number];
   /** True when the prompt was typed by mesh (a delivery), so it is not counted as a human prompt. */
   delivered?: boolean;
   /** Stop: the effort level and permission mode of the turn. */
@@ -88,8 +106,35 @@ export interface HookEvent {
   agentTranscriptPath?: string;
 }
 
+/** How far X-Mesh-At may be from the receive time before it is ignored (clock or parsing trouble). */
+const SENT_AT_PAST_MS = 10 * 60_000;
+const SENT_AT_FUTURE_MS = 5_000;
+
+/**
+ * Parse X-Mesh-At into a [earliest, latest] window in ms. GNU date prints nanoseconds; BSD and
+ * busybox date print the seconds followed by a literal `N` or `%N`, which gives a one-second window.
+ */
+export function parseSentAt(value: string | undefined, receivedAt: number): [number, number] | undefined {
+  if (!value) return undefined;
+  let w: [number, number] | undefined;
+  if (/^\d{16,}$/.test(value)) {
+    const ms = Number(BigInt(value) / 1_000_000n);
+    w = [ms, ms + 1];
+  } else {
+    const m = /^(\d{9,11})(?:%?N)?$/.exec(value);
+    if (m) w = [Number(m[1]) * 1000, Number(m[1]) * 1000 + 1000];
+  }
+  if (!w) return undefined;
+  if (w[0] > receivedAt + SENT_AT_FUTURE_MS || w[1] < receivedAt - SENT_AT_PAST_MS) return undefined;
+  return w;
+}
+
 export function toHookEvent(kind: HookKind, input: HookInput, headers: HookHeaders, at: number): HookEvent {
   const ev: HookEvent = { kind, at, claudeSessionId: input.session_id, cwd: input.cwd };
+  const version = Number(headers.hooks);
+  ev.hooksVersion = Number.isInteger(version) && version > 0 ? version : 1;
+  const sent = parseSentAt(headers.sentAt, at);
+  if (sent) ev.sentWindow = sent;
   const pid = Number(headers.claudePid);
   if (Number.isInteger(pid) && pid > 0) ev.pid = pid;
   if (headers.tmuxPane && /^%\d+$/.test(headers.tmuxPane)) ev.pane = headers.tmuxPane;

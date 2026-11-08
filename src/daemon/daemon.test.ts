@@ -131,6 +131,13 @@ describe("hooks → sessions", () => {
     expect(f.notes).toEqual(["mesh · interactive: asks: Keep the v4 fallback?"]);
   });
 
+  it("counts open sessions still on hooks from an older mesh", async () => {
+    await post("session-start", fixture("interactive.SessionStart.startup"));
+    expect((await http("GET", "/local/status")).json.oldHooks).toBe(1);
+    await post("prompt", fixture("interactive.UserPromptSubmit"), { "x-claude-pid": "4242", "x-mesh-hooks": "2", "x-mesh-at": `${Date.now()}000000` });
+    expect((await http("GET", "/local/status")).json.oldHooks).toBe(0);
+  });
+
   it("rejects malformed hook input and unknown hooks", async () => {
     expect((await post("stop", { nope: 1 })).status).toBe(400);
     expect((await post("pre-tool-use", fixture("interactive.Stop.first"))).status).toBe(404);

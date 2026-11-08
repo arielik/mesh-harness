@@ -27,6 +27,8 @@ import {
 import {
   HookInput,
   hookKindFromSlug,
+  HOOKS_VERSION,
+  notifyChannels,
   KEY_HEADER,
   SayRequest,
   stopReply,
@@ -42,8 +44,10 @@ import {
   type AgentEntry,
   type DaemonConfig,
   type HookEvent,
+  type HookHeaders,
   type HookKind,
   type Message,
+  type NotifyTarget,
   type Repo,
   type Session,
   type SessionsResponse,
@@ -60,7 +64,8 @@ export interface DaemonDeps {
   listAgents(): Promise<AgentEntry[] | null>;
   paste(pane: string, text: string, server: { socketPath?: string | undefined }): Promise<boolean>;
   wakeBackground(t: { bgId: string; sessionId: string; cwd: string }, text: string): Promise<{ ok: boolean; error?: string }>;
-  notify(title: string, body: string): Promise<unknown>;
+  /** Tell the person. `target` is the session concerned, for a notification in its own terminal. */
+  notify(title: string, body: string, target?: NotifyTarget): Promise<unknown>;
   now(): number;
   newId(): string;
   repoForCwd(cwd: string): Repo | undefined;
@@ -79,6 +84,11 @@ export interface DaemonDeps {
 }
 
 const claudeHome = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+
+/** Where a session runs, for a notification written to its own terminal. */
+function notifyTarget(s: Session): NotifyTarget {
+  return { ...(s.pid !== undefined ? { pid: s.pid } : {}), ...(s.pane ? { pane: s.pane } : {}), ...(s.tmuxSocket ? { tmuxSocket: s.tmuxSocket } : {}) };
+}
 
 export const defaultDeps = (overrides: Partial<DaemonDeps> & Pick<DaemonDeps, "listAgents" | "paste" | "wakeBackground" | "notify">): DaemonDeps => ({
   now: () => Date.now(),
@@ -205,7 +215,7 @@ export class Daemon {
 
   /** The hub refused a queued call (e.g. the step was taken over meanwhile): tell the person, keep both. */
   private rejected(call: PendingCall, e: HubRpcError): void {
-    if (this.config.notify) void this.deps.notify("mesh", `${call.label} (made offline) was refused by the hub: ${e.message}`).catch(() => undefined);
+    if (notifyChannels(this.config).any) void this.deps.notify("mesh", `${call.label} (made offline) was refused by the hub: ${e.message}`).catch(() => undefined);
     const m = /^\/v1\/steps\/([^/]+)\/done$/.exec(call.path);
     if (m && this.link) {
       const summary = String(call.body.summary ?? "");
@@ -537,8 +547,11 @@ export class Daemon {
     offlineSince?: number | undefined;
     hubUrl?: string | undefined;
     error?: string | undefined;
+    /** Live sessions whose hooks come from an older mesh (they started before `mesh setup` updated them). */
+    oldHooks: number;
   } {
-    if (!this.link) return { hub: "not-logged-in", mode: "none", outbox: 0, queued: 0 };
+    const oldHooks = this.sessions.filter((x) => x.state !== "ended" && x.hooksVersion !== undefined && x.hooksVersion < HOOKS_VERSION).length;
+    if (!this.link) return { hub: "not-logged-in", mode: "none", outbox: 0, queued: 0, oldHooks };
     const c = this.link.credentials();
     return {
       hub: this.link.status,
@@ -549,6 +562,7 @@ export class Daemon {
       ...(this.link.offlineSince ? { offlineSince: this.link.offlineSince } : {}),
       ...(c ? { hubUrl: c.hub } : {}),
       error: this.link.lastError,
+      oldHooks,
     };
   }
 
@@ -561,14 +575,14 @@ export class Daemon {
     if (prev?.state === "needs_you" && prev.needs === s.needs && this.notified.get(s.sid) === key) return;
     if (this.notified.get(s.sid) === key) return;
     this.notified.set(s.sid, key);
-    if (this.config.notify) void this.deps.notify(`mesh · ${sessionLabel(s)}`, needsLabel(s)).catch(() => undefined);
+    if (notifyChannels(this.config).any) void this.deps.notify(`mesh · ${sessionLabel(s)}`, needsLabel(s), notifyTarget(s)).catch(() => undefined);
   }
 
   private ctx() {
     return { now: this.deps.now(), newId: this.deps.newId, rules: this.rules };
   }
 
-  handleHook(kind: HookKind, input: HookInput, headers: { claudePid?: string; tmuxPane?: string; tmux?: string; autopilot?: string; step?: string }): object {
+  handleHook(kind: HookKind, input: HookInput, headers: HookHeaders): object {
     const now = this.deps.now();
     const ev: HookEvent = toHookEvent(kind, input, headers, now);
     if (kind === "SubagentStart" || kind === "SubagentStop") {
@@ -665,7 +679,7 @@ export class Daemon {
       } else {
         this.update(s.sid, { escalated: true });
         this.link?.enqueue({ id: randomUUID(), at: this.deps.now(), type: "session.escalated", sid: s.sid, ...(s.step ? { step: s.step } : {}) });
-        if (this.config.notify) void this.deps.notify(`mesh · ${sessionLabel(s)}`, `stalled on ${s.step} after 2 nudges`).catch(() => undefined);
+        if (notifyChannels(this.config).any) void this.deps.notify(`mesh · ${sessionLabel(s)}`, `stalled on ${s.step} after 2 nudges`, notifyTarget(s)).catch(() => undefined);
       }
     }
   }
@@ -761,7 +775,7 @@ export class Daemon {
           const v = req.headers[n];
           return typeof v === "string" && v !== "" ? v : undefined;
         };
-        const headers: { claudePid?: string; tmuxPane?: string; tmux?: string; autopilot?: string; step?: string } = {};
+        const headers: HookHeaders = {};
         const pid = h("x-claude-pid");
         const pane = h("x-tmux-pane");
         const tmux = h("x-tmux");
@@ -772,6 +786,10 @@ export class Daemon {
         if (pid) headers.claudePid = pid;
         if (pane) headers.tmuxPane = pane;
         if (tmux) headers.tmux = tmux;
+        const hooks = h("x-mesh-hooks");
+        const sentAt = h("x-mesh-at");
+        if (hooks) headers.hooks = hooks;
+        if (sentAt) headers.sentAt = sentAt;
         return send(res, 200, this.handleHook(kind, parsed.data, headers));
       }
       if (req.method === "GET" && path === "/local/health") {

@@ -23,6 +23,7 @@ export async function dispatch(
     out(usage(commands, version));
     return 0;
   }
+  if (name === "--skill") return dispatch(["skill", ...rest], commands, version, out);
   if (name === "--version" || name === "-v" || name === "version") {
     out(version);
     return 0;

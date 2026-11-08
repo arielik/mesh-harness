@@ -153,34 +153,50 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
   if (ev.autopilot !== undefined && s.autopilot === undefined) s.autopilot = ev.autopilot;
   if (ev.cwd) s.cwd = ev.cwd;
   s.lastEventAt = Math.max(s.lastEventAt, ev.at);
+  if (ev.hooksVersion !== undefined) s.hooksVersion = ev.hooksVersion;
+
+  // Async hooks can arrive out of order (a UserPromptSubmit after the Stop that ended its turn, or
+  // after SessionEnd). A hook that certainly ran before the hook that set the current state still
+  // updates counters and metadata, but not the state.
+  const [ranFrom, ranBy] = ev.sentWindow ?? [ev.at, ev.at];
+  // Strictly earlier: hooks received in the same millisecond, in order, all apply.
+  const stale = s.stateAt !== undefined && ranBy < s.stateAt;
+  const before = { state: s.state, needs: s.needs };
 
   switch (ev.kind) {
     case "SessionStart":
+      if (stale) break;
       revive(s);
       if (s.state !== "working") setIdle(s);
       break;
     case "UserPromptSubmit":
-      revive(s);
-      setWorking(s);
-      s.quiet = false;
-      s.lastTurnStartAt = ev.at;
+      if (!stale) {
+        revive(s);
+        setWorking(s);
+        s.quiet = false;
+        delete s.asked;
+      }
+      s.lastTurnStartAt = Math.max(s.lastTurnStartAt ?? 0, ranFrom);
       s.turns += 1;
-      delete s.asked;
       if (!ev.delivered) {
         s.humanPrompts += 1;
-        // A person stepped in: autopilot starts counting again.
-        delete s.nudges;
-        delete s.escalated;
+        if (!stale) {
+          // A person stepped in: autopilot starts counting again.
+          delete s.nudges;
+          delete s.escalated;
+        }
       }
       break;
     case "Notification":
+      if (stale) break;
       if (ev.notificationType === "permission_prompt") setNeeds(s, "permission");
       else if (ev.notificationType === "agent_needs_input" || ev.notificationType?.startsWith("elicitation_dialog"))
         setNeeds(s, "input");
       // idle_prompt means "finished about 60 s ago" (spike S2): no state change.
       break;
     case "Stop": {
-      s.lastStopAt = ev.at;
+      s.lastStopAt = Math.max(s.lastStopAt ?? 0, ev.at);
+      if (stale) break;
       const msg = preview(ev.lastAssistantMessage);
       if (msg !== undefined) s.lastMessage = msg;
       if (s.asked || endsWithQuestion(ev.lastAssistantMessage)) setNeeds(s, "question");
@@ -192,6 +208,14 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
       if (ev.reason !== "clear") end(s, ev.at, ev.reason ?? "ended");
       break;
   }
+  const setsState =
+    !stale &&
+    (ev.kind === "SessionStart" ||
+      ev.kind === "UserPromptSubmit" ||
+      ev.kind === "Stop" ||
+      (ev.kind === "SessionEnd" && ev.reason !== "clear") ||
+      (ev.kind === "Notification" && (s.state !== before.state || s.needs !== before.needs)));
+  if (setsState) s.stateAt = Math.max(s.stateAt ?? 0, ranFrom);
   return { sessions: put(sessions, s, index), changed: [s.sid] };
 }
 

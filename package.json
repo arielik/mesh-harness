@@ -1,10 +1,25 @@
 {
-  "name": "@ours/mesh",
-  "version": "0.0.0",
-  "private": true,
+  "name": "mesh-harness",
+  "version": "0.1.0",
   "description": "mesh-harness: one place to see and steer all your Claude Code sessions",
   "type": "module",
   "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arielik/mesh-harness.git"
+  },
+  "homepage": "https://github.com/arielik/mesh-harness#readme",
+  "bugs": {
+    "url": "https://github.com/arielik/mesh-harness/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "agents",
+    "hooks",
+    "mcp",
+    "tmux",
+    "coordination"
+  ],
   "engines": {
     "node": "^22.13.0 || >=24"
   },
@@ -14,11 +29,16 @@
   "files": [
     "dist",
     "assets",
+    "skills",
+    "schemas",
+    "scripts/install.sh",
     "LICENSE.md",
-    "NOTICE"
+    "NOTICE",
+    "README.md"
   ],
   "scripts": {
     "build": "tsdown && vite build --config web/vite.config.ts --logLevel warn",
+    "prepack": "pnpm build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "lint": "eslint .",
     "boundaries": "depcruise src --config .dependency-cruiser.cjs",
@@ -67,5 +87,8 @@
     "pg": "^8.23.1",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

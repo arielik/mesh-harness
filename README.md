@@ -19,10 +19,10 @@ It needs Claude Code on a subscription login, Node and git. It needs no other re
 ## Use it (M1: local)
 
 ```bash
-pnpm install && pnpm build
-alias mesh="node $PWD/dist/main.mjs"
+curl -fsSL https://github.com/arielik/mesh-harness/releases/latest/download/install.sh | sh
+# or, once on npm: npm install -g mesh-harness   (from a clone: pnpm install && pnpm build)
 
-mesh setup          # writes ~/.config/mesh/daemon.json and adds 7 hooks to ~/.claude/settings.json
+mesh setup          # ~/.config/mesh/daemon.json, 7 hooks in ~/.claude/settings.json, the MCP server and the mesh skill
 mesh up             # the daemon, with its own local hub (Solo) until you log in to a team hub
 mesh status         # team, Solo, or "hub offline, working locally"
 mesh doctor         # checks claude, curl, tmux, hooks, daemon

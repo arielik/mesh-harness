@@ -114,6 +114,17 @@ mesh ledger export --repo ~/src/payments-api --repo ~/src/payments-web \
 
 Each line is a validated `mesh.ledger.v1` record or a hub event (`schemas/ledger-line.json`). Invalid records are reported on stderr and make the exit code 1.
 
+## Releasing mesh
+
+Push a tag `vX.Y.Z` that matches `package.json`'s version. The `release` workflow runs the checks, then publishes:
+- a GitHub release with `mesh-harness.tgz` (the npm package) and `install.sh`, which is what `releases/latest/download/install.sh` serves;
+- the hub image `ghcr.io/<owner>/<repo>-hub:vX.Y.Z` and `:latest`;
+- the npm package, only when the repository has an `NPM_TOKEN` secret.
+
+## The hub API
+
+[`schemas/hub-api.openapi.json`](../../schemas/hub-api.openapi.json) describes every hub route as OpenAPI 3.1: who may call it, its request body and query, and the event log's response. `pnpm schemas` writes it from `src/protocol/hub-api.ts`, and a test checks it lists exactly the routes the hub serves.
+
 ## Upgrading Claude Code
 
 Run `pnpm test:claude`. It checks the hooks mesh uses, `claude agents --json`, and the workflow files mesh reads (journal, agent meta, run json). If a check fails, mesh's capture of that piece may be wrong until mesh is updated; sessions and the process itself are not affected.
@@ -122,6 +133,10 @@ Run `pnpm test:claude`. It checks the hooks mesh uses, `claude agents --json`, a
 
 - `MESH_BACKFILL=off` (environment of `mesh up`): don't import past workflow runs from Claude Code's files. Only runs seen live through the subagent hooks are recorded.
 - `mesh up --no-solo`: no local hub; without a team hub, only the session list works.
+
+## Files mesh writes
+
+Config, credentials, the Claude settings file, `CLAUDE.md`, the skill, service units and records are written atomically (a temporary file in the same folder, flushed, then renamed), so a crash or power cut leaves the old file or the new one, never a broken one. `mesh setup` keeps the previous `daemon.json` as `daemon.json.prev`: its key is also in every installed hook.
 
 ## Logs
 

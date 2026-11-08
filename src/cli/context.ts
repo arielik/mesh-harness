@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import type { Runner } from "../claude/index.ts";
-import { DaemonConfig, resolvePaths, type MeshPaths } from "../protocol/index.ts";
+import { DaemonConfig, resolvePaths, writeFileAtomic, type MeshPaths } from "../protocol/index.ts";
 
 export interface Io {
   out(text: string): void;
@@ -41,8 +41,8 @@ export function newConfig(port?: number): DaemonConfig {
 
 export function saveConfig(p: MeshPaths, c: DaemonConfig): void {
   mkdirSync(p.configDir, { recursive: true, mode: 0o700 });
-  writeFileSync(p.daemonConfig, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(p.daemonConfig, 0o600);
+  // The key in this file is also in every installed hook: keep the previous copy as daemon.json.prev.
+  writeFileAtomic(p.daemonConfig, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600, keepPrevious: true });
 }
 
 /** Tiny flag parser: --flag, --key value, --key=value; everything else is positional. */

@@ -71,7 +71,10 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-/** Instructions added to the user's ~/.claude/CLAUDE.md by `mesh setup` (plan §4.6). */
+/**
+ * The block `mesh setup` used to add to ~/.claude/CLAUDE.md (plan §4.6). Since hooks v2 the `mesh`
+ * skill replaces it; `mesh setup` removes the block when it finds one.
+ */
 export const CLAUDE_MD_BLOCK = [
   "<!-- mesh:begin (managed by `mesh setup`; remove with `mesh setup --uninstall`) -->",
   "## mesh",

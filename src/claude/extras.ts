@@ -2,6 +2,7 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { writeFileAtomic } from "../protocol/index.ts";
 import { run, type Runner } from "./exec.ts";
 
 export const MCP_NAME = "mesh";
@@ -36,7 +37,7 @@ export function installClaudeMd(path: string, block: string): { changed: boolean
     if (text === undefined) writeFileSync(absentOf(path), "");
     else writeFileSync(backupOf(path), text);
   }
-  writeFileSync(path, next);
+  writeFileAtomic(path, next);
   return { changed: true };
 }
 
@@ -46,18 +47,19 @@ export function uninstallClaudeMd(path: string): { changed: boolean } {
   const absent = absentOf(path);
   let changed = false;
   if (text !== undefined) {
-    const stripped = text.replace(BLOCK_RE, "");
+    const rest = text.replace(BLOCK_RE, "");
+    const stripped = rest === "" || rest.endsWith("\n") ? rest : `${rest}\n`;
     if (existsSync(backup) && readFileSync(backup, "utf8").replace(BLOCK_RE, "").trimEnd() === stripped.trimEnd()) {
       const original = readFileSync(backup, "utf8");
       if (original !== text) {
-        writeFileSync(path, original);
+        writeFileAtomic(path, original);
         changed = true;
       }
     } else if (existsSync(absent) && stripped.trim() === "") {
       rmSync(path);
       changed = true;
     } else if (stripped !== text) {
-      writeFileSync(path, stripped);
+      writeFileAtomic(path, stripped);
       changed = true;
     }
   }

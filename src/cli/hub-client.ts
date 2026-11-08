@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { Credentials, IDEMPOTENCY_HEADER, type MeshPaths } from "../protocol/index.ts";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { Credentials, IDEMPOTENCY_HEADER, writeFileAtomic, type MeshPaths } from "../protocol/index.ts";
 
 export class HubCallError extends Error {
   status: number;
@@ -29,8 +29,7 @@ export function loadCredentialsOrSolo(p: MeshPaths): (Credentials & { solo?: boo
 
 export function saveCredentials(p: MeshPaths, c: Credentials): void {
   mkdirSync(p.configDir, { recursive: true, mode: 0o700 });
-  writeFileSync(p.credentials, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(p.credentials, 0o600);
+  writeFileAtomic(p.credentials, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600 });
 }
 
 export function clearCredentials(p: MeshPaths): void {

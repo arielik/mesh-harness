@@ -18,7 +18,8 @@
             "url": "http://127.0.0.1:27777/mesh/hook/stop",
             "timeout": 3,
             "headers": {
-              "X-Mesh-Key": "0123456789abcdef0123456789abcdef"
+              "X-Mesh-Key": "0123456789abcdef0123456789abcdef",
+              "X-Mesh-Hooks": "2"
             }
           }
         ]
@@ -41,7 +42,7 @@
           {
             "type": "command",
             "async": true,
-            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/session-start"
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H 'X-Mesh-Hooks: 2' -H \"X-Mesh-At: $(date +%s%N)\" -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/session-start"
           }
         ]
       }
@@ -52,7 +53,7 @@
           {
             "type": "command",
             "async": true,
-            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/prompt"
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H 'X-Mesh-Hooks: 2' -H \"X-Mesh-At: $(date +%s%N)\" -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/prompt"
           }
         ]
       }
@@ -63,7 +64,7 @@
           {
             "type": "command",
             "async": true,
-            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/notification"
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H 'X-Mesh-Hooks: 2' -H \"X-Mesh-At: $(date +%s%N)\" -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/notification"
           }
         ]
       }
@@ -74,7 +75,7 @@
           {
             "type": "command",
             "async": true,
-            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/session-end"
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H 'X-Mesh-Hooks: 2' -H \"X-Mesh-At: $(date +%s%N)\" -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/session-end"
           }
         ]
       }
@@ -85,7 +86,7 @@
           {
             "type": "command",
             "async": true,
-            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/subagent-start"
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H 'X-Mesh-Hooks: 2' -H \"X-Mesh-At: $(date +%s%N)\" -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/subagent-start"
           }
         ]
       }
@@ -96,7 +97,7 @@
           {
             "type": "command",
             "async": true,
-            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/subagent-stop"
+            "command": "curl -s -m 2 -o /dev/null --data-binary @- -H 'Content-Type: application/json' -H 'X-Mesh-Key: 0123456789abcdef0123456789abcdef' -H 'X-Mesh-Hooks: 2' -H \"X-Mesh-At: $(date +%s%N)\" -H \"X-Claude-Pid: ${CLAUDE_PID:-$PPID}\" -H \"X-Tmux-Pane: ${TMUX_PANE:-}\" -H \"X-Tmux: ${TMUX:-}\" -H \"X-Mesh-Autopilot: ${MESH_AUTOPILOT:-}\" -H \"X-Mesh-Step: ${MESH_STEP:-}\" http://127.0.0.1:27777/mesh/hook/subagent-stop"
           }
         ]
       }

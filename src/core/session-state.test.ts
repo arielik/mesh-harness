@@ -226,3 +226,51 @@ describe("helpers", () => {
     expect(findSession(sessions, "nope")).toBeUndefined();
   });
 });
+
+describe("out-of-order async hooks (hooks v2)", () => {
+  const sent = (ms: number): Partial<HookEvent> => ({ sentWindow: [ms, ms + 1], hooksVersion: 2 });
+
+  it("a UserPromptSubmit that ran before the Stop that ended its turn does not make the session working again", () => {
+    const s = only(
+      run([
+        hook("SessionStart", 1000, sent(1000)),
+        // The prompt hook ran at 1100 but its curl arrived after the (synchronous) Stop at 1500.
+        hook("Stop", 1500, { lastAssistantMessage: "Done." }),
+        hook("UserPromptSubmit", 1510, { ...sent(1100), promptLength: 5 }),
+      ]),
+    );
+    expect(s.state).toBe("idle");
+    expect(s.turns).toBe(1);
+    expect(s.humanPrompts).toBe(1);
+    expect(s.lastTurnStartAt).toBe(1100);
+  });
+
+  it("a late hook does not revive an ended session", () => {
+    const s = only(run([hook("SessionStart", 1000, sent(1000)), hook("SessionEnd", 2000, { ...sent(2000), reason: "exit" }), hook("Notification", 2100, { ...sent(1500), notificationType: "permission_prompt" })]));
+    expect(s.state).toBe("ended");
+  });
+
+  it("a hook that ran after the current state still applies", () => {
+    const s = only(run([hook("SessionStart", 1000, sent(1000)), hook("Stop", 1500), hook("UserPromptSubmit", 1700, sent(1600))]));
+    expect(s.state).toBe("working");
+  });
+
+  it("second-precision timestamps (BSD date) only drop hooks that certainly ran earlier", () => {
+    const secs = (s: number): Partial<HookEvent> => ({ sentWindow: [s * 1000, s * 1000 + 1000] });
+    // Ran somewhere in [1000, 2000): it may have run after the Stop at 1500, so it applies.
+    expect(only(run([hook("SessionStart", 900), hook("Stop", 1500), hook("UserPromptSubmit", 1600, secs(1))])).state).toBe("working");
+    // Ran in [1000, 2000) but the Stop came at 2500: certainly earlier, dropped.
+    expect(only(run([hook("SessionStart", 900), hook("Stop", 2500), hook("UserPromptSubmit", 2600, secs(1))])).state).toBe("idle");
+  });
+
+  it("hooks without a timestamp (v1) behave as before: arrival order wins", () => {
+    const s = only(run([hook("SessionStart", 1000), hook("Stop", 1500), hook("UserPromptSubmit", 1510)]));
+    expect(s.state).toBe("working");
+    expect(s.hooksVersion).toBeUndefined();
+  });
+
+  it("records the hook version", () => {
+    expect(only(run([hook("SessionStart", 1000, { hooksVersion: 1 })])).hooksVersion).toBe(1);
+    expect(only(run([hook("SessionStart", 1000, sent(1000))])).hooksVersion).toBe(2);
+  });
+});

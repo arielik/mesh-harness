@@ -1,0 +1,78 @@
+name: release
+
+# Push a tag vX.Y.Z (matching package.json's version) to publish:
+#   - a GitHub release with mesh-harness.tgz (the npm package) and install.sh, so
+#     curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | sh works;
+#   - the hub image ghcr.io/<owner>/<repo>-hub:vX.Y.Z (and :latest);
+#   - the package on npm, only when the repository has an NPM_TOKEN secret.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - name: Tag matches package.json
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME does not match package.json version $v"; exit 1; }
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm boundaries
+      - run: pnpm test
+      - name: Pack
+        run: |
+          mkdir -p out
+          pnpm pack --pack-destination out
+          cp out/mesh-harness-*.tgz out/mesh-harness.tgz
+          cp scripts/install.sh out/install.sh
+      - name: The package installs and runs
+        run: |
+          MESH_PACKAGE="$PWD/out/mesh-harness.tgz" MESH_PREFIX="$RUNNER_TEMP/mesh" sh scripts/install.sh
+          "$RUNNER_TEMP/mesh/bin/mesh" --version
+          "$RUNNER_TEMP/mesh/bin/mesh" skill > "$RUNNER_TEMP/skill.md"
+          grep -q '^name: mesh$' "$RUNNER_TEMP/skill.md"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/mesh-harness-*.tgz out/mesh-harness.tgz out/install.sh --title "$GITHUB_REF_NAME" --generate-notes
+      - name: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: npm publish out/mesh-harness-*.tgz --access public
+
+  hub-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Image name
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-hub" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.name.outputs.image }}:latest

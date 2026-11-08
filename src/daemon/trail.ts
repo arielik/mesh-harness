@@ -1,9 +1,8 @@
 // Write trail files (goal.yaml, plan versions, step records) into a session's repo so the agent
 // commits them with its work (journeys doc §3.1).
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, normalize } from "node:path";
-import type { TrailFile } from "../protocol/index.ts";
+import { join, normalize } from "node:path";
+import { writeFileAtomic, type TrailFile } from "../protocol/index.ts";
 import { commonDir, findGitDir, findRepoRoot } from "./git.ts";
 
 export function writeTrail(cwd: string, files: readonly TrailFile[]): { root?: string; written: string[] } {
@@ -14,8 +13,7 @@ export function writeTrail(cwd: string, files: readonly TrailFile[]): { root?: s
     const rel = normalize(f.path);
     if (!rel.startsWith(".mesh/") || rel.includes("..")) continue;
     const abs = join(root, rel);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, f.text);
+    writeFileAtomic(abs, f.text);
     written.push(rel);
   }
   return { root, written };
@@ -38,8 +36,7 @@ export function writePending(cwd: string, key: string, files: readonly TrailFile
   for (const f of files) {
     const name = f.path.split("/").pop() ?? "";
     if (!/^[A-Za-z0-9._-]+\.md$/.test(name)) continue;
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, name), f.text);
+    writeFileAtomic(join(dir, name), f.text);
     written.push(join(dir, name));
   }
   return written;

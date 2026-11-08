@@ -1,7 +1,7 @@
 // `mesh up --install`: run the daemon as a user service (launchd on macOS, systemd on Linux).
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { writeFileAtomic } from "../protocol/index.ts";
+import { join } from "node:path";
 
 export interface ServiceSpec {
   node: string;
@@ -71,8 +71,7 @@ export interface InstalledService {
 export function installService(platform: NodeJS.Platform, home: string, s: ServiceSpec): InstalledService {
   if (platform === "darwin") {
     const file = join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, launchdPlist(s));
+    writeFileAtomic(file, launchdPlist(s));
     return {
       file,
       enable: [`launchctl bootstrap gui/$(id -u) ${file}`],
@@ -81,8 +80,7 @@ export function installService(platform: NodeJS.Platform, home: string, s: Servi
   }
   if (platform === "linux") {
     const file = join(home, ".config", "systemd", "user", "mesh.service");
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, systemdUnit(s));
+    writeFileAtomic(file, systemdUnit(s));
     return {
       file,
       enable: ["systemctl --user daemon-reload", "systemctl --user enable --now mesh.service"],

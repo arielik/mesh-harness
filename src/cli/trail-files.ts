@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
-import type { TrailFile } from "../protocol/index.ts";
+import { writeFileAtomic, type TrailFile } from "../protocol/index.ts";
 
 /** Write trail files into the git checkout containing `cwd`; returns the paths written. */
 export function writeTrailHere(cwd: string, files: readonly TrailFile[]): string[] {
@@ -14,8 +14,7 @@ export function writeTrailHere(cwd: string, files: readonly TrailFile[]): string
   for (const f of files) {
     const rel = normalize(f.path);
     if (!rel.startsWith(".mesh/") || rel.includes("..")) continue;
-    mkdirSync(dirname(join(root, rel)), { recursive: true });
-    writeFileSync(join(root, rel), f.text);
+    writeFileAtomic(join(root, rel), f.text);
     out.push(rel);
   }
   return out;
