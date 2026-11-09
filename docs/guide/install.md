@@ -71,3 +71,11 @@ All hooks call `127.0.0.1` only. A daemon that is not running costs nothing; the
 ```bash
 pnpm test:claude   # re-checks every Claude Code behaviour mesh relies on (haiku, about a minute)
 ```
+
+## A hub behind a company or lab CA
+
+Node.js checks TLS against its own bundled list and ignores the operating system's certificate store.
+mesh adds the system store at start (Node 22.19+ or 24.5+), so a hub whose certificate chains to a CA
+installed on the machine (for example in `/usr/local/share/ca-certificates/` and `update-ca-certificates`)
+works for `mesh login`, the daemon and the MCP server, as it does for curl. On an older Node, point
+`NODE_EXTRA_CA_CERTS` at the CA file instead. `MESH_SYSTEM_CA=off` turns the system store off.

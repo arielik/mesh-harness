@@ -86,9 +86,10 @@ async function browserLogin(o: LoginOptions, providerId: string): Promise<LoginR
   const port = (server.address() as { port: number }).port;
   const timer = setTimeout(() => rejectCode(new Error("timed out waiting for the browser login (5 min)")), 5 * 60_000);
   try {
+    // Paste mode only when a line can be read (no terminal: the listener, e.g. a forwarded port).
     // cli_port stays in paste mode: a hub older than paste mode ignores cli_mode and redirects to
     // the listener, which then works with port forwarding, or by pasting the address it ended on.
-    const url = `${o.hub.replace(/\/+$/, "")}/auth/${encodeURIComponent(providerId)}/start?client=cli&cli_port=${port}&cli_challenge=${pkceChallenge(verifier)}${o.paste ? "&cli_mode=paste" : ""}&hostname=${encodeURIComponent(host)}`;
+    const url = `${o.hub.replace(/\/+$/, "")}/auth/${encodeURIComponent(providerId)}/start?client=cli&cli_port=${port}&cli_challenge=${pkceChallenge(verifier)}${o.paste && o.readLine ? "&cli_mode=paste" : ""}&hostname=${encodeURIComponent(host)}`;
     o.onBrowserUrl?.(url);
     if (o.paste && o.readLine) {
       o.io.out(`Open this URL in a browser (on any machine) and sign in:\n  ${url}\n`);
@@ -97,7 +98,8 @@ async function browserLogin(o: LoginOptions, providerId: string): Promise<LoginR
         for (;;) {
           const line = await o.readLine?.("Then paste the code the page shows (or the whole address your browser ended on): ", stop.signal);
           if (stop.signal.aborted) return new Promise<string>(() => undefined);
-          const code = pastedCode(line ?? "");
+          if (!line?.trim()) continue;
+          const code = pastedCode(line);
           if (code) return code;
           o.io.err("That isn't a login code or an address with code=… in it; try again.");
         }

@@ -11,7 +11,8 @@ import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./
 import { Daemon, defaultDeps } from "./daemon/index.ts";
 import { desktopNotify, paneText, pasteToPane, terminalNotify } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
-import { notifyChannels, writeFileAtomic, type Credentials } from "./protocol/index.ts";
+import { notifyChannels, trustSystemCertificates, writeFileAtomic, type Credentials } from "./protocol/index.ts";
+import * as tls from "node:tls";
 
 
 // node:sqlite is still flagged experimental; keep that one warning out of the user's terminal.
@@ -21,6 +22,9 @@ process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
   if (/SQLite/i.test(text)) return;
   (emit as (...a: unknown[]) => void)(warning, ...rest);
 }) as typeof process.emitWarning;
+
+// A hub behind a company or lab CA: trust what the operating system trusts (MESH_SYSTEM_CA=off: don't).
+trustSystemCertificates(tls);
 
 const p = paths();
 const self = [process.execPath, process.argv[1] ?? "mesh"];
