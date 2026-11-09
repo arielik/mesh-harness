@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentEntry, DaemonConfig } from "../protocol/index.ts";
 import { DaemonStore } from "../store/index.ts";
-import { Daemon, defaultDeps, type DaemonDeps } from "./daemon.ts";
+import { Daemon, defaultDeps, transcriptGuess, type DaemonDeps } from "./daemon.ts";
 
 const FIX = join(import.meta.dirname, "..", "..", "test", "fixtures", "claude", "hooks");
 const fixture = (name: string) => (JSON.parse(readFileSync(join(FIX, `${name}.json`), "utf8")) as { input: Record<string, unknown> }).input;
@@ -23,6 +23,9 @@ interface Fakes {
   wakes: { bgId: string; text: string }[];
   notes: string[];
   now: number;
+  /** What each tmux pane shows (absent: the pane is gone). */
+  screens: Record<string, string>;
+  mtimes: Record<string, number>;
 }
 
 let daemon: Daemon;
@@ -49,7 +52,8 @@ async function boot(existing?: DaemonStore) {
     now: () => f.now,
     newId: () => `sid-${++ids}`,
     repoForCwd: (cwd) => (cwd === CWD ? { id: "gitlab.lab/vpc/interactive", name: "interactive" } : undefined),
-    mtime: () => undefined,
+    mtime: (p) => f.mtimes[p],
+    paneText: async (pane) => f.screens[pane],
     log: () => undefined,
   });
   daemon = new Daemon({ config: CONFIG, store, deps, intervals: { reconcileMs: 0, transcriptMs: 0, tickMs: 0, deliveryMs: 0 } });
@@ -58,7 +62,7 @@ async function boot(existing?: DaemonStore) {
 
 beforeEach(async () => {
   ids = 0;
-  f = { agents: [], pastes: [], wakes: [], notes: [], now: 1_000_000 };
+  f = { agents: [], pastes: [], wakes: [], notes: [], now: 1_000_000, screens: {}, mtimes: {} };
   await boot();
 });
 afterEach(async () => {
@@ -222,5 +226,56 @@ describe("message delivery (plan §6.4)", () => {
 
   it("returns 404 for an unknown target", async () => {
     expect((await http("POST", "/local/say", { target: "nothing", text: "x" })).status).toBe(404);
+  });
+});
+
+describe("windows mesh run opened", () => {
+  const TRUST = "Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder";
+
+  it("lists a window waiting at the trust prompt as needing you, then hands it to the real session", async () => {
+    f.screens["%7"] = TRUST;
+    const r = await http("POST", "/local/launch", { pane: "%7", cwd: CWD, name: "interactive·G1.design", step: "G1.design" });
+    expect(r.status).toBe(200);
+    let [s] = await sessions();
+    expect(s).toMatchObject({ launching: true, state: "needs_you", needs: "dialog", pane: "%7", step: "G1.design" });
+    expect(f.notes).toEqual(["mesh · interactive·G1.design: accept Claude's folder trust prompt"]);
+
+    await post("session-start", fixture("interactive.SessionStart.startup"));
+    const all = await sessions();
+    expect(all).toHaveLength(1);
+    [s] = all;
+    expect(s.sid).toBe(r.json.session.sid);
+    expect(s.launching).toBeUndefined();
+    expect(s).toMatchObject({ state: "idle", pid: 4242, step: "G1.design" });
+  });
+
+  it("drops the placeholder when its window closes before Claude starts", async () => {
+    f.screens["%7"] = TRUST;
+    await http("POST", "/local/launch", { pane: "%7", cwd: CWD });
+    delete f.screens["%7"];
+    await observe([]);
+    expect(await sessions()).toEqual([]);
+  });
+
+  it("rejects a malformed launch", async () => {
+    expect((await http("POST", "/local/launch", { pane: "7", cwd: CWD })).status).toBe(400);
+  });
+});
+
+describe("sessions that started before mesh setup", () => {
+  it("finds the transcript where Claude Code keeps it", () => {
+    const s = { cwd: "/home/u/src/my.repo", claudeSessionIds: ["old", "c1"] } as Json;
+    expect(transcriptGuess(s, "/home/u/.claude")).toBe("/home/u/.claude/projects/-home-u-src-my-repo/c1.jsonl");
+    expect(transcriptGuess({ cwd: "/x", claudeSessionIds: [] } as Json, "/h")).toBeUndefined();
+  });
+
+  it("tracks their transcript's activity without any hook", async () => {
+    await observe([live("busy")]);
+    const path = transcriptGuess((await sessions())[0], process.env.CLAUDE_CONFIG_DIR ?? join(process.env.HOME ?? "", ".claude")) as string;
+    f.mtimes[path] = f.now - 60_000;
+    daemon.checkTranscripts();
+    const [s] = await sessions();
+    expect(s).toMatchObject({ state: "working", transcriptMtime: f.now - 60_000 });
+    expect(s.hooksVersion).toBeUndefined();
   });
 });

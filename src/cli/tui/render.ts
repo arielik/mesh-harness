@@ -35,6 +35,9 @@ function detail(s: Session, now: number): string {
     case "NEEDS YOU":
       return needsLabel(s);
     case "WORKING":
+      if (s.launching) return "starting Claude…";
+      // No hook yet: the session started before `mesh setup`, so mesh only sees what Claude reports.
+      if (s.hooksVersion === undefined && s.turns === 0) return "working · started before mesh setup (restart it to count turns)";
       return `working · turn ${s.turns} · ${age(now - (s.lastTurnStartAt ?? s.lastEventAt))}`;
     case "STALLED / QUIET":
       return s.state === "stalled"
@@ -47,9 +50,11 @@ function detail(s: Session, now: number): string {
   }
 }
 
-function since(s: Session, now: number): number {
-  if (s.state === "needs_you" || s.state === "idle") return now - (s.lastStopAt ?? s.lastEventAt);
-  return now - s.lastEventAt;
+/** Time since the session last did something: its last hook, or its transcript's last write. */
+export function since(s: Session, now: number): number {
+  const transcript = s.transcriptMtime ?? 0;
+  if (s.state === "needs_you" || s.state === "idle") return now - Math.max(s.lastStopAt ?? s.lastEventAt, s.lastStopAt === undefined ? transcript : 0);
+  return now - Math.max(s.lastEventAt, transcript);
 }
 
 function fit(text: string, width: number): string {

@@ -21,6 +21,8 @@ The examples use two repos, `payments-api` and `payments-web`, in `~/src`, and t
 
 ## 1. Start on your own (Solo)
 
+New to mesh? [Your first hour](first-run.md) walks through this section and a first goal step by step.
+
 ```bash
 curl -fsSL https://github.com/arielik/mesh-harness/releases/latest/download/install.sh | sh
 

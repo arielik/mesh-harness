@@ -9,6 +9,7 @@ Everything is in this repository. You need Claude Code on a subscription login, 
 | If you want to… | Read |
 |---|---|
 | understand what mesh is and isn't | [Overview](guide/overview.md) |
+| try it hands-on, from install to a first goal | [Your first hour](guide/first-run.md) |
 | install it and get going in Solo mode | [Install](guide/install.md) |
 | do something specific, with examples | [How-to](guide/howto.md) |
 | learn the words (goal, step, round, segment, gate, blind, programme…) | [Concepts](guide/concepts.md) |

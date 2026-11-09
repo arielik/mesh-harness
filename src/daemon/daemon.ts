@@ -14,6 +14,9 @@ import {
   applyTick,
   agentRecords,
   applyTranscriptMtime,
+  applyLaunch,
+  applyLaunchScreen,
+  isHidden,
   decide,
   parseLabel,
   DEFAULT_RULES,
@@ -30,6 +33,7 @@ import {
   HOOKS_VERSION,
   notifyChannels,
   KEY_HEADER,
+  LaunchRequest,
   SayRequest,
   stopReply,
   toHookEvent,
@@ -63,6 +67,8 @@ import type { PendingCall } from "../store/index.ts";
 export interface DaemonDeps {
   listAgents(): Promise<AgentEntry[] | null>;
   paste(pane: string, text: string, server: { socketPath?: string | undefined }): Promise<boolean>;
+  /** The text a tmux pane shows, or undefined when the pane is gone (a window `mesh run` opened). */
+  paneText?(pane: string, server: { socketPath?: string | undefined }): Promise<string | undefined>;
   wakeBackground(t: { bgId: string; sessionId: string; cwd: string }, text: string): Promise<{ ok: boolean; error?: string }>;
   /** Tell the person. `target` is the session concerned, for a notification in its own terminal. */
   notify(title: string, body: string, target?: NotifyTarget): Promise<unknown>;
@@ -84,6 +90,13 @@ export interface DaemonDeps {
 }
 
 const claudeHome = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+
+/** Where Claude Code keeps a session's transcript: projects/<cwd, every other character as ->/<id>.jsonl. */
+export function transcriptGuess(s: Session, home = claudeHome()): string | undefined {
+  const id = s.claudeSessionIds.at(-1);
+  if (!id || !s.cwd) return undefined;
+  return join(home, "projects", s.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`);
+}
 
 /** Where a session runs, for a notification written to its own terminal. */
 function notifyTarget(s: Session): NotifyTarget {
@@ -191,7 +204,7 @@ export class Daemon {
       this.link = new HubLink({
         credentialsPath: opts.credentialsPath,
         store: this.store,
-        sessions: () => this.sessions,
+        sessions: () => this.sessions.filter((s) => !isHidden(s)),
         onMessage: (m) => this.receive(m),
         log: (l) => this.deps.log(l),
         now: () => this.deps.now(),
@@ -290,6 +303,8 @@ export class Daemon {
   /** Spool hub events for sessions that hold a step (others stay private, plan Q5). */
   private observe(prev: Session | undefined, s: Session): void {
     if (!this.link || (!s.step && !prev?.step)) return;
+    // A placeholder for a window `mesh run` opened is not a session yet.
+    if (s.launching || isHidden(s)) return;
     const at = this.deps.now();
     const base = { sid: s.sid, ...(s.step ? { step: s.step } : {}) };
     const add = (type: string, payload: Record<string, unknown> = {}) => this.link?.enqueue({ id: randomUUID(), at, type, ...base, payload: { repo: s.repo?.name, ...payload } });
@@ -638,6 +653,7 @@ export class Daemon {
       const entries = await this.deps.listAgents();
       if (entries === null) return;
       this.commit(applyObservation(this.sessions, entries, this.ctx()));
+      await this.checkLaunches();
       await this.deliverPending();
       await this.link?.flush();
     } finally {
@@ -645,10 +661,32 @@ export class Daemon {
     }
   }
 
+  /** `mesh run` opened a window for Claude: record it until Claude's first hook arrives. */
+  async launch(l: LaunchRequest): Promise<Session | undefined> {
+    const r = applyLaunch(this.sessions, l, this.ctx());
+    this.commit(r);
+    await this.checkLaunches();
+    const sid = r.changed[0];
+    return sid ? this.sessions.find((s) => s.sid === sid) : undefined;
+  }
+
+  /** Read the panes of windows whose Claude hasn't sent a hook yet (the folder trust prompt). */
+  async checkLaunches(): Promise<void> {
+    if (!this.deps.paneText) return;
+    for (const s of this.sessions.filter((x) => x.launching && x.state !== "ended" && x.pane)) {
+      const screen = await this.deps.paneText(s.pane as string, { socketPath: s.tmuxSocket });
+      this.commit(applyLaunchScreen(this.sessions, s.sid, screen, this.ctx()));
+    }
+  }
+
   checkTranscripts(): void {
     for (const s of this.sessions) {
-      if (s.state === "ended" || !s.transcriptPath) continue;
-      const m = this.deps.mtime(s.transcriptPath);
+      if (s.state === "ended") continue;
+      // Sessions that started before `mesh setup` never sent a hook with their transcript's path;
+      // Claude Code keeps it under projects/<folder>/<session id>.jsonl.
+      const path = s.transcriptPath ?? transcriptGuess(s);
+      if (!path) continue;
+      const m = this.deps.mtime(path);
       if (m !== undefined) this.commit(applyTranscriptMtime(this.sessions, s.sid, m));
     }
   }
@@ -754,7 +792,7 @@ export class Daemon {
   snapshot(): SessionsResponse {
     const now = this.deps.now();
     return {
-      sessions: this.sessions.filter((s) => s.state !== "ended" || now - (s.endedAt ?? 0) < SHOW_ENDED_MS),
+      sessions: this.sessions.filter((s) => !isHidden(s) && (s.state !== "ended" || now - (s.endedAt ?? 0) < SHOW_ENDED_MS)),
       messages: this.store.recentMessages(now - SHOW_ENDED_MS),
     };
   }
@@ -796,6 +834,11 @@ export class Daemon {
         return send(res, 200, { ok: true, port: this.port, sessions: this.sessions.filter((s) => s.state !== "ended").length });
       }
       if (req.method === "GET" && path === "/local/sessions") return send(res, 200, this.snapshot());
+      if (req.method === "POST" && path === "/local/launch") {
+        const body = LaunchRequest.safeParse(await readJson(req));
+        if (!body.success) throw new HttpError(400, "expected {pane, cwd}");
+        return send(res, 200, { session: (await this.launch(body.data)) ?? null });
+      }
       if (req.method === "POST" && path === "/local/say") {
         const body = SayRequest.safeParse(await readJson(req));
         if (!body.success) throw new HttpError(400, "expected {target, text}");

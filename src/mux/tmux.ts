@@ -89,6 +89,19 @@ export async function bindReturnKey(session: string, key: string, o: TmuxOpts = 
   await tmux(o, ["bind-key", key, "switch-client", "-t", `=${session}:0`]);
 }
 
+/** The text a pane shows, or undefined when it no longer exists. */
+export async function paneText(pane: string, o: TmuxOpts = {}): Promise<string | undefined> {
+  if (!(await paneExists(pane, o))) return undefined;
+  const r = await tmux(o, ["capture-pane", "-p", "-t", pane]);
+  return r.code === 0 ? r.stdout : undefined;
+}
+
+/** The socket path of the tmux server a pane runs on. */
+export async function paneSocket(pane: string, o: TmuxOpts = {}): Promise<string | undefined> {
+  const r = await tmux(o, ["display-message", "-p", "-t", pane, "#{socket_path}"]);
+  return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
+}
+
 export async function capturePane(pane: string, o: TmuxOpts = {}): Promise<string> {
   return (await tmux(o, ["capture-pane", "-p", "-t", pane])).stdout;
 }

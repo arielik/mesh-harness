@@ -125,11 +125,24 @@ function bind(sessions: Session[], ev: HookEvent, ctx: Ctx): { s: Session; index
       }
     }
   }
+  if (index < 0 && ev.pane !== undefined) {
+    // The first hook from a window `mesh run` opened takes over its placeholder.
+    index = sessions.findIndex((x) => x.launching && x.state !== "ended" && samePane(x, ev.pane, ev.tmuxSocket));
+  }
   if (index >= 0) {
     const existing = sessions[index] as Session;
     return { s: structuredClone(existing), index };
   }
   return { s: blank(ctx.newId(), ev.cwd, ev.at, "unknown"), index: -1 };
+}
+
+function samePane(s: Session, pane: string | undefined, socket: string | undefined): boolean {
+  return pane !== undefined && s.pane === pane && (s.tmuxSocket === undefined || socket === undefined || s.tmuxSocket === socket);
+}
+
+/** A placeholder another record took over: ended, and hidden from the list (see `isHidden`). */
+function retire(s: Session, now: number): void {
+  end(s, now, "started");
 }
 
 function put(sessions: Session[], s: Session, index: number): Session[] {
@@ -140,7 +153,26 @@ function put(sessions: Session[], s: Session, index: number): Session[] {
 }
 
 export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result {
-  const { s, index } = bind(sessions, ev, ctx);
+  const bound = bind(sessions, ev, ctx);
+  const { s, index } = bound;
+  const wasLaunching = s.launching === true;
+  delete s.launching;
+  if (wasLaunching) {
+    // Claude started: from here on the hooks drive the state (the placeholder's is a guess).
+    s.kind = "interactive";
+    setIdle(s);
+  }
+  // A placeholder for this pane that another record took over (the reconciler saw Claude first).
+  const retired: string[] = [];
+  if (ev.pane !== undefined) {
+    sessions = sessions.map((x, i) => {
+      if (i === index || !x.launching || x.state === "ended" || !samePane(x, ev.pane, ev.tmuxSocket)) return x;
+      const y = structuredClone(x);
+      retire(y, ctx.now);
+      retired.push(y.sid);
+      return y;
+    });
+  }
 
   if (ev.kind !== "SessionEnd" || ev.reason !== "clear") addClaudeId(s, ev.claudeSessionId);
   if (ev.pid !== undefined) s.pid = ev.pid;
@@ -216,7 +248,7 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
       (ev.kind === "SessionEnd" && ev.reason !== "clear") ||
       (ev.kind === "Notification" && (s.state !== before.state || s.needs !== before.needs)));
   if (setsState) s.stateAt = Math.max(s.stateAt ?? 0, ranFrom);
-  return { sessions: put(sessions, s, index), changed: [s.sid] };
+  return { sessions: put(sessions, s, index), changed: [s.sid, ...retired] };
 }
 
 function kindOf(entry: AgentEntry): SessionKind {
@@ -287,8 +319,16 @@ export function applyObservation(sessions: Session[], entries: AgentEntry[], ctx
     if (!s) {
       // Ended background sessions linger in the list; don't resurrect what we never tracked.
       if (e.pid === undefined && (e.state === "stopped" || e.state === "failed" || e.state === "done")) continue;
-      s = blank(ctx.newId(), e.cwd ?? "", e.startedAt ?? ctx.now, kindOf(e));
-      next.push(s);
+      // A window `mesh run` opened in this folder: the Claude now running there is its session.
+      const placeholders = e.pid !== undefined && e.cwd ? next.filter((x) => x.launching && x.state !== "ended" && x.cwd === e.cwd) : [];
+      if (placeholders.length === 1) {
+        s = placeholders[0] as Session;
+        delete s.launching;
+        if (s.state === "needs_you" && s.needs === "dialog") setWorking(s);
+      } else {
+        s = blank(ctx.newId(), e.cwd ?? "", e.startedAt ?? ctx.now, kindOf(e));
+        next.push(s);
+      }
     }
     const before = JSON.stringify(s);
     applyEntry(s, e, ctx.now);
@@ -305,6 +345,56 @@ export function applyObservation(sessions: Session[], entries: AgentEntry[], ctx
     }
   }
   return { sessions: next, changed: [...changed] };
+}
+
+export interface Launch {
+  pane: string;
+  tmuxSocket?: string | undefined;
+  cwd: string;
+  name?: string | undefined;
+  step?: string | undefined;
+}
+
+/**
+ * `mesh run` opened a tmux window for Claude. Until Claude's first hook arrives (it may sit at the
+ * folder trust prompt, which runs no hooks), list the window as a placeholder bound to its pane.
+ */
+export function applyLaunch(sessions: Session[], l: Launch, ctx: Ctx): Result {
+  if (sessions.some((x) => x.state !== "ended" && samePane(x, l.pane, l.tmuxSocket))) return { sessions, changed: [] };
+  const s = blank(ctx.newId(), l.cwd, ctx.now, "interactive");
+  s.launching = true;
+  s.state = "working";
+  s.pane = l.pane;
+  if (l.tmuxSocket) s.tmuxSocket = l.tmuxSocket;
+  if (l.name) s.name = l.name;
+  if (l.step) s.step = l.step;
+  return { sessions: [...sessions, s], changed: [s.sid] };
+}
+
+/** Claude Code's folder trust prompt, as it reads on screen. */
+export function isTrustPrompt(screen: string): boolean {
+  return /trust this folder|Do you trust the files in this folder/i.test(screen);
+}
+
+/**
+ * What a placeholder's pane shows: `undefined` when the pane is gone (the window closed, or Claude
+ * exited at the prompt), else its text.
+ */
+export function applyLaunchScreen(sessions: Session[], sid: string, screen: string | undefined, ctx: Ctx): Result {
+  const i = sessions.findIndex((x) => x.sid === sid);
+  const orig = sessions[i];
+  if (!orig?.launching || orig.state === "ended") return { sessions, changed: [] };
+  const s = structuredClone(orig);
+  if (screen === undefined) end(s, ctx.now, "window closed before Claude started");
+  else if (isTrustPrompt(screen)) setNeeds(s, "dialog");
+  else setWorking(s);
+  if (JSON.stringify(s) === JSON.stringify(orig)) return { sessions, changed: [] };
+  return { sessions: put(sessions, s, i), changed: [sid] };
+}
+
+/** Records the list never shows: placeholders that ended (taken over, or their window closed). */
+export function isHidden(s: Session): boolean {
+  return s.launching === true && s.state === "ended";
 }
 
 /** Record the transcript file's modification time (daemon stats it every 30 s). */
@@ -385,7 +475,7 @@ export function needsLabel(s: Session): string {
     case "question":
       return s.lastMessage ? `asks: ${s.lastMessage}` : "asked a question";
     case "dialog":
-      return "dialog open (workspace trust?)";
+      return s.launching ? "accept Claude's folder trust prompt" : "dialog open (workspace trust?)";
     case "input":
       return "waiting for input";
     default:

@@ -53,6 +53,30 @@ describe("render", () => {
     expect(lines.join("\n")).toMatchSnapshot();
   });
 
+  it("shows windows waiting to start and sessions that started before mesh", () => {
+    const lines = render({
+      sessions: [
+        base("t", { name: "mesh-try·G1.design", launching: true, state: "needs_you", needs: "dialog", turns: 0, lastEventAt: NOW - 20_000 }),
+        base("s", { name: "web", launching: true, state: "working", turns: 0, lastEventAt: NOW - 3_000 }),
+        // Seen only by the reconciler: started 10 days ago, transcript written 2 minutes ago.
+        base("p", { name: "old", state: "working", turns: 0, startedAt: NOW - 864_000_000, lastEventAt: NOW - 864_000_000, transcriptMtime: NOW - 120_000 }),
+        base("i", { name: "old-idle", state: "idle", turns: 0, lastEventAt: NOW - 864_000_000, transcriptMtime: NOW - 300_000 }),
+      ],
+      messages: [],
+      now: NOW,
+      width: 120,
+      height: 20,
+      header: "mesh",
+      color: false,
+    });
+    const row = (name: string) => lines.find((l) => l.includes(name)) ?? "";
+    expect(row("mesh-try")).toContain("accept Claude's folder trust prompt");
+    expect(row(" web ")).toContain("starting Claude…");
+    expect(row(" old ")).toContain("started before mesh setup");
+    expect(row(" old ").trimEnd().endsWith("2m")).toBe(true);
+    expect(row("old-idle").trimEnd().endsWith("5m")).toBe(true);
+  });
+
   it("shows the say prompt and status, and an empty state", () => {
     const lines = render({
       sessions: [],

@@ -21,3 +21,4 @@ export { installSkill, skillStatus, uninstallSkill, type SkillStatus } from "./s
 export { claudeMdInstalled, installClaudeMd, installMcp, MCP_NAME, mcpInstalled, uninstallClaudeMd, uninstallMcp } from "./extras.ts";
 export { computeHarness } from "./harness.ts";
 export { agentPaths, readAgentFiles, scanWorkflowRuns } from "./workflow.ts";
+export { claudeStatePath, folderTrusted } from "./trust.ts";

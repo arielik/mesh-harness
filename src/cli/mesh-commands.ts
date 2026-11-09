@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
   claudeMdInstalled,
+  claudeStatePath,
+  folderTrusted,
   claudeVersion,
   compareVersions,
   inspectSettingsFile,
@@ -21,7 +23,7 @@ import {
   uninstallSettingsFile,
 } from "../claude/index.ts";
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
-import { bindReturnKey, hasSession, newSession, newWindow, serverFromEnv, type TmuxServer } from "../mux/index.ts";
+import { bindReturnKey, hasSession, newSession, newWindow, paneSocket, serverFromEnv, type TmuxServer } from "../mux/index.ts";
 import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
@@ -33,7 +35,7 @@ import { hubCommands } from "./hub-commands.ts";
 import { assetsCommand } from "./assets.ts";
 import { ledgerCommand } from "./ledger.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
-import { age, groupOf, ordered } from "./tui/render.ts";
+import { age, groupOf, ordered, since } from "./tui/render.ts";
 import { jump, runTui } from "./tui/tui.ts";
 
 
@@ -193,8 +195,8 @@ export function doctorCommand(c: CliEnv): Command {
 function line(s: Session, now: number): string {
   const g = groupOf(s);
   const what = g === "NEEDS YOU" ? needsLabel(s) : g === "IDLE" && s.lastMessage ? `done: ${s.lastMessage}` : g.toLowerCase();
-  const since = age(now - (s.lastStopAt ?? s.lastEventAt));
-  return `${sessionLabel(s).padEnd(24)} ${(s.step ?? "-").padEnd(14)} ${s.state.padEnd(9)} ${since.padStart(4)}  ${s.pane ?? s.bgId ?? "-"}  ${what}`;
+  const ago = age(since(s, now));
+  return `${sessionLabel(s).padEnd(24)} ${(s.step ?? "-").padEnd(14)} ${s.state.padEnd(9)} ${ago.padStart(4)}  ${s.pane ?? s.bgId ?? "-"}  ${what}`;
 }
 
 export function lsCommand(c: CliEnv): Command {
@@ -385,18 +387,34 @@ export function runCommand(c: CliEnv): Command {
         }
         if (!a.has("no-bind")) await bindReturnKey(sessionName, "m", tmux);
       }
+      const untrusted: string[] = [];
+      let listed = config !== undefined;
       for (const dir of dirs) {
         const name = basename(dir);
-        const spec = { name, cwd: dir, argv: claudeArgv(step ? `${name}·${step}` : name), env };
+        const label = step ? `${name}·${step}` : name;
+        const spec = { name, cwd: dir, argv: claudeArgv(label), env };
         const pane = first ? await newSession(sessionName, spec, tmux) : await newWindow(sessionName, spec, tmux);
         first = false;
         windows.push(`${name} (${pane})`);
+        if (folderTrusted(dir, claudeStatePath(c.env, c.env.HOME)) === false) untrusted.push(`${name} (${pane})`);
+        // Until Claude's first hook, the daemon lists the window itself (it may wait at the trust prompt).
+        if (config) {
+          try {
+            const socket = await paneSocket(pane, tmux);
+            await new DaemonClient(config).launch({ pane, cwd: dir, name: label, ...(socket ? { tmuxSocket: socket } : {}), ...(step ? { step } : {}) });
+          } catch {
+            listed = false;
+          }
+        }
       }
       c.io.out(`Started in tmux session "${sessionName}": ${windows.join(", ")}`);
       if (created && !a.has("no-bind")) c.io.out("Press prefix + m to come back to the mesh window.");
       if (!inTmux) c.io.out(`Attach with: tmux attach -t ${sessionName}`);
       else if (created) c.io.out(`Switch with: tmux switch-client -t ${sessionName}`);
-      c.io.out("A new folder shows Claude's trust dialog first; mesh lists that window as needing you until you accept it.");
+      if (untrusted.length) {
+        c.io.out(`Claude asks whether you trust ${untrusted.length === 1 ? "this folder" : "these folders"} before it starts: ${untrusted.join(", ")}.`);
+        c.io.out(`Switch to ${untrusted.length === 1 ? "it" : "each"} (tmux switch-client -t <pane>, or prefix + s) and choose "Yes, I trust this folder".${listed ? " The mesh list shows it under NEEDS YOU until you do." : ""}`);
+      }
       return 0;
     },
   };

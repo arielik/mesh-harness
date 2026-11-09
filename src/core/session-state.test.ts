@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { AgentEntry, HookEvent, Session } from "../protocol/index.ts";
 import {
   applyHook,
+  applyLaunch,
+  applyLaunchScreen,
   applyObservation,
+  isHidden,
   applyTick,
   applyTranscriptMtime,
   DEFAULT_RULES,
@@ -272,5 +275,86 @@ describe("out-of-order async hooks (hooks v2)", () => {
   it("records the hook version", () => {
     expect(only(run([hook("SessionStart", 1000, { hooksVersion: 1 })])).hooksVersion).toBe(1);
     expect(only(run([hook("SessionStart", 1000, sent(1000))])).hooksVersion).toBe(2);
+  });
+});
+
+describe("windows mesh run opened (launch placeholders)", () => {
+  const TRUST = "Accessing workspace:\n/work/repo\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm";
+  const launch = (now: number) => applyLaunch([], { pane: "%7", tmuxSocket: "/tmp/tmux-1/default", cwd: CWD, name: "repo·G1.design", step: "G1.design" }, ctx(now)).sessions;
+
+  it("lists the window as needing you while Claude asks to trust the folder", () => {
+    counter = 0;
+    let sessions = launch(1000);
+    const p = only(sessions);
+    expect(p).toMatchObject({ launching: true, state: "working", pane: "%7", step: "G1.design", name: "repo·G1.design" });
+    sessions = applyLaunchScreen(sessions, p.sid, TRUST, ctx(2000)).sessions;
+    expect(only(sessions)).toMatchObject({ state: "needs_you", needs: "dialog" });
+    // Accepted: Claude is starting (no prompt on screen).
+    sessions = applyLaunchScreen(sessions, p.sid, "Welcome to Claude Code", ctx(3000)).sessions;
+    expect(only(sessions)).toMatchObject({ state: "working" });
+  });
+
+  it("the first hook from that pane takes the placeholder over", () => {
+    counter = 0;
+    let sessions = launch(1000);
+    const sid = only(sessions).sid;
+    sessions = applyLaunchScreen(sessions, sid, TRUST, ctx(2000)).sessions;
+    sessions = applyHook(sessions, hook("SessionStart", 5000, { pane: "%7", tmuxSocket: "/tmp/tmux-1/default" }), ctx(5000)).sessions;
+    const s = only(sessions);
+    expect(s.sid).toBe(sid);
+    expect(s.launching).toBeUndefined();
+    expect(s.state).toBe("idle");
+    expect(s.step).toBe("G1.design");
+    expect(s.claudeSessionIds).toEqual(["c1"]);
+  });
+
+  it("a hook from another pane does not take it", () => {
+    counter = 0;
+    let sessions = launch(1000);
+    sessions = applyHook(sessions, hook("SessionStart", 5000, { pane: "%8" }), ctx(5000)).sessions;
+    expect(sessions).toHaveLength(2);
+    expect(sessions.filter((s) => s.launching)).toHaveLength(1);
+  });
+
+  it("the reconciler seeing Claude first in that folder adopts the placeholder", () => {
+    counter = 0;
+    let sessions = launch(1000);
+    const sid = only(sessions).sid;
+    sessions = applyObservation(sessions, [{ pid: 4242, cwd: CWD, kind: "interactive", sessionId: "c1", status: "busy" }], ctx(4000)).sessions;
+    const s = only(sessions);
+    expect(s).toMatchObject({ sid, pid: 4242, state: "working" });
+    expect(s.launching).toBeUndefined();
+    // Its hooks then bind by Claude session id.
+    sessions = applyHook(sessions, hook("Stop", 6000, { pid: 4242, pane: "%7" }), ctx(6000)).sessions;
+    expect(only(sessions)).toMatchObject({ sid, state: "idle" });
+  });
+
+  it("a hook bound elsewhere retires the placeholder for its pane, hidden from the list", () => {
+    counter = 0;
+    let sessions = launch(1000);
+    // Two placeholders in one folder: the reconciler can't tell which is which, so it makes a record.
+    sessions = applyLaunch(sessions, { pane: "%9", cwd: CWD }, ctx(1100)).sessions;
+    sessions = applyObservation(sessions, [{ pid: 4242, cwd: CWD, kind: "interactive", sessionId: "c1", status: "busy" }], ctx(4000)).sessions;
+    expect(sessions).toHaveLength(3);
+    sessions = applyHook(sessions, hook("SessionStart", 5000, { pid: 4242, pane: "%7" }), ctx(5000)).sessions;
+    const retired = sessions.find((s) => s.pane === "%7" && s.launching);
+    expect(retired?.state).toBe("ended");
+    expect(isHidden(retired as Session)).toBe(true);
+    expect(sessions.find((s) => s.pane === "%9")?.launching).toBe(true);
+  });
+
+  it("a window closed before Claude started ends its placeholder", () => {
+    counter = 0;
+    let sessions = launch(1000);
+    sessions = applyLaunchScreen(sessions, only(sessions).sid, undefined, ctx(2000)).sessions;
+    const s = only(sessions);
+    expect(s.state).toBe("ended");
+    expect(isHidden(s)).toBe(true);
+  });
+
+  it("registering the same pane twice keeps one record", () => {
+    counter = 0;
+    const sessions = launch(1000);
+    expect(applyLaunch(sessions, { pane: "%7", tmuxSocket: "/tmp/tmux-1/default", cwd: CWD }, ctx(1500)).changed).toEqual([]);
   });
 });

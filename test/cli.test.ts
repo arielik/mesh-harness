@@ -13,10 +13,13 @@ import { defaultRoots, resolveRepo } from "../src/cli/repos.ts";
 import { launchdPlist, systemdUnit } from "../src/cli/service.ts";
 
 const dirs: string[] = [];
+// One level down, so the folder's parent (a workspace root for `mesh run`) is ours, not /tmp.
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), "mesh-cli-"));
   dirs.push(d);
-  return d;
+  const w = join(d, "w");
+  mkdirSync(w);
+  return w;
 };
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });

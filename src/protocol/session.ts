@@ -57,6 +57,11 @@ export const Session = z.object({
     .object({ at: z.number(), status: z.string().optional(), waitingFor: z.string().optional(), state: z.string().optional() })
     .optional(),
   seenByReconciler: z.boolean(),
+  /**
+   * A window `mesh run` opened whose Claude hasn't sent a hook yet (it may be waiting at the folder
+   * trust prompt). The first hook from that pane adopts this record.
+   */
+  launching: z.boolean().optional(),
   endedAt: z.number().optional(),
   endedReason: z.string().optional(),
   /** Mesh step this session holds. */
@@ -95,4 +100,13 @@ export type SessionsResponse = z.infer<typeof SessionsResponse>;
 /** POST /local/say */
 export const SayRequest = z.object({ target: z.string().min(1), text: z.string().min(1).max(8000) });
 export type SayRequest = z.infer<typeof SayRequest>;
+/** `mesh run` opened a tmux window for Claude (POST /local/launch). */
+export const LaunchRequest = z.object({
+  pane: z.string().regex(/^%\d+$/),
+  tmuxSocket: z.string().optional(),
+  cwd: z.string().min(1),
+  name: z.string().optional(),
+  step: z.string().optional(),
+});
+export type LaunchRequest = z.infer<typeof LaunchRequest>;
 export const SayResponse = z.object({ message: Message, sid: z.string() });

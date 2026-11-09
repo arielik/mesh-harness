@@ -9,7 +9,7 @@ import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } 
 import { runShim } from "./mcp/index.ts";
 import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./store/index.ts";
 import { Daemon, defaultDeps } from "./daemon/index.ts";
-import { desktopNotify, pasteToPane, terminalNotify } from "./mux/index.ts";
+import { desktopNotify, paneText, pasteToPane, terminalNotify } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
 import { notifyChannels, writeFileAtomic, type Credentials } from "./protocol/index.ts";
 
@@ -62,6 +62,7 @@ const up: Command = {
       deps: defaultDeps({
         listAgents: () => listAgents(),
         paste: (pane, text, server) => pasteToPane(pane, text, server),
+        paneText: (pane, server) => paneText(pane, server),
         wakeBackground: (t, text) => wakeBackground(t, text),
         notify: async (title, body, target) => {
           const ch = notifyChannels(config);

@@ -764,6 +764,9 @@
                         "seenByReconciler": {
                           "type": "boolean"
                         },
+                        "launching": {
+                          "type": "boolean"
+                        },
                         "endedAt": {
                           "type": "number"
                         },

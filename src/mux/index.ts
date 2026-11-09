@@ -10,6 +10,8 @@ export {
   newSession,
   newWindow,
   paneExists,
+  paneSocket,
+  paneText,
   pasteToPane,
   serverFromEnv,
   type TmuxOpts,
