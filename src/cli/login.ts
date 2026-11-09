@@ -34,9 +34,15 @@ export async function providers(hub: string): Promise<ProviderInfo[]> {
   return (await hubFetch<{ providers: ProviderInfo[] }>(hub, "GET", "/auth/providers")).json.providers;
 }
 
-/** Is this a shell on another machine, where a browser can't reach this machine's localhost? */
-export function isRemoteShell(env: Record<string, string | undefined>): boolean {
-  return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY);
+/**
+ * Is the browser on another machine, so it can't reach this machine's localhost? An SSH login says
+ * so; a shell opened with `sudo -iu`, `su -` or `machinectl shell` inside one doesn't carry the SSH
+ * variables, so on Linux a session with no display (no DISPLAY, no WAYLAND_DISPLAY) counts too:
+ * no browser can open here.
+ */
+export function isRemoteShell(env: Record<string, string | undefined>, platform: string = process.platform): boolean {
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) return true;
+  return platform === "linux" && !env.DISPLAY && !env.WAYLAND_DISPLAY;
 }
 
 /**
@@ -91,12 +97,22 @@ async function browserLogin(o: LoginOptions, providerId: string): Promise<LoginR
     // the listener, which then works with port forwarding, or by pasting the address it ended on.
     const url = `${o.hub.replace(/\/+$/, "")}/auth/${encodeURIComponent(providerId)}/start?client=cli&cli_port=${port}&cli_challenge=${pkceChallenge(verifier)}${o.paste && o.readLine ? "&cli_mode=paste" : ""}&hostname=${encodeURIComponent(host)}`;
     o.onBrowserUrl?.(url);
-    if (o.paste && o.readLine) {
-      o.io.out(`Open this URL in a browser (on any machine) and sign in:\n  ${url}\n`);
+    // With a terminal, a pasted code or address is always accepted, also in redirect mode: a redirect
+    // that lands on another machine's localhost can still be finished by pasting where it ended.
+    if (o.readLine) {
+      let prompt: string;
+      if (o.paste) {
+        o.io.out(`Open this URL in a browser (on any machine) and sign in:\n  ${url}\n`);
+        prompt = "Then paste the code the page shows (or the whole address your browser ended on): ";
+      } else {
+        const opened = o.noBrowser ? false : await openBrowser(url, o.runner ?? run);
+        o.io.out(opened ? "Opened your browser to log in. Waiting…" : `Open this URL to log in:\n  ${url}`);
+        prompt = "Waiting. If the browser ends on a page that can't be reached, paste its address here: ";
+      }
       const stop = new AbortController();
       const pasted = (async () => {
         for (;;) {
-          const line = await o.readLine?.("Then paste the code the page shows (or the whole address your browser ended on): ", stop.signal);
+          const line = await o.readLine?.(prompt, stop.signal);
           if (stop.signal.aborted) return new Promise<string>(() => undefined);
           if (!line?.trim()) continue;
           const code = pastedCode(line);

@@ -142,10 +142,41 @@ describe("mesh login", () => {
     expect(pastedCode("http://127.0.0.1:1/callback")).toBeUndefined();
   });
 
+  it("in redirect mode, a pasted 127.0.0.1 address still finishes the login", async () => {
+    let landed: Promise<string> | undefined;
+    const r = await login({
+      hub: hub.url,
+      provider: "kanidm",
+      io,
+      noBrowser: true,
+      // The browser follows the redirects but stops at the CLI's localhost (it's on another machine).
+      onBrowserUrl: (url) => {
+        landed = (async () => {
+          let next = url;
+          for (let i = 0; i < 6; i++) {
+            const res = await fetch(next, { redirect: "manual" });
+            const loc = res.headers.get("location");
+            if (!loc) break;
+            next = new URL(loc, next).href;
+            // The CLI's listener (the hub and the mock IdP are on 127.0.0.1 too, at other paths).
+            if (new URL(next).pathname === "/callback") return next;
+          }
+          throw new Error("no localhost redirect");
+        })();
+      },
+      readLine: async () => (await (landed as Promise<string>)).replace(/^http:\/\//, ""),
+    });
+    expect(r.token).toMatch(/^mh_d_/);
+  });
+
   it("knows a remote shell", () => {
-    expect(isRemoteShell({ SSH_CONNECTION: "10.0.0.2 51000 10.0.0.1 22" })).toBe(true);
-    expect(isRemoteShell({ SSH_TTY: "/dev/pts/3" })).toBe(true);
-    expect(isRemoteShell({})).toBe(false);
+    expect(isRemoteShell({ SSH_CONNECTION: "10.0.0.2 51000 10.0.0.1 22" }, "darwin")).toBe(true);
+    expect(isRemoteShell({ SSH_TTY: "/dev/pts/3" }, "linux")).toBe(true);
+    // `sudo -iu other` inside an SSH login: no SSH variables, and no display on Linux.
+    expect(isRemoteShell({}, "linux")).toBe(true);
+    expect(isRemoteShell({ DISPLAY: ":0" }, "linux")).toBe(false);
+    expect(isRemoteShell({ WAYLAND_DISPLAY: "wayland-0" }, "linux")).toBe(false);
+    expect(isRemoteShell({}, "darwin")).toBe(false);
   });
 
   it("`mesh login` over SSH pastes instead of opening a browser", async () => {
