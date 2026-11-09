@@ -263,6 +263,15 @@
             }
           },
           {
+            "name": "cli_mode",
+            "in": "query",
+            "required": false,
+            "description": "paste: the CLI can't receive a localhost redirect (a remote shell); the callback shows the one-time code to paste",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "hostname",
             "in": "query",
             "required": false,
@@ -283,7 +292,7 @@
     "/auth/{id}/callback": {
       "get": {
         "operationId": "getAuthIdCallback",
-        "summary": "The identity provider's redirect back to the hub.",
+        "summary": "The identity provider's redirect back to the hub (a page with the one-time code for a CLI in paste mode).",
         "description": "No authentication.",
         "tags": [
           "auth"

@@ -90,6 +90,12 @@ mesh status
 mesh logout                                              # back to Solo
 ```
 
+**Over SSH** (or with `--no-browser`), `mesh login` opens no browser. It prints the URL: open it on
+any machine, sign in, and the page shows a one-time code; paste it into the terminal. With a hub
+older than 0.1.2 the browser instead ends on an `http://127.0.0.1:…/callback?code=…` address it
+can't open: paste that whole address. `--local` forces the usual localhost redirect, for example
+with the port forwarded.
+
 The web dashboard is at the hub's URL. It has a Live page (who is working on what, and what needs whom), a Goals board, and a page per goal with the step graph.
 
 ## 4. A goal from design to done

@@ -79,5 +79,7 @@ export interface CliEnv {
   /** argv to start this mesh binary (node + script), for tmux windows and services. */
   self: string[];
   runner?: Runner;
+  /** Read one line from the person (tests inject one); resolves "" when `signal` aborts. */
+  readLine?: (prompt: string, signal: AbortSignal) => Promise<string>;
   version: string;
 }

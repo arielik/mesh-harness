@@ -24,7 +24,7 @@ The installer puts the package under `~/.local` with npm (the command is `~/.loc
 To join a team hub:
 
 ```bash
-mesh login --hub https://mesh.example --token <token>   # or --provider kanidm (OIDC in the browser)
+mesh login --hub https://mesh.example --token <token>   # or --provider kanidm (OIDC in the browser; over SSH, paste the code it shows)
 mesh logout                                             # back to Solo
 ```
 

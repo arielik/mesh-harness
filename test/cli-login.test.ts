@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sha256 } from "../src/auth/index.ts";
-import { login } from "../src/cli/login.ts";
+import { isRemoteShell, login, pastedCode } from "../src/cli/login.ts";
 import { hubCommands } from "../src/cli/hub-commands.ts";
 import type { CliEnv } from "../src/cli/context.ts";
 import { buildHubConfig, startHub, type RunningHub } from "../src/hub/index.ts";
@@ -71,6 +71,112 @@ describe("mesh login", () => {
     });
     expect(r.user).toMatchObject({ id: "alice-2", roles: ["member"] });
     expect(r.token).toMatch(/^mh_d_/);
+  });
+
+  /** Play the browser: follow redirects from `url`; return the final response's body (the paste page). */
+  async function browse(url: string): Promise<string> {
+    let next = url;
+    for (let i = 0; i < 6; i++) {
+      const res = await fetch(next, { redirect: "manual" });
+      const loc = res.headers.get("location");
+      if (!loc) return await res.text();
+      next = new URL(loc, next).href;
+    }
+    throw new Error("too many redirects");
+  }
+
+  it("over SSH: the hub shows a one-time code and the person pastes it into the terminal", async () => {
+    let page: Promise<string> | undefined;
+    const prompts: string[] = [];
+    const r = await login({
+      hub: hub.url,
+      provider: "kanidm",
+      io,
+      paste: true,
+      hostname: "remote-01",
+      onBrowserUrl: (url) => {
+        expect(url).toContain("cli_mode=paste");
+        page = browse(url);
+      },
+      readLine: async (prompt) => {
+        prompts.push(prompt);
+        if (prompts.length === 1) return "not a code";
+        const html = await (page as Promise<string>);
+        const code = /<code id="code">([^<]+)<\/code>/.exec(html)?.[1];
+        expect(code).toBeTruthy();
+        return `  ${code}  `;
+      },
+    });
+    expect(r.user).toMatchObject({ id: "alice-2" });
+    expect(r.token).toMatch(/^mh_d_/);
+    expect(prompts).toHaveLength(2);
+  });
+
+  it("a pasted code works once", async () => {
+    let page: Promise<string> | undefined;
+    let code = "";
+    await login({
+      hub: hub.url,
+      provider: "kanidm",
+      io,
+      paste: true,
+      onBrowserUrl: (url) => void (page = browse(url)),
+      readLine: async () => (code = /<code id="code">([^<]+)<\/code>/.exec(await (page as Promise<string>))?.[1] ?? ""),
+    });
+    const again = await fetch(`${hub.url}/auth/cli/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, verifier: "x".repeat(43) }) });
+    expect(again.status).toBe(401);
+  });
+
+  it("the hub needs a port or paste mode for a CLI login", async () => {
+    const base = `${hub.url}/auth/kanidm/start?client=cli&cli_challenge=${"c".repeat(43)}`;
+    expect((await fetch(base, { redirect: "manual" })).status).toBe(400);
+    expect((await fetch(`${base}&cli_mode=paste`, { redirect: "manual" })).status).toBe(302);
+  });
+
+  it("reads the code from what was pasted", () => {
+    expect(pastedCode("AbCdEf0123456789_-xyz")).toBe("AbCdEf0123456789_-xyz");
+    expect(pastedCode(" 'http://127.0.0.1:43117/callback?code=Zz9_8-7yYxXwWvV' ")).toBe("Zz9_8-7yYxXwWvV");
+    expect(pastedCode("127.0.0.1:43117/callback?code=Qq1234567890")).toBe("Qq1234567890");
+    expect(pastedCode("")).toBeUndefined();
+    expect(pastedCode("hello world")).toBeUndefined();
+    expect(pastedCode("http://127.0.0.1:1/callback")).toBeUndefined();
+  });
+
+  it("knows a remote shell", () => {
+    expect(isRemoteShell({ SSH_CONNECTION: "10.0.0.2 51000 10.0.0.1 22" })).toBe(true);
+    expect(isRemoteShell({ SSH_TTY: "/dev/pts/3" })).toBe(true);
+    expect(isRemoteShell({})).toBe(false);
+  });
+
+  it("`mesh login` over SSH pastes instead of opening a browser", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mesh-login-ssh-"));
+    try {
+      const paths = resolvePaths({ MESH_CONFIG_DIR: join(root, "cfg"), MESH_STATE_DIR: join(root, "st"), CLAUDE_CONFIG_DIR: join(root, "cl") }, root);
+      const out: string[] = [];
+      let opened = false;
+      const c: CliEnv = {
+        io: { out: (t) => out.push(t), err: (t) => out.push(t) },
+        paths,
+        env: { SSH_CONNECTION: "10.0.0.2 51000 10.0.0.1 22" },
+        cwd: root,
+        self: ["mesh"],
+        version: "0",
+        runner: async () => {
+          opened = true;
+          return { code: 0, stdout: "", stderr: "" };
+        },
+        readLine: async () => {
+          const url = /(http\S+\/auth\/kanidm\/start\S+)/.exec(out.join("\n"))?.[1] as string;
+          return /<code id="code">([^<]+)<\/code>/.exec(await browse(url))?.[1] ?? "";
+        },
+      };
+      const cmd = hubCommands(c).find((x) => x.name === "login") as { run(a: string[]): Promise<number> };
+      expect(await cmd.run(["--hub", hub.url, "--provider", "kanidm"])).toBe(0);
+      expect(opened).toBe(false);
+      expect(JSON.parse(readFileSync(paths.credentials, "utf8"))).toMatchObject({ user: { id: "alice-2" } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("runs the device flow", async () => {

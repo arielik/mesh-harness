@@ -14,6 +14,13 @@ export interface LoginOptions {
   token?: string | undefined;
   device?: boolean;
   noBrowser?: boolean;
+  /**
+   * The browser may run on another machine (a remote shell): don't open one, and take the
+   * one-time code (or the address the browser ended on) pasted into the terminal.
+   */
+  paste?: boolean;
+  /** Read one line; resolves "" if `signal` aborts first (paste mode). */
+  readLine?: (prompt: string, signal: AbortSignal) => Promise<string>;
   io: Io;
   runner?: Runner;
   /** Read a line from the user (token prompt). */
@@ -25,6 +32,28 @@ export interface LoginOptions {
 
 export async function providers(hub: string): Promise<ProviderInfo[]> {
   return (await hubFetch<{ providers: ProviderInfo[] }>(hub, "GET", "/auth/providers")).json.providers;
+}
+
+/** Is this a shell on another machine, where a browser can't reach this machine's localhost? */
+export function isRemoteShell(env: Record<string, string | undefined>): boolean {
+  return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY);
+}
+
+/**
+ * The one-time code from what a person pasted: the code itself, or the whole address the browser
+ * ended on (http://127.0.0.1:<port>/callback?code=…, which a remote shell's browser can't open).
+ */
+export function pastedCode(input: string): string | undefined {
+  const text = input.trim().replace(/^["']|["']$/g, "");
+  if (!text) return undefined;
+  if (/^https?:\/\//i.test(text) || text.includes("code=")) {
+    try {
+      return new URL(text, "http://127.0.0.1").searchParams.get("code") ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return /^[A-Za-z0-9_-]{8,}$/.test(text) ? text : undefined;
 }
 
 async function openBrowser(url: string, runner: Runner): Promise<boolean> {
@@ -57,15 +86,44 @@ async function browserLogin(o: LoginOptions, providerId: string): Promise<LoginR
   const port = (server.address() as { port: number }).port;
   const timer = setTimeout(() => rejectCode(new Error("timed out waiting for the browser login (5 min)")), 5 * 60_000);
   try {
-    const url = `${o.hub.replace(/\/+$/, "")}/auth/${encodeURIComponent(providerId)}/start?client=cli&cli_port=${port}&cli_challenge=${pkceChallenge(verifier)}&hostname=${encodeURIComponent(host)}`;
+    // cli_port stays in paste mode: a hub older than paste mode ignores cli_mode and redirects to
+    // the listener, which then works with port forwarding, or by pasting the address it ended on.
+    const url = `${o.hub.replace(/\/+$/, "")}/auth/${encodeURIComponent(providerId)}/start?client=cli&cli_port=${port}&cli_challenge=${pkceChallenge(verifier)}${o.paste ? "&cli_mode=paste" : ""}&hostname=${encodeURIComponent(host)}`;
     o.onBrowserUrl?.(url);
-    const opened = o.noBrowser ? false : await openBrowser(url, o.runner ?? run);
+    if (o.paste && o.readLine) {
+      o.io.out(`Open this URL in a browser (on any machine) and sign in:\n  ${url}\n`);
+      const stop = new AbortController();
+      const pasted = (async () => {
+        for (;;) {
+          const line = await o.readLine?.("Then paste the code the page shows (or the whole address your browser ended on): ", stop.signal);
+          if (stop.signal.aborted) return new Promise<string>(() => undefined);
+          const code = pastedCode(line ?? "");
+          if (code) return code;
+          o.io.err("That isn't a login code or an address with code=… in it; try again.");
+        }
+      })();
+      try {
+        const code = await Promise.race([codeP, pasted]);
+        return await exchange(o, code, verifier, host);
+      } finally {
+        stop.abort();
+      }
+    }
+    const opened = o.noBrowser || o.paste ? false : await openBrowser(url, o.runner ?? run);
     o.io.out(opened ? "Opened your browser to log in. Waiting…" : `Open this URL to log in:\n  ${url}`);
-    const code = await codeP;
-    return (await hubFetch<LoginResult>(o.hub, "POST", "/auth/cli/exchange", { body: { code, verifier, hostname: host } })).json;
+    return await exchange(o, await codeP, verifier, host);
   } finally {
     clearTimeout(timer);
     server.close();
+  }
+}
+
+async function exchange(o: LoginOptions, code: string, verifier: string, host: string): Promise<LoginResult> {
+  try {
+    return (await hubFetch<LoginResult>(o.hub, "POST", "/auth/cli/exchange", { body: { code, verifier, hostname: host } })).json;
+  } catch (e) {
+    if (e instanceof HubCallError && e.status === 401) throw new Error("the hub did not accept that code (it works once, for 5 minutes); run mesh login again", { cause: e });
+    throw e;
   }
 }
 

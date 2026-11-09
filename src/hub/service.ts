@@ -87,6 +87,8 @@ interface LoginAttempt {
   redirectUri: string;
   cliPort?: number | undefined;
   cliChallenge?: string | undefined;
+  /** The CLI cannot receive a localhost redirect (a remote shell): show the code to paste instead. */
+  cliPaste?: boolean | undefined;
   hostname?: string | undefined;
 }
 
@@ -105,6 +107,8 @@ interface CliCode {
 }
 
 const LOGIN_TTL = 10 * 60_000;
+/** How long a CLI's one-time login code lives: long enough to copy it from a browser into a terminal. */
+const CLI_CODE_TTL = 5 * 60_000;
 const ONLINE_MS = 2 * 60_000;
 
 export class HubService {
@@ -232,10 +236,15 @@ export class HubService {
   }
 
   /** Redirect flow start (hub-mediated, plan §4.4). Returns the IdP URL. */
-  async loginStart(providerId: string, client: "cli" | "web", opts: { cliPort?: number | undefined; cliChallenge?: string | undefined; hostname?: string | undefined }): Promise<string> {
+  async loginStart(
+    providerId: string,
+    client: "cli" | "web",
+    opts: { cliPort?: number | undefined; cliChallenge?: string | undefined; cliPaste?: boolean | undefined; hostname?: string | undefined },
+  ): Promise<string> {
     const p = this.provider(providerId);
     if (!p.flows().includes("redirect")) throw new HubError(400, `provider ${providerId} has no browser login`);
-    if (client === "cli" && (!opts.cliPort || !opts.cliChallenge)) throw new HubError(400, "cli_port and cli_challenge are required");
+    if (client === "cli" && !opts.cliChallenge) throw new HubError(400, "cli_challenge is required");
+    if (client === "cli" && !opts.cliPort && !opts.cliPaste) throw new HubError(400, "cli_port (or cli_mode=paste) is required");
     const state = randomId();
     const attempt: LoginAttempt = {
       provider: providerId,
@@ -245,6 +254,7 @@ export class HubService {
       redirectUri: `${this.config.url}/auth/${providerId}/callback`,
       cliPort: opts.cliPort,
       cliChallenge: opts.cliChallenge,
+      cliPaste: client === "cli" && opts.cliPaste === true ? true : undefined,
       hostname: opts.hostname,
     };
     await this.store.putLoginAttempt(`state:${state}`, attempt as unknown as Record<string, unknown>, this.now());
@@ -253,8 +263,11 @@ export class HubService {
     return r.url;
   }
 
-  /** IdP callback. Returns where to send the browser and, for web logins, the session token. */
-  async loginCallback(providerId: string, callbackUrl: string): Promise<{ redirect: string; webToken?: LoginResult }> {
+  /**
+   * IdP callback. Returns where to send the browser and, for web logins, the session token; for a
+   * CLI in paste mode, the one-time code to show instead of a redirect.
+   */
+  async loginCallback(providerId: string, callbackUrl: string): Promise<{ redirect: string; webToken?: LoginResult; pasteCode?: string }> {
     const state = new URL(callbackUrl).searchParams.get("state") ?? "";
     // Read and consume the attempt in one transaction: a replayed callback finds nothing.
     const attempt = await this.store.tx(async () => {
@@ -270,13 +283,16 @@ export class HubService {
     // CLI: hand a one-time code to the CLI's localhost listener; it proves itself with its PKCE verifier.
     const code = randomId(24);
     await this.store.putLoginAttempt(`code:${code}`, { identity: id, cliChallenge: attempt.cliChallenge, hostname: attempt.hostname } as unknown as Record<string, unknown>, this.now());
+    // A remote shell's CLI can't receive a redirect to its own localhost: the person pastes the code.
+    // The code alone is useless without the CLI's PKCE verifier, so showing it is safe.
+    if (attempt.cliPaste) return { redirect: "", pasteCode: code };
     return { redirect: `http://127.0.0.1:${attempt.cliPort}/callback?code=${encodeURIComponent(code)}` };
   }
 
   async cliExchange(code: string, verifier: string, hostname: string | undefined): Promise<LoginResult> {
     // Read and burn the code in one transaction, so it is used at most once.
     const rec = await this.store.tx(async () => {
-      const r = await this.store.getLoginAttempt<{ identity: Identity; cliChallenge: string; hostname?: string } & Partial<CliCode>>(`code:${code}`, this.now(), 2 * 60_000);
+      const r = await this.store.getLoginAttempt<{ identity: Identity; cliChallenge: string; hostname?: string } & Partial<CliCode>>(`code:${code}`, this.now(), CLI_CODE_TTL);
       // Another replica may have read it too: only the caller whose delete removed it goes on.
       if (!r || !(await this.store.deleteLoginAttempt(`code:${code}`))) return undefined;
       return r;

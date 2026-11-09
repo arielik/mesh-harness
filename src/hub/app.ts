@@ -58,6 +58,28 @@ async function body<T>(c: Context<Env>, schema: ZodType<T>): Promise<T> {
 
 const param = (c: Context<Env>, name: string) => decodeURIComponent(c.req.param(name) ?? "");
 
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+
+/** What a person sees after signing in for a CLI in a remote shell: the code to paste there. */
+export function pasteCodePage(code: string): string {
+  const c = escapeHtml(code);
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mesh login</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; padding: 0 1rem; color: #1b1b1b; background: #fff; }
+  code { display: block; font: 1.15rem ui-monospace, monospace; padding: .8rem 1rem; margin: 1rem 0; background: #f2f2f2; border-radius: 6px; word-break: break-all; user-select: all; }
+  @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } code { background: #262626; } }
+</style></head>
+<body>
+  <h1>Almost done</h1>
+  <p>Paste this code into the terminal where you ran <b>mesh login</b>:</p>
+  <code id="code">${c}</code>
+  <p>It works once, for the next 5 minutes, and only in that terminal. You can close this tab afterwards.</p>
+</body></html>
+`;
+}
+
 export function buildRoutes(svc: HubService): Route[] {
   const secureCookie = svc.config.url.startsWith("https://");
   const setSession = (c: Context<Env>, r: LoginResult) =>
@@ -91,6 +113,7 @@ export function buildRoutes(svc: HubService): Route[] {
       const url = await svc.loginStart(param(c, "id"), client, {
         cliPort: Number.isInteger(port) && port > 0 && port < 65536 ? port : undefined,
         cliChallenge: c.req.query("cli_challenge"),
+        cliPaste: c.req.query("cli_mode") === "paste",
         hostname: c.req.query("hostname"),
       });
       return c.redirect(url, 302);
@@ -98,6 +121,10 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/auth/:id/callback", "public", async (c) => {
       const out = await svc.loginCallback(param(c, "id"), c.req.url.replace(/^https?:\/\/[^/]+/, svc.config.url));
       if (out.webToken) setSession(c, out.webToken);
+      if (out.pasteCode !== undefined) {
+        c.header("cache-control", "no-store");
+        return c.html(pasteCodePage(out.pasteCode));
+      }
       return c.redirect(out.redirect, 302);
     }),
     r("POST", "/auth/cli/exchange", "public", async (c) => {

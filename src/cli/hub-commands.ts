@@ -14,7 +14,7 @@ import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
 import { clearCredentials, HubClient, hubFetch, loadCredentials, saveCredentials } from "./hub-client.ts";
-import { login } from "./login.ts";
+import { isRemoteShell, login } from "./login.ts";
 import { renderGoal } from "./show.ts";
 import { writeTrailHere } from "./trail-files.ts";
 
@@ -23,12 +23,12 @@ const stepLine = (s: Step) => `${s.id.padEnd(20)} ${s.state.padEnd(8)} ${s.kind.
 export function loginCommand(c: CliEnv): Command {
   return {
     name: "login",
-    summary: "log in to a mesh hub: mesh login --hub URL [--provider ID] [--token T] [--device]",
+    summary: "log in to a mesh hub: mesh login --hub URL [--provider ID] [--token T] [--device] [--no-browser | --local]",
     async run(args) {
       const a = parseArgs(args, ["hub", "provider", "token"]);
       const hub = a.str("hub") ?? loadCredentials(c.paths)?.hub ?? c.env.MESH_HUB;
       if (!hub) {
-        c.io.err("usage: mesh login --hub https://mesh.example [--provider ID] [--token T] [--device]");
+        c.io.err("usage: mesh login --hub https://mesh.example [--provider ID] [--token T] [--device] [--no-browser | --local]");
         return 2;
       }
       const ask = async (q: string) => {
@@ -39,14 +39,28 @@ export function loginCommand(c: CliEnv): Command {
           rl.close();
         }
       };
+      // Over SSH the browser runs on another machine and can't reach this one's localhost: paste
+      // the one-time code instead. --no-browser asks for that anywhere; --local forces the redirect.
+      const paste = a.has("no-browser") || (!a.has("local") && isRemoteShell(c.env));
+      const readLine = async (q: string, signal: AbortSignal) => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          return await rl.question(q, { signal });
+        } catch {
+          return "";
+        } finally {
+          rl.close();
+        }
+      };
       const r = await login({
         hub,
         provider: a.str("provider"),
         token: a.str("token") ?? c.env.MESH_TOKEN,
         device: a.has("device"),
-        noBrowser: a.has("no-browser"),
+        paste,
         io: c.io,
         ...(c.runner ? { runner: c.runner } : {}),
+        ...(c.readLine ? { readLine: c.readLine } : process.stdin.isTTY ? { readLine } : {}),
         ask,
       });
       saveCredentials(c.paths, { hub: hub.replace(/\/+$/, ""), token: r.token, user: r.user, ...(r.machine ? { machine: r.machine } : {}) });
