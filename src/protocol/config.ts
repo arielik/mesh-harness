@@ -59,6 +59,8 @@ export interface MeshPaths {
   /** Solo mode (M4): the daemon's local hub and the credentials it writes for the CLI. */
   soloHubDb: string;
   soloCredentials: string;
+  /** This installation's own id, sent at login so the hub tells two installations of one person apart. */
+  installId: string;
 }
 
 /** Resolve file locations from the environment (XDG, with MESH_* overrides for tests). */
@@ -78,6 +80,7 @@ export function resolvePaths(env: Record<string, string | undefined>, home: stri
     claudeSettings: join(claudeConfigDir, "settings.json"),
     soloHubDb: join(stateDir, "solo-hub.db"),
     soloCredentials: join(stateDir, "solo.json"),
+    installId: join(configDir, "install-id"),
   };
 }
 

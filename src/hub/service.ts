@@ -207,18 +207,27 @@ export class HubService {
     return { userId: user.id, roles: user.roles as Role[], machineId: row.machineId, tokenHash: row.hash, tokenKind: row.kind };
   }
 
-  private async machineFor(userId: string, hostname: string | undefined): Promise<string> {
+  /**
+   * The machine a CLI login is for. With an installation id (v0.1.5+): the machine with that id, else
+   * this person's machine on this host that has none yet (one an older CLI made: adopted, so its
+   * history stays), else a new one. So one person on two OS users or containers of a host gets two
+   * machines. Without an id (an older CLI): person + hostname, as before.
+   */
+  private async machineFor(userId: string, hostname: string | undefined, installId?: string | undefined): Promise<string> {
     const host = hostname?.trim() || "unknown";
-    const existing = (await this.store.listMachines()).find((m) => m.userId === userId && m.hostname === host);
+    const mine = (await this.store.listMachines()).filter((m) => m.userId === userId);
+    const existing = installId
+      ? (mine.find((m) => m.installId === installId) ?? mine.find((m) => m.hostname === host && !m.installId))
+      : mine.find((m) => m.hostname === host);
     const id = existing?.id ?? `m-${randomBytes(4).toString("hex")}`;
-    await this.store.upsertMachine({ id, userId, hostname: host }, this.now());
+    await this.store.upsertMachine({ id, userId, hostname: host, installId }, this.now());
     return id;
   }
 
-  private async issue(identity: Identity, client: "cli" | "web", hostname: string | undefined): Promise<LoginResult> {
+  private async issue(identity: Identity, client: "cli" | "web", hostname: string | undefined, installId?: string | undefined): Promise<LoginResult> {
     return await this.store.tx(async () => {
       const { user, roles } = await loginIdentity(this.store, identity, { roleMappings: this.config.roleMappings, bootstrapAdmins: this.config.bootstrapAdmins }, this.now());
-      const machine = client === "cli" ? await this.machineFor(user.id, hostname) : undefined;
+      const machine = client === "cli" ? await this.machineFor(user.id, hostname, installId) : undefined;
       const t = await this.tokens.issue(client === "cli" ? "device" : "web", user.id, this.now(), { machineId: machine, label: hostname });
       await this.emit({ type: "user.logged_in", user: user.id, payload: { provider: identity.provider, client, machine } });
       return { token: t.token, user: { id: user.id, name: user.name, roles }, machine, expiresAt: t.expiresAt };
@@ -226,13 +235,13 @@ export class HubService {
   }
 
   /** none/token providers. */
-  async loginDirect(providerId: string, input: { token?: string | undefined; hostname?: string | undefined; client: "cli" | "web" }): Promise<LoginResult> {
+  async loginDirect(providerId: string, input: { token?: string | undefined; hostname?: string | undefined; install?: string | undefined; client: "cli" | "web" }): Promise<LoginResult> {
     const p = this.provider(providerId);
     const flow = p.flows().includes("none") ? "none" : "token";
     if (flow === "token" && !input.token) throw new HubError(400, "token required");
     const id = await p.complete(flow === "none" ? { flow: "none" } : { flow: "token", token: input.token as string });
     if (id === "pending") throw new HubError(500, "unexpected pending login");
-    return await this.issue(id, input.client, input.hostname);
+    return await this.issue(id, input.client, input.hostname, input.install);
   }
 
   /** Redirect flow start (hub-mediated, plan §4.4). Returns the IdP URL. */
@@ -289,7 +298,7 @@ export class HubService {
     return { redirect: `http://127.0.0.1:${attempt.cliPort}/callback?code=${encodeURIComponent(code)}` };
   }
 
-  async cliExchange(code: string, verifier: string, hostname: string | undefined): Promise<LoginResult> {
+  async cliExchange(code: string, verifier: string, hostname: string | undefined, installId?: string | undefined): Promise<LoginResult> {
     // Read and burn the code in one transaction, so it is used at most once.
     const rec = await this.store.tx(async () => {
       const r = await this.store.getLoginAttempt<{ identity: Identity; cliChallenge: string; hostname?: string } & Partial<CliCode>>(`code:${code}`, this.now(), CLI_CODE_TTL);
@@ -298,7 +307,7 @@ export class HubService {
       return r;
     });
     if (!rec || pkceChallenge(verifier) !== rec.cliChallenge) throw new HubError(401, "invalid or expired login code");
-    return await this.issue(rec.identity, "cli", hostname ?? rec.hostname);
+    return await this.issue(rec.identity, "cli", hostname ?? rec.hostname, installId);
   }
 
   async deviceStart(providerId: string, hostname: string | undefined, client: "cli" | "web" = "cli") {
@@ -314,7 +323,7 @@ export class HubService {
     return shown;
   }
 
-  async devicePoll(providerId: string, pollId: string, hostname: string | undefined): Promise<LoginResult | "pending"> {
+  async devicePoll(providerId: string, pollId: string, hostname: string | undefined, installId?: string | undefined): Promise<LoginResult | "pending"> {
     const key = `device:${pollId}`;
     const rec = await this.store.getLoginAttempt<DeviceAttempt>(key, this.now(), LOGIN_TTL);
     if (!rec || rec.provider !== providerId) throw new HubError(404, "unknown or expired device login");
@@ -333,7 +342,7 @@ export class HubService {
     }
     // The identity provider hands out the tokens only once, so only one poll gets here.
     await this.store.deleteLoginAttempt(key);
-    return await this.issue(id, rec.client, hostname ?? rec.hostname);
+    return await this.issue(id, rec.client, hostname ?? rec.hostname, installId);
   }
 
   async logout(actor: Actor): Promise<void> {

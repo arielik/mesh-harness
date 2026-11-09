@@ -26,6 +26,8 @@ export interface LoginOptions {
   /** Read a line from the user (token prompt). */
   ask?: (question: string) => Promise<string>;
   hostname?: string;
+  /** This installation's id (its config folder's `install-id`); the hub keys the machine by it. */
+  install?: string | undefined;
   /** Called with the URL a person must open (tests use it to drive the browser part). */
   onBrowserUrl?: (url: string) => void;
 }
@@ -136,9 +138,11 @@ async function browserLogin(o: LoginOptions, providerId: string): Promise<LoginR
   }
 }
 
+const inst = (o: LoginOptions) => (o.install ? { install: o.install } : {});
+
 async function exchange(o: LoginOptions, code: string, verifier: string, host: string): Promise<LoginResult> {
   try {
-    return (await hubFetch<LoginResult>(o.hub, "POST", "/auth/cli/exchange", { body: { code, verifier, hostname: host } })).json;
+    return (await hubFetch<LoginResult>(o.hub, "POST", "/auth/cli/exchange", { body: { code, verifier, hostname: host, ...inst(o) } })).json;
   } catch (e) {
     if (e instanceof HubCallError && e.status === 401) throw new Error("the hub did not accept that code (it works once, for 5 minutes); run mesh login again", { cause: e });
     throw e;
@@ -153,7 +157,7 @@ async function deviceLogin(o: LoginOptions, providerId: string): Promise<LoginRe
   const deadline = Date.now() + start.expiresIn * 1000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, Math.max(1, start.interval) * 1000));
-    const r = await hubFetch<LoginResult | { pending: true }>(o.hub, "POST", `/auth/${encodeURIComponent(providerId)}/device/poll`, { body: { pollId: start.pollId, hostname: host } });
+    const r = await hubFetch<LoginResult | { pending: true }>(o.hub, "POST", `/auth/${encodeURIComponent(providerId)}/device/poll`, { body: { pollId: start.pollId, hostname: host, ...inst(o) } });
     if (r.status === 200) return r.json as LoginResult;
   }
   throw new Error("the device login expired; try again");
@@ -169,13 +173,13 @@ export async function login(o: LoginOptions): Promise<LoginResult> {
   }
   const host = o.hostname ?? osHostname();
   if (p.flows.includes("none")) {
-    return (await hubFetch<LoginResult>(o.hub, "POST", `/auth/${encodeURIComponent(p.id)}/login`, { body: { hostname: host } })).json;
+    return (await hubFetch<LoginResult>(o.hub, "POST", `/auth/${encodeURIComponent(p.id)}/login`, { body: { hostname: host, ...inst(o) } })).json;
   }
   if (p.flows.includes("token")) {
     const token = o.token ?? (o.ask ? (await o.ask(`Token for ${p.label}: `)).trim() : undefined);
     if (!token) throw new Error("a token is required (--token)");
     try {
-      return (await hubFetch<LoginResult>(o.hub, "POST", `/auth/${encodeURIComponent(p.id)}/login`, { body: { token, hostname: host } })).json;
+      return (await hubFetch<LoginResult>(o.hub, "POST", `/auth/${encodeURIComponent(p.id)}/login`, { body: { token, hostname: host, ...inst(o) } })).json;
     } catch (e) {
       if (e instanceof HubCallError && e.status === 401) throw new Error("the hub did not accept that token", { cause: e });
       throw e;

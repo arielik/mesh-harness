@@ -210,6 +210,55 @@ describe("mesh login", () => {
     }
   });
 
+  describe("one person, several installations on one host", () => {
+    const loginAs = async (body: Record<string, unknown>) => {
+      const res = await fetch(`${hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "alice-token", ...body }) });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { machine: string }).machine;
+    };
+
+    it("gives each installation its own machine, and the same one again on re-login", async () => {
+      const a = await loginAs({ hostname: "shared-01", install: "install-aaaaaaaa" });
+      const b = await loginAs({ hostname: "shared-01", install: "install-bbbbbbbb" });
+      expect(a).not.toBe(b);
+      expect(await loginAs({ hostname: "shared-01", install: "install-aaaaaaaa" })).toBe(a);
+      // The same installation on a renamed host is still that machine.
+      expect(await loginAs({ hostname: "shared-01-renamed", install: "install-bbbbbbbb" })).toBe(b);
+    });
+
+    it("adopts an older CLI's machine (no installation id) once, then makes new ones", async () => {
+      const old = await loginAs({ hostname: "legacy-01" });
+      expect(await loginAs({ hostname: "legacy-01" })).toBe(old);
+      const first = await loginAs({ hostname: "legacy-01", install: "install-cccccccc" });
+      expect(first).toBe(old);
+      const second = await loginAs({ hostname: "legacy-01", install: "install-dddddddd" });
+      expect(second).not.toBe(old);
+    });
+
+    it("rejects a malformed installation id", async () => {
+      const res = await fetch(`${hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "alice-token", install: "bad id!" }) });
+      expect(res.status).toBe(400);
+    });
+
+    it("mesh login sends this installation's id, made once and kept", async () => {
+      const root = mkdtempSync(join(tmpdir(), "mesh-install-"));
+      try {
+        const paths = resolvePaths({ MESH_CONFIG_DIR: join(root, "cfg"), MESH_STATE_DIR: join(root, "st"), CLAUDE_CONFIG_DIR: join(root, "cl") }, root);
+        const c: CliEnv = { io, paths, env: { DISPLAY: ":0" }, cwd: root, self: ["mesh"], version: "0" };
+        const cmd = hubCommands(c).find((x) => x.name === "login") as { run(a: string[]): Promise<number> };
+        expect(await cmd.run(["--hub", hub.url, "--provider", "team", "--token", "alice-token"])).toBe(0);
+        const id = readFileSync(paths.installId, "utf8").trim();
+        expect(id).toMatch(/^[A-Za-z0-9_-]{16}$/);
+        const m1 = JSON.parse(readFileSync(paths.credentials, "utf8")).machine;
+        expect(await cmd.run(["--hub", hub.url, "--provider", "team", "--token", "alice-token"])).toBe(0);
+        expect(readFileSync(paths.installId, "utf8").trim()).toBe(id);
+        expect(JSON.parse(readFileSync(paths.credentials, "utf8")).machine).toBe(m1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("runs the device flow", async () => {
     const r = await login({ hub: hub.url, provider: "kanidm", device: true, io, onBrowserUrl: (code) => void setTimeout(() => mock.approveDevice(code), 50) });
     expect(r.token).toMatch(/^mh_d_/);

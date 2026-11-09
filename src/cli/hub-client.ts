@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { Credentials, IDEMPOTENCY_HEADER, writeFileAtomic, type MeshPaths } from "../protocol/index.ts";
 
@@ -25,6 +25,23 @@ export function loadCredentialsOrSolo(p: MeshPaths): (Credentials & { solo?: boo
   if (!existsSync(p.soloCredentials)) return undefined;
   const parsed = Credentials.safeParse(JSON.parse(readFileSync(p.soloCredentials, "utf8")));
   return parsed.success ? { ...parsed.data, solo: true } : undefined;
+}
+
+/**
+ * This installation's id: made once, kept in the config folder. Two installations of one person
+ * on one host (two OS users, two containers) send different ids, so the hub gives them two machines.
+ */
+export function installId(p: MeshPaths): string {
+  try {
+    const id = readFileSync(p.installId, "utf8").trim();
+    if (/^[A-Za-z0-9_-]{8,64}$/.test(id)) return id;
+  } catch {
+    // none yet
+  }
+  const id = randomBytes(12).toString("base64url");
+  mkdirSync(p.configDir, { recursive: true, mode: 0o700 });
+  writeFileAtomic(p.installId, `${id}\n`, { mode: 0o600 });
+  return id;
 }
 
 export function saveCredentials(p: MeshPaths, c: Credentials): void {

@@ -97,6 +97,10 @@ can't open: paste that whole address. `--local` forces the usual localhost redir
 with the port forwarded; a terminal login then still accepts the address pasted if the redirect lands
 somewhere it can't be reached.
 
+Each mesh installation has its own id (`install-id` in its config folder), so one person logged in
+from two OS users or two containers on one host shows as two machines. From an older CLI (before
+0.1.5) both would share one; log in again from each after updating.
+
 The web dashboard is at the hub's URL. It has a Live page (who is working on what, and what needs whom), a Goals board, and a page per goal with the step graph.
 
 ## 4. A goal from design to done

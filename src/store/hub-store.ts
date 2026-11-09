@@ -43,6 +43,8 @@ export const HUB_MIGRATIONS: readonly string[] = [
   `ALTER TABLE message ADD COLUMN data TEXT;
    CREATE INDEX event_step ON event (step);
    CREATE INDEX event_goal ON event (goal);`,
+  // v0.1.5: a machine is a mesh installation, not person + hostname (NULL: an older CLI's machine).
+  `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
 ];
 
 /**
@@ -88,6 +90,7 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
   `ALTER TABLE message ADD COLUMN data TEXT;
    CREATE INDEX event_step ON event (step);
    CREATE INDEX event_goal ON event (goal);`,
+  `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
 ];
 
 export type TokenKind = "device" | "web" | "service";
@@ -119,6 +122,8 @@ export interface MachineRow {
   hostname: string;
   lastSeen: number;
   counts: Record<string, number>;
+  /** The mesh installation this machine is (v0.1.5+ CLIs); absent for an older CLI's machine. */
+  installId?: string;
 }
 
 export interface HubSession {
@@ -204,8 +209,15 @@ const messageFrom = (r: MessageDbRow): MessageRow => ({
 type UserDbRow = { id: string; name: string; email: string | null; roles: string; roles_extra: string; created_at: number };
 const userFrom = (r: UserDbRow): UserRow => ({ id: r.id, name: r.name, email: opt(r.email), roles: JSON.parse(r.roles), rolesExtra: JSON.parse(r.roles_extra), createdAt: r.created_at });
 
-type MachineDbRow = { id: string; user_id: string; hostname: string; last_seen: number; counts: string };
-const machineFrom = (r: MachineDbRow): MachineRow => ({ id: r.id, userId: r.user_id, hostname: r.hostname, lastSeen: r.last_seen, counts: JSON.parse(r.counts) });
+type MachineDbRow = { id: string; user_id: string; hostname: string; last_seen: number; counts: string; install_id?: string | null };
+const machineFrom = (r: MachineDbRow): MachineRow => ({
+  id: r.id,
+  userId: r.user_id,
+  hostname: r.hostname,
+  lastSeen: r.last_seen,
+  counts: JSON.parse(r.counts),
+  ...(r.install_id ? { installId: r.install_id } : {}),
+});
 
 /**
  * Every method is async (the `Db` may be SQLite or, from M4.6, Postgres). Methods that issue more
@@ -379,13 +391,15 @@ export class HubStore {
 
   // ---------- machines and sessions ----------
 
-  async upsertMachine(m: { id: string; userId: string; hostname: string }, now: number): Promise<void> {
+  /** An installation id, once set, is kept: a later login without one (an older CLI) doesn't clear it. */
+  async upsertMachine(m: { id: string; userId: string; hostname: string; installId?: string | undefined }, now: number): Promise<void> {
     await this.db.run(
-      "INSERT INTO machine (id, user_id, hostname, last_seen) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, last_seen = excluded.last_seen",
+      "INSERT INTO machine (id, user_id, hostname, last_seen, install_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, last_seen = excluded.last_seen, install_id = COALESCE(excluded.install_id, machine.install_id)",
       m.id,
       m.userId,
       m.hostname,
       now,
+      m.installId ?? null,
     );
   }
 

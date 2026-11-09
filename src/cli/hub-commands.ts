@@ -13,7 +13,7 @@ import { PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type St
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
-import { clearCredentials, HubClient, hubFetch, loadCredentials, saveCredentials } from "./hub-client.ts";
+import { clearCredentials, HubClient, hubFetch, installId, loadCredentials, saveCredentials } from "./hub-client.ts";
 import { isRemoteShell, login } from "./login.ts";
 import { renderGoal } from "./show.ts";
 import { writeTrailHere } from "./trail-files.ts";
@@ -58,6 +58,7 @@ export function loginCommand(c: CliEnv): Command {
         token: a.str("token") ?? c.env.MESH_TOKEN,
         device: a.has("device"),
         paste,
+        install: installId(c.paths),
         io: c.io,
         ...(c.runner ? { runner: c.runner } : {}),
         ...(c.readLine ? { readLine: c.readLine } : process.stdin.isTTY ? { readLine } : {}),

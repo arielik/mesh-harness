@@ -30,9 +30,15 @@ export type SyncRequest = z.infer<typeof SyncRequest>;
 
 export const AckRequest = z.object({ state: z.enum(["delivered", "failed"]), method: z.string().optional() });
 
-export const LoginDirect = z.object({ token: z.string().optional(), hostname: z.string().max(200).optional(), client: z.enum(["cli", "web"]).default("cli") });
-export const CliExchange = z.object({ code: z.string(), verifier: z.string(), hostname: z.string().max(200).optional() });
-export const DevicePoll = z.object({ pollId: z.string(), hostname: z.string().max(200).optional() });
+/**
+ * `install`: the logging-in mesh installation's own id (its config folder's `install-id`). The hub
+ * keys a machine by it, so one person on two OS users or two containers of one host gets two
+ * machines; without it (an older CLI) the hub falls back to person + hostname.
+ */
+const InstallId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
+export const LoginDirect = z.object({ token: z.string().optional(), hostname: z.string().max(200).optional(), install: InstallId.optional(), client: z.enum(["cli", "web"]).default("cli") });
+export const CliExchange = z.object({ code: z.string(), verifier: z.string(), hostname: z.string().max(200).optional(), install: InstallId.optional() });
+export const DevicePoll = z.object({ pollId: z.string(), hostname: z.string().max(200).optional(), install: InstallId.optional() });
 
 export const NewGoal = z.object({
   title: z.string().min(1).max(200),

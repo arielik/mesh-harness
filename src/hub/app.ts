@@ -129,7 +129,7 @@ export function buildRoutes(svc: HubService): Route[] {
     }),
     r("POST", "/auth/cli/exchange", "public", async (c) => {
       const b = await body(c, CliExchange);
-      return c.json(await svc.cliExchange(b.code, b.verifier, b.hostname));
+      return c.json(await svc.cliExchange(b.code, b.verifier, b.hostname, b.install));
     }),
     r("POST", "/auth/:id/device", "public", async (c) => {
       const b = await body(c, LoginDirect);
@@ -138,7 +138,7 @@ export function buildRoutes(svc: HubService): Route[] {
     }),
     r("POST", "/auth/:id/device/poll", "public", async (c) => {
       const b = await body(c, DevicePoll);
-      const res = await svc.devicePoll(param(c, "id"), b.pollId, b.hostname);
+      const res = await svc.devicePoll(param(c, "id"), b.pollId, b.hostname, b.install);
       if (res === "pending") return c.json({ pending: true }, 202);
       if (!res.machine) {
         setSession(c, res);
