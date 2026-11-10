@@ -14,6 +14,13 @@ export const DaemonConfig = z.object({
   workspaceRoots: z.array(z.string()).default([]),
   /** Default autopilot level for sessions (plan §3.6). */
   autopilot: z.enum(["off", "nudge", "chain"]).default("nudge"),
+  /**
+   * Which sessions the daemon reports to the hub (Q5). `steps` (default): full records only for
+   * sessions holding a step; the rest stay local and the hub sees per-machine counts. `all`: also
+   * report sessions without a step, as metadata only (state, repo name, session name, timestamps;
+   * no cwd, pane, transcript or message text). Opt-in per machine.
+   */
+  shareSessions: z.enum(["steps", "all"]).default("steps"),
 });
 export type DaemonConfig = z.infer<typeof DaemonConfig>;
 export type NotifyMode = "desktop" | "terminal" | "both" | "off";

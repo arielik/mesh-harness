@@ -127,3 +127,58 @@ describe("hub link, offline", () => {
     expect(t.calls.filter((c) => c.endsWith("/health")).length).toBe(probes1 + 1);
   });
 });
+
+describe("syncedSessions (Q5)", () => {
+  const base = {
+    claudeSessionIds: ["c1"],
+    cwd: "/home/a/secret-project",
+    kind: "interactive" as const,
+    quiet: false,
+    startedAt: 1,
+    turns: 2,
+    humanPrompts: 1,
+    seenByReconciler: true,
+  };
+  const step = { ...base, sid: "s-step", state: "working" as const, lastEventAt: 5, step: "G1.a", pane: "%1" };
+  const free = {
+    ...base,
+    sid: "s-free",
+    state: "needs_you" as const,
+    needs: "permission" as const,
+    lastEventAt: 9,
+    name: "fix tests",
+    repo: { id: "r1", name: "repo" },
+    pid: 42,
+    pane: "%2",
+    tmuxSocket: "/tmp/tmux",
+    lastMessage: "private text",
+    transcriptPath: "/home/a/.claude/t.jsonl",
+    transcriptMtime: 3,
+  };
+
+  it("sends only step holders by default", async () => {
+    const { syncedSessions } = await import("./hub-link.ts");
+    expect(syncedSessions([step, free], false).map((s) => s.sid)).toEqual(["s-step"]);
+  });
+
+  it("with the opt-in, adds the rest as metadata only", async () => {
+    const { syncedSessions } = await import("./hub-link.ts");
+    const { Session } = await import("../protocol/index.ts");
+    const out = syncedSessions([free, step], true);
+    expect(out.map((s) => s.sid)).toEqual(["s-step", "s-free"]);
+    expect(out[0]).toEqual(step);
+    const m = out[1];
+    expect(Session.parse(m)).toEqual(m);
+    expect(m).toMatchObject({ state: "needs_you", needs: "permission", name: "fix tests", repo: { name: "repo" }, cwd: "", claudeSessionIds: [] });
+    for (const k of ["pid", "pane", "tmuxSocket", "lastMessage", "transcriptPath", "transcriptMtime"]) expect(m).not.toHaveProperty(k);
+  });
+
+  it("caps a sync at 200 records, step holders first", async () => {
+    const { syncedSessions } = await import("./hub-link.ts");
+    const many = Array.from({ length: 250 }, (_, i) => ({ ...free, sid: `f${i}`, lastEventAt: i }));
+    const out = syncedSessions([...many, step], true);
+    expect(out).toHaveLength(200);
+    expect(out[0]?.sid).toBe("s-step");
+    expect(out[1]?.sid).toBe("f249");
+  });
+});

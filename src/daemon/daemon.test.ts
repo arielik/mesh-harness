@@ -13,7 +13,7 @@ const fixture = (name: string) => (JSON.parse(readFileSync(join(FIX, `${name}.js
 type Json = any;
 
 const KEY = "k".repeat(32);
-const CONFIG: DaemonConfig = { port: 0, key: KEY, notify: true, workspaceRoots: [], autopilot: "nudge" };
+const CONFIG: DaemonConfig = { port: 0, key: KEY, notify: true, workspaceRoots: [], autopilot: "nudge", shareSessions: "steps" };
 const SID = "f92c48b0-49ed-4650-b8f7-c87574da1f2f";
 const CWD = "/work/interactive";
 

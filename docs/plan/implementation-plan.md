@@ -96,7 +96,7 @@ Only `store` touches SQLite. Only `claude`, `mux` and `cli` spawn processes.
 | `identity` | `provider`, `subject`, `user_id`, `groups[]`, `last_login` | Unique on (`provider`, `subject`). Logging in with a different provider creates a separate user unless an admin links them (`mesh hub link-identity`). |
 | `token` | `hash`, `user_id`, `kind` (`device`, `web`, `service`), `machine_id?`, `created_at`, `last_used`, `expires_at`, `revoked` | Opaque bearer tokens, stored as SHA-256 hashes (§4.3) |
 | `machine` | `id`, `user_id`, `hostname`, `last_seen`, `online` | `online` = hub sync within 2 minutes |
-| `session` (hub copy) | `sid`, `machine_id`, `user_id`, `repo`, `state`, `step_id?`, `autopilot`, `last_turn_at` | Only sessions holding a step are sent in full. Others are reported as **per-machine aggregate counts** (Q5). |
+| `session` (hub copy) | `sid`, `machine_id`, `user_id`, `repo`, `state`, `step_id?`, `autopilot`, `last_turn_at` | Only sessions holding a step are sent in full. Others are reported as **per-machine aggregate counts** (Q5), unless the machine opts in with `shareSessions: "all"` (`mesh setup --share-sessions all`): then they are sent as metadata only (no cwd, pane, pid, transcript or message text). |
 | `goal` | `id` (`G<n>`), `title`, `owner_id`, `state`, `primary_repo`, `issue_url?`, `priority` | |
 | `plan` | `goal_id`, `version`, `design_ref`, `steps_json`, `proposed_by`, `decision`, `decided_by`, `decided_at`, `comment` | Immutable once decided |
 | `step` | `id` (`G17.dplane`), `goal_id`, `plan_version`, `kind`, `repo`, `title`, `brief` (required), `deps[]`, `state`, `holder_user?`, `holder_sid?`, `branch?`, `mr?`, `summary?`, `fix_cycles`, `outcome?` | `G<n>.design` exists from goal creation |

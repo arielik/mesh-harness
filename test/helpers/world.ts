@@ -62,7 +62,7 @@ export class World {
     this.hub = await startHub(config, { store: this.hubStore, tickMs: 0, now: () => this.clock });
   }
 
-  async person(name: string, repo: string, opts: { solo?: Credentials } = {}): Promise<Person> {
+  async person(name: string, repo: string, opts: { solo?: Credentials; shareSessions?: DaemonConfig["shareSessions"] } = {}): Promise<Person> {
     const dir = mkdtempSync(join(tmpdir(), `mesh-world-${name}-`));
     this.dirs.push(dir);
     const repoDir = join(dir, repo);
@@ -74,7 +74,7 @@ export class World {
     if (!opts.solo) writeFileSync(credentialsPath, JSON.stringify({ hub: this.hub.url, token: login.token, user: login.user, machine: login.machine }));
     const store = await DaemonStore.open(":memory:");
     const p: Person = { name, login, store, pastes: [], notes: [], agents: null, repoDir, repo, daemon: undefined as unknown as Daemon, offline: false, credentialsPath };
-    const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: [], autopilot: "nudge" };
+    const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: [], autopilot: "nudge", shareSessions: opts.shareSessions ?? "steps" };
     p.daemon = new Daemon({
       config,
       store,

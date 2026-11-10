@@ -226,6 +226,7 @@ export class Daemon {
         credentialsPath: opts.credentialsPath,
         store: this.store,
         sessions: () => this.sessions.filter((s) => !isHidden(s)),
+        shareAll: () => this.config.shareSessions === "all",
         onMessage: (m) => this.receive(m),
         log: (l) => this.deps.log(l),
         now: () => this.deps.now(),

@@ -43,7 +43,7 @@ async function person(name: string, repo: string): Promise<Person> {
   writeFileSync(credentialsPath, JSON.stringify({ hub: hub.url, token: login.token, user: login.user, machine: login.machine }));
   const store = await DaemonStore.open(":memory:");
   const p: Person = { name, login, store, pastes: [], notes: [], agents: null, dir, configPath: join(dir, "daemon.json"), daemon: undefined as unknown as Daemon };
-  const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: [], autopilot: "nudge" };
+  const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: [], autopilot: "nudge", shareSessions: "steps" };
   p.daemon = new Daemon({
     config,
     store,

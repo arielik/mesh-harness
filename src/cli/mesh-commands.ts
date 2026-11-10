@@ -60,10 +60,15 @@ export function setupCommand(c: CliEnv): Command {
     name: "setup",
     summary: "install mesh into Claude Code, or OpenCode with --agent opencode|all (--uninstall to remove)",
     async run(args) {
-      const a = parseArgs(args, ["port", "notify", "agent"]);
+      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions"]);
       const notifyArg = a.str("notify");
       if (notifyArg !== undefined && !["desktop", "terminal", "both", "off"].includes(notifyArg)) {
         c.io.err("--notify must be desktop, terminal, both or off");
+        return 2;
+      }
+      const shareArg = a.str("share-sessions");
+      if (shareArg !== undefined && shareArg !== "steps" && shareArg !== "all") {
+        c.io.err("--share-sessions must be steps or all");
         return 2;
       }
       const agent = a.has("agent") ? agentChoice(a.str("agent")) : a.has("uninstall") ? "all" : "claude";
@@ -117,7 +122,13 @@ export function setupCommand(c: CliEnv): Command {
         if (a.has("no-notify")) config.notify = false;
         if (notifyArg) config.notify = notifyArg as NotifyMode;
       }
+      if (shareArg) config = { ...config, shareSessions: shareArg };
       saveConfig(c.paths, config);
+      const shareLine = shareArg
+        ? shareArg === "all"
+          ? "Sessions without a step will be reported to the hub as metadata (state, repo, name, times; no paths or text). Restart the daemon to apply."
+          : "Only sessions holding a step will be reported to the hub. Restart the daemon to apply."
+        : "";
       const ocLines: string[] = [];
       if (opencode) {
         const v = await opencodeVersion(runner);
@@ -137,6 +148,7 @@ export function setupCommand(c: CliEnv): Command {
         c.io.out(
           [
             `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
+            shareLine,
             ...ocLines,
             "OpenCode sessions started from now on report to mesh. Next:",
             "  mesh up             # run the daemon here, or",
@@ -154,6 +166,7 @@ export function setupCommand(c: CliEnv): Command {
       c.io.out(
         [
           `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
+          shareLine,
           r.changed ? `Installed ${HOOK_KINDS.length} hooks (v${HOOKS_VERSION}) into ${c.paths.claudeSettings}.` : `Hooks (v${HOOKS_VERSION}) already installed in ${c.paths.claudeSettings}.`,
           "skipped" in mcp ? "Skipped the MCP server and the skill (--no-mcp)." : mcp.ok ? "Registered the mesh MCP server." : `Could not register the MCP server: ${"error" in mcp ? mcp.error : ""}`,
           skill?.foreign

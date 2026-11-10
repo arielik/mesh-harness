@@ -25,6 +25,8 @@ export interface HubLinkDeps {
   store: DaemonStore;
   /** Sessions to report: full records for step holders, counts for all. */
   sessions(): Session[];
+  /** Q5 opt-in: also report sessions that hold no step, as metadata only. */
+  shareAll?: () => boolean;
   onMessage(m: InboxMessage): "queued" | "unknown";
   log(line: string): void;
   now(): number;
@@ -36,6 +38,49 @@ export interface HubLinkDeps {
   onRejected?(call: PendingCall, error: HubRpcError): void;
   /** Call timeout; a blackholed hub costs at most this once, then the link is offline. */
   timeoutMs?: number;
+}
+
+/** Most session records one sync may carry (SyncRequest allows 200). */
+const SYNC_SESSIONS_MAX = 200;
+
+/**
+ * The session records a sync sends (Q5): full records of sessions holding a step and, when the
+ * machine opted in, metadata-only records of the rest. Step holders come first so the cap never
+ * drops them.
+ */
+export function syncedSessions(all: readonly Session[], shareAll: boolean): Session[] {
+  const steps = all.filter((s) => s.step !== undefined);
+  if (!shareAll) return steps.slice(0, SYNC_SESSIONS_MAX);
+  const rest = all
+    .filter((s) => s.step === undefined)
+    .sort((a, b) => b.lastEventAt - a.lastEventAt)
+    .map(sessionMetadata);
+  return [...steps, ...rest].slice(0, SYNC_SESSIONS_MAX);
+}
+
+/** A session without a step as the hub may see it: no paths, panes, process, transcript or text. */
+export function sessionMetadata(s: Session): Session {
+  return {
+    sid: s.sid,
+    ...(s.agent ? { agent: s.agent } : {}),
+    claudeSessionIds: [],
+    cwd: "",
+    ...(s.repo ? { repo: s.repo } : {}),
+    kind: s.kind,
+    ...(s.name !== undefined ? { name: s.name } : {}),
+    state: s.state,
+    ...(s.needs ? { needs: s.needs } : {}),
+    quiet: s.quiet,
+    startedAt: s.startedAt,
+    lastEventAt: s.lastEventAt,
+    ...(s.lastTurnStartAt !== undefined ? { lastTurnStartAt: s.lastTurnStartAt } : {}),
+    ...(s.lastStopAt !== undefined ? { lastStopAt: s.lastStopAt } : {}),
+    turns: s.turns,
+    humanPrompts: s.humanPrompts,
+    seenByReconciler: s.seenByReconciler,
+    ...(s.autopilot ? { autopilot: s.autopilot } : {}),
+    ...(s.endedAt !== undefined ? { endedAt: s.endedAt } : {}),
+  };
 }
 
 export type LinkStatus = "not-logged-in" | "ok" | "offline" | "auth-failed";
@@ -215,7 +260,7 @@ export class HubLink {
       for (const s of all) if (s.state !== "ended") counts[s.state] = (counts[s.state] ?? 0) + 1;
       for (;;) {
         const batch = this.deps.store.outboxPeek(200);
-        const sessions = all.filter((s) => s.step !== undefined);
+        const sessions = syncedSessions(all, this.deps.shareAll?.() ?? false);
         await this.rpc("POST", "/v1/sync", { events: batch.map((b) => b.value), sessions, counts }, undefined, { probe: true });
         this.deps.store.outboxRemove(batch.map((b) => b.id));
         if (batch.length < 200) break;

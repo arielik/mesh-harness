@@ -72,6 +72,17 @@ When a session needs you, mesh tells you. Choose how with `mesh setup --notify <
 | `both` | both of the above |
 | `off` | none |
 
+## What the hub sees
+
+On a team hub, the daemon reports a session in full only while it holds a mesh step. Other sessions stay on your machine; the hub sees how many of them are in each state. To let your team see those sessions too (on the Live page and in `GET /v1/live`), opt in on that machine:
+
+```sh
+mesh setup --share-sessions all     # and restart the daemon
+mesh setup --share-sessions steps   # back to the default
+```
+
+With `all`, a session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
+
 ## Hooks
 
 | Hook | Kind | Why |

@@ -36,6 +36,7 @@ export function newConfig(port?: number): DaemonConfig {
     notify: true,
     workspaceRoots: [],
     autopilot: "nudge",
+    shareSessions: "steps",
   };
 }
 

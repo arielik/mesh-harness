@@ -21,7 +21,10 @@ export type SyncEvent = z.infer<typeof SyncEvent>;
 
 export const SyncRequest = z.object({
   events: z.array(SyncEvent).max(500).default([]),
-  /** Full records of sessions that hold a step (others stay private, Q5). */
+  /**
+   * Full records of sessions that hold a step, plus metadata-only records of the other sessions
+   * when the machine opted in (`shareSessions: "all"`); otherwise those stay private (Q5).
+   */
   sessions: z.array(Session).max(200).default([]),
   /** Session counts by state for the whole machine. */
   counts: z.record(z.string(), z.number().int()).default({}),
