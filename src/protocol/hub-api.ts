@@ -30,11 +30,18 @@ import { HubEvent } from "./json-schema.ts";
 
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
+/** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read"] as const;
+export const ServiceScope = z.enum(SERVICE_SCOPES);
+export type ServiceScope = z.infer<typeof ServiceScope>;
+
 export interface HubApiRoute {
   method: "GET" | "POST";
   /** Hono-style path: `:name` is a path parameter. */
   path: string;
   rule: HubRouteRule;
+  /** A member route a service token with this scope may also call. */
+  scope?: ServiceScope;
   summary: string;
   tag: "probes" | "auth" | "daemon" | "goals" | "steps" | "questions" | "analysis" | "admin";
   body?: z.ZodType;
@@ -81,30 +88,31 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/sync", rule: "member", tag: "daemon", body: SyncRequest, summary: "A daemon reports its sessions and facts (batched, idempotent)." },
   { method: "GET", path: "/v1/inbox", rule: "member", tag: "daemon", summary: "Messages waiting for the calling machine's sessions." },
   { method: "POST", path: "/v1/inbox/:id/ack", rule: "member", tag: "daemon", body: AckRequest, summary: "Mark an inbox message delivered or failed." },
-  { method: "GET", path: "/v1/live", rule: "member", tag: "daemon", summary: "Live sessions across the team." },
+  { method: "GET", path: "/v1/live", rule: "member", scope: "live:read", tag: "daemon", summary: "Live sessions across the team." },
   { method: "GET", path: "/v1/attention", rule: "member", tag: "daemon", summary: "What needs the calling user: questions, gates, stalled steps." },
-  { method: "GET", path: "/v1/stream", rule: "member", tag: "daemon", sse: true, summary: "Server-sent hints (changed, wake). Lossy by design: clients refetch." },
+  { method: "GET", path: "/v1/stream", rule: "member", scope: "live:read", tag: "daemon", sse: true, summary: "Server-sent hints (changed, wake). Lossy by design: clients refetch." },
 
-  { method: "GET", path: "/v1/goals", rule: "member", tag: "goals", summary: "All goals." },
-  { method: "POST", path: "/v1/goals", rule: "member", tag: "goals", body: NewGoal, status: 201, summary: "Create a goal." },
-  { method: "GET", path: "/v1/goals/:id", rule: "member", tag: "goals", summary: "A goal with its plans and steps." },
+  { method: "GET", path: "/v1/goals", rule: "member", scope: "goals:read", tag: "goals", summary: "All goals." },
+  { method: "POST", path: "/v1/goals", rule: "member", scope: "goals:write", tag: "goals", body: NewGoal, status: 201, summary: "Create a goal." },
+  { method: "GET", path: "/v1/goals/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal with its plans and steps." },
   { method: "POST", path: "/v1/goals/:id/plan", rule: "member", tag: "goals", body: ProposePlan, status: 201, summary: "Propose a plan (design sessions)." },
   { method: "POST", path: "/v1/goals/:id/approve", rule: "member", tag: "goals", body: Approve, summary: "Approve the proposed plan (approvers)." },
   { method: "POST", path: "/v1/goals/:id/revise", rule: "member", tag: "goals", body: Decide, summary: "Ask the design session to revise the proposed plan." },
   { method: "POST", path: "/v1/goals/:id/replan", rule: "member", tag: "goals", body: Replan, summary: "Reopen design for a goal with an approved plan." },
-  { method: "GET", path: "/v1/goals/:id/files", rule: "member", tag: "goals", summary: "The record files of a goal, as the ledger writes them." },
-  { method: "GET", path: "/v1/goals/:id/timeline", rule: "member", tag: "goals", summary: "A goal's history." },
+  { method: "GET", path: "/v1/goals/:id/files", rule: "member", scope: "goals:read", tag: "goals", summary: "The record files of a goal, as the ledger writes them." },
+  { method: "GET", path: "/v1/goals/:id/timeline", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal's history." },
 
   {
     method: "GET",
     path: "/v1/steps",
     rule: "member",
+    scope: "goals:read",
     tag: "steps",
     query: { goal: "goal id", ready: "1: only ready steps", repo: "repo name or id", mine: "1: only steps the caller holds" },
     summary: "Steps, filtered.",
   },
   { method: "GET", path: "/v1/steps/:id/context", rule: "member", tag: "steps", query: { agent: "1: the brief as an agent reads it" }, summary: "A step's brief: design, dependencies, notes." },
-  { method: "GET", path: "/v1/steps/:id", rule: "member", tag: "steps", summary: "One step." },
+  { method: "GET", path: "/v1/steps/:id", rule: "member", scope: "goals:read", tag: "steps", summary: "One step." },
   { method: "POST", path: "/v1/steps/:id/claim", rule: "member", tag: "steps", body: ClaimRequest, summary: "Claim a ready step (exactly one caller wins)." },
   { method: "POST", path: "/v1/steps/:id/release", rule: "member", tag: "steps", body: ReleaseRequest, summary: "Give a step back with a handoff note." },
   { method: "POST", path: "/v1/steps/:id/note", rule: "member", tag: "steps", body: NoteRequest, summary: "Add a progress note to a step." },
@@ -158,12 +166,12 @@ export function hubOpenApi(version = "1"): Record<string, unknown> {
           : { description: "OK", content: { "application/json": { schema: r.response ? schema(r.response, "output") : { type: "object" } } } },
     };
     if (r.rule !== "public") responses["401"] = { description: "Login required." };
-    if (r.rule === "admin" || r.rule === "events") responses["403"] = { description: "Forbidden." };
+    if (r.rule === "admin" || r.rule === "events" || r.scope) responses["403"] = { description: "Forbidden." };
     if (r.body) responses["400"] = { description: "Invalid request: { error, details }." };
     const op: Record<string, unknown> = {
       operationId: `${r.method.toLowerCase()}${r.path.replace(/[/:]+([a-zA-Z])/g, (_, ch: string) => ch.toUpperCase()).replace(/[^a-zA-Z]/g, "")}`,
       summary: r.summary,
-      description: RULE_TEXT[r.rule],
+      description: r.scope ? `${RULE_TEXT[r.rule]} Also service tokens with the scope \`${r.scope}\`.` : RULE_TEXT[r.rule],
       tags: [r.tag],
       ...(params.length ? { parameters: params } : {}),
       ...(r.body ? { requestBody: { required: false, content: { "application/json": { schema: schema(r.body, "input") } } } } : {}),

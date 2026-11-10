@@ -32,6 +32,7 @@ import {
   SESSION_COOKIE,
   SyncRequest,
   type LoginResult,
+  type ServiceScope,
 } from "../protocol/index.ts";
 import { HubError, type Actor, type HubService } from "./service.ts";
 
@@ -42,6 +43,7 @@ export interface Route {
   method: "GET" | "POST";
   path: string;
   rule: RouteRule;
+  scope?: ServiceScope | undefined;
   handler: Handler;
 }
 
@@ -85,7 +87,7 @@ export function buildRoutes(svc: HubService): Route[] {
   const setSession = (c: Context<Env>, r: LoginResult) =>
     setCookie(c, SESSION_COOKIE, r.token, { httpOnly: true, secure: secureCookie, sameSite: "Lax", path: "/", expires: new Date(r.expiresAt) });
 
-  const r = (method: Route["method"], path: string, rule: RouteRule, handler: Handler): Route => ({ method, path, rule, handler });
+  const r = (method: Route["method"], path: string, rule: RouteRule, handler: Handler, scope?: ServiceScope): Route => ({ method, path, rule, handler, scope });
   return [
     r("GET", "/health", "public", (c) => c.json({ ok: true })),
     // Probes (M4.6), no auth. Liveness: the process answers. Readiness: the database answers and is
@@ -162,7 +164,7 @@ export function buildRoutes(svc: HubService): Route[] {
     }),
 
     // ---------- dashboard ----------
-    r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a))),
+    r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a)), "live:read"),
     r("GET", "/v1/attention", "member", async (c, a) => c.json({ attention: await svc.attentionFor(a) })),
     r("GET", "/v1/stream", "member", (c, a) =>
       streamSSE(c, async (stream) => {
@@ -198,12 +200,13 @@ export function buildRoutes(svc: HubService): Route[] {
         }
         unsubscribe();
       }),
+      "live:read",
     ),
 
     // ---------- goals ----------
-    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals() })),
-    r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201)),
-    r("GET", "/v1/goals/:id", "member", async (c) => c.json(await svc.goalDetail(param(c, "id")))),
+    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals() }), "goals:read"),
+    r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201), "goals:write"),
+    r("GET", "/v1/goals/:id", "member", async (c) => c.json(await svc.goalDetail(param(c, "id"))), "goals:read"),
     r("POST", "/v1/goals/:id/plan", "member", async (c, a) => c.json(await svc.proposePlan(a, param(c, "id"), await body(c, ProposePlan)), 201)),
     r("POST", "/v1/goals/:id/approve", "member", async (c, a) => {
       const b = await body(c, Approve);
@@ -211,8 +214,8 @@ export function buildRoutes(svc: HubService): Route[] {
     }),
     r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(await svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment))),
     r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
-    r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) })),
-    r("GET", "/v1/goals/:id/timeline", "member", async (c) => c.json({ timeline: await svc.timeline(param(c, "id")) })),
+    r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) }), "goals:read"),
+    r("GET", "/v1/goals/:id/timeline", "member", async (c) => c.json({ timeline: await svc.timeline(param(c, "id")) }), "goals:read"),
 
     // ---------- steps ----------
     r("GET", "/v1/steps", "member", async (c, a) =>
@@ -224,9 +227,10 @@ export function buildRoutes(svc: HubService): Route[] {
           mine: c.req.query("mine") === "1" ? a.userId : undefined,
         }),
       }),
+      "goals:read",
     ),
     r("GET", "/v1/steps/:id/context", "member", async (c) => c.json(await svc.context(param(c, "id"), c.req.query("agent") === "1"))),
-    r("GET", "/v1/steps/:id", "member", async (c) => c.json(await svc.stepView(param(c, "id")))),
+    r("GET", "/v1/steps/:id", "member", async (c) => c.json(await svc.stepView(param(c, "id"))), "goals:read"),
     r("POST", "/v1/steps/:id/claim", "member", async (c, a) => c.json(await svc.claimStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     r("POST", "/v1/steps/:id/release", "member", async (c, a) => c.json(await svc.releaseStep(a, param(c, "id"), (await body(c, ReleaseRequest)).note))),
     r("POST", "/v1/steps/:id/note", "member", async (c, a) => {
@@ -300,7 +304,7 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
   for (const route of routes) {
     app.on(route.method, route.path, async (c) => {
       const actor = c.get("actor");
-      if (!allowed(route.rule, actor)) return c.json({ error: actor ? "forbidden" : "login required" }, actor ? 403 : 401);
+      if (!allowed(route.rule, actor, route.scope)) return c.json({ error: actor ? "forbidden" : "login required" }, actor ? 403 : 401);
       const key = route.method === "POST" && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;
       if (key && actor) {
         const prior = (await svc.store.getIdem(key, actor.userId)) as { status: number; body: unknown } | undefined;

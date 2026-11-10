@@ -58,6 +58,7 @@ import type {
   TimelineEntry,
   TrailFile,
   UserView,
+  ServiceScope,
 } from "../protocol/index.ts";
 import { HubStore, type NewEvent, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
@@ -204,7 +205,7 @@ export class HubService {
     if (!row) return undefined;
     const user = await this.store.getUser(row.userId);
     if (!user) return undefined;
-    return { userId: user.id, roles: user.roles as Role[], machineId: row.machineId, tokenHash: row.hash, tokenKind: row.kind };
+    return { userId: user.id, roles: user.roles as Role[], scopes: row.scopes, machineId: row.machineId, tokenHash: row.hash, tokenKind: row.kind };
   }
 
   /**
@@ -1163,11 +1164,11 @@ export class HubService {
     });
   }
 
-  /** Mint a service token (analysis tools reading the event feed). */
-  async serviceToken(name: string): Promise<string> {
+  /** Mint a service token: the event feed, plus the member routes its scopes name. */
+  async serviceToken(name: string, scopes: ServiceScope[] = []): Promise<string> {
     const user = await this.store.upsertIdentity({ provider: "service", subject: name, name, groups: ["service"] }, this.now());
     await this.store.setUserRoles(user.id, ["service"]);
-    return (await this.tokens.issue("service", user.id, this.now(), { label: name })).token;
+    return (await this.tokens.issue("service", user.id, this.now(), { label: name, scopes })).token;
   }
 
   newEventId(): string {

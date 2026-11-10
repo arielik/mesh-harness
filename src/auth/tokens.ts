@@ -1,6 +1,7 @@
 // Hub-issued opaque tokens (plan §4.3): random, stored hashed, idle and absolute expiry, revocable.
 
 import { randomBytes } from "node:crypto";
+import type { ServiceScope } from "../protocol/index.ts";
 import type { HubStore, TokenKind, TokenRow } from "../store/index.ts";
 import { sha256 } from "./providers.ts";
 
@@ -40,12 +41,12 @@ export class Tokens {
     this.policies = policies;
   }
 
-  async issue(kind: TokenKind, userId: string, now: number, opts: { machineId?: string | undefined; label?: string | undefined } = {}): Promise<Issued> {
+  async issue(kind: TokenKind, userId: string, now: number, opts: { machineId?: string | undefined; label?: string | undefined; scopes?: ServiceScope[] | undefined } = {}): Promise<Issued> {
     const token = PREFIX[kind] + randomBytes(32).toString("base64url");
     const hash = sha256(token);
     const p = this.policies[kind];
     const expiresAt = now + p.maxAgeMs;
-    await this.store.insertToken({ hash, userId, kind, machineId: opts.machineId, label: opts.label, createdAt: now, lastUsed: now, expiresAt, revoked: false });
+    await this.store.insertToken({ hash, userId, kind, machineId: opts.machineId, label: opts.label, scopes: opts.scopes, createdAt: now, lastUsed: now, expiresAt, revoked: false });
     return { token, hash, expiresAt };
   }
 

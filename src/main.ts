@@ -11,7 +11,7 @@ import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./
 import { Daemon, defaultDeps } from "./daemon/index.ts";
 import { desktopNotify, paneText, pasteToPane, terminalNotify } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
-import { notifyChannels, trustSystemCertificates, writeFileAtomic, type Credentials } from "./protocol/index.ts";
+import { notifyChannels, SERVICE_SCOPES, trustSystemCertificates, writeFileAtomic, type Credentials, type ServiceScope } from "./protocol/index.ts";
 import * as tls from "node:tls";
 
 
@@ -125,7 +125,7 @@ const hub: Command = {
   async run(args) {
     const sub = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
     const rest = sub ? args.slice(1) : args;
-    const a = parseArgs(rest, ["config", "users", "listen", "service", "user", "machine", "from", "to"]);
+    const a = parseArgs(rest, ["config", "users", "listen", "service", "scope", "user", "machine", "from", "to"]);
     if (sub === "init") {
       const path = resolve(a.str("config") ?? "mesh-hub.yaml");
       const users = (a.str("users") ?? process.env.USER ?? "me").split(",").map((u) => u.trim()).filter(Boolean);
@@ -171,8 +171,11 @@ const hub: Command = {
         const svc = new HubService(store, config);
         if (sub === "token") {
           const name = a.str("service");
-          if (!name) throw new Error("usage: mesh hub token --service <name>");
-          stdio.out(await svc.serviceToken(name));
+          if (!name) throw new Error(`usage: mesh hub token --service <name> [--scope ${SERVICE_SCOPES.join(",")}]`);
+          const scopes = (a.str("scope") ?? "").split(",").filter(Boolean);
+          const unknown = scopes.filter((x) => !(SERVICE_SCOPES as readonly string[]).includes(x));
+          if (unknown.length) throw new Error(`unknown scope ${unknown.join(", ")}; known: ${SERVICE_SCOPES.join(", ")}`);
+          stdio.out(await svc.serviceToken(name, scopes as ServiceScope[]));
         } else {
           const n = await store.revokeTokens({ ...(a.str("user") ? { userId: a.str("user") } : {}), ...(a.str("machine") ? { machineId: a.str("machine") } : {}) });
           stdio.out(`Revoked ${n} token(s).`);

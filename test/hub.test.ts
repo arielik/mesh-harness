@@ -136,6 +136,26 @@ describe("authorization", () => {
   });
 });
 
+describe("service token scopes", () => {
+  it("open exactly the scoped member routes; a created goal is owned by the service account", async () => {
+    const reader = await hub.svc.serviceToken("viewer", ["goals:read", "live:read"]);
+    expect((await call("GET", "/v1/goals", reader)).status).toBe(200);
+    expect((await call("GET", "/v1/steps", reader)).status).toBe(200);
+    expect((await call("GET", "/v1/live", reader)).status).toBe(200);
+    expect((await call("GET", "/v1/events?after=0", reader)).status).toBe(200);
+    expect((await call("POST", "/v1/goals", reader, { title: "nope" })).status).toBe(403);
+    expect((await call("GET", "/v1/attention", reader)).status).toBe(403);
+
+    const writer = await hub.svc.serviceToken("mesh-ai", ["goals:write", "goals:read"]);
+    const created = await call("POST", "/v1/goals", writer, { title: "From the trunk", refs: { trunk: "item-1" } });
+    expect(created.status).toBe(201);
+    const id = (created.json as { id: string }).id;
+    expect((await call("GET", `/v1/goals/${id}`, writer)).json).toMatchObject({ goal: { title: "From the trunk", ownerId: "mesh-ai", refs: { trunk: "item-1" } } });
+    expect((await call("POST", `/v1/goals/${id}/approve`, writer, {})).status).toBe(403);
+    expect((await call("GET", "/v1/live", writer)).status).toBe(403);
+  });
+});
+
 describe("token login", () => {
   it("issues a device token bound to a machine; logout revokes it", async () => {
     const a = await login("alice");

@@ -1,7 +1,7 @@
 // Hub persistence (plan §3.2, §8). Rows keep a few indexed columns plus the JSON value.
 
 import { randomUUID } from "node:crypto";
-import { Goal, Plan, Question, Session, Step, type Note } from "../protocol/index.ts";
+import { Goal, Plan, Question, ServiceScope, Session, Step, type Note } from "../protocol/index.ts";
 import { openDb, SOLE_LEADER, type Channel, type Db, type Leader } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
@@ -45,6 +45,8 @@ export const HUB_MIGRATIONS: readonly string[] = [
    CREATE INDEX event_goal ON event (goal);`,
   // v0.1.5: a machine is a mesh installation, not person + hostname (NULL: an older CLI's machine).
   `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
+  // v0.1.6: a service token's scopes, comma-separated (NULL: the event feed only).
+  `ALTER TABLE token ADD COLUMN scopes TEXT;`,
 ];
 
 /**
@@ -91,6 +93,7 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    CREATE INDEX event_step ON event (step);
    CREATE INDEX event_goal ON event (goal);`,
   `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
+  `ALTER TABLE token ADD COLUMN scopes TEXT;`,
 ];
 
 export type TokenKind = "device" | "web" | "service";
@@ -101,6 +104,8 @@ export interface TokenRow {
   kind: TokenKind;
   machineId?: string | undefined;
   label?: string | undefined;
+  /** Service tokens only: the member routes this token may also call. */
+  scopes?: ServiceScope[] | undefined;
   createdAt: number;
   lastUsed: number;
   expiresAt: number;
@@ -171,6 +176,8 @@ export interface NewEvent {
 }
 
 const opt = <T>(v: T | null): T | undefined => (v === null ? undefined : v);
+// A scope this version does not know (written by a newer hub) grants nothing.
+const scopesOf = (v: string): ServiceScope[] => v.split(",").flatMap((x) => (ServiceScope.safeParse(x).success ? [x as ServiceScope] : []));
 const json = (v: unknown) => JSON.stringify(v);
 
 function slug(name: string): string {
@@ -330,12 +337,13 @@ export class HubStore {
 
   async insertToken(t: TokenRow): Promise<void> {
     await this.db.run(
-      "INSERT INTO token (hash, user_id, kind, machine_id, label, created_at, last_used, expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+      "INSERT INTO token (hash, user_id, kind, machine_id, label, scopes, created_at, last_used, expires_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
       t.hash,
       t.userId,
       t.kind,
       t.machineId ?? null,
       t.label ?? null,
+      t.scopes?.length ? t.scopes.join(",") : null,
       t.createdAt,
       t.lastUsed,
       t.expiresAt,
@@ -343,12 +351,12 @@ export class HubStore {
   }
 
   async getToken(hash: string): Promise<TokenRow | undefined> {
-    const r = await this.db.get<{ hash: string; user_id: string; kind: TokenKind; machine_id: string | null; label: string | null; created_at: number; last_used: number; expires_at: number; revoked: number }>(
+    const r = await this.db.get<{ hash: string; user_id: string; kind: TokenKind; machine_id: string | null; label: string | null; scopes: string | null; created_at: number; last_used: number; expires_at: number; revoked: number }>(
       "SELECT * FROM token WHERE hash = ?",
       hash,
     );
     if (!r) return undefined;
-    return { hash: r.hash, userId: r.user_id, kind: r.kind, machineId: opt(r.machine_id), label: opt(r.label), createdAt: r.created_at, lastUsed: r.last_used, expiresAt: r.expires_at, revoked: r.revoked === 1 };
+    return { hash: r.hash, userId: r.user_id, kind: r.kind, machineId: opt(r.machine_id), label: opt(r.label), scopes: r.scopes ? scopesOf(r.scopes) : undefined, createdAt: r.created_at, lastUsed: r.last_used, expiresAt: r.expires_at, revoked: r.revoked === 1 };
   }
 
   async touchToken(hash: string, now: number): Promise<void> {

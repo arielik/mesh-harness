@@ -1,5 +1,7 @@
 // Roles and authorization (plan §4.5). Provider-agnostic: groups come normalized from the provider.
 
+import type { ServiceScope } from "../protocol/index.ts";
+
 export const ROLES = ["member", "approver", "admin", "service"] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -41,15 +43,17 @@ export function rolesFor(groups: readonly string[], mapping: RoleMapping, extra:
 export interface Principal {
   userId: string;
   roles: readonly Role[];
+  /** Scopes of a service token: the member routes it may also call. */
+  scopes?: readonly ServiceScope[] | undefined;
 }
 
 /** Route-level rules; every hub route declares one (checked by a test). */
 export type RouteRule = "public" | "member" | "admin" | "events";
 
-export function allowed(rule: RouteRule, p: Principal | undefined): boolean {
+export function allowed(rule: RouteRule, p: Principal | undefined, scope?: ServiceScope): boolean {
   if (rule === "public") return true;
   if (!p) return false;
-  if (rule === "member") return p.roles.includes("member") || p.roles.includes("admin");
+  if (rule === "member") return p.roles.includes("member") || p.roles.includes("admin") || (scope !== undefined && (p.scopes ?? []).includes(scope));
   if (rule === "admin") return p.roles.includes("admin");
   return p.roles.includes("service") || p.roles.includes("admin");
 }

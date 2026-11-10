@@ -118,6 +118,15 @@ describe("roles", () => {
     expect(allowed(rule, roles ? { userId: "u", roles } : undefined)).toBe(expected);
   });
 
+  it("lets a service token call a member route only with that route's scope", () => {
+    const svc = { userId: "s", roles: ["service"] as const, scopes: ["goals:read"] as const };
+    expect(allowed("member", svc, "goals:read")).toBe(true);
+    expect(allowed("member", svc, "goals:write")).toBe(false);
+    expect(allowed("member", svc)).toBe(false);
+    expect(allowed("admin", svc, "goals:read")).toBe(false);
+    expect(allowed("member", { userId: "s", roles: ["service"] }, "goals:read")).toBe(false);
+  });
+
   it("lets owners, approvers and admins approve", () => {
     expect(canApprove({ userId: "o", roles: ["member"] }, "o")).toBe(true);
     expect(canApprove({ userId: "x", roles: ["member"] }, "o")).toBe(false);

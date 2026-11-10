@@ -34,7 +34,7 @@ auth:
 - **member:** use goals and steps.
 - **approver:** approve any plan.
 - **admin:** everything, plus user and token administration.
-- **service:** read the event feed only.
+- **service:** read the event feed, plus what the token's scopes allow.
 
 Roles come from provider groups (`roles:` mappings) and `bootstrap_admins`.
 
@@ -42,5 +42,6 @@ Roles come from provider groups (`roles:` mappings) and `bootstrap_admins`.
 - Device tokens (CLI and daemon) and web sessions expire as configured.
 - `mesh hub revoke --user alice` or `--machine m-…` revokes them.
 - `mesh hub token --service analytics` mints a token for `GET /v1/events` and `mesh ledger export --events`.
+- `--scope` adds member routes to a service token, comma-separated. `goals:read` reads goals and steps (`GET /v1/goals`, `/v1/goals/:id` with its files and timeline, `GET /v1/steps`, `/v1/steps/:id`); `goals:write` creates goals (`POST /v1/goals`, owned by the service account); `live:read` reads `GET /v1/live` and `GET /v1/stream`. No scope approves, claims or answers. Example, for a dashboard that shows and adds goals: `mesh hub token --service mesh-ai --scope goals:read,goals:write,live:read`. A scope is fixed when the token is minted; to change it, revoke the token (`mesh hub revoke --user <service user>`) and mint another.
 
 A daemon whose token expired keeps working locally and shows "hub login expired"; `mesh login` again.

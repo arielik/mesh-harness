@@ -987,7 +987,7 @@
       "get": {
         "operationId": "getVLive",
         "summary": "Live sessions across the team.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `live:read`.",
         "tags": [
           "daemon"
         ],
@@ -1004,6 +1004,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1037,7 +1040,7 @@
       "get": {
         "operationId": "getVStream",
         "summary": "Server-sent hints (changed, wake). Lossy by design: clients refetch.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `live:read`.",
         "tags": [
           "daemon"
         ],
@@ -1054,6 +1057,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1062,7 +1068,7 @@
       "get": {
         "operationId": "getVGoals",
         "summary": "All goals.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "goals"
         ],
@@ -1079,13 +1085,16 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       },
       "post": {
         "operationId": "postVGoals",
         "summary": "Create a goal.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:write`.",
         "tags": [
           "goals"
         ],
@@ -1195,6 +1204,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1203,7 +1215,7 @@
       "get": {
         "operationId": "getVGoalsId",
         "summary": "A goal with its plans and steps.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "goals"
         ],
@@ -1230,6 +1242,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1709,7 +1724,7 @@
       "get": {
         "operationId": "getVGoalsIdFiles",
         "summary": "The record files of a goal, as the ledger writes them.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "goals"
         ],
@@ -1736,6 +1751,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1744,7 +1762,7 @@
       "get": {
         "operationId": "getVGoalsIdTimeline",
         "summary": "A goal's history.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "goals"
         ],
@@ -1771,6 +1789,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1779,7 +1800,7 @@
       "get": {
         "operationId": "getVSteps",
         "summary": "Steps, filtered.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "steps"
         ],
@@ -1834,6 +1855,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1886,7 +1910,7 @@
       "get": {
         "operationId": "getVStepsId",
         "summary": "One step.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "steps"
         ],
@@ -1913,6 +1937,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
