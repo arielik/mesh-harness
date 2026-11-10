@@ -92,7 +92,9 @@ export function render(v: View): string[] {
   if (list.length === 0) {
     lines.push("  No Claude Code sessions yet. Start one with `claude` or `mesh run <repo>`.");
   }
-  const labelW = Math.min(24, Math.max(10, ...list.map((s) => sessionLabel(s).length)));
+  // OpenCode sessions carry a small agent marker.
+  const shown = (s: Session) => (s.agent === "opencode" ? `${sessionLabel(s)} ·oc` : sessionLabel(s));
+  const labelW = Math.min(24, Math.max(10, ...list.map((s) => shown(s).length)));
   const stepW = Math.min(16, Math.max(0, ...list.map((s) => (s.step ?? "").length)));
   let current: Group | undefined;
   for (const s of list) {
@@ -107,7 +109,7 @@ export function render(v: View): string[] {
     const pending = pendingBySid.get(s.sid);
     const auto = s.autopilot && s.autopilot !== "nudge" ? `${s.autopilot} ` : "";
     const right = `${pending ? `✉${pending} ` : ""}${auto}${s.bgId ? "bg " : ""}${age(since(s, v.now)).padStart(4)}`;
-    const left = `  ${ICON[g]} ${fit(sessionLabel(s), labelW)}  ${stepW ? `${fit(s.step ?? "—", stepW)}  ` : ""}`;
+    const left = `  ${ICON[g]} ${fit(shown(s), labelW)}  ${stepW ? `${fit(s.step ?? "—", stepW)}  ` : ""}`;
     const middle = fit(detail(s, v.now), Math.max(0, v.width - left.length - right.length - 1));
     const row = `${left}${middle} ${right}`;
     lines.push(s.sid === v.selected ? paint(C.inverse, row) : row);

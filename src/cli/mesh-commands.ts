@@ -23,8 +23,9 @@ import {
   uninstallSettingsFile,
 } from "../claude/index.ts";
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
+import { installPlugin, opencodeSupported, opencodeVersion, pluginStatus, uninstallPlugin, type PluginOptions } from "../opencode/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, paneSocket, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -43,19 +44,50 @@ function client(c: CliEnv): DaemonClient {
   return new DaemonClient(loadConfig(c.paths));
 }
 
+type AgentChoice = "claude" | "opencode" | "all";
+
+function agentChoice(v: string | undefined): AgentChoice | undefined {
+  return v === "claude" || v === "opencode" || v === "all" ? v : undefined;
+}
+
+/** What the OpenCode plugin needs to know: where the daemon config is, and how to start `mesh mcp`. */
+function pluginOptions(c: CliEnv): PluginOptions {
+  return { daemonConfigPath: c.paths.daemonConfig, mcpCommand: [...c.self, "mcp"] };
+}
+
 export function setupCommand(c: CliEnv): Command {
   return {
     name: "setup",
-    summary: "install mesh's hooks into Claude Code (--uninstall to remove)",
+    summary: "install mesh into Claude Code, or OpenCode with --agent opencode|all (--uninstall to remove)",
     async run(args) {
-      const a = parseArgs(args, ["port", "notify"]);
+      const a = parseArgs(args, ["port", "notify", "agent"]);
       const notifyArg = a.str("notify");
       if (notifyArg !== undefined && !["desktop", "terminal", "both", "off"].includes(notifyArg)) {
         c.io.err("--notify must be desktop, terminal, both or off");
         return 2;
       }
+      const agent = a.has("agent") ? agentChoice(a.str("agent")) : a.has("uninstall") ? "all" : "claude";
+      if (!agent) {
+        c.io.err("--agent must be claude, opencode or all");
+        return 2;
+      }
+      const claude = agent !== "opencode";
+      const opencode = agent !== "claude";
       const runner = c.runner ?? runProgram;
       if (a.has("uninstall")) {
+        const lines: string[] = [];
+        if (opencode) {
+          const p = uninstallPlugin(c.paths.opencodePlugin);
+          const sk = uninstallSkill(c.paths.opencodeSkill);
+          if (p.changed) lines.push(`Removed the mesh plugin ${c.paths.opencodePlugin}.`);
+          if (sk.changed) lines.push(`Removed the mesh skill ${c.paths.opencodeSkill}.`);
+          if (agent === "opencode" && !p.changed && !sk.changed) lines.push("mesh was not installed into OpenCode.");
+          if (p.changed) lines.push("OpenCode sessions that are already open keep the plugin until they exit.");
+        }
+        if (!claude) {
+          c.io.out(lines.join("\n"));
+          return 0;
+        }
         const r = uninstallSettingsFile(c.paths.claudeSettings);
         const md = uninstallClaudeMd(c.paths.claudeMd);
         const skill = uninstallSkill(c.paths.claudeSkill);
@@ -66,6 +98,7 @@ export function setupCommand(c: CliEnv): Command {
             md.changed ? `Removed the mesh block from ${c.paths.claudeMd}.` : "",
             skill.changed ? `Removed the mesh skill ${c.paths.claudeSkill}.` : "",
             mcp ? "Removed the mesh MCP server." : "",
+            ...lines,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -85,6 +118,34 @@ export function setupCommand(c: CliEnv): Command {
         if (notifyArg) config.notify = notifyArg as NotifyMode;
       }
       saveConfig(c.paths, config);
+      const ocLines: string[] = [];
+      if (opencode) {
+        const v = await opencodeVersion(runner);
+        if (!v) ocLines.push("warning: opencode not found on PATH; installing the plugin anyway.");
+        else if (!opencodeSupported(v)) ocLines.push(`warning: opencode ${v} is older than ${MIN_OPENCODE_VERSION} (mesh needs the v2 plugin API); run: opencode upgrade`);
+        const p = installPlugin(c.paths.opencodePlugin, pluginOptions(c));
+        ocLines.push(
+          p.foreign
+            ? `Left ${c.paths.opencodePlugin} alone: mesh did not write it. Move it away and run mesh setup --agent opencode again.`
+            : `${p.changed ? "Installed" : "Kept"} the mesh plugin (v${OPENCODE_PLUGIN_VERSION}) ${c.paths.opencodePlugin}; it also gives OpenCode the mesh MCP tools.`,
+        );
+        const sk = installSkill(c.paths.opencodeSkill);
+        ocLines.push(sk.foreign ? `Left ${c.paths.opencodeSkill} alone: mesh did not write it.` : `${sk.changed ? "Installed" : "Kept"} the mesh skill ${c.paths.opencodeSkill}.`);
+        if (p.changed) ocLines.push("OpenCode loads plugins at startup: restart open OpenCode sessions (and the desktop app or `opencode service restart`).");
+      }
+      if (!claude) {
+        c.io.out(
+          [
+            `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
+            ...ocLines,
+            "OpenCode sessions started from now on report to mesh. Next:",
+            "  mesh up             # run the daemon here, or",
+            "  mesh up --install   # run it as a user service",
+            "  mesh                # the session list",
+          ].join("\n"),
+        );
+        return 0;
+      }
       const r = installSettingsFile(c.paths.claudeSettings, config);
       const mcp = a.has("no-mcp") ? { ok: true, skipped: true } : await installMcp([...c.self, "mcp"], runner);
       // The skill replaces the CLAUDE.md block older versions wrote: remove that block if present.
@@ -102,7 +163,8 @@ export function setupCommand(c: CliEnv): Command {
               : "",
           legacy.changed ? `Removed the old mesh block from ${c.paths.claudeMd} (the skill replaces it).` : "",
           r.changed ? "Sessions that are already open keep their old hooks until you restart them." : "",
-          "Claude sessions started from now on report to mesh. Next:",
+          ...ocLines,
+          `${opencode ? "Claude and OpenCode" : "Claude"} sessions started from now on report to mesh. Next:`,
           "  mesh up             # run the daemon here, or",
           "  mesh up --install   # run it as a user service",
           "  mesh                # the session list",
@@ -147,42 +209,69 @@ export function doctorCommand(c: CliEnv): Command {
       } catch (e) {
         bad(e instanceof Error ? e.message : String(e));
       }
-      const v = await claudeVersion(runner);
-      if (!v) bad("claude not found on PATH");
-      else if (compareVersions(v, MIN_CLAUDE_VERSION) < 0) bad(`claude ${v} is older than ${MIN_CLAUDE_VERSION}; run: claude update`);
-      else ok(`claude ${v}`);
-      if ((await runner("curl", ["--version"], { timeoutMs: 5_000 })).code === 0) ok("curl");
-      else bad("curl not found (the hooks use it)");
+      // Which agents mesh is set up for: Claude Code (hooks), OpenCode (plugin). With only OpenCode
+      // set up, Claude Code is optional and its checks are skipped.
+      const st = config ? inspectSettingsFile(c.paths.claudeSettings, config) : undefined;
+      const ps = pluginStatus(c.paths.opencodePlugin, pluginOptions(c));
+      const claudeWanted = !st || st.installed.length > 0 || ps.state === "missing";
+      if (claudeWanted) {
+        const v = await claudeVersion(runner);
+        if (!v) bad("claude not found on PATH");
+        else if (compareVersions(v, MIN_CLAUDE_VERSION) < 0) bad(`claude ${v} is older than ${MIN_CLAUDE_VERSION}; run: claude update`);
+        else ok(`claude ${v}`);
+        if ((await runner("curl", ["--version"], { timeoutMs: 5_000 })).code === 0) ok("curl");
+        else bad("curl not found (the hooks use it)");
+      }
       if ((await runner("tmux", ["-V"], { timeoutMs: 5_000 })).code === 0) ok("tmux");
       else warn("tmux not found: jump and typing into sessions need it");
-      if (config) {
-        const st = inspectSettingsFile(c.paths.claudeSettings, config);
-        if (st.installed.length === HOOK_KINDS.length && st.stale.length === 0) ok(`hooks v${HOOKS_VERSION} installed in ${c.paths.claudeSettings}`);
-        else if (st.installed.length === 0) bad("hooks not installed; run: mesh setup");
-        else if ((st.version ?? HOOKS_VERSION) < HOOKS_VERSION) bad(`hooks are from an older mesh (v${st.version}, this mesh writes v${HOOKS_VERSION}); run: mesh setup`);
-        else bad(`hooks out of date (${[...new Set([...st.stale])].join(", ") || "incomplete"}); run: mesh setup`);
-        if (await mcpInstalled(runner)) ok("mesh MCP server registered");
-        else warn("mesh MCP server not registered (agents can't use mesh tools); run: mesh setup");
-        const sk = skillStatus(c.paths.claudeSkill);
-        if (sk === "current") ok(`mesh skill ${c.paths.claudeSkill}`);
-        else if (sk === "foreign") warn(`${c.paths.claudeSkill} was not written by mesh; agents get mesh's own instructions only from the MCP server`);
-        else warn(`mesh skill ${sk === "missing" ? "not installed" : "out of date"}; run: mesh setup`);
-        if (claudeMdInstalled(c.paths.claudeMd)) warn(`old mesh block in ${c.paths.claudeMd} (the skill replaces it); run: mesh setup`);
+      if (config && st) {
+        if (!claudeWanted) warn("mesh is set up for OpenCode only (Claude Code too: mesh setup --agent all)");
+        else {
+          if (st.installed.length === HOOK_KINDS.length && st.stale.length === 0) ok(`hooks v${HOOKS_VERSION} installed in ${c.paths.claudeSettings}`);
+          else if (st.installed.length === 0) bad("hooks not installed; run: mesh setup");
+          else if ((st.version ?? HOOKS_VERSION) < HOOKS_VERSION) bad(`hooks are from an older mesh (v${st.version}, this mesh writes v${HOOKS_VERSION}); run: mesh setup`);
+          else bad(`hooks out of date (${[...new Set([...st.stale])].join(", ") || "incomplete"}); run: mesh setup`);
+          if (await mcpInstalled(runner)) ok("mesh MCP server registered");
+          else warn("mesh MCP server not registered (agents can't use mesh tools); run: mesh setup");
+          const sk = skillStatus(c.paths.claudeSkill);
+          if (sk === "current") ok(`mesh skill ${c.paths.claudeSkill}`);
+          else if (sk === "foreign") warn(`${c.paths.claudeSkill} was not written by mesh; agents get mesh's own instructions only from the MCP server`);
+          else warn(`mesh skill ${sk === "missing" ? "not installed" : "out of date"}; run: mesh setup`);
+          if (claudeMdInstalled(c.paths.claudeMd)) warn(`old mesh block in ${c.paths.claudeMd} (the skill replaces it); run: mesh setup`);
+        }
+        // OpenCode: checked when mesh's plugin is there, or OpenCode is installed.
+        const ov = await opencodeVersion(runner);
+        if (ps.state !== "missing" || ov) {
+          if (!ov) warn("mesh plugin installed for OpenCode, but opencode is not on PATH");
+          else if (!opencodeSupported(ov)) bad(`opencode ${ov} is older than ${MIN_OPENCODE_VERSION} (mesh needs the v2 plugin API); run: opencode upgrade`);
+          else ok(`opencode ${ov}`);
+          if (ps.state === "current") ok(`OpenCode plugin v${ps.version} ${c.paths.opencodePlugin}`);
+          else if (ps.state === "missing") warn("OpenCode sessions don't report to mesh; run: mesh setup --agent opencode");
+          else if (ps.state === "foreign") warn(`${c.paths.opencodePlugin} was not written by mesh`);
+          else bad(`OpenCode plugin out of date${ps.version ? ` (v${ps.version}, this mesh writes v${OPENCODE_PLUGIN_VERSION})` : ""}; run: mesh setup --agent opencode`);
+          if (ps.state !== "missing") {
+            const osk = skillStatus(c.paths.opencodeSkill);
+            if (osk === "current") ok(`mesh skill ${c.paths.opencodeSkill}`);
+            else if (osk !== "foreign") warn(`mesh skill for OpenCode ${osk === "missing" ? "not installed" : "out of date"}; run: mesh setup --agent opencode`);
+          }
+        }
         try {
           const d = new DaemonClient(config);
           const h = await d.health();
           ok(`daemon running on 127.0.0.1:${config.port} (${h.sessions} live sessions)`);
-          const st = await d.status();
-          const old = st.oldHooks ?? 0;
+          const ds = await d.status();
+          const old = ds.oldHooks ?? 0;
           if (old > 0) warn(`${old} open session${old === 1 ? "" : "s"} started before the hooks were updated; restart ${old === 1 ? "it" : "them"} (exit, then claude --continue) to pick up the new hooks`);
+          const oldPlugin = ds.oldPlugin ?? 0;
+          if (oldPlugin > 0) warn(`${oldPlugin} open OpenCode session${oldPlugin === 1 ? "" : "s"} run an older mesh plugin; restart ${oldPlugin === 1 ? "it" : "them"} (exit, then opencode --continue)`);
           const creds = loadCredentials(c.paths);
           if (!creds) {
-            if (st.mode === "solo") ok(`Solo: working on the local hub ${st.hubUrl ?? ""} (log in to a team hub with: mesh login --hub <url>)`);
+            if (ds.mode === "solo") ok(`Solo: working on the local hub ${ds.hubUrl ?? ""} (log in to a team hub with: mesh login --hub <url>)`);
             else warn("not logged in to a hub and no Solo hub; restart mesh up, or run: mesh login --hub <url>");
-          } else if (st.hub === "ok") ok(`hub ${creds.hub} as ${creds.user.id}${st.outbox ? ` (${st.outbox} events waiting to sync)` : ""}`);
-          else if (st.hub === "offline")
-            warn(`hub ${creds.hub} offline${st.offlineSince ? ` since ${new Date(st.offlineSince).toISOString().slice(11, 16)} UTC` : ""}: working locally (${st.outbox} events, ${st.queued} calls queued)`);
-          else bad(`hub ${creds.hub}: ${st.hub}${st.error ? ` (${st.error})` : ""}`);
+          } else if (ds.hub === "ok") ok(`hub ${creds.hub} as ${creds.user.id}${ds.outbox ? ` (${ds.outbox} events waiting to sync)` : ""}`);
+          else if (ds.hub === "offline")
+            warn(`hub ${creds.hub} offline${ds.offlineSince ? ` since ${new Date(ds.offlineSince).toISOString().slice(11, 16)} UTC` : ""}: working locally (${ds.outbox} events, ${ds.queued} calls queued)`);
+          else bad(`hub ${creds.hub}: ${ds.hub}${ds.error ? ` (${ds.error})` : ""}`);
         } catch (e) {
           bad(e instanceof Error ? e.message : String(e));
         }
@@ -196,13 +285,14 @@ function line(s: Session, now: number): string {
   const g = groupOf(s);
   const what = g === "NEEDS YOU" ? needsLabel(s) : g === "IDLE" && s.lastMessage ? `done: ${s.lastMessage}` : g.toLowerCase();
   const ago = age(since(s, now));
-  return `${sessionLabel(s).padEnd(24)} ${(s.step ?? "-").padEnd(14)} ${s.state.padEnd(9)} ${ago.padStart(4)}  ${s.pane ?? s.bgId ?? "-"}  ${what}`;
+  const label = s.agent === "opencode" ? `${sessionLabel(s)} [oc]` : sessionLabel(s);
+  return `${label.padEnd(24)} ${(s.step ?? "-").padEnd(14)} ${s.state.padEnd(9)} ${ago.padStart(4)}  ${s.pane ?? s.bgId ?? "-"}  ${what}`;
 }
 
 export function lsCommand(c: CliEnv): Command {
   return {
     name: "ls",
-    summary: "list your Claude sessions (--json)",
+    summary: "list your agent sessions (--json); [oc] marks OpenCode",
     async run(args) {
       const a = parseArgs(args);
       const data = await client(c).sessions();
@@ -272,9 +362,19 @@ export function tuiCommand(c: CliEnv): Command {
 export function runCommand(c: CliEnv): Command {
   return {
     name: "run",
-    summary: "start claude in tmux, one window per repo: mesh run <repo…> [--step S [--worktree] [--base REF] | --design G] [--auto L] [--bg --prompt P]",
+    summary: "start claude (or opencode: --agent opencode) in tmux, one window per repo: mesh run <repo…> [--step S [--worktree] [--base REF] | --design G] [--auto L] [--bg --prompt P]",
     async run(args) {
-      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design", "base"]);
+      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design", "base", "agent"]);
+      const agent = a.str("agent") ?? "claude";
+      if (agent !== "claude" && agent !== "opencode") {
+        c.io.err("--agent must be claude or opencode");
+        return 2;
+      }
+      const oc = agent === "opencode";
+      if (oc && a.has("bg")) {
+        c.io.err("--bg starts a Claude Code background session; OpenCode sessions run in tmux windows");
+        return 2;
+      }
       const designGoal = a.str("design");
       let design: GoalDetail | undefined;
       if (designGoal) {
@@ -335,7 +435,9 @@ export function runCommand(c: CliEnv): Command {
           c.io.out(`${wt.created ? "Created" : "Using"} worktree ${wt.path} on branch ${wt.branch}${wt.created ? ` from ${wt.base}` : ""}.`);
         }
         // Paths the step must not read become Claude Code deny rules for its session (best effort).
-        if (claimed.policy?.forbid?.length) {
+        if (claimed.policy?.forbid?.length && oc) {
+          c.io.err(`warning: the step forbids reading ${claimed.policy.forbid.join(", ")}; mesh can't enforce that in OpenCode yet.`);
+        } else if (claimed.policy?.forbid?.length) {
           const file = join(c.paths.stateDir, "step-settings", `${claimed.id}.json`);
           mkdirSync(dirname(file), { recursive: true });
           writeFileSync(file, `${JSON.stringify({ permissions: { deny: claimed.policy.forbid.flatMap((p) => [`Read(${p})`, `Edit(${p})`]) } }, null, 2)}\n`);
@@ -378,6 +480,12 @@ export function runCommand(c: CliEnv): Command {
       const created = !(await hasSession(sessionName, tmux));
       // The prompt goes first: --add-dir takes a variable number of values.
       const claudeArgv = (name: string) => ["claude", ...(prompt ? [prompt] : []), "-n", name, ...(model ? ["--model", model] : []), ...extraArgv, ...addDirs.flatMap((d) => ["--add-dir", d])];
+      // OpenCode: a private server per window (--standalone), so the mesh plugin runs in it and
+      // knows the window's pane, step and autopilot. The TUI has no name or model flag.
+      if (oc && model) c.io.err("warning: opencode's terminal UI has no --model flag; pick the model in OpenCode (or set it in opencode.json).");
+      if (oc && addDirs.length) c.io.err(`warning: OpenCode has no --add-dir; the design session sees only ${dirs[0]}.`);
+      const opencodeArgv = (): string[] => ["opencode", "--standalone", ...(prompt ? ["--prompt", prompt] : [])];
+      const agentArgv = (name: string) => (oc ? opencodeArgv() : claudeArgv(name));
       const windows: string[] = [];
       let first = true;
       if (created) {
@@ -392,16 +500,16 @@ export function runCommand(c: CliEnv): Command {
       for (const dir of dirs) {
         const name = basename(dir);
         const label = step ? `${name}·${step}` : name;
-        const spec = { name, cwd: dir, argv: claudeArgv(label), env };
+        const spec = { name, cwd: dir, argv: agentArgv(label), env };
         const pane = first ? await newSession(sessionName, spec, tmux) : await newWindow(sessionName, spec, tmux);
         first = false;
         windows.push(`${name} (${pane})`);
-        if (folderTrusted(dir, claudeStatePath(c.env, c.env.HOME)) === false) untrusted.push(`${name} (${pane})`);
-        // Until Claude's first hook, the daemon lists the window itself (it may wait at the trust prompt).
+        if (!oc && folderTrusted(dir, claudeStatePath(c.env, c.env.HOME)) === false) untrusted.push(`${name} (${pane})`);
+        // Until the agent's first event, the daemon lists the window itself (Claude may wait at the trust prompt).
         if (config) {
           try {
             const socket = await paneSocket(pane, tmux);
-            await new DaemonClient(config).launch({ pane, cwd: dir, name: label, ...(socket ? { tmuxSocket: socket } : {}), ...(step ? { step } : {}) });
+            await new DaemonClient(config).launch({ pane, cwd: dir, name: label, ...(oc ? { agent: "opencode" as const } : {}), ...(socket ? { tmuxSocket: socket } : {}), ...(step ? { step } : {}) });
           } catch {
             listed = false;
           }

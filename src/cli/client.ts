@@ -85,4 +85,6 @@ export interface DaemonStatus {
   host: string;
   /** Open sessions whose hooks come from an older mesh (missing from older daemons). */
   oldHooks?: number;
+  /** Live OpenCode sessions reported by an older mesh plugin. */
+  oldPlugin?: number;
 }

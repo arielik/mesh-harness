@@ -145,7 +145,7 @@ export interface GoalDetail {
   steps: Step[];
   plans: Plan[];
   /** Live state of each holder's session, by step id (stalled, needs you, …). */
-  holders?: Record<string, { sid: string; state: string; needs?: string | undefined; user: string }> | undefined;
+  holders?: Record<string, { sid: string; state: string; needs?: string | undefined; user: string; agent?: string | undefined }> | undefined;
 }
 
 export interface StepView {

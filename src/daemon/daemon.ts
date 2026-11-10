@@ -34,6 +34,10 @@ import {
   notifyChannels,
   KEY_HEADER,
   LaunchRequest,
+  OpenCodeEvent,
+  OpenCodePoll,
+  OPENCODE_PLUGIN_VERSION,
+  openCodeToHookEvent,
   SayRequest,
   stopReply,
   toHookEvent,
@@ -52,6 +56,7 @@ import {
   type HookKind,
   type Message,
   type NotifyTarget,
+  type OpenCodeReply,
   type Repo,
   type Session,
   type SessionsResponse,
@@ -87,12 +92,25 @@ export interface DaemonDeps {
   scanRuns?(since: number): AgentRun[];
   /** Hub call timeout (tests use a short one). */
   hubTimeoutMs?: number;
+  /** Is this process alive? (OpenCode sessions end when their server's process is gone.) */
+  alive?(pid: number): boolean;
+}
+
+/** `kill -0`: EPERM means the process exists but belongs to someone else. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 const claudeHome = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 
 /** Where Claude Code keeps a session's transcript: projects/<cwd, every other character as ->/<id>.jsonl. */
 export function transcriptGuess(s: Session, home = claudeHome()): string | undefined {
+  if (s.agent === "opencode") return undefined;
   const id = s.claudeSessionIds.at(-1);
   if (!id || !s.cwd) return undefined;
   return join(home, "projects", s.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`);
@@ -119,6 +137,7 @@ export const defaultDeps = (overrides: Partial<DaemonDeps> & Pick<DaemonDeps, "l
   claudeVersion: () => claudeVersion(),
   readAgent: (path, id) => readAgentFiles(path, id),
   scanRuns: (since) => scanWorkflowRuns(claudeHome(), since),
+  alive: pidAlive,
   ...overrides,
 });
 
@@ -182,6 +201,8 @@ export class Daemon {
   private claudeCode: string | undefined;
   private provenanceSent = new Set<string>();
   private agentEvents = new Set<string>();
+  /** session:step pairs already bound at the hub after a SessionStart. */
+  private boundSteps = new Set<string>();
 
   constructor(opts: {
     config: DaemonConfig;
@@ -526,8 +547,15 @@ export class Daemon {
   }
 
   async callTool(tool: ToolName, call: ToolCall): Promise<{ text: string; isError?: boolean }> {
-    const s = this.sessions.find((x) => x.pid === call.pid && x.state !== "ended");
-    if (!s) return { text: "mesh doesn't know this Claude session yet (are the hooks installed? run `mesh doctor`).", isError: true };
+    // OpenCode names the session in each MCP call; Claude Code's shim is bound to its Claude pid.
+    const s = call.agentSessionId
+      ? this.sessions.find((x) => x.state !== "ended" && x.claudeSessionIds.includes(call.agentSessionId as string))
+      : this.sessions.find((x) => x.agent !== "opencode" && x.pid === call.pid && x.state !== "ended");
+    if (!s) {
+      return call.agentSessionId
+        ? { text: "mesh doesn't know this OpenCode session yet (is the mesh plugin installed? run `mesh doctor`).", isError: true }
+        : { text: "mesh doesn't know this Claude session yet (are the hooks installed? run `mesh doctor`).", isError: true };
+    }
     return runTool(this.toolHost(), s, tool, call.args, call.key);
   }
 
@@ -564,9 +592,12 @@ export class Daemon {
     error?: string | undefined;
     /** Live sessions whose hooks come from an older mesh (they started before `mesh setup` updated them). */
     oldHooks: number;
+    /** Live OpenCode sessions whose plugin is older than this mesh's. */
+    oldPlugin: number;
   } {
     const oldHooks = this.sessions.filter((x) => x.state !== "ended" && x.hooksVersion !== undefined && x.hooksVersion < HOOKS_VERSION).length;
-    if (!this.link) return { hub: "not-logged-in", mode: "none", outbox: 0, queued: 0, oldHooks };
+    const oldPlugin = this.sessions.filter((x) => x.state !== "ended" && x.pluginVersion !== undefined && x.pluginVersion < OPENCODE_PLUGIN_VERSION).length;
+    if (!this.link) return { hub: "not-logged-in", mode: "none", outbox: 0, queued: 0, oldHooks, oldPlugin };
     const c = this.link.credentials();
     return {
       hub: this.link.status,
@@ -578,6 +609,7 @@ export class Daemon {
       ...(c ? { hubUrl: c.hub } : {}),
       error: this.link.lastError,
       oldHooks,
+      oldPlugin,
     };
   }
 
@@ -617,20 +649,7 @@ export class Daemon {
         this.typed.splice(i, 1);
       }
     }
-    const result = applyHook(this.sessions, ev, this.ctx());
-    this.commit(result);
-    const sid = result.changed[0] as string;
-    this.store.appendHookEvent(sid, ev);
-    if (kind === "SessionStart" && ev.stepHint && this.link) {
-      const s = this.sessions.find((x) => x.sid === sid);
-      if (s && s.step !== ev.stepHint) {
-        const step = ev.stepHint;
-        void this.link
-          .rpc("POST", `/v1/steps/${encodeURIComponent(step)}/claim`, { sid }, `bind:${sid}:${step}`)
-          .then(() => this.update(sid, { step, nudges: 0, escalated: false }))
-          .catch((e) => this.deps.log(`could not bind ${sid} to ${step}: ${String(e)}`));
-      }
-    }
+    const sid = this.applyEvent(ev);
 
     if (kind === "Stop") {
       if (ev.stopHookActive !== true) {
@@ -644,6 +663,87 @@ export class Daemon {
       setTimeout(() => void this.deliverPending(sid).catch(() => undefined), 250).unref();
     }
     return {};
+  }
+
+  /** Apply a normalised hook event (from any agent); returns the session's sid. */
+  private applyEvent(ev: HookEvent): string {
+    const result = applyHook(this.sessions, ev, this.ctx());
+    this.commit(result);
+    const sid = result.changed[0] as string;
+    this.store.appendHookEvent(sid, ev);
+    if (ev.kind === "SessionStart" && ev.stepHint && this.link) {
+      const s = this.sessions.find((x) => x.sid === sid);
+      // Bind the step to this session at the hub (so its messages reach it), once per session and
+      // step. A `mesh run` window's placeholder already carries the step: bind it anyway.
+      const key = `${sid}:${ev.stepHint}`;
+      if (s && (s.step !== ev.stepHint || !this.boundSteps.has(key))) {
+        this.boundSteps.add(key);
+        const step = ev.stepHint;
+        void this.link
+          .rpc("POST", `/v1/steps/${encodeURIComponent(step)}/claim`, { sid }, `bind:${sid}:${step}`)
+          .then(() => this.update(sid, { step, nudges: 0, escalated: false }))
+          .catch((e) => this.deps.log(`could not bind ${sid} to ${step}: ${String(e)}`));
+      }
+    }
+    return sid;
+  }
+
+  // ---------- OpenCode ----------
+
+  /**
+   * An event from the mesh plugin in an OpenCode server. The reply may carry a message for the
+   * plugin to hand to that session (OpenCode queues it behind a running turn).
+   */
+  handleOpenCodeEvent(e: OpenCodeEvent): OpenCodeReply {
+    const now = this.deps.now();
+    if (e.type === "location.shutdown") {
+      // A shared server stops one location (folder) at a time; a private one stops with its terminal.
+      this.endOpenCodeServer(e.pid, "opencode exited", e.standalone ? undefined : e.cwd);
+      return {};
+    }
+    const ev = openCodeToHookEvent(e, now);
+    if (!ev) return {};
+    this.applyEvent(ev);
+    const [deliver] = this.takeOpenCodeDeliveries([ev.claudeSessionId]);
+    return deliver ? { deliver } : {};
+  }
+
+  /** Every live session an OpenCode server reported (in that folder, when given) ends with it. */
+  private endOpenCodeServer(pid: number, reason: string, cwd?: string): void {
+    for (const s of this.sessions.filter((x) => x.agent === "opencode" && x.pid === pid && x.state !== "ended" && (cwd === undefined || x.cwd === cwd))) {
+      const id = s.claudeSessionIds.at(-1);
+      if (!id) continue;
+      this.applyEvent({ kind: "SessionEnd", agent: "opencode", at: this.deps.now(), claudeSessionId: id, cwd: s.cwd, reason });
+    }
+  }
+
+  /**
+   * Messages the plugin can deliver now to these OpenCode sessions (by OpenCode session id): the
+   * oldest pending one each, unless a permission prompt is open. Marked delivered when handed over.
+   */
+  takeOpenCodeDeliveries(ids: readonly string[]): { sessionID: string; text: string }[] {
+    const out: { sessionID: string; text: string }[] = [];
+    const now = this.deps.now();
+    for (const id of ids) {
+      const s = this.sessions.find((x) => x.agent === "opencode" && x.state !== "ended" && x.claudeSessionIds.at(-1) === id);
+      if (!s) continue;
+      const [m] = this.store.pendingMessages(s.sid);
+      if (!m || now - m.createdAt > MESSAGE_TTL_MS) continue;
+      if (s.state === "needs_you" && (s.needs === "permission" || s.needs === "dialog")) continue;
+      this.settle(m, "delivered", "opencode");
+      this.deps.log(`delivered message ${m.id} to ${s.sid} via the OpenCode plugin`);
+      if (s.state !== "working") this.markWorking(s.sid);
+      out.push({ sessionID: id, text: m.text });
+    }
+    return out;
+  }
+
+  /** OpenCode sessions whose server process is gone (killed without a shutdown event). */
+  private checkOpenCodeServers(): void {
+    const alive = this.deps.alive;
+    if (!alive) return;
+    const pids = new Set(this.sessions.filter((x) => x.agent === "opencode" && x.state !== "ended" && x.pid !== undefined).map((x) => x.pid as number));
+    for (const pid of pids) if (!alive(pid)) this.endOpenCodeServer(pid, "process exited");
   }
 
   async reconcile(): Promise<void> {
@@ -693,6 +793,7 @@ export class Daemon {
 
   tick(): void {
     const now = this.deps.now();
+    this.checkOpenCodeServers();
     this.commit(applyTick(this.sessions, this.ctx()));
     this.autopilot();
     // Forget long-ended sessions in memory; the store keeps them a week.
@@ -829,6 +930,16 @@ export class Daemon {
         if (hooks) headers.hooks = hooks;
         if (sentAt) headers.sentAt = sentAt;
         return send(res, 200, this.handleHook(kind, parsed.data, headers));
+      }
+      if (req.method === "POST" && path === "/mesh/agent-event/opencode") {
+        const parsed = OpenCodeEvent.safeParse(await readJson(req));
+        if (!parsed.success) throw new HttpError(400, "invalid OpenCode event");
+        return send(res, 200, this.handleOpenCodeEvent(parsed.data));
+      }
+      if (req.method === "POST" && path === "/mesh/agent-poll/opencode") {
+        const parsed = OpenCodePoll.safeParse(await readJson(req));
+        if (!parsed.success) throw new HttpError(400, "expected {sessionIDs}");
+        return send(res, 200, { deliver: this.takeOpenCodeDeliveries(parsed.data.sessionIDs) });
       }
       if (req.method === "GET" && path === "/local/health") {
         return send(res, 200, { ok: true, port: this.port, sessions: this.sessions.filter((s) => s.state !== "ended").length });

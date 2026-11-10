@@ -63,7 +63,13 @@ export type ToolName = keyof typeof TOOLS;
 export const TOOL_NAMES = Object.keys(TOOLS) as ToolName[];
 
 /** POST /local/mcp/:tool from the shim to the daemon. */
-export const ToolCall = z.object({ pid: z.number().int().positive(), args: z.record(z.string(), z.unknown()).default({}), key: z.string().min(8) });
+export const ToolCall = z.object({
+  pid: z.number().int().positive(),
+  args: z.record(z.string(), z.unknown()).default({}),
+  key: z.string().min(8),
+  /** The agent's own session id when the agent names it in the MCP call (OpenCode's `_meta["ai.opencode/sessionID"]`). */
+  agentSessionId: z.string().min(1).optional(),
+});
 export type ToolCall = z.infer<typeof ToolCall>;
 
 export interface ToolResult {

@@ -1,7 +1,7 @@
 // Module boundaries (docs/plan/implementation-plan.md §2.1).
 // Paths match "src/<module>/" anywhere in the path so test fixtures can exercise the rules.
 
-const MODULES = ["protocol", "core", "auth", "store", "claude", "mux", "daemon", "mcp", "hub", "cli", "gitlab"];
+const MODULES = ["protocol", "core", "auth", "store", "claude", "opencode", "mux", "daemon", "mcp", "hub", "cli", "gitlab"];
 
 /** module -> internal modules it may import (itself is always allowed) */
 const ALLOWED = {
@@ -10,11 +10,12 @@ const ALLOWED = {
   auth: ["protocol", "core", "store"],
   store: ["protocol"],
   claude: ["protocol"],
+  opencode: ["protocol", "claude"],
   mux: ["protocol"],
   daemon: ["protocol", "core", "store", "claude", "mux"],
   mcp: ["protocol"],
   hub: ["protocol", "core", "store", "auth", "gitlab"],
-  cli: ["protocol", "core", "claude", "mux", "auth"],
+  cli: ["protocol", "core", "claude", "opencode", "mux", "auth"],
   gitlab: ["protocol"],
 };
 

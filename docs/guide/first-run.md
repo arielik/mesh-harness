@@ -134,6 +134,10 @@ mesh run --design G1           # a design session in tmux session "mesh"
    git -C mesh-try log --stat -3    # the work, with the record under .mesh/goals/G1/
    ```
 
+**With OpenCode instead of Claude Code:** run `mesh setup --agent opencode` once, then add
+`--agent opencode` to both `mesh run` commands. OpenCode has no folder trust prompt, so item 1
+doesn't apply.
+
 When you're done, delete the scratch repo: `rm -rf ~/src/mesh-try`.
 
 ## If something is off

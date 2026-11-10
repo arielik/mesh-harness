@@ -1,6 +1,6 @@
 # mesh-harness
 
-One place to see and steer all your Claude Code sessions, across repos and people, and a ledger in git of how the work went.
+One place to see and steer all your Claude Code and OpenCode sessions, across repos and people, and a ledger in git of how the work went.
 
 **Self-contained.** Everything needed is in this repo:
 - the tool;

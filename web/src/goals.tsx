@@ -133,7 +133,7 @@ function Dag({ detail, selected, onSelect }: { detail: GoalDetail; selected?: st
       {visible.map((s) => {
         const p = pos.get(s.id) as { x: number; y: number };
         const h = detail.holders?.[s.id];
-        const who = s.state === "claimed" || s.state === "paused" ? `@${s.holderUser ?? "?"}${h ? ` · ${h.state === "needs_you" ? `needs ${h.needs ?? "you"}` : h.state}` : ""}` : s.repo;
+        const who = s.state === "claimed" || s.state === "paused" ? `@${s.holderUser ?? "?"}${h?.agent === "opencode" ? " (opencode)" : ""}${h ? ` · ${h.state === "needs_you" ? `needs ${h.needs ?? "you"}` : h.state}` : ""}` : s.repo;
         return (
           <g key={s.id} transform={`translate(${p.x},${p.y})`} className={`node st-${s.state} ${selected === s.id ? "sel" : ""}`} onClick={() => onSelect(s.id)} data-step={s.id}>
             <rect width={BOX_W} height={BOX_H} rx={6} />

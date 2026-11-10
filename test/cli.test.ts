@@ -72,6 +72,63 @@ describe("mesh setup", () => {
   });
 });
 
+describe("mesh setup --agent opencode", () => {
+  const runner: Runner = async (cmd, args) => (cmd === "opencode" && args[0] === "--version" ? ok("2.2.4\n") : ok());
+
+  it("installs only the OpenCode plugin and skill, and uninstalls them", async () => {
+    const t = env(tmp(), runner);
+    expect(await t.cmd("setup").run(["--agent", "opencode", "--port", "31235"])).toBe(0);
+    expect(existsSync(t.paths.claudeSettings)).toBe(false);
+    const plugin = readFileSync(t.paths.opencodePlugin, "utf8");
+    expect(plugin).toContain(JSON.stringify(t.paths.daemonConfig));
+    expect(plugin).toContain('["mesh","mcp"]');
+    expect(existsSync(t.paths.opencodeSkill)).toBe(true);
+    expect(t.out.join("\n")).toContain("OpenCode sessions started from now on report to mesh");
+    expect(await t.cmd("setup").run(["--agent", "opencode", "--uninstall"])).toBe(0);
+    expect(existsSync(t.paths.opencodePlugin)).toBe(false);
+    expect(existsSync(t.paths.opencodeSkill)).toBe(false);
+    // The folders mesh created for its files go with them; OpenCode's config folder stays.
+    expect(existsSync(join(t.paths.opencodeConfigDir, "plugins"))).toBe(false);
+    expect(existsSync(join(t.paths.opencodeConfigDir, "skills"))).toBe(false);
+  });
+
+  it("--agent all installs both; plain --uninstall removes both", async () => {
+    const t = env(tmp(), runner);
+    expect(await t.cmd("setup").run(["--agent", "all", "--no-mcp"])).toBe(0);
+    expect(existsSync(t.paths.claudeSettings)).toBe(true);
+    expect(existsSync(t.paths.opencodePlugin)).toBe(true);
+    expect(await t.cmd("setup").run(["--uninstall"])).toBe(0);
+    expect(existsSync(t.paths.claudeSettings)).toBe(false);
+    expect(existsSync(t.paths.opencodePlugin)).toBe(false);
+  });
+
+  it("warns about an OpenCode older than the v2 plugin API, and doctor flags it", async () => {
+    const old: Runner = async (cmd, args) => (cmd === "opencode" && args[0] === "--version" ? ok("1.18.29\n") : cmd === "claude" ? ok("2.1.317") : ok());
+    const t = env(tmp(), old);
+    await t.cmd("setup").run(["--agent", "opencode"]);
+    expect(t.out.join("\n")).toContain("older than 2.2.4");
+    await t.cmd("doctor").run([]);
+    expect(t.out.join("\n")).toMatch(/✗ opencode 1\.18\.29 is older/);
+    expect(t.out.join("\n")).toContain("✓ OpenCode plugin v1");
+  });
+
+  it("doctor does not require Claude Code when only OpenCode is set up", async () => {
+    const t = env(tmp(), async (cmd, args) => (cmd === "opencode" && args[0] === "--version" ? ok("2.2.4\n") : cmd === "claude" ? { code: 127, stdout: "", stderr: "not found" } : ok()));
+    await t.cmd("setup").run(["--agent", "opencode"]);
+    await t.cmd("doctor").run([]);
+    const out = t.out.join("\n");
+    expect(out).toContain("! mesh is set up for OpenCode only");
+    expect(out).not.toContain("claude not found");
+    expect(out).not.toContain("hooks not installed");
+    expect(out).toContain("✓ opencode 2.2.4");
+  });
+
+  it("rejects an unknown agent", async () => {
+    const t = env(tmp(), runner);
+    expect(await t.cmd("setup").run(["--agent", "cursor"])).toBe(2);
+  });
+});
+
 describe("mesh doctor", () => {
   const runner: Runner = async (cmd, args) => {
     if (cmd === "claude" && args[0] === "--version") return ok("2.1.317 (Claude Code)\n");
@@ -178,6 +235,42 @@ describe.skipIf(!haveTmux)("mesh run (real tmux, fake claude)", () => {
         // already gone
       }
     }
+  });
+
+  it("opens OpenCode windows with a private server and the prompt (--agent opencode)", async () => {
+    const root = tmp();
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const record = join(root, "calls.txt");
+    const fake = join(bin, "opencode");
+    writeFileSync(fake, `#!/bin/sh\necho "$PWD|$*|$MESH_AUTOPILOT" >> '${record}'\nexec sleep 30\n`);
+    chmodSync(fake, 0o755);
+    mkdirSync(join(root, "ws", "frr", ".git"), { recursive: true });
+    const socket = `meshrunoc-${process.pid}`;
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      const t = env(root, undefined, { cwd: join(root, "ws"), self: [fake] });
+      const code = await t.cmd("run").run(["frr", "--agent", "opencode", "--prompt", "fix the build", "--auto", "chain", "--model", "haiku", "--no-tui", "--socket-name", socket]);
+      expect(code).toBe(0);
+      expect(t.err.join("\n")).toContain("no --model flag");
+      for (let i = 0; i < 50 && !existsSync(record); i++) await new Promise((r) => setTimeout(r, 100));
+      expect(readFileSync(record, "utf8").trim()).toBe(`${join(root, "ws", "frr")}|--standalone --prompt fix the build|chain`);
+    } finally {
+      process.env.PATH = oldPath;
+      try {
+        execFileSync("tmux", ["-L", socket, "kill-server"]);
+      } catch {
+        // already gone
+      }
+    }
+  });
+
+  it("refuses --bg with OpenCode", async () => {
+    const root = tmp();
+    mkdirSync(join(root, "frr", ".git"), { recursive: true });
+    const t = env(root);
+    expect(await t.cmd("run").run(["frr", "--agent", "opencode", "--bg", "--prompt", "x"])).toBe(2);
   });
 
   it("refuses --bg without a prompt", async () => {

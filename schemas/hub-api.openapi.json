@@ -646,6 +646,13 @@
                         "sid": {
                           "type": "string"
                         },
+                        "agent": {
+                          "type": "string",
+                          "enum": [
+                            "claude",
+                            "opencode"
+                          ]
+                        },
                         "claudeSessionIds": {
                           "type": "array",
                           "items": {
@@ -737,6 +744,11 @@
                           "type": "number"
                         },
                         "hooksVersion": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "pluginVersion": {
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991

@@ -67,10 +67,11 @@ mesh-harness/
 | `auth` | `protocol`, `core`, `store` |
 | `store` | `protocol` |
 | `claude`, `mux` | `protocol` |
+| `opencode` | `protocol`, `claude` (the process runner) |
 | `daemon` | `protocol`, `core`, `store`, `claude`, `mux` |
 | `mcp` | `protocol` (talks to the daemon over its local socket) |
 | `hub` | `protocol`, `core`, `store`, `auth`, `gitlab` |
-| `cli` | `protocol`, `core`, `claude`, `mux`, `auth` (login orchestration only); talks to the daemon and hub over HTTP |
+| `cli` | `protocol`, `core`, `claude`, `opencode`, `mux`, `auth` (login orchestration only); talks to the daemon and hub over HTTP |
 | `web` | `protocol` types via a build alias |
 
 Only `store` touches SQLite. Only `claude`, `mux` and `cli` spawn processes.

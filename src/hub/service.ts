@@ -429,7 +429,7 @@ export class HubService {
       for (const s of steps) {
         if (!s.holderSid || (s.state !== "claimed" && s.state !== "paused")) continue;
         const hs = await this.store.getSession(s.holderSid);
-        if (hs) holders[s.id] = { sid: hs.session.sid, state: hs.session.state, ...(hs.session.needs ? { needs: hs.session.needs } : {}), user: hs.userId };
+        if (hs) holders[s.id] = { sid: hs.session.sid, state: hs.session.state, ...(hs.session.needs ? { needs: hs.session.needs } : {}), ...(hs.session.agent ? { agent: hs.session.agent } : {}), user: hs.userId };
       }
       return { goal, steps, plans: await this.store.listPlans(goal.id), holders };
     });

@@ -112,9 +112,10 @@ function end(s: Session, now: number, reason: string): void {
 /** Find (or create) the session a hook belongs to. Returns a mutable copy and whether it is new. */
 function bind(sessions: Session[], ev: HookEvent, ctx: Ctx): { s: Session; index: number } {
   let index = sessions.findIndex((x) => x.claudeSessionIds.includes(ev.claudeSessionId) && x.state !== "ended");
-  if (index < 0 && ev.pid !== undefined) {
-    // Same live process and folder: /clear or a startup id switch (spike S9).
-    index = sessions.findIndex((x) => x.pid === ev.pid && x.cwd === ev.cwd && x.state !== "ended");
+  if (index < 0 && ev.pid !== undefined && ev.agent !== "opencode") {
+    // Same live process and folder: /clear or a startup id switch (spike S9). Not for OpenCode: one
+    // OpenCode server hosts many sessions, each with its own id.
+    index = sessions.findIndex((x) => x.agent !== "opencode" && x.pid === ev.pid && x.cwd === ev.cwd && x.state !== "ended");
   }
   if (index < 0) {
     // Resume of a known (ended) session: newest match wins.
@@ -174,6 +175,8 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
     });
   }
 
+  if (ev.agent === "opencode") s.agent = "opencode";
+  if (ev.pluginVersion !== undefined) s.pluginVersion = ev.pluginVersion;
   if (ev.kind !== "SessionEnd" || ev.reason !== "clear") addClaudeId(s, ev.claudeSessionId);
   if (ev.pid !== undefined) s.pid = ev.pid;
   if (ev.pane !== undefined) s.pane = ev.pane;
@@ -222,7 +225,12 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
     case "Notification":
       if (stale) break;
       if (ev.notificationType === "permission_prompt") setNeeds(s, "permission");
-      else if (ev.notificationType === "agent_needs_input" || ev.notificationType?.startsWith("elicitation_dialog"))
+      else if (ev.notificationType === "question" || ev.notificationType === "agent_error") {
+        // OpenCode: a question form is open, or the turn failed. Both wait for the person.
+        setNeeds(s, ev.notificationType === "question" ? "question" : "input");
+        const msg = preview(ev.lastAssistantMessage);
+        if (msg !== undefined) s.lastMessage = msg;
+      } else if (ev.notificationType === "agent_needs_input" || ev.notificationType?.startsWith("elicitation_dialog"))
         setNeeds(s, "input");
       // idle_prompt means "finished about 60 s ago" (spike S2): no state change.
       break;
@@ -235,6 +243,10 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
       else setIdle(s);
       break;
     }
+    case "Resume":
+      // The person answered the prompt (OpenCode): the turn goes on.
+      if (!stale && s.state === "needs_you") setWorking(s);
+      break;
     case "SessionEnd":
       // /clear is followed by a SessionStart with a new id on the same pid (spike S9).
       if (ev.reason !== "clear") end(s, ev.at, ev.reason ?? "ended");
@@ -246,7 +258,7 @@ export function applyHook(sessions: Session[], ev: HookEvent, ctx: Ctx): Result 
       ev.kind === "UserPromptSubmit" ||
       ev.kind === "Stop" ||
       (ev.kind === "SessionEnd" && ev.reason !== "clear") ||
-      (ev.kind === "Notification" && (s.state !== before.state || s.needs !== before.needs)));
+      ((ev.kind === "Notification" || ev.kind === "Resume") && (s.state !== before.state || s.needs !== before.needs)));
   if (setsState) s.stateAt = Math.max(s.stateAt ?? 0, ranFrom);
   return { sessions: put(sessions, s, index), changed: [s.sid, ...retired] };
 }
@@ -353,6 +365,7 @@ export interface Launch {
   cwd: string;
   name?: string | undefined;
   step?: string | undefined;
+  agent?: "claude" | "opencode" | undefined;
 }
 
 /**
@@ -368,6 +381,7 @@ export function applyLaunch(sessions: Session[], l: Launch, ctx: Ctx): Result {
   if (l.tmuxSocket) s.tmuxSocket = l.tmuxSocket;
   if (l.name) s.name = l.name;
   if (l.step) s.step = l.step;
+  if (l.agent === "opencode") s.agent = "opencode";
   return { sessions: [...sessions, s], changed: [s.sid] };
 }
 
@@ -387,6 +401,8 @@ export function applyLaunchScreen(sessions: Session[], sid: string, screen: stri
   const s = structuredClone(orig);
   if (screen === undefined) end(s, ctx.now, "window closed before Claude started");
   else if (isTrustPrompt(screen)) setNeeds(s, "dialog");
+  // OpenCode creates its session with the first prompt: until then the window waits for one.
+  else if (s.agent === "opencode") setIdle(s);
   else setWorking(s);
   if (JSON.stringify(s) === JSON.stringify(orig)) return { sessions, changed: [] };
   return { sessions: put(sessions, s, i), changed: [sid] };

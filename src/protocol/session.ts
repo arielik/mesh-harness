@@ -10,14 +10,27 @@ export type Needs = z.infer<typeof Needs>;
 export const SessionKind = z.enum(["interactive", "background", "print", "unknown"]);
 export type SessionKind = z.infer<typeof SessionKind>;
 
+/** The coding agent a session runs in. Absent means Claude Code (records written before v0.2). */
+export const AgentKind = z.enum(["claude", "opencode"]);
+export type AgentKind = z.infer<typeof AgentKind>;
+
+export function agentOf(s: { agent?: AgentKind | undefined }): AgentKind {
+  return s.agent ?? "claude";
+}
+
 export const Repo = z.object({ id: z.string(), name: z.string() });
 export type Repo = z.infer<typeof Repo>;
 
-/** A Claude Code session as tracked by the local daemon (plan §3.1, §3.3). */
+/** An agent session (Claude Code or OpenCode) as tracked by the local daemon (plan §3.1, §3.3). */
 export const Session = z.object({
   /** Stable mesh id; survives /clear, compaction and resume. */
   sid: z.string(),
-  /** Claude session ids seen for this session, oldest first; the last one is current. */
+  /** Absent: Claude Code. */
+  agent: AgentKind.optional(),
+  /**
+   * The agent's own session ids seen for this session (Claude session ids, or OpenCode `ses_…`
+   * ids), oldest first; the last one is current. The name predates OpenCode support.
+   */
   claudeSessionIds: z.array(z.string()),
   pid: z.number().int().optional(),
   cwd: z.string(),
@@ -44,6 +57,8 @@ export const Session = z.object({
   stateAt: z.number().optional(),
   /** Version of the hook commands this session's last hook came from (1 = before versioning). */
   hooksVersion: z.number().int().optional(),
+  /** OpenCode: version of the mesh plugin that reported this session. */
+  pluginVersion: z.number().int().optional(),
   lastTurnStartAt: z.number().optional(),
   lastStopAt: z.number().optional(),
   /** Short preview of the last assistant message (local only). */
@@ -107,6 +122,7 @@ export const LaunchRequest = z.object({
   cwd: z.string().min(1),
   name: z.string().optional(),
   step: z.string().optional(),
+  agent: AgentKind.optional(),
 });
 export type LaunchRequest = z.infer<typeof LaunchRequest>;
 export const SayResponse = z.object({ message: Message, sid: z.string() });

@@ -50,6 +50,10 @@ export interface MeshPaths {
   claudeMd: string;
   /** ~/.claude/skills/mesh/SKILL.md, written by `mesh setup`. */
   claudeSkill: string;
+  /** OpenCode's global config folder, the mesh plugin in it and mesh's skill for OpenCode. */
+  opencodeConfigDir: string;
+  opencodePlugin: string;
+  opencodeSkill: string;
   configDir: string;
   stateDir: string;
   daemonConfig: string;
@@ -68,10 +72,15 @@ export function resolvePaths(env: Record<string, string | undefined>, home: stri
   const configDir = env.MESH_CONFIG_DIR ?? join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "mesh");
   const stateDir = env.MESH_STATE_DIR ?? join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "mesh");
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+  // OpenCode's global config folder (`opencode debug paths`); OPENCODE_CONFIG_DIR replaces it.
+  const opencodeConfigDir = env.OPENCODE_CONFIG_DIR ?? join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "opencode");
   return {
     credentials: join(configDir, "credentials.json"),
     claudeMd: join(claudeConfigDir, "CLAUDE.md"),
     claudeSkill: join(claudeConfigDir, "skills", "mesh", "SKILL.md"),
+    opencodeConfigDir,
+    opencodePlugin: join(opencodeConfigDir, "plugins", "mesh-harness.js"),
+    opencodeSkill: join(opencodeConfigDir, "skills", "mesh", "SKILL.md"),
     configDir,
     stateDir,
     daemonConfig: join(configDir, "daemon.json"),

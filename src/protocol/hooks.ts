@@ -66,9 +66,20 @@ export interface HookHeaders {
   sentAt?: string | undefined;
 }
 
-/** A hook call normalised for the core. Never carries prompt text (only its length). */
+/**
+ * What the core's state machine consumes: the Claude hook kinds, plus `Resume` (the person
+ * answered a permission or question prompt and the turn goes on; OpenCode reports it, Claude Code
+ * has no hook for it).
+ */
+export type EventKind = HookKind | "Resume";
+
+/** A hook call (or an agent event mapped onto one) normalised for the core. Never carries prompt text (only its length). */
 export interface HookEvent {
-  kind: HookKind;
+  kind: EventKind;
+  /** Absent: Claude Code. */
+  agent?: "claude" | "opencode";
+  /** OpenCode: version of the mesh plugin that sent this. */
+  pluginVersion?: number;
   at: number;
   claudeSessionId: string;
   cwd: string;

@@ -358,3 +358,48 @@ describe("windows mesh run opened (launch placeholders)", () => {
     expect(applyLaunch(sessions, { pane: "%7", tmuxSocket: "/tmp/tmux-1/default", cwd: CWD }, ctx(1500)).changed).toEqual([]);
   });
 });
+
+describe("OpenCode sessions", () => {
+  const oc = (kind: HookEvent["kind"], at: number, id: string, extra: Partial<HookEvent> = {}): HookEvent => ({ kind, at, claudeSessionId: id, cwd: CWD, pid: 500, agent: "opencode", ...extra });
+
+  it("never binds by pid: one shared server hosts many sessions", () => {
+    const sessions = run([oc("SessionStart", 1, "ses_a"), oc("SessionStart", 2, "ses_b"), oc("UserPromptSubmit", 3, "ses_b")]);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((s) => [s.agent, s.state])).toEqual([
+      ["opencode", "idle"],
+      ["opencode", "working"],
+    ]);
+  });
+
+  it("a Claude session with the same pid is never merged into an OpenCode one", () => {
+    expect(run([oc("SessionStart", 1, "ses_a"), hook("SessionStart", 2, { pid: 500 })])).toHaveLength(2);
+  });
+
+  it("question form, error and Resume", () => {
+    let s = only(run([oc("UserPromptSubmit", 1, "ses_a"), oc("Notification", 2, "ses_a", { notificationType: "question", lastAssistantMessage: "Red or blue?" })]));
+    expect(s).toMatchObject({ state: "needs_you", needs: "question", lastMessage: "Red or blue?" });
+    s = only(run([oc("UserPromptSubmit", 1, "ses_a"), oc("Notification", 2, "ses_a", { notificationType: "question" }), oc("Resume", 3, "ses_a")]));
+    expect(s).toMatchObject({ state: "working" });
+    expect(s.needs).toBeUndefined();
+    s = only(run([oc("UserPromptSubmit", 1, "ses_a"), oc("Notification", 2, "ses_a", { notificationType: "agent_error", lastAssistantMessage: "error: overloaded" })]));
+    expect(s).toMatchObject({ state: "needs_you", needs: "input", lastMessage: "error: overloaded" });
+  });
+
+  it("Resume does nothing to a session that is not waiting, and a stale one is ignored", () => {
+    expect(only(run([oc("UserPromptSubmit", 1, "ses_a"), oc("Stop", 2, "ses_a"), oc("Resume", 3, "ses_a")])).state).toBe("idle");
+    const s = only(run([oc("UserPromptSubmit", 1, "ses_a"), oc("Notification", 5, "ses_a", { notificationType: "permission_prompt", sentWindow: [5, 6] }), oc("Resume", 6, "ses_a", { sentWindow: [2, 3] })]));
+    expect(s).toMatchObject({ state: "needs_you", needs: "permission" });
+  });
+
+  it("a mesh run window waits idle until OpenCode's first prompt creates the session", () => {
+    counter = 0;
+    let sessions = applyLaunch([], { pane: "%4", cwd: CWD, name: "repo", agent: "opencode" }, ctx(1)).sessions;
+    const sid = (sessions[0] as Session).sid;
+    sessions = applyLaunchScreen(sessions, sid, "Ask anything…", ctx(2)).sessions;
+    expect(sessions[0]).toMatchObject({ agent: "opencode", launching: true, state: "idle" });
+    sessions = applyHook(sessions, oc("SessionStart", 3, "ses_a", { pane: "%4" }), ctx(3)).sessions;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ sid, agent: "opencode", name: "repo", state: "idle", claudeSessionIds: ["ses_a"] });
+    expect(sessions[0]?.launching).toBeUndefined();
+  });
+});

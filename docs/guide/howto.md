@@ -78,6 +78,16 @@ mesh autopilot payments-api chain
 
 Sessions you start yourself with `claude` show up too. With the hooks installed, jump and say work for them.
 
+**OpenCode.** After `mesh setup --agent opencode` ([install](install.md#opencode)), OpenCode sessions show up as well, marked `[oc]`/`·oc`, with the same states. Start them from mesh with `--agent opencode`; every `mesh run` form below works, except `--bg`:
+
+```bash
+mesh run payments-api --agent opencode                     # opencode --standalone in a tmux window
+mesh run payments-api --agent opencode --step G3.api       # holds a step, with the mesh tools
+mesh say payments-api "also update the changelog"          # queued in OpenCode, sent when it can take it
+```
+
+OpenCode sessions you start yourself with plain `opencode` (the shared background server) report their state, but mesh doesn't know their terminal, so `mesh jump` can't reach them.
+
 ## 3. Join a team hub
 
 Someone runs the hub (see [11](#11-run-a-team-hub)) and gives you a token, or the hub uses OIDC:
