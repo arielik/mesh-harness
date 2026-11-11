@@ -1,4 +1,4 @@
-import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type LaunchRequest } from "../protocol/index.ts";
+import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest } from "../protocol/index.ts";
 
 export class DaemonUnreachable extends Error {
   constructor(port: number) {
@@ -61,6 +61,11 @@ export class DaemonClient {
 
   async goals(): Promise<{ id: string; title: string; state: string; owner: string; done: number; total: number; holders: string[] }[]> {
     return ((await this.call("GET", "/local/goals")) as { goals: { id: string; title: string; state: string; owner: string; done: number; total: number; holders: string[] }[] }).goals;
+  }
+
+  /** MM-1: the hub's GET /v1/fleet, through the daemon. */
+  async fleet(): Promise<FleetView> {
+    return (await this.call("GET", "/local/fleet")) as FleetView;
   }
 
   /** Tell the daemon about a window `mesh run` opened for Claude. */

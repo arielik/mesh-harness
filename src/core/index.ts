@@ -10,3 +10,5 @@ export * from "./agent-ledger.ts";
 export * from "./policy.ts";
 export * from "./stages.ts";
 export * from "./presets.ts";
+export * from "./visibility.ts";
+export * from "./fleet.ts";

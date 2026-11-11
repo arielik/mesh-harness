@@ -31,6 +31,7 @@ import {
   takeOver,
   validatePlan,
   pause,
+  sessionVisible,
   type Principal,
   type Role,
 } from "../core/index.ts";
@@ -46,6 +47,9 @@ import type {
   Topic,
   TopicView,
   InboxMessage,
+  FleetMachine,
+  FleetView,
+  LiveSession,
   LiveView,
   LoginResult,
   Plan,
@@ -57,13 +61,14 @@ import type {
   StepContext,
   StepView,
   SyncRequest,
+  SyncResponse,
   TimelineEntry,
   TrailFile,
   UserView,
   ServiceScope,
 } from "../protocol/index.ts";
 import { ALL_TOPIC, TopicName, goalHasTopics, normalizeTopics } from "../protocol/index.ts";
-import { HubStore, type NewEvent, type UserRow } from "../store/index.ts";
+import { HubStore, type HubSession, type NewEvent, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
@@ -219,7 +224,7 @@ export class HubService {
    */
   private async machineFor(userId: string, hostname: string | undefined, installId?: string | undefined): Promise<string> {
     const host = hostname?.trim() || "unknown";
-    const mine = (await this.store.listMachines()).filter((m) => m.userId === userId);
+    const mine = await this.store.listMachines({ userId });
     const existing = installId
       ? (mine.find((m) => m.installId === installId) ?? mine.find((m) => m.hostname === host && !m.installId))
       : mine.find((m) => m.hostname === host);
@@ -1061,6 +1066,12 @@ export class HubService {
     return await this.store.tx(async () => {
       const sid = input.toSid ?? (input.toStep ? (await this.stepOr404(input.toStep)).holderSid : undefined);
       if (!sid) throw new HubError(409, `${input.toStep} has no session holding it`);
+      if (input.toSid !== undefined) {
+        // MM-1: a session the caller cannot see answers like an unknown one; nothing is queued.
+        const hs = await this.store.getSession(input.toSid);
+        const share = hs ? (await this.store.getMachine(hs.machineId))?.share : undefined;
+        if (hs && !sessionVisible(actor.userId, { userId: hs.userId, step: hs.session.step }, share)) throw new HubError(404, `session ${sid} is not live on any machine`);
+      }
       const id = await this.message(sid, actor.userId, "say", input.text);
       if (id === undefined) throw new HubError(404, `session ${sid} is not live on any machine`);
       await this.emit({ type: "message.sent", user: actor.userId, sid, payload: { id } });
@@ -1070,7 +1081,7 @@ export class HubService {
 
   // ---------- daemon sync and inbox ----------
 
-  async sync(actor: Actor, req: SyncRequest): Promise<{ accepted: number }> {
+  async sync(actor: Actor, req: SyncRequest): Promise<SyncResponse> {
     if (!actor.machineId) throw new HubError(403, "sync needs a device token (mesh login)");
     const machine = actor.machineId;
     return await this.store.tx(async () => {
@@ -1088,8 +1099,11 @@ export class HubService {
         if (existing && existing.userId !== actor.userId) continue; // never overwrite another user's session
         await this.store.upsertSession(s, actor.userId, machine, now);
       }
-      await this.store.touchMachine(machine, now, req.counts);
-      return { accepted };
+      const facts = req.machine ? { share: req.machine.share, ...(req.machine.repos ? { repos: req.machine.repos } : {}) } : undefined;
+      await this.store.touchMachine(machine, now, req.counts, facts);
+      // MM-1: the stored share level tells the daemon this hub applies the visibility rule.
+      const share = (await this.store.getMachine(machine))?.share;
+      return { accepted, ...(share ? { share } : {}) };
     });
   }
 
@@ -1149,25 +1163,15 @@ export class HubService {
       const now = this.now();
       const users = (await this.store.listUsers()).filter((u) => !(u.roles.includes("service") && !u.roles.includes("member")));
       const machines = await this.store.listMachines();
+      const shareOf = new Map(machines.map((m) => [m.id, m.share]));
       const sessions = (await this.store.listSessions()).filter((hs) => hs.session.state !== "ended" || now - (hs.session.endedAt ?? 0) < 10 * 60_000);
       const people = users.map((u) => {
         const ms = machines
           .filter((m) => m.userId === u.id)
-          .map((m) => ({ id: m.id, hostname: m.hostname, online: now - m.lastSeen < ONLINE_MS, lastSeen: m.lastSeen, counts: m.counts }));
+          .map((m) => ({ id: m.id, hostname: m.hostname, ...(m.nickname ? { nickname: m.nickname } : {}), online: now - m.lastSeen < ONLINE_MS, lastSeen: m.lastSeen, counts: m.counts }));
         const ss = sessions
-          .filter((hs) => hs.userId === u.id)
-          .map((hs) => ({
-            sid: hs.session.sid,
-            machine: hs.machineId,
-            user: u.id,
-            repo: hs.session.repo?.name,
-            name: hs.session.name,
-            step: hs.session.step,
-            state: hs.session.state,
-            needs: hs.session.needs,
-            autopilot: hs.session.autopilot,
-            lastTurnAt: hs.session.lastTurnStartAt,
-          }));
+          .filter((hs) => hs.userId === u.id && sessionVisible(viewer.userId, { userId: hs.userId, step: hs.session.step }, shareOf.get(hs.machineId)))
+          .map((hs) => liveSession(hs));
         return { user: this.userView(u), online: ms.some((m) => m.online), machines: ms, sessions: ss };
       });
       const goals: LiveView["goals"] = [];
@@ -1184,11 +1188,62 @@ export class HubService {
           holders: [...new Set(steps.filter((s) => s.holderUser && (s.state === "claimed" || s.state === "paused")).map((s) => s.holderUser as string))],
         });
       }
+      const hostnames = new Map(machines.map((m) => [m.id, m.hostname]));
       const activity = (await this.store.recentEvents(40))
         .filter((e) => !e.type.startsWith("session.turn"))
         .reverse()
-        .map((e) => ({ seq: e.seq, at: e.at, type: e.type, user: e.user, goal: e.goal, step: e.step, text: describe(e.type, e.step ?? e.goal, e.payload) }));
+        .map((e) => ({ seq: e.seq, at: e.at, type: e.type, user: e.user, goal: e.goal, step: e.step, text: describe(e.type, e.step ?? e.goal, e.payload, hostnames) }));
       return { now, me: this.userView(await this.store.getUser(viewer.userId) as UserRow), people, goals, attention: await this.attentionFor(viewer), activity };
+    });
+  }
+
+  /**
+   * "My mesh" (MM-1): every machine of the caller, each with all the caller's non-ended sessions
+   * on it whatever the share level. Online machines first, then most recently seen, then by id;
+   * sessions most recent first, then by sid.
+   */
+  async fleet(viewer: Actor): Promise<FleetView> {
+    return this.store.tx(async () => {
+      const now = this.now();
+      const mine = await this.store.listMachines({ userId: viewer.userId });
+      const sessions = (await this.store.listSessions({ userId: viewer.userId, live: true })).filter((hs) => hs.session.state !== "ended");
+      const machines: FleetMachine[] = mine.map((m) => ({
+        id: m.id,
+        hostname: m.hostname,
+        ...(m.nickname ? { nickname: m.nickname } : {}),
+        online: now - m.lastSeen < ONLINE_MS,
+        lastSeen: m.lastSeen,
+        counts: m.counts,
+        ...(m.share ? { share: m.share } : {}),
+        repos: m.repos ?? [],
+        ...(m.reposAt !== undefined ? { reposAt: m.reposAt } : {}),
+        current: m.id === viewer.machineId,
+        sessions: sessions
+          .filter((hs) => hs.machineId === m.id)
+          .map((hs) => ({ ...liveSession(hs), lastEventAt: hs.session.lastEventAt }))
+          .sort((a, b) => b.lastEventAt - a.lastEventAt || cmp(a.sid, b.sid)),
+      }));
+      machines.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen || cmp(a.id, b.id));
+      return { now, user: this.userView((await this.store.getUser(viewer.userId)) as UserRow), machines };
+    });
+  }
+
+  /** Name one of the caller's own machines (MM-1); null clears the name. Admins get no exception. */
+  async renameMachine(actor: Actor, id: string, nickname: string | null): Promise<{ id: string; hostname: string; nickname?: string }> {
+    return await this.store.tx(async () => {
+      await this.store.serialize();
+      const m = await this.store.getMachine(id);
+      if (!m) throw new HubError(404, `no machine ${id}`);
+      if (m.userId !== actor.userId) throw new HubError(403, "not your machine");
+      const next = nickname ?? undefined;
+      const view = (n: string | undefined) => ({ id: m.id, hostname: m.hostname, ...(n ? { nickname: n } : {}) });
+      if (next === m.nickname) return view(next);
+      if (!(await this.store.setMachineNickname(id, next))) {
+        const other = next === undefined ? undefined : await this.store.machineByNickname(actor.userId, next);
+        throw new HubError(409, `nickname ${next ?? ""} is already used by your machine ${other?.hostname ?? "?"} (${other?.id ?? "?"})`);
+      }
+      await this.emit({ type: "machine.named", user: actor.userId, payload: { machine: id, nickname: next ?? null } });
+      return view(next);
     });
   }
 
@@ -1267,9 +1322,35 @@ export class HubService {
   }
 }
 
-function describe(type: string, subject: string | undefined, payload: Record<string, unknown>): string {
+/** Code-point order (ids and sids are ASCII), independent of the locale. */
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** A hub session as /v1/live and /v1/fleet list it. */
+function liveSession(hs: HubSession): LiveSession {
+  return {
+    sid: hs.session.sid,
+    machine: hs.machineId,
+    user: hs.userId,
+    repo: hs.session.repo?.name,
+    name: hs.session.name,
+    step: hs.session.step,
+    state: hs.session.state,
+    needs: hs.session.needs,
+    autopilot: hs.session.autopilot,
+    lastTurnAt: hs.session.lastTurnStartAt,
+  };
+}
+
+/** `hostnames`: machine id → hostname, for events about a machine (Live's activity). */
+function describe(type: string, subject: string | undefined, payload: Record<string, unknown>, hostnames?: ReadonlyMap<string, string>): string {
   const s = subject ?? "";
   switch (type) {
+    case "machine.named": {
+      const host = hostnames?.get(String(payload.machine)) ?? String(payload.machine);
+      return payload.nickname ? `named machine ${host} ${String(payload.nickname)}` : `cleared the name of machine ${host}`;
+    }
     case "goal.created":
       return `created ${s} "${String(payload.title ?? "")}"`;
     case "goal.topics": {

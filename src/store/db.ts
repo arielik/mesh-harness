@@ -8,7 +8,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { SQLITE, type Dialect, type LockKey } from "./dialect.ts";
 
 export type SqlValue = string | number | bigint | null | Uint8Array;
@@ -133,6 +133,48 @@ interface Tx {
   after: (() => void)[];
 }
 
+/** The turn queue of one database, shared by every handle this process opened on the same file. */
+interface Queue {
+  tail: Promise<void>;
+  /** The file's key in `queues`; undefined for a private queue (":memory:", no path). */
+  key?: string;
+  /** Open handles on this queue; the entry leaves `queues` when the last one closes. */
+  refs: number;
+}
+
+const queues = new Map<string, Queue>();
+
+/**
+ * One queue per file. node:sqlite is synchronous, so a second handle waiting for the file lock
+ * (busy_timeout) blocks the event loop while the first handle's transaction is awaiting: neither
+ * moves until "database is locked". Handles on one file therefore take turns on one queue.
+ *
+ * Constraint: a transaction on one handle must never await a call on another handle to the same
+ * file. That call queues behind the transaction, which is waiting for it: a deadlock. Inside a
+ * transaction use the transaction's own handle (calls from its callback run at once).
+ *
+ * Entries are reference-counted: each handle takes one here and gives it back on close
+ * (`releaseQueue`), so the map holds only files that still have an open handle.
+ */
+function queueFor(path: string | undefined): Queue {
+  if (path === undefined || path === ":memory:") return { tail: Promise.resolve(), refs: 1 };
+  const key = resolve(path);
+  let q = queues.get(key);
+  if (!q) {
+    q = { tail: Promise.resolve(), key, refs: 0 };
+    queues.set(key, q);
+  }
+  q.refs++;
+  return q;
+}
+
+/** Give back one handle's reference; the last one removes the file's entry. */
+function releaseQueue(q: Queue): void {
+  q.refs--;
+  if (q.refs > 0 || q.key === undefined) return;
+  if (queues.get(q.key) === q) queues.delete(q.key);
+}
+
 /**
  * `Db` over one SQLite connection. A connection has one transaction at a time, and with async
  * callbacks two requests could otherwise interleave inside it. So every call takes a turn on a
@@ -144,10 +186,13 @@ export class SqliteDb implements Db {
   readonly sync: SyncDb;
   private readonly scope = new AsyncLocalStorage<Tx>();
   private current: Tx | undefined;
-  private tail: Promise<void> = Promise.resolve();
+  private readonly queue: Queue;
+  private closed = false;
 
-  constructor(sync: SyncDb) {
+  /** `path`: the database file; handles on one file share one turn queue (see `queueFor`). */
+  constructor(sync: SyncDb, path?: string) {
     this.sync = sync;
+    this.queue = queueFor(path);
   }
 
   private inTx(): boolean {
@@ -157,9 +202,9 @@ export class SqliteDb implements Db {
 
   /** Run `fn` on its turn: after every call queued before it has finished. */
   private turn<T>(fn: () => T | Promise<T>): Promise<T> {
-    const prev = this.tail;
+    const prev = this.queue.tail;
     let done!: () => void;
-    this.tail = new Promise<void>((ok) => (done = ok));
+    this.queue.tail = new Promise<void>((ok) => (done = ok));
     return prev.then(fn).finally(done);
   }
 
@@ -212,7 +257,13 @@ export class SqliteDb implements Db {
   }
 
   async close(): Promise<void> {
-    await this.turn(() => this.sync.close());
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      await this.turn(() => this.sync.close());
+    } finally {
+      releaseQueue(this.queue);
+    }
   }
 }
 
@@ -248,5 +299,5 @@ export async function openSyncDb(path: string, migrations: readonly string[]): P
 
 /** The async `Db` over SQLite, migrated (see `openSyncDb`). */
 export async function openDb(path: string, migrations: readonly string[]): Promise<Db> {
-  return new SqliteDb(await openSyncDb(path, migrations));
+  return new SqliteDb(await openSyncDb(path, migrations), path);
 }

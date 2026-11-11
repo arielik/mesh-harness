@@ -7,7 +7,7 @@
 // is used (Solo).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { Credentials, IDEMPOTENCY_HEADER, type InboxMessage, type Session, type SyncEvent } from "../protocol/index.ts";
+import { Credentials, IDEMPOTENCY_HEADER, type InboxMessage, type Repo, type Session, type ShareLevel, type SyncEvent, type SyncResponse } from "../protocol/index.ts";
 import type { DaemonStore, PendingCall } from "../store/index.ts";
 
 export class HubRpcError extends Error {
@@ -25,8 +25,13 @@ export interface HubLinkDeps {
   store: DaemonStore;
   /** Sessions to report: full records for step holders, counts for all. */
   sessions(): Session[];
-  /** Q5 opt-in: also report sessions that hold no step, as metadata only. */
-  shareAll?: () => boolean;
+  /**
+   * The configured share level (Q5, MM-1; default `steps`). `me` and `all` also report sessions
+   * that hold no step, as metadata only; `me` only once the hub has confirmed it applies the rule.
+   */
+  share?: () => ShareLevel;
+  /** The machine's repo inventory (ids and names only), sent on the first sync and on change. */
+  machineRepos?: () => Repo[];
   onMessage(m: InboxMessage): "queued" | "unknown";
   log(line: string): void;
   now(): number;
@@ -44,13 +49,13 @@ export interface HubLinkDeps {
 const SYNC_SESSIONS_MAX = 200;
 
 /**
- * The session records a sync sends (Q5): full records of sessions holding a step and, when the
- * machine opted in, metadata-only records of the rest. Step holders come first so the cap never
- * drops them.
+ * The session records a sync sends (Q5, MM-1): full records of sessions holding a step and, under
+ * `me` or `all`, metadata-only records of the rest, newest first. Step holders come first so the
+ * cap never drops them.
  */
-export function syncedSessions(all: readonly Session[], shareAll: boolean): Session[] {
+export function syncedSessions(all: readonly Session[], share: ShareLevel): Session[] {
   const steps = all.filter((s) => s.step !== undefined);
-  if (!shareAll) return steps.slice(0, SYNC_SESSIONS_MAX);
+  if (share === "steps") return steps.slice(0, SYNC_SESSIONS_MAX);
   const rest = all
     .filter((s) => s.step === undefined)
     .sort((a, b) => b.lastEventAt - a.lastEventAt)
@@ -103,6 +108,12 @@ export class HubLink {
   mode: LinkMode = "none";
   offlineSince: number | undefined;
   private nextProbeAt = 0;
+  // MM-1, per credentials (hub URL + machine id): whether the hub confirmed the share level, the
+  // inventory it last accepted, and whether the "does not support me" line was logged.
+  private factsKey: string | undefined;
+  private confirmed = false;
+  private sentRepos: string | undefined;
+  private warnedUnconfirmed = false;
   private probeBackoff = PROBE_MIN_MS;
 
   constructor(deps: HubLinkDeps) {
@@ -252,16 +263,39 @@ export class HubLink {
     return this.current;
   }
 
+  /** Forget what the hub confirmed and accepted when the credentials name another hub or machine. */
+  private factsFor(c: Credentials): void {
+    const key = `${c.hub}\n${c.machine ?? ""}`;
+    if (key === this.factsKey) return;
+    this.factsKey = key;
+    this.confirmed = false;
+    this.sentRepos = undefined;
+    this.warnedUnconfirmed = false;
+  }
+
   private async doFlush(c: Credentials): Promise<void> {
     try {
       if (!(await this.probe(c))) return;
+      this.factsFor(c);
       const all = this.deps.sessions();
       const counts: Record<string, number> = {};
       for (const s of all) if (s.state !== "ended") counts[s.state] = (counts[s.state] ?? 0) + 1;
+      const share = this.deps.share?.() ?? "steps";
+      const repos = this.deps.machineRepos?.() ?? [];
+      const reposJson = JSON.stringify(repos);
       for (;;) {
         const batch = this.deps.store.outboxPeek(200);
-        const sessions = syncedSessions(all, this.deps.shareAll?.() ?? false);
-        await this.rpc("POST", "/v1/sync", { events: batch.map((b) => b.value), sessions, counts }, undefined, { probe: true });
+        // `me` counts as `steps` until this hub has confirmed it applies the visibility rule.
+        const effective: ShareLevel = share === "me" && !this.confirmed ? "steps" : share;
+        const sendRepos = this.sentRepos !== reposJson;
+        const body = { events: batch.map((b) => b.value), sessions: syncedSessions(all, effective), counts, machine: { share, ...(sendRepos ? { repos } : {}) } };
+        const reply = await this.rpc<SyncResponse | undefined>("POST", "/v1/sync", body, undefined, { probe: true });
+        if (sendRepos) this.sentRepos = reposJson;
+        this.confirmed = reply?.share !== undefined;
+        if (share === "me" && !this.confirmed && !this.warnedUnconfirmed) {
+          this.warnedUnconfirmed = true;
+          this.deps.log("the hub does not support share level me; sending step holders only");
+        }
         this.deps.store.outboxRemove(batch.map((b) => b.id));
         if (batch.length < 200) break;
       }

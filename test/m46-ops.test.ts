@@ -68,6 +68,12 @@ describe("probes", () => {
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
   });
 
+  it("test_AC05_readyz_schema_6 (MM-1)", async () => {
+    const hub = await start(":memory:");
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 6 } });
+    expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
+  });
+
   it("/readyz is 503 when the schema is older than this hub's, and while shutting down; /healthz stays 200", async () => {
     const hub = await start(":memory:");
     await hub.svc.store.db.run("UPDATE schema_version SET version = ?", HubStore.SCHEMA_VERSION - 1);

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Attention, LiveView, ProviderInfo } from "../../src/protocol/hub.ts";
 import { api, ApiError } from "./api.ts";
 import { GoalPage, GoalsBoard, TopicChips } from "./goals.tsx";
+import { MinePage } from "./mine.tsx";
 import "./styles.css";
 
 function ago(now: number, at: number | undefined): string {
@@ -115,6 +116,9 @@ function Header({ data, route, onLogout }: { data: LiveView; route: string; onLo
         <a href="#/goals" className={route.startsWith("#/goal") ? "active" : ""}>
           Goals
         </a>
+        <a href="#/mine" className={route === "#/mine" ? "active" : ""}>
+          Mine
+        </a>
       </nav>
       <span className="muted">
         {online.length} {online.length === 1 ? "person" : "people"} · {machinesOnline.length} machines · {total} sessions
@@ -180,7 +184,7 @@ function Live({ data, onApprove }: { data: LiveView; onApprove: (goal: string) =
               <div className="row">
                 <span className={`dot ${p.online ? "on" : "off"}`} />
                 <strong>{p.user.name}</strong>
-                <span className="muted">{p.machines.map((m) => m.hostname).join(", ")}</span>
+                <span className="muted">{p.machines.map((m) => (m.nickname ? `${m.nickname} (${m.hostname})` : m.hostname)).join(", ")}</span>
               </div>
               {p.sessions.filter((s) => s.state !== "ended").map((s) => (
                 <div key={s.sid} className={`session st-${s.state}`}>
@@ -217,6 +221,8 @@ function App() {
   const [data, setData] = useState<LiveView>();
   const [needLogin, setNeedLogin] = useState(false);
   const [error, setError] = useState<string>();
+  /** Bumped on every (debounced) SSE `changed` hint, so pages with their own data refetch. */
+  const [hint, setHint] = useState(0);
   const timer = useRef<number | undefined>(undefined);
   const route = useRoute();
 
@@ -242,7 +248,10 @@ function App() {
     const es = new EventSource("/v1/stream");
     es.addEventListener("changed", () => {
       window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => void load(), 300);
+      timer.current = window.setTimeout(() => {
+        void load();
+        setHint((n) => n + 1);
+      }, 300);
     });
     return () => es.close();
   }, [needLogin, data === undefined, load]);
@@ -257,6 +266,8 @@ function App() {
       {error && <p className="error">{error}</p>}
       {goalMatch ? (
         <GoalPage key={goalMatch[1]} id={decodeURIComponent(goalMatch[1] as string)} />
+      ) : route === "#/mine" ? (
+        <MinePage hint={hint} />
       ) : route === "#/goals" ? (
         <GoalsBoard progress={progress} onRefresh={() => void load()} />
       ) : (

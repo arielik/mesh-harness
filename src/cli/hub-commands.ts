@@ -15,6 +15,7 @@ import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
 import { clearCredentials, HubClient, hubFetch, installId, loadCredentials, saveCredentials } from "./hub-client.ts";
 import { isRemoteShell, login } from "./login.ts";
+import { machineCommand, machinesCommand } from "./machine-commands.ts";
 import { renderGoal } from "./show.ts";
 import { writeTrailHere } from "./trail-files.ts";
 
@@ -470,5 +471,5 @@ export function presetCommand(c: CliEnv): Command {
 }
 
 export function hubCommands(c: CliEnv): Command[] {
-  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), topicCommand(c), showCommand(c), nextCommand(c), takeCommand(c), stepCommand(c), presetCommand(c), answerCommand(c), autopilotCommand(c)];
+  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), topicCommand(c), showCommand(c), nextCommand(c), takeCommand(c), stepCommand(c), presetCommand(c), answerCommand(c), autopilotCommand(c), machinesCommand(c, "machines"), machinesCommand(c, "fleet"), machineCommand(c)];
 }

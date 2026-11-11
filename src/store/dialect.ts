@@ -22,6 +22,14 @@ export interface Dialect {
    * transaction is serialised anyway (SQLite: `BEGIN IMMEDIATE`).
    */
   lock(key: LockKey): string | undefined;
+  /**
+   * Suffix for a SELECT whose rows the transaction will rewrite from what it read: Postgres
+   * row-locks them until commit (`FOR UPDATE`); empty on SQLite, where `BEGIN IMMEDIATE` already
+   * holds the write lock.
+   */
+  readonly forUpdate: string;
+  /** The text of top-level `key` in the JSON stored in text column `col` (null when absent). */
+  jsonText(col: string, key: string): string;
 }
 
 /** Advisory-lock keys (Postgres). One number per purpose; "mesh" in the high bytes. */
@@ -43,6 +51,8 @@ export const SQLITE: Dialect = {
   like: "LIKE",
   stepOrder: "rowid",
   lock: () => undefined,
+  forUpdate: "",
+  jsonText: (col, key) => `json_extract(${col}, '$.${key}')`,
 };
 
 export const POSTGRES: Dialect = {
@@ -52,6 +62,8 @@ export const POSTGRES: Dialect = {
   like: "ILIKE",
   stepOrder: "ord",
   lock: (key) => `SELECT pg_advisory_xact_lock(${LOCKS[key]})`,
+  forUpdate: " FOR UPDATE",
+  jsonText: (col, key) => `(${col}::jsonb ->> '${key}')`,
 };
 
 /** True when `db:` names a Postgres server rather than a SQLite file. */

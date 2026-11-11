@@ -40,3 +40,90 @@ describe("skills/mesh/SKILL.md", () => {
     expect(readFileSync(join(import.meta.dirname, "..", "skills", "mesh", "SKILL.md"), "utf8")).toBe(MESH_SKILL);
   });
 });
+
+// MM-1 (AC-24, AC-25, AC-26).
+const ROOT = join(import.meta.dirname, "..");
+const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
+
+describe("AC-24 OpenAPI and route table", () => {
+  type Op = { summary?: string; description?: string; operationId: string };
+  const doc = () => hubOpenApi() as { paths: Record<string, Record<string, Op>> };
+
+  it("test_AC24_openapi_up_to_date", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+    const committed = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, unknown> };
+    expect(Object.keys(committed.paths)).toContain("/v1/fleet");
+    expect(Object.keys(committed.paths)).toContain("/v1/machines/{id}/name");
+  });
+
+  it("test_AC24_openapi_lists_fleet", () => {
+    const op = doc().paths["/v1/fleet"]?.get;
+    expect(op).toBeDefined();
+    expect(JSON.stringify(op)).toContain("live:read");
+  });
+
+  it("test_AC24_openapi_lists_name", () => {
+    expect(doc().paths["/v1/machines/{id}/name"]?.post).toBeDefined();
+  });
+
+  it("test_AC24_route_table_method_path_rule_scope", () => {
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    const documented = HUB_API.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    // Positive control: the pre-existing live route is in the table.
+    expect(documented).toContain("GET /v1/live member live:read");
+    expect(documented).toContain("GET /v1/fleet member live:read");
+    expect(documented).toContain("POST /v1/machines/:id/name member -");
+    expect(documented).toEqual(served);
+  });
+});
+
+describe("AC-25 docs and skill", () => {
+  it("test_AC25_skill_mentions_fleet", () => {
+    expect(MESH_SKILL.length).toBeGreaterThan(0);
+    expect(MESH_SKILL).toContain("mesh_fleet");
+    expect(MESH_SKILL).toContain("mesh machines");
+  });
+
+  it("test_AC25_skill_file_equal", () => {
+    const file = read("skills/mesh/SKILL.md");
+    expect(file).toContain("mesh_fleet");
+    expect(file).toBe(MESH_SKILL);
+  });
+
+  it("test_AC25_install_guide_levels", () => {
+    const install = read("docs/guide/install.md");
+    expect(install.length).toBeGreaterThan(0);
+    for (const t of ["`steps`", "`me`", "`all`", "--share-sessions me"]) expect(install).toContain(t);
+    expect(install).toMatch(/`me`[^\n]*default[^\n]*new setups|default[^\n]*new setups[^\n]*`me`/);
+  });
+
+  it("test_AC25_concepts_howto", () => {
+    const concepts = read("docs/guide/concepts.md");
+    const howto = read("docs/guide/howto.md");
+    expect(concepts.length).toBeGreaterThan(0);
+    expect(howto.length).toBeGreaterThan(0);
+    expect(concepts).toContain("mesh machines");
+    expect(howto).toContain("mesh machines");
+    for (const t of ["See all your machines", "mesh machine name", "workspaceRoots", "Mine"]) expect(howto).toContain(t);
+  });
+
+  it("test_AC25_plan_routes", () => {
+    const plan = read("docs/plan/implementation-plan.md");
+    expect(plan.length).toBeGreaterThan(0);
+    expect(plan).toContain("GET /v1/fleet");
+    expect(plan).toContain("POST /v1/machines/:id/name");
+  });
+
+  it("test_AC25_events_doc", () => {
+    const events = read("docs/events.md");
+    expect(events.length).toBeGreaterThan(0);
+    expect(events).toContain("machine.named");
+  });
+});
+
+describe("AC-26 version", () => {
+  it("test_AC26_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.9");
+  });
+});

@@ -369,6 +369,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET/POST /v1/topics`, `POST /v1/topics/:name/delete`, `POST /v1/goals/:id/topics`, `GET /v1/goals?topic=a,b` | Topics: labels for goals (v0.1.8). Every goal is in `all`; a filter with several topics means all of them |
 | `GET /v1/steps?ready=1&repo=`, `GET /v1/steps/:id/context`, `POST /v1/steps/:id/{claim,release,note,done,take}` | Steps |
 | `POST /v1/messages` | Messages |
+| `GET /v1/fleet`, `POST /v1/machines/:id/name` | My mesh (v0.1.9): the caller's machines and their sessions; name a machine |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

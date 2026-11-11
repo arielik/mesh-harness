@@ -1,4 +1,4 @@
-// The eight mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
+// The nine mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
 // stdio shim (`mesh mcp`) and the daemon that executes them.
 
 import { z } from "zod";
@@ -56,6 +56,10 @@ export const TOOLS = {
       steps: z.array(PlanStep).min(1),
       acs: z.array(PlanAc).optional().describe("the acceptance criteria (id, text, surface, fails_when), if the design defines them"),
     },
+  },
+  mesh_fleet: {
+    description: "Every machine logged in as your user and what each session on it is doing (read-only).",
+    input: {},
   },
 } as const;
 

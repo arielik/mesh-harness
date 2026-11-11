@@ -3,7 +3,8 @@
 import { z } from "zod";
 import type { Goal, Note, Plan, PlanAc, Question, Step, StepFacts, TrailFile } from "./goal.ts";
 import { AcState, Failure, Findings, PlanInput, Verdict } from "./goal.ts";
-import { Session } from "./session.ts";
+import { ShareLevel } from "./config.ts";
+import { Repo, Session } from "./session.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
 export const SESSION_COOKIE = "mesh_session";
@@ -23,13 +24,40 @@ export const SyncRequest = z.object({
   events: z.array(SyncEvent).max(500).default([]),
   /**
    * Full records of sessions that hold a step, plus metadata-only records of the other sessions
-   * when the machine opted in (`shareSessions: "all"`); otherwise those stay private (Q5).
+   * when the machine shares them (`shareSessions` `me` or `all`); otherwise those stay private (Q5).
    */
   sessions: z.array(Session).max(200).default([]),
   /** Session counts by state for the whole machine. */
   counts: z.record(z.string(), z.number().int()).default({}),
+  /**
+   * Facts about the machine (MM-1): its share level, and its repo inventory (ids and names only).
+   * Absent (an older daemon): the hub keeps what it has. `repos` absent: inventory unchanged.
+   */
+  machine: z.object({ share: ShareLevel, repos: z.array(Repo).max(500).optional() }).optional(),
 });
 export type SyncRequest = z.infer<typeof SyncRequest>;
+
+/**
+ * Reply to `POST /v1/sync`. `share`: the level the hub has stored for the token's machine (absent
+ * when none was ever reported); a hub older than v0.1.9 answers `{ accepted }` only.
+ */
+export interface SyncResponse {
+  accepted: number;
+  share?: ShareLevel | undefined;
+}
+
+/** A machine nickname (MM-1): short, lowercase, unique among one person's machines. */
+export const NICKNAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** The shape of a machine id; a nickname may not look like one. */
+export const MACHINE_ID_RE = /^m-[0-9a-f]{8}$/;
+export const NICKNAME_RULE = "nickname must match [a-z0-9][a-z0-9-]{0,31} and not look like a machine id";
+
+export function nicknameOk(n: string): boolean {
+  return NICKNAME_RE.test(n) && !MACHINE_ID_RE.test(n);
+}
+
+/** Body of `POST /v1/machines/:id/name`: a nickname, or null to clear it. */
+export const MachineName = z.object({ nickname: z.string().refine(nicknameOk, NICKNAME_RULE).nullable() });
 
 export const AckRequest = z.object({ state: z.enum(["delivered", "failed"]), method: z.string().optional() });
 
@@ -203,6 +231,7 @@ export interface LiveSession {
 export interface LiveMachine {
   id: string;
   hostname: string;
+  nickname?: string | undefined;
   online: boolean;
   lastSeen: number;
   counts: Record<string, number>;
@@ -225,4 +254,34 @@ export interface LiveView {
   goals: { id: string; title: string; state: string; owner: string; topics: string[]; done: number; total: number; holders: string[] }[];
   attention: Attention[];
   activity: { seq: number; at: number; type: string; user?: string | undefined; goal?: string | undefined; step?: string | undefined; text: string }[];
+}
+
+/** A session in `GET /v1/fleet` (MM-1). */
+export interface FleetSession extends LiveSession {
+  lastEventAt: number;
+}
+
+/** One of the caller's machines in `GET /v1/fleet` (MM-1). */
+export interface FleetMachine {
+  id: string;
+  hostname: string;
+  nickname?: string | undefined;
+  online: boolean;
+  lastSeen: number;
+  counts: Record<string, number>;
+  /** Absent: the machine's daemon never reported a share level. */
+  share?: ShareLevel | undefined;
+  /** `[]` when none was reported. */
+  repos: Repo[];
+  reposAt?: number | undefined;
+  /** This is the machine of the calling token. */
+  current: boolean;
+  sessions: FleetSession[];
+}
+
+/** `GET /v1/fleet`: every machine logged in as the caller and what each session on it does. */
+export interface FleetView {
+  now: number;
+  user: UserView;
+  machines: FleetMachine[];
 }

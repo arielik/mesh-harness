@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256 } from "../../src/auth/index.ts";
 import { Daemon, defaultDeps } from "../../src/daemon/index.ts";
+import { repoForCwd } from "../../src/daemon/git.ts";
 import { buildHubConfig, startHub, type HubConfig, type RunningHub } from "../../src/hub/index.ts";
 import type { AgentEntry, Credentials, DaemonConfig, HookInput, LoginResult, Session } from "../../src/protocol/index.ts";
 import { DaemonStore, HubStore } from "../../src/store/index.ts";
@@ -27,6 +28,28 @@ export interface Person {
   /** Simulate this person's network to the hub being down. */
   offline: boolean;
   credentialsPath: string;
+  /** This machine's folder: credentials.json and daemon.json (MESH_CONFIG_DIR for a CLI run). */
+  dir: string;
+  /** daemon.json of this machine's daemon (with its port), written once it listens. */
+  configPath: string;
+  config: DaemonConfig;
+  hostname: string;
+  /** Every POST /v1/sync body this daemon sent, oldest first. */
+  syncs: Json[];
+}
+
+export interface PersonOptions {
+  solo?: Credentials;
+  shareSessions?: DaemonConfig["shareSessions"];
+  /** Hostname sent at login (default `<name>-laptop`). */
+  hostname?: string;
+  /** Install id sent at login (default: a new one per call, so each call is its own machine). */
+  install?: string;
+  workspaceRoots?: string[];
+  /** Repo id of the sessions in this person's checkout (default `gitlab.lab/vpc/<repo>`). */
+  repoId?: string;
+  /** Log in (for the token) but write no credentials file: this installation is not logged in. */
+  noCredentials?: boolean;
 }
 
 export class World {
@@ -34,15 +57,22 @@ export class World {
   hubConfig!: HubConfig;
   hubStore!: HubStore;
   clock = 2_000_000_000;
+  /** The latest machine started for each name. */
   people: Record<string, Person> = {};
+  /** Every machine started, in order (one name may have several). */
+  machines: Person[] = [];
   private dirs: string[] = [];
+  private installs = 0;
 
-  async start(users: string[]): Promise<void> {
+  async start(users: string[], opts: { admins?: string[] } = {}): Promise<void> {
     const config = buildHubConfig(
       {
         listen: "127.0.0.1:0",
         db: ":memory:",
-        auth: { providers: [{ id: "team", kind: "token", users: users.map((n) => ({ name: n, token_sha256: sha256(`${n}-token-secret`) })) }] },
+        auth: {
+          providers: [{ id: "team", kind: "token", users: users.map((n) => ({ name: n, token_sha256: sha256(`${n}-token-secret`) })) }],
+          ...(opts.admins ? { bootstrap_admins: opts.admins.map((n) => `team:${n}`) } : {}),
+        },
       },
       { baseDir: "/", env: {} },
     );
@@ -62,23 +92,70 @@ export class World {
     this.hub = await startHub(config, { store: this.hubStore, tickMs: 0, now: () => this.clock });
   }
 
-  async person(name: string, repo: string, opts: { solo?: Credentials; shareSessions?: DaemonConfig["shareSessions"] } = {}): Promise<Person> {
+  /** A login only (no daemon): a device token bound to its own machine. */
+  async login(name: string, opts: { hostname?: string; install?: string } = {}): Promise<LoginResult> {
+    const body = { token: `${name}-token-secret`, hostname: opts.hostname ?? `${name}-laptop`, install: opts.install ?? this.newInstall(name) };
+    const res = await fetch(`${this.hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return (await res.json()) as LoginResult;
+  }
+
+  private newInstall(name: string): string {
+    return `inst-${name}-${++this.installs}`.padEnd(8, "x");
+  }
+
+  async person(name: string, repo: string, opts: PersonOptions = {}): Promise<Person> {
     const dir = mkdtempSync(join(tmpdir(), `mesh-world-${name}-`));
     this.dirs.push(dir);
     const repoDir = join(dir, repo);
     mkdirSync(repoDir);
     execFileSync("git", ["init", "-q"], { cwd: repoDir });
-    const res = await fetch(`${this.hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: `${name}-token-secret`, hostname: `${name}-laptop` }) });
-    const login = (await res.json()) as LoginResult;
+    const hostname = opts.hostname ?? `${name}-laptop`;
+    const login = await this.login(name, { hostname, ...(opts.install ? { install: opts.install } : {}) });
     const credentialsPath = join(dir, "credentials.json");
-    if (!opts.solo) writeFileSync(credentialsPath, JSON.stringify({ hub: this.hub.url, token: login.token, user: login.user, machine: login.machine }));
+    if (!opts.solo && !opts.noCredentials) writeFileSync(credentialsPath, JSON.stringify({ hub: this.hub.url, token: login.token, user: login.user, machine: login.machine }));
     const store = await DaemonStore.open(":memory:");
-    const p: Person = { name, login, store, pastes: [], notes: [], agents: null, repoDir, repo, daemon: undefined as unknown as Daemon, offline: false, credentialsPath };
-    const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: [], autopilot: "nudge", shareSessions: opts.shareSessions ?? "steps" };
-    p.daemon = new Daemon({
-      config,
+    const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: opts.workspaceRoots ?? [], autopilot: "nudge", shareSessions: opts.shareSessions ?? "steps" };
+    const p: Person = {
+      name,
+      login,
       store,
+      pastes: [],
+      notes: [],
+      agents: null,
+      repoDir,
+      repo,
+      daemon: undefined as unknown as Daemon,
+      offline: false,
       credentialsPath,
+      dir,
+      configPath: join(dir, "daemon.json"),
+      config,
+      hostname,
+      syncs: [],
+    };
+    p.daemon = this.makeDaemon(p, opts);
+    await p.daemon.start(0);
+    writeFileSync(p.configPath, JSON.stringify({ ...config, port: p.daemon.port }));
+    this.people[name] = p;
+    this.machines.push(p);
+    return p;
+  }
+
+  /** Stop this machine's daemon and start it again (same store and credentials), e.g. with another share level. */
+  async restart(p: Person, change: Partial<Pick<DaemonConfig, "shareSessions" | "workspaceRoots">> = {}, opts: PersonOptions = {}): Promise<void> {
+    await p.daemon.stop();
+    p.config = { ...p.config, ...change };
+    p.daemon = this.makeDaemon(p, opts);
+    await p.daemon.start(0);
+    writeFileSync(p.configPath, JSON.stringify({ ...p.config, port: p.daemon.port }));
+  }
+
+  private makeDaemon(p: Person, opts: PersonOptions): Daemon {
+    const repoId = opts.repoId ?? `gitlab.lab/vpc/${p.repo}`;
+    return new Daemon({
+      config: p.config,
+      store: p.store,
+      credentialsPath: p.credentialsPath,
       ...(opts.solo ? { solo: () => opts.solo } : {}),
       version: "test",
       deps: defaultDeps({
@@ -93,24 +170,23 @@ export class World {
         wakeBackground: async () => ({ ok: true }),
         notify: async (t, b) => p.notes.push(`${t}: ${b}`),
         now: () => this.clock,
-        repoForCwd: () => ({ id: `gitlab.lab/vpc/${repo}`, name: repo }),
+        // Sessions in the person's own checkout belong to its repo; any other folder is read from git.
+        repoForCwd: (cwd) => (cwd === p.repoDir || cwd.startsWith(`${p.repoDir}/`) ? { id: repoId, name: p.repo } : repoForCwd(cwd)),
         mtime: () => undefined,
-        log: (l) => process.env.WORLD_LOG && console.log(`[${name}] ${l}`),
+        log: (l) => process.env.WORLD_LOG && console.log(`[${p.name}] ${l}`),
         hubTimeoutMs: 500,
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           if (p.offline) throw new TypeError("fetch failed (simulated network loss)");
+          if (init?.method === "POST" && String(url).endsWith("/v1/sync") && typeof init.body === "string") p.syncs.push(JSON.parse(init.body));
           return fetch(url, init);
         }) as typeof fetch,
       }),
       intervals: { reconcileMs: 0, transcriptMs: 0, tickMs: 0, deliveryMs: 0 },
     });
-    await p.daemon.start(0);
-    this.people[name] = p;
-    return p;
   }
 
   async stop(): Promise<void> {
-    for (const p of Object.values(this.people)) {
+    for (const p of this.machines) {
       await p.daemon.stop();
       p.store.close();
     }
@@ -138,7 +214,17 @@ export class World {
   }
 
   async flush(): Promise<void> {
-    for (const p of Object.values(this.people)) await p.daemon.link?.flush();
+    for (const p of this.machines) await p.daemon.link?.flush();
+  }
+
+  /** The hub's machine id of this person's installation. */
+  machineOf(p: Person): string {
+    return p.login.machine as string;
+  }
+
+  /** Every POST /v1/sync body this person's daemon sent. */
+  syncBodies(p: Person): Json[] {
+    return p.syncs;
   }
 
   async api(p: Person, method: "GET" | "POST", path: string, body?: unknown): Promise<{ status: number; json: Json }> {
@@ -148,5 +234,22 @@ export class World {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     return { status: r.status, json: await r.json() };
+  }
+
+  /** A raw call with any bearer token (a device token from `login`, a service token, or none). */
+  async call(token: string | undefined, method: "GET" | "POST", path: string, body?: unknown): Promise<{ status: number; json: Json }> {
+    const r = await fetch(this.hub.url + path, {
+      method,
+      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await r.text();
+    let json: Json;
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch {
+      json = text;
+    }
+    return { status: r.status, json };
   }
 }

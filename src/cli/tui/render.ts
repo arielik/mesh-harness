@@ -1,7 +1,7 @@
 // Pure rendering of the session list (plan §9). No I/O, so it can be snapshot-tested.
 
-import { messageStage, needsLabel, SESSION_STAGES, sessionLabel, sessionStage, type SessionStage } from "../../core/index.ts";
-import type { Message, Session } from "../../protocol/index.ts";
+import { age, messageStage, needsLabel, renderFleet, SESSION_STAGES, sessionLabel, sessionStage, type SessionStage } from "../../core/index.ts";
+import type { FleetView, Message, Session } from "../../protocol/index.ts";
 
 /** Session groups come from the stage table in core (one source for every panel). */
 export type Group = SessionStage;
@@ -19,14 +19,7 @@ export function ordered(sessions: readonly Session[]): Session[] {
   );
 }
 
-export function age(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.round(m / 60);
-  return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
-}
+export { age };
 
 const ICON: Record<Group, string> = { "NEEDS YOU": "●", WORKING: "◐", "STALLED / QUIET": "◌", IDLE: "○", ENDED: "·" };
 
@@ -117,7 +110,7 @@ export function render(v: View): string[] {
 
   const footer: string[] = [];
   if (v.input) footer.push(paint(C.bold, `${v.input.label}${v.input.value}▌`));
-  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · n next step · g goals · r refresh · ↑↓ move · q quit"));
+  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · n next step · g goals · m machines · r refresh · ↑↓ move · q quit"));
   if (failedDeliveries.length) footer.push(paint(C.red, fit(`${failedDeliveries.length} message(s) could not be delivered: ${failedDeliveries.map((m) => m.error ?? "?").slice(0, 2).join("; ")}`, v.width)));
   if (v.status) footer.push(fit(v.status, v.width));
   const room = v.height - footer.length - 1;
@@ -134,6 +127,29 @@ export interface GoalRow {
   done: number;
   total: number;
   holders: string[];
+}
+
+/** Shorten to `width` characters (no padding). */
+function clip(text: string, width: number): string {
+  if (width <= 0) return "";
+  return text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text;
+}
+
+export const MACHINES_FOOTER = "m back to sessions · g goals · details: mesh machines";
+
+/**
+ * The My machines panel of the TUI (`m`, MM-1): the person's other machines and their sessions.
+ * Exactly `height` lines; the footer is the last line and a status, when given, the one above it.
+ */
+export function renderMachines(fleet: FleetView, v: { width: number; height: number; header: string; status?: string | undefined }): string[] {
+  const lines = [v.header, "", "MY MACHINES"];
+  if (fleet.machines.every((m) => m.current)) lines.push("  No other machines. Run mesh login on your other machines.");
+  else for (const l of renderFleet(fleet, { skipCurrent: true }).split("\n")) lines.push(l === "" ? "" : `  ${l}`);
+  const footer = [...(v.status ? [v.status] : []), MACHINES_FOOTER].map((l) => clip(l, v.width));
+  const room = Math.max(0, v.height - footer.length);
+  const body = lines.slice(0, room).map((l) => clip(l, v.width));
+  while (body.length < room) body.push("");
+  return [...body, ...footer].slice(-Math.max(0, v.height));
 }
 
 /** The goals view of the TUI (`g`). */

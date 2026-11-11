@@ -859,6 +859,41 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     }
+                  },
+                  "machine": {
+                    "type": "object",
+                    "properties": {
+                      "share": {
+                        "type": "string",
+                        "enum": [
+                          "steps",
+                          "me",
+                          "all"
+                        ]
+                      },
+                      "repos": {
+                        "maxItems": 500,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "share"
+                    ]
                   }
                 }
               }
@@ -1018,6 +1053,103 @@
           },
           "403": {
             "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/fleet": {
+      "get": {
+        "operationId": "getVFleet",
+        "summary": "Every machine logged in as the caller and what each session on it is doing (read-only).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `live:read`.",
+        "tags": [
+          "daemon"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/machines/{id}/name": {
+      "post": {
+        "operationId": "postVMachinesIdName",
+        "summary": "Name one of your machines (or clear its name with null).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "daemon"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "nickname": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "nickname"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
           }
         }
       }

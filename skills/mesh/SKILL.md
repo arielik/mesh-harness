@@ -9,7 +9,7 @@ description: How to work inside mesh-harness, which tracks Claude Code sessions 
 
 mesh tracks this Claude Code session for your person and, when you hold a **step**, connects you
 to a shared plan. A goal (for example `G17`) has a plan of steps (`G17.api`, `G17.web`, …).
-Each step is held by one session at a time. The mesh MCP server gives you eight tools for this.
+Each step is held by one session at a time. The mesh MCP server gives you nine tools for this.
 
 ## If you hold a step
 
@@ -39,6 +39,8 @@ and anything surprising.
 - A design session for a goal writes the design document, then proposes the plan with
   `mesh_plan` (a DAG of steps, and acceptance criteria if the design defines them). The plan
   waits for a person to approve it; do not start the steps yourself.
+- `mesh_fleet` lists every machine logged in as your person's user and what each session on
+  it is doing (read-only). Your person sees the same with `mesh machines`.
 
 ## Asking your person
 
@@ -69,4 +71,6 @@ your person.
 | `mesh next` | steps that are ready |
 | `mesh run <repo> --step <step>` | start a session that holds a step |
 | `mesh say <session> "<text>"` | send a message to a session |
+| `mesh machines` | every machine logged in as you and what each session on it does |
+| `mesh machine name <nickname>` | give this machine a short name (`--machine` names another) |
 | `mesh doctor` | check the installation |

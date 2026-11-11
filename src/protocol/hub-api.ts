@@ -15,6 +15,7 @@ import {
   DoneRequest,
   GateDecision,
   LoginDirect,
+  MachineName,
   MessageRequest,
   NewGoal,
   NewTopic,
@@ -93,6 +94,8 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "GET", path: "/v1/inbox", rule: "member", tag: "daemon", summary: "Messages waiting for the calling machine's sessions." },
   { method: "POST", path: "/v1/inbox/:id/ack", rule: "member", tag: "daemon", body: AckRequest, summary: "Mark an inbox message delivered or failed." },
   { method: "GET", path: "/v1/live", rule: "member", scope: "live:read", tag: "daemon", query: { topic: TOPIC_QUERY }, summary: "Live sessions across the team, and goals (filtered by topic)." },
+  { method: "GET", path: "/v1/fleet", rule: "member", scope: "live:read", tag: "daemon", summary: "Every machine logged in as the caller and what each session on it is doing (read-only)." },
+  { method: "POST", path: "/v1/machines/:id/name", rule: "member", tag: "daemon", body: MachineName, summary: "Name one of your machines (or clear its name with null)." },
   { method: "GET", path: "/v1/attention", rule: "member", tag: "daemon", summary: "What needs the calling user: questions, gates, stalled steps." },
   { method: "GET", path: "/v1/stream", rule: "member", scope: "live:read", tag: "daemon", sse: true, summary: "Server-sent hints (changed, wake). Lossy by design: clients refetch." },
 

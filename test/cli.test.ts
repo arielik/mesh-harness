@@ -72,6 +72,98 @@ describe("mesh setup", () => {
   });
 });
 
+// MM-1 (AC-01 newConfig, AC-02 `mesh setup` share level).
+describe("mesh setup share level", () => {
+  const ME_LINE = "Sessions without a step will be reported to the hub as metadata that only you can see (state, repo, name, times; no paths or text). Restart the daemon to apply.";
+  const STEPS_LINE = "Only sessions holding a step will be reported to the hub. Restart the daemon to apply.";
+  const ALL_LINE = "Sessions without a step will be reported to the hub as metadata (state, repo, name, times; no paths or text). Restart the daemon to apply.";
+  const level = (t: ReturnType<typeof env>) => JSON.parse(readFileSync(t.paths.daemonConfig, "utf8")).shareSessions as string | undefined;
+  const outText = (t: ReturnType<typeof env>) => t.out.join("\n");
+
+  /** An existing config (as an older mesh wrote it) with the given level, or without the field. */
+  async function existing(shareSessions: string | undefined) {
+    const t = env(tmp());
+    expect(await t.cmd("setup").run(["--port", "31236"])).toBe(0);
+    const config = JSON.parse(readFileSync(t.paths.daemonConfig, "utf8"));
+    if (shareSessions === undefined) delete config.shareSessions;
+    else config.shareSessions = shareSessions;
+    writeFileSync(t.paths.daemonConfig, JSON.stringify(config, null, 2), { mode: 0o600 });
+    t.out.length = 0;
+    t.err.length = 0;
+    return t;
+  }
+
+  it("test_AC01_newConfig_is_me", async () => {
+    const { newConfig } = await import("../src/cli/context.ts");
+    const { DaemonConfig } = await import("../src/protocol/index.ts");
+    const c = newConfig(31237);
+    expect(c.shareSessions).toBe("me");
+    expect(DaemonConfig.parse(c)).toEqual(c);
+  });
+
+  it("test_AC02_fresh_setup_writes_me", async () => {
+    const t = env(tmp());
+    expect(await t.cmd("setup").run(["--port", "31238"])).toBe(0);
+    expect(level(t)).toBe("me");
+    expect(outText(t)).toContain(ME_LINE);
+  });
+
+  it("test_AC02_existing_steps_kept", async () => {
+    const t = await existing("steps");
+    expect(await t.cmd("setup").run([])).toBe(0);
+    expect(level(t)).toBe("steps");
+    expect(outText(t)).not.toContain(ME_LINE);
+    expect(outText(t)).not.toContain(STEPS_LINE);
+  });
+
+  it("test_AC02_existing_without_field_kept", async () => {
+    const t = await existing(undefined);
+    expect(await t.cmd("setup").run([])).toBe(0);
+    expect([undefined, "steps"]).toContain(level(t));
+    expect(outText(t)).not.toContain(ME_LINE);
+  });
+
+  it("test_AC02_flag_sets_all", async () => {
+    const t = await existing("steps");
+    expect(await t.cmd("setup").run(["--share-sessions", "all"])).toBe(0);
+    expect(level(t)).toBe("all");
+    expect(outText(t)).toContain(ALL_LINE);
+  });
+
+  it("test_AC02_alias_share", async () => {
+    const t = await existing("steps");
+    expect(await t.cmd("setup").run(["--share", "all"])).toBe(0);
+    expect(level(t)).toBe("all");
+    t.out.length = 0;
+    expect(await t.cmd("setup").run(["--share", "me"])).toBe(0);
+    expect(level(t)).toBe("me");
+    expect(outText(t)).toContain(ME_LINE);
+  });
+
+  it("test_AC02_flag_me", async () => {
+    const t = await existing("steps");
+    expect(await t.cmd("setup").run(["--share-sessions", "me"])).toBe(0);
+    expect(level(t)).toBe("me");
+    expect(outText(t)).toContain(ME_LINE);
+  });
+
+  it("test_AC02_flag_steps_prints_line", async () => {
+    const t = await existing("me");
+    expect(await t.cmd("setup").run(["--share-sessions", "steps"])).toBe(0);
+    expect(level(t)).toBe("steps");
+    expect(outText(t)).toContain(STEPS_LINE);
+    expect(outText(t)).not.toContain(ME_LINE);
+  });
+
+  it("test_AC02_bad_value_exit_2", async () => {
+    const t = await existing("me");
+    const before = readFileSync(t.paths.daemonConfig);
+    expect(await t.cmd("setup").run(["--share-sessions", "nope"])).toBe(2);
+    expect(t.err.join("\n")).toContain("--share-sessions must be steps, me or all");
+    expect(readFileSync(t.paths.daemonConfig).equals(before)).toBe(true);
+  });
+});
+
 describe("mesh setup --agent opencode", () => {
   const runner: Runner = async (cmd, args) => (cmd === "opencode" && args[0] === "--version" ? ok("2.2.4\n") : ok());
 

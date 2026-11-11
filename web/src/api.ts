@@ -1,5 +1,5 @@
 import type { Goal } from "../../src/protocol/goal.ts";
-import type { GoalDetail, LiveView, ProviderInfo, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import type { FleetView, GoalDetail, LiveView, ProviderInfo, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -25,6 +25,7 @@ const g = (id: string) => `/v1/goals/${encodeURIComponent(id)}`;
 
 export const api = {
   live: () => call<LiveView>("GET", "/v1/live"),
+  fleet: () => call<FleetView>("GET", "/v1/fleet"),
   providers: async () => (await call<{ providers: ProviderInfo[] }>("GET", "/auth/providers")).providers,
   loginToken: (provider: string, token: string) => call<{ user: { id: string } }>("POST", `/auth/${encodeURIComponent(provider)}/login`, { token, client: "web" }),
   loginNone: (provider: string) => call<{ user: { id: string } }>("POST", `/auth/${encodeURIComponent(provider)}/login`, { client: "web" }),

@@ -25,7 +25,7 @@ import {
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { installPlugin, opencodeSupported, opencodeVersion, pluginStatus, uninstallPlugin, type PluginOptions } from "../opencode/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, paneSocket, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -55,22 +55,31 @@ function pluginOptions(c: CliEnv): PluginOptions {
   return { daemonConfigPath: c.paths.daemonConfig, mcpCommand: [...c.self, "mcp"] };
 }
 
+/** What `mesh setup` says about the share level now in effect (when given or newly written). */
+const SHARE_LINES: Record<ShareLevel, string> = {
+  steps: "Only sessions holding a step will be reported to the hub. Restart the daemon to apply.",
+  me: "Sessions without a step will be reported to the hub as metadata that only you can see (state, repo, name, times; no paths or text). Restart the daemon to apply.",
+  all: "Sessions without a step will be reported to the hub as metadata (state, repo, name, times; no paths or text). Restart the daemon to apply.",
+};
+
 export function setupCommand(c: CliEnv): Command {
   return {
     name: "setup",
     summary: "install mesh into Claude Code, or OpenCode with --agent opencode|all (--uninstall to remove)",
     async run(args) {
-      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions"]);
+      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions", "share"]);
       const notifyArg = a.str("notify");
       if (notifyArg !== undefined && !["desktop", "terminal", "both", "off"].includes(notifyArg)) {
         c.io.err("--notify must be desktop, terminal, both or off");
         return 2;
       }
-      const shareArg = a.str("share-sessions");
-      if (shareArg !== undefined && shareArg !== "steps" && shareArg !== "all") {
-        c.io.err("--share-sessions must be steps or all");
+      const shareRaw = a.str("share-sessions") ?? a.str("share");
+      const shareParsed = shareRaw === undefined ? undefined : ShareLevel.safeParse(shareRaw);
+      if (shareParsed && !shareParsed.success) {
+        c.io.err("--share-sessions must be steps, me or all");
         return 2;
       }
+      const shareArg: ShareLevel | undefined = shareParsed?.data;
       const agent = a.has("agent") ? agentChoice(a.str("agent")) : a.has("uninstall") ? "all" : "claude";
       if (!agent) {
         c.io.err("--agent must be claude, opencode or all");
@@ -112,7 +121,8 @@ export function setupCommand(c: CliEnv): Command {
       }
       let config: DaemonConfig;
       const port = a.str("port") ? Number(a.str("port")) : undefined;
-      if (existsSync(c.paths.daemonConfig)) {
+      const fresh = !existsSync(c.paths.daemonConfig);
+      if (!fresh) {
         config = loadConfig(c.paths);
         if (port !== undefined) config = { ...config, port };
         if (a.has("no-notify")) config = { ...config, notify: false };
@@ -124,11 +134,7 @@ export function setupCommand(c: CliEnv): Command {
       }
       if (shareArg) config = { ...config, shareSessions: shareArg };
       saveConfig(c.paths, config);
-      const shareLine = shareArg
-        ? shareArg === "all"
-          ? "Sessions without a step will be reported to the hub as metadata (state, repo, name, times; no paths or text). Restart the daemon to apply."
-          : "Only sessions holding a step will be reported to the hub. Restart the daemon to apply."
-        : "";
+      const shareLine = shareArg !== undefined || fresh ? SHARE_LINES[config.shareSessions] : "";
       const ocLines: string[] = [];
       if (opencode) {
         const v = await opencodeVersion(runner);

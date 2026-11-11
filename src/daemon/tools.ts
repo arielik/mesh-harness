@@ -7,8 +7,8 @@
 // shared work, proposing a plan) say "offline", at once.
 
 import { join } from "node:path";
-import { pickNext, repoMatches, stepFacts, stepRecord, type FactEvent } from "../core/index.ts";
-import { PlanStep, TOOLS, type DoneResult, type Session, type Step, type StepContext, type ToolName, type ToolResult, type TrailFile } from "../protocol/index.ts";
+import { pickNext, renderFleet, repoMatches, stepFacts, stepRecord, type FactEvent } from "../core/index.ts";
+import { PlanStep, TOOLS, type DoneResult, type FleetView, type Session, type Step, type StepContext, type ToolName, type ToolResult, type TrailFile } from "../protocol/index.ts";
 import type { PendingCall } from "../store/index.ts";
 import { blobSha, findRepoRoot } from "./git.ts";
 import { HubRpcError, type HubLink } from "./hub-link.ts";
@@ -162,6 +162,8 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
           : `This session holds no mesh step, and no step is ready for ${s.repo?.name ?? "this repo"}. Work on what your person asked.`,
       );
     }
+    case "mesh_fleet":
+      return ok(renderFleet(await host.link.rpc<FleetView>("GET", "/v1/fleet")));
     case "mesh_next": {
       const steps = await readySteps(host, (args.repo as string | undefined) ?? repoId);
       return ok(steps.length ? steps.map(fmtStep).join("\n") : "No ready steps.");

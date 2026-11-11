@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Session } from "../../protocol/index.ts";
-import { age, groupOf, ordered, render } from "./render.ts";
+import { renderFleet } from "../../core/index.ts";
+import type { FleetMachine, FleetSession, FleetView, Session } from "../../protocol/index.ts";
+import { age, groupOf, ordered, render, renderMachines } from "./render.ts";
 
 const NOW = 10_000_000;
 const base = (sid: string, over: Partial<Session>): Session => ({
@@ -102,5 +103,103 @@ describe("render", () => {
     [72 * 3_600_000, "3d"],
   ])("age(%d) = %s", (ms, text) => {
     expect(age(ms)).toBe(text);
+  });
+});
+
+// AC-22 (MM-1): the "My machines" panel.
+describe("AC-22 renderMachines", () => {
+  const now = 1_000_000_000_000;
+  const session = (sid: string, over: Partial<FleetSession> = {}): FleetSession => ({ sid, machine: "m-x", user: "bob", state: "idle", lastEventAt: now - 60_000, ...over });
+  const machine = (id: string, over: Partial<FleetMachine> = {}): FleetMachine => ({
+    id,
+    hostname: `host-${id}`,
+    online: true,
+    lastSeen: now - 5_000,
+    counts: {},
+    share: "me",
+    repos: [],
+    current: false,
+    sessions: [],
+    ...over,
+  });
+  const here = machine("m-0000000a", { hostname: "bob-here", nickname: "here", current: true, sessions: [session("s-here", { repo: "alpha", name: "local-work" })] });
+  const other = machine("m-0000000b", { hostname: "bob-desk", nickname: "desk", sessions: [session("s-desk", { repo: "beta", name: "remote-work", step: "G2.api" })] });
+  const fleet = (machines: FleetMachine[]): FleetView => ({ now, user: { id: "bob", name: "bob", roles: ["member"] }, machines });
+  const FOOTER = "m back to sessions · g goals · details: mesh machines";
+  // eslint-disable-next-line no-control-regex -- ANSI escapes
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+  it("test_AC22_first_lines", () => {
+    const lines = renderMachines(fleet([here, other]), { width: 100, height: 20, header: "mesh 0.1.9 · bob" });
+    expect(stripAnsi(lines[0] ?? "").trimEnd()).toBe("mesh 0.1.9 · bob");
+    expect(stripAnsi(lines[1] ?? "").trim()).toBe("");
+    expect(stripAnsi(lines[2] ?? "").trimEnd()).toBe("MY MACHINES");
+  });
+
+  it("test_AC22_skips_current", () => {
+    const f = fleet([here, other]);
+    const lines = renderMachines(f, { width: 120, height: 20, header: "mesh" }).map((l) => stripAnsi(l).trimEnd());
+    const text = lines.join("\n");
+    expect(text).not.toContain("bob-here");
+    expect(text).not.toContain("local-work");
+    expect(text).toContain("bob-desk");
+    expect(text).toContain("remote-work");
+    // The other machine's lines are renderFleet's, each indented by two spaces.
+    const expected = renderFleet(f, { skipCurrent: true })
+      .split("\n")
+      .map((l) => (l ? `  ${l}` : l));
+    const start = lines.indexOf(expected[0] as string);
+    expect(start).toBeGreaterThan(2);
+    expect(lines.slice(start, start + expected.length)).toEqual(expected);
+  });
+
+  it("test_AC22_only_current_empty_text", () => {
+    const lines = renderMachines(fleet([here]), { width: 100, height: 12, header: "mesh" }).map((l) => stripAnsi(l).trimEnd());
+    expect(lines).toContain("  No other machines. Run mesh login on your other machines.");
+    expect(lines.join("\n")).not.toContain("bob-here");
+    // Positive control: with another machine the empty text is gone.
+    expect(renderMachines(fleet([here, other]), { width: 100, height: 12, header: "mesh" }).join("\n")).not.toContain("No other machines");
+  });
+
+  it("test_AC22_footer_last", () => {
+    for (const status of [undefined, "fetch failed"]) {
+      const lines = renderMachines(fleet([here, other]), { width: 100, height: 15, header: "mesh", ...(status ? { status } : {}) });
+      expect(stripAnsi(lines.at(-1) ?? "").trim()).toBe(FOOTER);
+    }
+  });
+
+  it("test_AC22_status_above_footer", () => {
+    const height = 15;
+    const lines = renderMachines(fleet([here, other]), { width: 100, height, header: "mesh", status: "fetch failed" });
+    expect(stripAnsi(lines[height - 2] ?? "").trim()).toBe("fetch failed");
+    expect(lines.filter((l) => l.includes("fetch failed"))).toHaveLength(1);
+  });
+
+  it.each([10, 40])("test_AC22_height_exact (%d)", (height) => {
+    expect(renderMachines(fleet([here, other]), { width: 100, height, header: "mesh" })).toHaveLength(height);
+    expect(renderMachines(fleet([here]), { width: 100, height, header: "mesh", status: "x" })).toHaveLength(height);
+  });
+
+  it("test_AC22_width_limit", () => {
+    const long = machine("m-0000000c", {
+      hostname: "a-very-long-hostname-for-a-build-machine.example.org",
+      nickname: "build-box-with-a-long-name",
+      repos: [{ id: "example.org/team/r", name: "r" }],
+      sessions: [session("s-long", { repo: "a-repository-with-a-long-name", name: "a session name that goes on and on", step: "G12.some-long-step", state: "needs_you", needs: "permission" })],
+    });
+    const lines = renderMachines(fleet([here, other, long]), {
+      width: 30,
+      height: 20,
+      header: "\x1b[1mmesh 0.1.9 · bob with a long header line\x1b[0m",
+      status: "\x1b[31ma status line that is longer than thirty\x1b[0m",
+    });
+    expect(lines).toHaveLength(20);
+    expect(lines.join("\n")).toContain("desk"); // positive control: content is there
+    for (const l of lines) expect(stripAnsi(l).length).toBeLessThanOrEqual(30);
+  });
+
+  it("test_AC22_session_footer_has_m", () => {
+    const lines = render({ sessions, messages: [], now: NOW, width: 160, height: 20, header: "mesh", color: false });
+    expect(lines.join("\n")).toContain("m machines");
   });
 });

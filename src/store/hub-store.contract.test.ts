@@ -11,7 +11,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { Goal, Session, Step } from "../protocol/index.ts";
 import { openDb, type Db } from "./db.ts";
 import { describeDbTarget, toPgPlaceholders } from "./dialect.ts";
-import { HubStore } from "./hub-store.ts";
+import { HUB_MIGRATIONS, HUB_MIGRATIONS_PG, HubStore } from "./hub-store.ts";
 import { openPgDb } from "./pg.ts";
 
 const PG_URL = process.env.MESH_TEST_PG_URL;
@@ -406,6 +406,150 @@ function contract(d: Driver) {
       await s.backup(join(dir, "copy.db"));
       const copy = track(await HubStore.open(join(dir, "copy.db")));
       expect((await copy.listGoals()).map((g) => g.title)).toEqual(["kept"]);
+    });
+  });
+
+  // MM-1: per-machine share level, repo inventory and nickname (AC-05, AC-06, AC-07).
+  describe("MM-1 machines", () => {
+    const A = { id: "example.org/team/a", name: "a" };
+    const B = { id: "example.org/team/b", name: "b" };
+    const C = { id: "example.org/team/c", name: "c" };
+
+    /** u1 (ada) with m1 and m2, u2 (bea) with m3. */
+    async function machines(s: HubStore): Promise<void> {
+      await s.upsertIdentity({ provider: "oidc", subject: "1", name: "Ada", groups: [] }, T0);
+      await s.upsertIdentity({ provider: "oidc", subject: "2", name: "Bea", groups: [] }, T0);
+      await s.upsertMachine({ id: "m1", userId: "ada", hostname: "one" }, T0);
+      await s.upsertMachine({ id: "m2", userId: "ada", hostname: "two" }, T0);
+      await s.upsertMachine({ id: "m3", userId: "bea", hostname: "three" }, T0);
+    }
+    const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
+
+    it("test_AC05_schema_version_6", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(6);
+    });
+
+    it("test_AC05_migration_lengths_equal", () => {
+      expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
+      expect(HUB_MIGRATIONS.length).toBe(6);
+    });
+
+    it("test_AC05_fresh_machine_row_strict", async () => {
+      const s = await store();
+      await machines(s);
+      await s.touchMachine("m1", T0 + 2, { idle: 1 });
+      expect(await s.getMachine("m1")).toStrictEqual({ id: "m1", userId: "ada", hostname: "one", lastSeen: T0 + 2, counts: { idle: 1 } });
+      expect((await s.listMachines()).find((m) => m.id === "m1")).toStrictEqual({ id: "m1", userId: "ada", hostname: "one", lastSeen: T0 + 2, counts: { idle: 1 } });
+      // Positive control: once facts are stored the same read returns them.
+      await s.touchMachine("m1", T0 + 3, { idle: 1 }, { share: "me", repos: [A] });
+      expect(await s.getMachine("m1")).toMatchObject({ share: "me", repos: [A], reposAt: T0 + 3 });
+    });
+
+    it("test_AC06_touch_facts_sequence", async () => {
+      const s = await store();
+      await machines(s);
+      const m2Before = await s.getMachine("m2");
+      const c = { idle: 2 };
+      // stores share and repos, reposAt = now
+      await s.touchMachine("m1", 1000, c, { share: "me", repos: [A, B] });
+      expect(await s.getMachine("m1")).toMatchObject({ share: "me", repos: [A, B], reposAt: 1000, lastSeen: 1000 });
+      // a plain touch keeps the inventory
+      await s.touchMachine("m1", 2000, c);
+      expect(await s.getMachine("m1")).toMatchObject({ share: "me", repos: [A, B], reposAt: 1000, lastSeen: 2000 });
+      // share only keeps the inventory
+      await s.touchMachine("m1", 3000, c, { share: "all" });
+      expect(await s.getMachine("m1")).toMatchObject({ share: "all", repos: [A, B], reposAt: 1000, lastSeen: 3000 });
+      // given repos replace it
+      await s.touchMachine("m1", 4000, c, { share: "all", repos: [C] });
+      expect(await s.getMachine("m1")).toMatchObject({ share: "all", repos: [C], reposAt: 4000, lastSeen: 4000 });
+      // an empty list clears it
+      await s.touchMachine("m1", 5000, c, { repos: [] });
+      expect(await s.getMachine("m1")).toMatchObject({ share: "all", repos: [], reposAt: 5000, lastSeen: 5000 });
+      // other machines untouched
+      expect(await s.getMachine("m2")).toStrictEqual(m2Before);
+    });
+
+    it("test_AC07_set_and_clear", async () => {
+      const s = await store();
+      await machines(s);
+      const before = await s.getMachine("m1");
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      expect(await nick(s, "m1")).toBe("desk");
+      expect(await s.setMachineNickname("m1", undefined)).toBe(true);
+      const row = await s.getMachine("m1");
+      expect(row).not.toHaveProperty("nickname");
+      expect(row).toStrictEqual(before);
+    });
+
+    it("test_AC07_duplicate_within_user_refused", async () => {
+      const s = await store();
+      await machines(s);
+      expect(await s.setMachineNickname("m2", "tower")).toBe(true);
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      expect(await s.setMachineNickname("m2", "desk")).toBe(false);
+      expect(await nick(s, "m2")).toBe("tower");
+      expect(await nick(s, "m1")).toBe("desk");
+    });
+
+    it("test_AC07_same_nickname_other_user", async () => {
+      const s = await store();
+      await machines(s);
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      expect(await s.setMachineNickname("m3", "desk")).toBe(true);
+      expect(await nick(s, "m3")).toBe("desk");
+      expect(await nick(s, "m1")).toBe("desk");
+    });
+
+    it("test_AC07_rename_to_own_nickname", async () => {
+      const s = await store();
+      await machines(s);
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      expect(await nick(s, "m1")).toBe("desk");
+    });
+
+    it("test_AC07_concurrent_one_wins", async () => {
+      const target = await d.fresh();
+      const s1 = track(await HubStore.open(target));
+      const s2 = track(await HubStore.open(target));
+      await machines(s1);
+      for (let round = 0; round < 20; round++) {
+        const x = `n${round}`;
+        const results = await Promise.all([s1.setMachineNickname("m1", x), s2.setMachineNickname("m2", x)]);
+        expect(results.slice().sort()).toEqual([false, true]);
+        const holders = [await nick(s1, "m1"), await nick(s1, "m2")].filter((n) => n === x);
+        expect(holders).toHaveLength(1);
+        expect(results[0] ? await nick(s1, "m1") : await nick(s1, "m2")).toBe(x);
+      }
+    });
+
+    it("test_AC07_inside_caller_transaction", async () => {
+      const s = await store();
+      await machines(s);
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      let clash: boolean | undefined;
+      await s.tx(async () => {
+        clash = await s.setMachineNickname("m2", "desk");
+        await s.createTopic({ name: "after-clash", createdBy: "ada", createdAt: T0 });
+      });
+      expect(clash).toBe(false);
+      expect((await s.listTopics()).map((t) => t.name)).toContain("after-clash");
+      expect(await nick(s, "m2")).toBeUndefined();
+      // Positive control: a non-clashing name in a transaction is stored.
+      await s.tx(async () => {
+        expect(await s.setMachineNickname("m2", "tower")).toBe(true);
+      });
+      expect(await nick(s, "m2")).toBe("tower");
+    });
+
+    it("test_AC07_unknown_id", async () => {
+      const s = await store();
+      await machines(s);
+      await s.setMachineNickname("m1", "desk");
+      const before = await s.listMachines();
+      expect(await s.setMachineNickname("m-ffffffff", "desk")).toBe(true);
+      expect(await s.setMachineNickname("m-ffffffff", "other")).toBe(true);
+      expect(await s.listMachines()).toStrictEqual(before);
     });
   });
 }

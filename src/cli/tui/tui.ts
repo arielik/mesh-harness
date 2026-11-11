@@ -4,9 +4,9 @@
 import { spawn } from "node:child_process";
 import { attachCommand } from "../../claude/index.ts";
 import { jumpToPane, serverFromEnv } from "../../mux/index.ts";
-import type { Session, SessionsResponse } from "../../protocol/index.ts";
+import type { FleetView, Session, SessionsResponse } from "../../protocol/index.ts";
 import type { DaemonClient, DaemonStatus } from "../client.ts";
-import { ordered, render, renderGoals, type GoalRow } from "./render.ts";
+import { MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, type GoalRow } from "./render.ts";
 
 const ALT_ON = "\x1b[?1049h\x1b[?25l";
 const ALT_OFF = "\x1b[?25h\x1b[?1049l";
@@ -65,12 +65,22 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   let prompt: { label: string; value: string; target: string } | undefined;
   let paused = false;
   let goals: GoalRow[] | undefined;
+  /** MM-1: the My machines panel (`m`) is open; `fleet` is its data, refreshed every 5 s. */
+  let machines = false;
+  let fleet: FleetView | undefined;
+  let fleetTimer: NodeJS.Timeout | undefined;
   let stopped = false;
   let hubTag = "";
   let ticks = 0;
 
   const draw = () => {
     if (paused || stopped) return;
+    if (machines) {
+      const v = { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, status };
+      const lines = fleet ? renderMachines(fleet, v) : [v.header, "", "MY MACHINES", "  loading…", ...(status ? [status] : []), MACHINES_FOOTER];
+      out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
+      return;
+    }
     if (goals) {
       const lines = renderGoals(goals, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, status });
       out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
@@ -127,12 +137,29 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
 
   const current = () => data.sessions.find((s) => s.sid === selected);
 
+  const loadFleet = async () => {
+    try {
+      fleet = await client.fleet();
+      status = undefined;
+    } catch (e) {
+      status = e instanceof Error ? e.message : String(e);
+    }
+    draw();
+  };
+  const closeMachines = () => {
+    machines = false;
+    fleet = undefined;
+    if (fleetTimer) clearInterval(fleetTimer);
+    fleetTimer = undefined;
+  };
+
   return new Promise<number>((resolve) => {
     const timer = setInterval(() => void refresh(), 1_000);
     const onResize = () => draw();
     const quit = () => {
       stopped = true;
       clearInterval(timer);
+      if (fleetTimer) clearInterval(fleetTimer);
       out.off("resize", onResize);
       input.off("data", onData);
       leave();
@@ -169,7 +196,20 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         return;
       }
       if (key === "q" || key === "\x03") return quit();
+      if (key === "m") {
+        if (machines) {
+          closeMachines();
+          return draw();
+        }
+        goals = undefined;
+        machines = true;
+        draw();
+        await loadFleet();
+        if (machines && !fleetTimer) fleetTimer = setInterval(() => void (machines ? loadFleet() : undefined), 5_000);
+        return;
+      }
       if (key === "g") {
+        if (machines) closeMachines();
         if (goals) goals = undefined;
         else {
           try {
@@ -181,7 +221,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         }
         return draw();
       }
-      if (goals) return;
+      if (goals || machines) return;
       if (key === "\x1b[A" || key === "k") return move(-1);
       if (key === "\x1b[B" || key === "j") return move(1);
       if (key === "r") {

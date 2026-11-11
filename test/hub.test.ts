@@ -387,7 +387,8 @@ describe("sync, pause, take-over, messages", () => {
   it("routes messages to the session's machine inbox, wakes it over SSE, and acks", async () => {
     const alice = await login("alice");
     const bob = await login("bob");
-    await call("POST", "/v1/sync", alice.token, { sessions: [session("s1")] });
+    // MM-1: another person reaches a session without a step only on a machine that shares it with the team.
+    await call("POST", "/v1/sync", alice.token, { sessions: [session("s1")], machine: { share: "all" } });
     const ctrl = new AbortController();
     const stream = await fetch(`${hub.url}/v1/stream`, { headers: { authorization: `Bearer ${alice.token}` }, signal: ctrl.signal });
     const reader = (stream.body as ReadableStream<Uint8Array>).getReader();

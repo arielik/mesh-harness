@@ -1,6 +1,13 @@
 import { join } from "node:path";
 import { z } from "zod";
 
+/**
+ * Which sessions a daemon reports to the hub (Q5, MM-1). `steps`: only sessions holding a step;
+ * `me`: also the other sessions as metadata that only their owner sees; `all`: the team sees them.
+ */
+export const ShareLevel = z.enum(["steps", "me", "all"]);
+export type ShareLevel = z.infer<typeof ShareLevel>;
+
 /** ~/.config/mesh/daemon.json, written by `mesh setup` (mode 0600). */
 export const DaemonConfig = z.object({
   port: z.number().int().min(1024).max(65535),
@@ -15,12 +22,13 @@ export const DaemonConfig = z.object({
   /** Default autopilot level for sessions (plan §3.6). */
   autopilot: z.enum(["off", "nudge", "chain"]).default("nudge"),
   /**
-   * Which sessions the daemon reports to the hub (Q5). `steps` (default): full records only for
-   * sessions holding a step; the rest stay local and the hub sees per-machine counts. `all`: also
-   * report sessions without a step, as metadata only (state, repo name, session name, timestamps;
-   * no cwd, pane, transcript or message text). Opt-in per machine.
+   * Which sessions the daemon reports to the hub (Q5, MM-1). `steps` (default for a file without
+   * the field): full records only for sessions holding a step; the rest stay local and the hub sees
+   * per-machine counts. `me` (written by `mesh setup` for new setups): also report sessions without
+   * a step, as metadata only (state, repo name, session name, timestamps; no cwd, pane, transcript
+   * or message text), shown to their owner only. `all`: the same metadata, shown to the team.
    */
-  shareSessions: z.enum(["steps", "all"]).default("steps"),
+  shareSessions: ShareLevel.default("steps"),
 });
 export type DaemonConfig = z.infer<typeof DaemonConfig>;
 export type NotifyMode = "desktop" | "terminal" | "both" | "off";

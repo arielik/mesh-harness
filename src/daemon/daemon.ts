@@ -46,6 +46,7 @@ import {
   type AgentRun,
   type Credentials,
   type DoneResult,
+  type FleetView,
   type Harness,
   type InboxMessage,
   type ToolName,
@@ -65,6 +66,7 @@ import type { DaemonStore } from "../store/index.ts";
 import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
 import { commonDir, findGitDir, findRepoRoot, headCommit, repoForCwd } from "./git.ts";
 import { HubLink, type HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
+import { REPO_SCAN_MS, repoInventory, scanRepos } from "./repos.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
 import { writePending, writeTrail } from "./trail.ts";
 import type { PendingCall } from "../store/index.ts";
@@ -94,6 +96,8 @@ export interface DaemonDeps {
   hubTimeoutMs?: number;
   /** Is this process alive? (OpenCode sessions end when their server's process is gone.) */
   alive?(pid: number): boolean;
+  /** MM-1: the repos of the checkouts under the workspace roots (ids and names only). */
+  scanRepos?(roots: readonly string[]): Repo[];
 }
 
 /** `kill -0`: EPERM means the process exists but belongs to someone else. */
@@ -138,6 +142,7 @@ export const defaultDeps = (overrides: Partial<DaemonDeps> & Pick<DaemonDeps, "l
   readAgent: (path, id) => readAgentFiles(path, id),
   scanRuns: (since) => scanWorkflowRuns(claudeHome(), since),
   alive: pidAlive,
+  scanRepos,
   ...overrides,
 });
 
@@ -189,6 +194,8 @@ export class Daemon {
   private typed: { text: string; at: number }[] = [];
   private notified = new Map<string, string>();
   private reconciling = false;
+  /** MM-1: the last scan of the workspace roots, redone at most every REPO_SCAN_MS. */
+  private repoScan: { at: number; repos: Repo[] } | undefined;
   port = 0;
 
   readonly config: DaemonConfig;
@@ -226,7 +233,8 @@ export class Daemon {
         credentialsPath: opts.credentialsPath,
         store: this.store,
         sessions: () => this.sessions.filter((s) => !isHidden(s)),
-        shareAll: () => this.config.shareSessions === "all",
+        share: () => this.config.shareSessions,
+        machineRepos: () => this.machineRepos(),
         onMessage: (m) => this.receive(m),
         log: (l) => this.deps.log(l),
         now: () => this.deps.now(),
@@ -237,6 +245,19 @@ export class Daemon {
         onRejected: (call, e) => this.rejected(call, e),
       });
     }
+  }
+
+  /**
+   * The machine's repo inventory (MM-1): under `me` and `all` the repos under the workspace roots
+   * plus those of the current sessions; under `steps` always empty (no scan). Never a path.
+   */
+  private machineRepos(): Repo[] {
+    if (this.config.shareSessions === "steps") return [];
+    const now = this.deps.now();
+    if (!this.repoScan || now - this.repoScan.at >= REPO_SCAN_MS) {
+      this.repoScan = { at: now, repos: (this.deps.scanRepos ?? scanRepos)(this.config.workspaceRoots) };
+    }
+    return repoInventory([...this.repoScan.repos, ...this.sessions.filter((x) => x.state !== "ended" && !isHidden(x)).map((x) => x.repo)]);
   }
 
   /** A call queued while offline went through: write the hub's fuller record over the local one. */
@@ -968,6 +989,10 @@ export class Daemon {
         if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
         const live = await this.link.rpc<{ goals: unknown[] }>("GET", "/v1/live");
         return send(res, 200, { goals: live.goals });
+      }
+      if (req.method === "GET" && path === "/local/fleet") {
+        if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+        return send(res, 200, await this.link.rpc<FleetView>("GET", "/v1/fleet"));
       }
       if (req.method === "POST" && path === "/local/autopilot") {
         const b = (await readJson(req)) as { target?: string; level?: string };

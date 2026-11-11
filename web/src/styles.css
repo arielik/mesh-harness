@@ -487,3 +487,24 @@ a {
   gap: 4px;
   margin-top: 4px;
 }
+
+/* Mine (MM-1): one card per machine. */
+.mine .machine {
+  margin-bottom: 1rem;
+}
+.mine .machine h3 {
+  margin: 0 0 0.25rem;
+}
+.mine .machine table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.mine .machine th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--muted);
+}
+.mine .machine td,
+.mine .machine th {
+  padding: 0.2rem 0.5rem 0.2rem 0;
+}

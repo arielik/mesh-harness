@@ -33,6 +33,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `question.asked` / `question.answered` | `mesh_ask` / an answer | `question` |
 | `message.sent` | a person messaged a session | `id` |
 | `message.delivered` | the daemon delivered or failed a message | `id`, `state`, `method` |
+| `machine.named` | a machine was named or its name cleared | `machine`, `nickname` (null when cleared) |
 | `hub.events_pruned` | retention ran | `count`, `days` |
 
 A plan replaced before anyone decided is stored as `superseded`, not `revised`. It emits no `plan.revised`, so design rounds count only human requests for changes.

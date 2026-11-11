@@ -1,7 +1,7 @@
 // Hub persistence (plan §3.2, §8). Rows keep a few indexed columns plus the JSON value.
 
 import { randomUUID } from "node:crypto";
-import { Goal, Plan, Question, ServiceScope, Session, Step, Topic, type Note } from "../protocol/index.ts";
+import { Goal, Plan, Question, ServiceScope, Session, Step, Topic, type Note, type Repo, type ShareLevel } from "../protocol/index.ts";
 import { openDb, SOLE_LEADER, type Channel, type Db, type Leader } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
@@ -49,6 +49,12 @@ export const HUB_MIGRATIONS: readonly string[] = [
   `ALTER TABLE token ADD COLUMN scopes TEXT;`,
   // v0.1.8: topics, the labels people define for goals (a goal's own topics live in its value).
   `CREATE TABLE topic (name TEXT PRIMARY KEY, value TEXT NOT NULL, created_at INTEGER NOT NULL);`,
+  // v0.1.9 (MM-1): a machine's share level, nickname (unique per person; NULL on many rows) and one
+  // JSON object for the rest (now the repo inventory; later labels and accept policy).
+  `ALTER TABLE machine ADD COLUMN share TEXT;
+   ALTER TABLE machine ADD COLUMN nickname TEXT;
+   ALTER TABLE machine ADD COLUMN extra TEXT;
+   CREATE UNIQUE INDEX machine_nickname ON machine (user_id, nickname);`,
 ];
 
 /**
@@ -97,6 +103,10 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
   `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
   `ALTER TABLE token ADD COLUMN scopes TEXT;`,
   `CREATE TABLE topic (name TEXT PRIMARY KEY, value TEXT NOT NULL, created_at BIGINT NOT NULL);`,
+  `ALTER TABLE machine ADD COLUMN share TEXT;
+   ALTER TABLE machine ADD COLUMN nickname TEXT;
+   ALTER TABLE machine ADD COLUMN extra TEXT;
+   CREATE UNIQUE INDEX machine_nickname ON machine (user_id, nickname);`,
 ];
 
 export type TokenKind = "device" | "web" | "service";
@@ -132,6 +142,19 @@ export interface MachineRow {
   counts: Record<string, number>;
   /** The mesh installation this machine is (v0.1.5+ CLIs); absent for an older CLI's machine. */
   installId?: string;
+  /** MM-1: the share level its daemon last reported; absent when none was ever reported. */
+  share?: ShareLevel;
+  /** MM-1: the short name its owner gave it (unique among that person's machines). */
+  nickname?: string;
+  /** MM-1: the repo inventory (ids and names only) its daemon last reported, and when. */
+  repos?: Repo[];
+  reposAt?: number;
+}
+
+/** Facts a sync reports about its machine (MM-1). */
+export interface MachineFacts {
+  share?: ShareLevel | undefined;
+  repos?: Repo[] | undefined;
 }
 
 export interface HubSession {
@@ -219,15 +242,35 @@ const messageFrom = (r: MessageDbRow): MessageRow => ({
 type UserDbRow = { id: string; name: string; email: string | null; roles: string; roles_extra: string; created_at: number };
 const userFrom = (r: UserDbRow): UserRow => ({ id: r.id, name: r.name, email: opt(r.email), roles: JSON.parse(r.roles), rolesExtra: JSON.parse(r.roles_extra), createdAt: r.created_at });
 
-type MachineDbRow = { id: string; user_id: string; hostname: string; last_seen: number; counts: string; install_id?: string | null };
-const machineFrom = (r: MachineDbRow): MachineRow => ({
-  id: r.id,
-  userId: r.user_id,
-  hostname: r.hostname,
-  lastSeen: r.last_seen,
-  counts: JSON.parse(r.counts),
-  ...(r.install_id ? { installId: r.install_id } : {}),
-});
+type MachineDbRow = {
+  id: string;
+  user_id: string;
+  hostname: string;
+  last_seen: number;
+  counts: string;
+  install_id?: string | null;
+  share?: string | null;
+  nickname?: string | null;
+  extra?: string | null;
+};
+/** The JSON column `machine.extra`: per-machine facts beyond the indexed columns. */
+type MachineExtra = { repos?: Repo[]; reposAt?: number };
+const machineExtra = (raw: string | null | undefined): MachineExtra => (raw ? (JSON.parse(raw) as MachineExtra) : {});
+const machineFrom = (r: MachineDbRow): MachineRow => {
+  const x = machineExtra(r.extra);
+  return {
+    id: r.id,
+    userId: r.user_id,
+    hostname: r.hostname,
+    lastSeen: r.last_seen,
+    counts: JSON.parse(r.counts),
+    ...(r.install_id ? { installId: r.install_id } : {}),
+    ...(r.share ? { share: r.share as ShareLevel } : {}),
+    ...(r.nickname ? { nickname: r.nickname } : {}),
+    ...(Array.isArray(x.repos) ? { repos: x.repos } : {}),
+    ...(typeof x.reposAt === "number" ? { reposAt: x.reposAt } : {}),
+  };
+};
 
 /**
  * Every method is async (the `Db` may be SQLite or, from M4.6, Postgres). Methods that issue more
@@ -419,12 +462,58 @@ export class HubStore {
     return r ? machineFrom(r) : undefined;
   }
 
-  async listMachines(): Promise<MachineRow[]> {
-    return (await this.db.all<MachineDbRow>("SELECT * FROM machine ORDER BY user_id, hostname")).map(machineFrom);
+  /** Every machine, or with `userId` only that user's. */
+  async listMachines(filter: { userId?: string } = {}): Promise<MachineRow[]> {
+    const rows =
+      filter.userId === undefined
+        ? await this.db.all<MachineDbRow>("SELECT * FROM machine ORDER BY user_id, hostname")
+        : await this.db.all<MachineDbRow>("SELECT * FROM machine WHERE user_id = ? ORDER BY hostname", filter.userId);
+    return rows.map(machineFrom);
   }
 
-  async touchMachine(id: string, now: number, counts: Record<string, number>): Promise<void> {
-    await this.db.run("UPDATE machine SET last_seen = ?, counts = ? WHERE id = ?", now, json(counts), id);
+  /**
+   * A sync from this machine: last seen and counts, plus (MM-1) the facts it reported. A given
+   * `share` is stored; given `repos` replace the inventory and set `reposAt = now`.
+   * `extra` is read and rewritten under a row lock (Postgres `FOR UPDATE`; SQLite's write lock),
+   * so two syncs of one machine never lose each other's keys.
+   */
+  async touchMachine(id: string, now: number, counts: Record<string, number>, facts?: MachineFacts): Promise<void> {
+    if (facts?.share === undefined && facts?.repos === undefined) {
+      await this.db.run("UPDATE machine SET last_seen = ?, counts = ? WHERE id = ?", now, json(counts), id);
+      return;
+    }
+    await this.tx(async () => {
+      const r = await this.db.get<{ extra: string | null }>(`SELECT extra FROM machine WHERE id = ?${this.db.dialect.forUpdate}`, id);
+      if (!r) return;
+      const extra = facts.repos !== undefined ? json({ ...machineExtra(r.extra), repos: facts.repos, reposAt: now }) : r.extra;
+      await this.db.run("UPDATE machine SET last_seen = ?, counts = ?, share = COALESCE(?, share), extra = ? WHERE id = ?", now, json(counts), facts.share ?? null, extra, id);
+    });
+  }
+
+  /**
+   * Set (or, with undefined, clear) a machine's nickname. False, and nothing changes, when another
+   * machine of the same user already has it. Checked under the store's write lock, never through
+   * the unique index (on Postgres a failed statement would abort the caller's transaction).
+   * An unknown id changes nothing and returns true.
+   */
+  setMachineNickname(id: string, nickname: string | undefined): Promise<boolean> {
+    return this.tx(async () => {
+      await this.serialize();
+      const m = await this.db.get<{ user_id: string }>("SELECT user_id FROM machine WHERE id = ?", id);
+      if (!m) return true;
+      if (nickname !== undefined) {
+        const clash = await this.db.get<{ id: string }>("SELECT id FROM machine WHERE user_id = ? AND nickname = ? AND id <> ?", m.user_id, nickname, id);
+        if (clash) return false;
+      }
+      await this.db.run("UPDATE machine SET nickname = ? WHERE id = ?", nickname ?? null, id);
+      return true;
+    });
+  }
+
+  /** The user's machine with this nickname, if any. */
+  async machineByNickname(userId: string, nickname: string): Promise<MachineRow | undefined> {
+    const r = await this.db.get<MachineDbRow>("SELECT * FROM machine WHERE user_id = ? AND nickname = ?", userId, nickname);
+    return r ? machineFrom(r) : undefined;
   }
 
   async upsertSession(s: Session, userId: string, machineId: string, now: number): Promise<void> {
@@ -443,8 +532,23 @@ export class HubStore {
     return r ? { session: Session.parse(JSON.parse(r.value)), userId: r.user_id, machineId: r.machine_id, updatedAt: r.updated_at } : undefined;
   }
 
-  async listSessions(): Promise<HubSession[]> {
-    return (await this.db.all<{ value: string; user_id: string; machine_id: string; updated_at: number }>("SELECT * FROM hsession ORDER BY updated_at DESC")).flatMap((r) => {
+  /**
+   * Stored sessions, newest first. `userId` keeps one user's; `live` drops ended ones in SQL, so
+   * a caller that polls does not parse every session the hub has ever stored.
+   */
+  async listSessions(filter: { userId?: string; live?: boolean } = {}): Promise<HubSession[]> {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter.userId !== undefined) {
+      where.push("user_id = ?");
+      params.push(filter.userId);
+    }
+    if (filter.live) {
+      const state = this.db.dialect.jsonText("value", "state");
+      where.push(`(${state} IS NULL OR ${state} <> 'ended')`);
+    }
+    const sql = `SELECT * FROM hsession ${where.length ? `WHERE ${where.join(" AND ")} ` : ""}ORDER BY updated_at DESC`;
+    return (await this.db.all<{ value: string; user_id: string; machine_id: string; updated_at: number }>(sql, ...params)).flatMap((r) => {
       const p = Session.safeParse(JSON.parse(r.value));
       return p.success ? [{ session: p.data, userId: r.user_id, machineId: r.machine_id, updatedAt: r.updated_at }] : [];
     });

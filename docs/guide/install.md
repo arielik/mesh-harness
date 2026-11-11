@@ -74,14 +74,29 @@ When a session needs you, mesh tells you. Choose how with `mesh setup --notify <
 
 ## What the hub sees
 
-On a team hub, the daemon reports a session in full only while it holds a mesh step. Other sessions stay on your machine; the hub sees how many of them are in each state. To let your team see those sessions too (on the Live page and in `GET /v1/live`), opt in on that machine:
+On a team hub, the daemon always reports a session in full while it holds a mesh step, and how many sessions the machine has in each state. What else it reports depends on the machine's share level (`shareSessions` in `daemon.json`):
+
+| Level | What the daemon sends | Who sees a session without a step |
+|---|---|---|
+| `steps` | step holders, counts and the level; no repo inventory | nobody (it stays on your machine) |
+| `me` (default for new setups) | also the sessions without a step, as metadata, and the repo inventory | only you (Mine page, `mesh machines`) |
+| `all` | the same as `me` | the whole team (Live page, `GET /v1/live`) |
+
+A session holding a step is visible to everyone whatever the level. Admins see other people's `me` sessions only as counts.
 
 ```sh
-mesh setup --share-sessions all     # and restart the daemon
-mesh setup --share-sessions steps   # back to the default
+mesh setup --share-sessions me      # the default for new setups; restart the daemon
+mesh setup --share-sessions all     # show them to the team
+mesh setup --share-sessions steps   # report step holders only
 ```
 
-With `all`, a session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
+`--share` is an alias of `--share-sessions`. An existing `daemon.json` keeps its level (one without the field means `steps`) until you give one.
+
+A session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
+
+The repo inventory (`me` and `all`) is the ids and names of the git checkouts under `workspaceRoots` (two folder levels deep) and of the current sessions' repos, never a path. The daemon rescans at most every 5 minutes and sends the list only when it changes. Under `steps` it sends an empty inventory, which clears one stored earlier.
+
+Upgrading: upgrade every hub replica to v0.1.9 before the daemons. A `me` daemon sends its sessions without a step only after its hub confirmed (in the sync reply) that it applies the visibility rule; until then it sends step holders only and logs `the hub does not support share level me; sending step holders only`. A v0.1.7 or v0.1.8 daemon set to `all` reports no share level, so its sessions without a step are shown to their owner only until it is updated.
 
 ## Hooks
 

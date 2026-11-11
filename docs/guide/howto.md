@@ -111,7 +111,32 @@ Each mesh installation has its own id (`install-id` in its config folder), so on
 from two OS users or two containers on one host shows as two machines. From an older CLI (before
 0.1.5) both would share one; log in again from each after updating.
 
-The web dashboard is at the hub's URL. It has a Live page (who is working on what, and what needs whom), a Goals board, and a page per goal with the step graph.
+The web dashboard is at the hub's URL. It has a Live page (who is working on what, and what needs whom), a Goals board, a page per goal with the step graph, and **Mine** (your own machines).
+
+### See all your machines
+
+Log in from each machine you work on. Then, from any of them:
+
+```bash
+mesh machines                      # or: mesh fleet; --json for the raw view
+#   laptop (alice-laptop) · online · share me · 4 repos · this machine
+#     payments-api · fix refunds · working · no step · 12s
+#     web · G3.web · needs_you (permission) · G3.web · 2m
+#
+#   build-box · last seen 3h ago · share me · 12 repos
+#     no sessions
+mesh machine name laptop           # name this machine
+mesh machine name gpu --machine build-box   # name another one (id, nickname or hostname)
+mesh machine name --clear          # remove this machine's name
+```
+
+In the TUI, `m` opens the **My machines** panel (your other machines; `m` again goes back, `g`
+shows goals). The web dashboard's **Mine** page shows the same, refreshed every 15 seconds.
+
+Sessions without a step appear only from machines whose share level is `me` or `all` (`mesh setup
+--share-sessions me`, the default for new setups); see [What the hub sees](install.md#what-the-hub-sees).
+The repo count comes from `workspaceRoots` in `daemon.json` (for example `["~/src"]`) plus the
+repos of the current sessions; only ids and names are sent.
 
 ## 4. A goal from design to done
 
