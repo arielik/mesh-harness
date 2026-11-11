@@ -1,7 +1,7 @@
 # Spec MM-3: Assign: offers, accept policy, auto-accept delivery, Assigned to you, report back
 
 ## Status
-Draft (revision 1)
+Draft (revision 2: fixes review round 1 blockers B1–B3 and suggestions S1–S9)
 
 Source: `docs/analysis/2026-11-11-my-mesh-and-assign.md`, section "MM-3: Assign (offers and accept)".
 Builds on MM-1 (`docs/specs/MM-1.md`, v0.1.9) and MM-2 (`docs/specs/MM-2.md`, v0.1.10). Release v0.1.11.
@@ -69,7 +69,7 @@ of an offer = `<machine name>` or `<machine name>/<session name>` when the offer
 | `AssignRequest` (src/protocol/hub.ts) | zod | New body of both assign routes: `{ to: z.string().min(1).max(200), sid: z.string().optional(), stick: z.boolean().default(false), note: z.string().max(2000).optional() }`. `sid` = the **offering** session (as `sid` in `ClaimRequest`). |
 | `DeclineRequest` (src/protocol/hub.ts) | zod | New: `{ note: z.string().max(2000).optional() }`. |
 | `AssignResult` | interface | New: `{ step: Step; auto: boolean }`. |
-| `GoalAssignResult` | interface | New: `{ goal: Goal; steps: Step[]; auto: boolean }` (`steps`: the steps offered now, by id). |
+| `GoalAssignResult` | interface | New: `{ goal: Goal; steps: Step[]; auto: boolean }` (`steps`: the steps offered now, by id; `auto`: the policy verdict for the target at assign time, also when `steps` is `[]`). |
 | `GoalWithdrawResult` | interface | New: `{ goal: Goal; withdrawn: string[] }` (step ids, sorted). |
 | `OfferView` | interface | New, one open offer: `{ step: string; goal: string; title: string; repo: string; kind: StepKind; machine: string; sid?: string; to: string; by: string; bySid?: string; byMachine?: string; at: number; expiresAt: number; auto: boolean; note?: string }`. `to` = target text; `expiresAt = at + offerExpiryMs`. |
 | `OfferLine` | interface | New: `{ to: string; state: OfferState; by: string; at: number; accepted?: string; note?: string }`. `accepted` = `<machine name of the holder machine>/<session name of the holder session>` (only the machine name when the hub has no session record) once accepted. |
@@ -130,18 +130,43 @@ several: 409 `"<reference>" matches several sessions on <machine name>`.
 
 All new routes: rule `member`, no service scope, tag `steps` (goal routes: tag `goals`).
 
+**Caller machine.** Every offer decision (the assign's `byMachine`, the accept check, the claim
+guard, the decline policy check) uses the **caller machine**, never a machine looked up from a
+`sid` alone:
+- the token has a machine (`actor.machineId`): that machine. A `sid` in the body is used only when
+  the hub has that session, its user is the caller and its machine is the token's machine;
+- the token has no machine: the machine of `sid` when the hub has that session and its user is the
+  caller; no usable `sid` → no caller machine (`byMachine` absent; it is never the target machine).
+
+A `sid` that fails these checks on assign, accept, decline, or a claim of a step with an open offer →
+403 `session <sid> is not yours on this machine`. Claims of steps without an open offer are unchanged.
+
+**Concurrency.** Assign (step and goal), accept, decline, both withdraws, expiry, the stick offer,
+the end of an offer when its step leaves `ready`, and `POST /v1/steps/:id/claim` all run in the
+hub's serialised goal transaction (`goalTx`, `HubStore.serialize()`), so with several hubs on one
+Postgres store each decides from current state: of two concurrent assigns one gets 200 and the other
+409 `already offered`; a claim never erases an offer committed before it (it sees the offer and is
+guarded); an accept never overwrites an offer that expired or was withdrawn first (it answers
+409 `<id> has no open offer`). No store interface changes for this.
+
+**Privacy.** The target of an offer (`step.offer.to`, `OfferLine.to`, `OfferView.to`, the
+`step.offered` payload `sid`) is visible to every member who may see the step, including a session
+that is not otherwise visible to the team (e.g. under `shareSessions: me`). The offerer chose to name
+it; this is an accepted exposure and the concepts guide states it.
+
 | Route | Behaviour |
 |---|---|
-| `POST /v1/steps/:id/assign` (`AssignRequest`) | Checks, in order: 404 `no step <id>`; gate → 409 `<id> is a gate: a person decides it`; not `ready` → 409 `<id> is <state>, not ready`; open offer → 409 `<id> is already offered to <target text>; withdraw it first (mesh withdraw <id>)`; target resolution errors (above). Then sets `offer = {to, by: caller, bySid: sid, byMachine: machine of sid (else of the token), at: now, state: "offered", auto, note?}` where `auto = acceptMatches(session override ?? machine policy, …)` (the named session's `accept` when the offer names a session that has one, else the target machine's stored `accept`). The step stays `ready`. Queues one machine-wide inbox message to the target machine (below) and wakes its daemon. Event `step.offered`. With `stick: true` also sets the goal's `stick` to the same target and offerer. 200 `AssignResult`. |
+| `POST /v1/steps/:id/assign` (`AssignRequest`) | Checks, in order: 404 `no step <id>`; gate → 409 `<id> is a gate: a person decides it`; not `ready` → 409 `<id> is <state>, not ready`; open offer → 409 `<id> is already offered to <target text>; withdraw it first (mesh withdraw <id>)`; target resolution errors (above). Then sets `offer = {to, by: caller, bySid: sid, byMachine: the caller machine (absent when none), at: now, state: "offered", auto, note?}` where `auto = acceptMatches(session override ?? machine policy, …)` (the named session's `accept` when the offer names a session that has one, else the target machine's stored `accept`). The step stays `ready`. Queues one machine-wide inbox message to the target machine (below) and wakes its daemon. Event `step.offered`. With `stick: true` also sets the goal's `stick` to the same target and offerer. 200 `AssignResult`. |
 | `POST /v1/goals/:id/assign` (`AssignRequest`) | 404 `no goal <id>`; goal `done`/`dropped` → 409 `<id> is <state>`; target resolution errors. Offers every step of the goal that is `ready`, not a gate and has no open offer (in a new goal that is its design step), each as above (one message and one event per step). None and `stick` false → 409 `<id> has no ready step to offer`. With `stick` sets `Goal.stick`. 200 `GoalAssignResult`. |
-| `POST /v1/steps/:id/accept` (`ClaimRequest`, `sid` = the accepting session) | 404 `no step <id>`; no open offer → 409 `<id> has no open offer`; the machine of `sid` (else of the token) is not `offer.to.machine` → 403 `<id> is offered to <machine name>, not to this machine`. Then claims as `POST /v1/steps/:id/claim` would (same errors) and sets `offer.state = "accepted"`, `decidedAt`. Events `step.claimed` then `step.accepted`. Report back `offer_accepted`. 200 the claimed `Step`. A session or token on the target machine may also accept a different session than the one the offer names. |
-| `POST /v1/steps/:id/decline` (`DeclineRequest`) | 404; no open offer → 409 `<id> has no open offer`; caller is neither the target machine's owner nor matched by the target's policy (`acceptMatches` with the caller as `byUser` and the caller's token machine) → 403 `only the owner of <machine name> can decline <id>`. Sets `state = "declined"`, `note`, `decidedAt`; the step stays `ready`; the goal's stick is kept. Event `step.declined`. Report back `offer_declined`. 200 `Step`. |
+| `POST /v1/steps/:id/accept` (`ClaimRequest`, `sid` = the accepting session) | 404 `no step <id>`; no open offer → 409 `<id> has no open offer`; a `sid` that is not the caller's on this machine → 403 `session <sid> is not yours on this machine`; the caller machine is not `offer.to.machine` (or there is none) → 403 `<id> is offered to <machine name>, not to this machine`. Then claims as `POST /v1/steps/:id/claim` would (same errors) and sets `offer.state = "accepted"`, `decidedAt`. Events `step.claimed` then `step.accepted`. Report back `offer_accepted`. 200 the claimed `Step`. A session or token on the target machine may also accept a different session than the one the offer names. |
+| `POST /v1/steps/:id/decline` (`DeclineRequest`) | 404; no open offer → 409 `<id> has no open offer`; caller is neither the target machine's owner nor matched by the target's policy (`acceptMatches` with the caller as `byUser` and the caller machine as `byMachine`; the policy is the named session's override when the offer names a session that has one, else the target machine's stored `accept`, as on assign) → 403 `only the owner of <machine name> can decline <id>`. Sets `state = "declined"`, `note`, `decidedAt`; the step stays `ready`; the goal's stick is kept. Event `step.declined`. Report back `offer_declined`. 200 `Step`. |
 | `POST /v1/steps/:id/withdraw` (`{}`) | 404; no open offer → 409 `<id> has no open offer`; caller not `offer.by` and not admin → 403 `only @<by> or an admin can withdraw the offer of <id>`. Sets `state = "withdrawn"`, `decidedAt`. Event `step.offer_withdrawn`. 200 `Step`. |
 | `POST /v1/goals/:id/withdraw` (`{}`) | 404 `no goal <id>`. Clears `Goal.stick` if the caller is its `by` or an admin, and withdraws every open offer on the goal's steps whose `by` is the caller (admin: every one), each with event `step.offer_withdrawn`. Nothing to do → 409 `<id> has no stick and no open offer of yours`. 200 `GoalWithdrawResult`. |
 | `GET /v1/offers` | `{offers: OfferView[]}`: open offers on `ready` steps whose target machine belongs to the caller (all their machines), ordered by `at`, then step id. |
-| `POST /v1/steps/:id/claim` | While the step has an open offer: a claim whose machine (of `sid`, else of the token) is the target machine succeeds and is an accept (as above: `step.accepted`, report back); a claim by `offer.by` from another machine succeeds and ends the offer as `withdrawn` (event `step.offer_withdrawn`, payload `reason: "claimed by the offerer"`); any other claim → 409 `<id> is offered to <machine name>`. Without an open offer: unchanged. |
+| `POST /v1/steps/:id/claim` | Runs in `goalTx` (see Concurrency). While the step has an open offer: a `sid` that is not the caller's on this machine → 403 `session <sid> is not yours on this machine`; a claim whose caller machine is the target machine succeeds and is an accept (as above: `step.accepted`, report back); a claim by `offer.by` from another machine succeeds and ends the offer as `withdrawn` (event `step.offer_withdrawn`, payload `reason: "claimed by the offerer"`); any other claim → 409 `<id> is offered to <machine name>`. Without an open offer: unchanged. |
 | `GET /v1/steps?ready=1` | Omits steps with an open offer whose target machine is not the token's machine, unless the caller is `offer.by`. Steps offered to the token's machine come first (then the previous order). Without `ready=1`: unchanged (steps carry `offer`). |
 | `GET /v1/goals/:id` | `GoalDetail` gains `offers` and `stick` as defined above. |
+| `POST /v1/questions` | Unchanged, except `toUsers` gains `offer.by` on a step whose offer is `accepted` (see Questions on an offered step). |
 | `GET /v1/attention` (and `/v1/live` `attention`) | Kind `offer` for every open offer to one of the viewer's machines: text `@<by> offers <step> "<title>" to <machine name>`, `goal`, `step`, `at` = offer time. Kind `offer_expired` for a `ready` step whose last offer is `expired` and was made by the viewer: text `the offer of <step> to <machine name> expired; it is ready again`, `goal`, `step`, `at` = `decidedAt`. |
 | `GET /v1/fleet` | Machines carry `accept` once reported; sessions carry `accept` when they have an override. |
 | `POST /v1/sync` | Stores `machine.accept` when given (in the machine's JSON, with repos and labels kept). A sync without it keeps the stored policy. |
@@ -156,6 +181,19 @@ resolves (machine or session gone) offers nothing and keeps the stick.
 to `expired` (`decidedAt = now`), emits `step.offer_expired` and reports back `offer_expired`.
 Running the tick twice expires once.
 
+**Offer ends with its step.** A change that moves a step with an open offer out of `ready` other than
+a claim or accept (a new plan drops it, a replan blocks it, it is parked) ends the offer in the same
+transaction: `state = "withdrawn"`, `decidedAt`, event `step.offer_withdrawn` with payload
+`reason: "step <new state>"`. No report-back message is sent for it.
+
+**Release.** Releasing a step whose offer is `accepted` removes `step.offer` (the step then has no
+offer; the goal page shows none), so `offer_done`, `offer_failed` and `offer_question` never reach the
+offerer for work a later holder does.
+
+**Questions on an offered step.** `POST /v1/questions` with a `step` whose offer is `accepted` adds
+`offer.by` to the question's `toUsers` (after the asker and the goal owner, without repeats), so the
+offerer may answer it with `mesh answer` and sees it in `/v1/attention` as a `question`.
+
 **Machine-wide message.** Inbox row with `toMachine` = target machine, `toSid: ""`, `kind: "offer"`,
 `fromUser` = offerer, text `MESH: @<by> offers step <id> "<title>" (repo <repo>) to this machine` plus
 `: <note>` when a note was given, `data: {step, goal, repo, topics: <goal topics>, auto, by, sid?, note?}`
@@ -169,7 +207,7 @@ ended), queued like other inbox messages:
 | `offer_accepted` | accept | `MESH: <accepted> accepted <step> "<title>".` |
 | `offer_declined` | decline | `MESH: <machine name> declined <step> "<title>"` + `: <note>` when given + `. It is ready again.` |
 | `offer_expired` | expiry | `MESH: the offer of <step> "<title>" to <machine name> expired (not accepted within <n> min). It is ready again.` (`n` = `offerExpiryMs` in whole minutes) |
-| `offer_done` | `step.done` of a step whose offer is `accepted` | `MESH: <step> "<title>" (offered to <machine name>) is done: <summary>` |
+| `offer_done` | `step.done` of a step whose offer is `accepted` (see Release) | `MESH: <step> "<title>" (offered to <machine name>) is done: <summary>` |
 | `offer_failed` | `step.failed` of such a step | `MESH: <step> "<title>" (offered to <machine name>) failed: <summary>` |
 | `offer_question` | `POST /v1/questions` with that `step` | `MESH: question on <step> (offered to <machine name>) from @<user>: <text>. Answer with: mesh answer <question id> <text>` |
 
@@ -194,10 +232,10 @@ ended), queued like other inbox messages:
 | Interface | Behaviour |
 |---|---|
 | Sync body | `machine` is `{share, accept: config.accept, repos?}` on every sync. `sessionMetadata(s)` copies `accept` when present. |
-| Machine-wide message, `kind: "offer"` | Handled by the daemon, once per hub message id (a second pull of the same id does nothing). In order: (1) `assignments: "off"` → `POST /v1/steps/<step>/decline {note: "this machine does not take assignments"}`, ack `delivered` method `declined`. (2) `auto: true` → `pickSession(live sessions, {repo, topics, sid})`; found → `POST /v1/steps/<step>/accept {sid}`, the session is bound to the step, `stepMessage(step)` is queued for it (the existing pending queue delivers it when the session is idle), ack `delivered` method `accepted`; the accept refused (409/403, e.g. expired or withdrawn) → ack `failed`, nothing bound. Not found and `assignments: "launch"` → `deps.launchStep(<repo name>, step)`, ack `delivered` method `launched` (`{ok: false}` → logged, ack `delivered` method `listed`, and the person is notified as in (3)). (3) Otherwise (`auto: false`, or nothing to pick under `deliver`) → nothing is claimed; when notifications are on, `deps.notify("mesh", "@<by> offers <step> \"<title>\": mesh offers")`; ack `delivered` method `listed`. Hub unreachable during (1)/(2): the message stays unacked and is handled on a later pull. |
+| Machine-wide message, `kind: "offer"` | Handled by the daemon at most once at a time per hub message id (a message being handled is skipped by a later pull in the same process). The `accept` and `decline` calls carry the header `Idempotency-Key: offer-<message id>`, so a retry after a lost reply replays the hub's first 2xx answer. The message is acked only after the hub answered (for (3): after the person was notified); the ack is the handled mark, and no daemon store table is added. In order: (1) `assignments: "off"` → `POST /v1/steps/<step>/decline {note: "this machine does not take assignments"}`, ack `delivered` method `declined`. (2) `auto: true` → `pickSession(live sessions, {repo, topics, sid})`; found → `POST /v1/steps/<step>/accept {sid}`, the session is bound to the step, `stepMessage(step)` is queued for it (the existing pending queue delivers it when the session is idle), ack `delivered` method `accepted`; the accept refused (409/403, e.g. expired or withdrawn) → ack `failed`, nothing bound. Not found and `assignments: "launch"` → `deps.launchStep(<repo name>, step)`, ack `delivered` method `launched` (`{ok: false}` → logged, ack `delivered` method `listed`, and the person is notified as in (3)). (3) Otherwise (`auto: false`, or nothing to pick under `deliver`) → nothing is claimed; when notifications are on, `deps.notify("mesh", "@<by> offers <step> \"<title>\": mesh offers")`; ack `delivered` method `listed`. Hub unreachable during (1)/(2): the message stays unacked and is handled again on a later pull (also after a daemon restart), with the same `Idempotency-Key`. |
 | Machine-wide message of another kind | Ack `failed`. Session messages (non-empty `toSid`) are unchanged. |
 | `DaemonDeps.launchStep?(repo: string, step: string): Promise<{ ok: boolean; error?: string }>` | New. Default: starts `<this mesh> run <repo> --step <step> --no-tui` detached (it claims from this machine, which is the accept). Tests inject a fake. Never called for an offer with `auto: false`. |
-| `POST /local/accept {step: string, target?: string}` | Not logged in → 409 `not logged in to a hub; run: mesh login`. Reads the step (`GET /v1/steps/:id`); `target` given → `findSession`, none → 404 `no live session matches "<target>"`, that session is used (any state); else `pickSession` with the offer's named `sid` if any; none → 409 `no idle session for <repo> on this machine; use --session <s> or --launch`. Then as auto accept (accept, bind, queue brief). 200 `{step, sid, message: "<session name> now holds <step>"}`. Hub errors: their status and `error` text. |
+| `POST /local/accept {step: string, target?: string}` | Not logged in → 409 `not logged in to a hub; run: mesh login`. Reads the step (`GET /v1/steps/:id`, field `context.step` of its `StepView`); `target` given → `findSession`, none → 404 `no live session matches "<target>"`, that session is used (any state); else `pickSession` with the offer's named `sid` if any; none → 409 `no idle session for <repo> on this machine; use --session <s> or --launch`. Then as auto accept (accept, bind, queue brief). 200 `{step, sid, message: "<session name> now holds <step>"}`. Hub errors: their status and `error` text. |
 | `GET /local/offers` | `{offers: OfferView[]}` from `GET /v1/offers`, only those whose `machine` is this installation's machine. 409 when not logged in (as `/local/fleet`). |
 | `POST /local/decline {step: string, note?: string}` | Proxies `POST /v1/steps/:id/decline`; 200 `{step: Step}`; hub errors pass through. |
 | `POST /local/session-accept {target: string, accept: string[] \| null}` | `findSession`; none → 404 `no live session matches "<target>"`. `null` removes the override; otherwise `parseAccept` (error → 400 with its text). 200 `{session}`. The next sync carries it. |
@@ -243,8 +281,8 @@ ended), queued like other inbox messages:
 
 | File | Change |
 |---|---|
-| `docs/guide/concepts.md` | "Offers and accept policy": offer states, who may assign/accept/decline/withdraw, claim guard, expiry (`thresholds.offer_expiry`, default 30 min), `--stick`, accept rules and where they live (machine `accept`, session override), `assignments` (deliver, launch, off), report back. |
-| `docs/guide/howto.md` | Subsection "Hand work to another machine": `mesh assign`, `mesh offers`, `mesh accept`/`decline`/`withdraw`, `mesh session accept`, `mesh setup --accept/--assignments`, TUI `o`, the web Mine tab. |
+| `docs/guide/concepts.md` | "Offers and accept policy": offer states, that a named target session is visible to the team (Privacy), who may assign/accept/decline/withdraw, claim guard, expiry (`thresholds.offer_expiry`, default 30 min), `--stick`, accept rules and where they live (machine `accept`, session override), `assignments` (deliver, launch, off), report back. |
+| `docs/guide/howto.md` | Subsection "Hand work to another machine": `mesh assign`, `mesh offers`, `mesh accept`/`decline`/`withdraw`, `mesh session accept`, `mesh setup --accept/--assignments`, TUI `o`, the web Mine tab; that under `shareSessions: steps` the hub does not know an idle session, so `<machine>/<session>` answers 404 until the session holds a step. |
 | `docs/guide/install.md` | `daemon.json` fields `accept` and `assignments`; what the hub sees now includes the accept policy. |
 | `src/protocol/skill.ts` `MESH_SKILL` and generated `skills/mesh/SKILL.md` | `mesh_assign`, `mesh_offers`, `mesh_accept`, and that an offered step arrives as a message to call `mesh_context`. |
 | `docs/plan/implementation-plan.md` §5.6 | Rows for the seven new routes (v0.1.11). |
@@ -257,7 +295,10 @@ ended), queued like other inbox messages:
   policy gets only manual offers (`auto: false`); a v0.1.10 daemon acks a machine-wide message as
   `failed` and the offer stays listed in `mesh offers` until it expires.
 - The daemon sync body's `machine` object now always has `accept`; the MM-1 test that compares it
-  exactly (`src/daemon/inventory.test.ts`) is updated to include `accept: ["self"]`.
+  exactly (`src/daemon/inventory.test.ts`) is updated by the test-writer (not the developer) to
+  include `accept: ["self"]`.
+- `POST /v1/steps/:id/claim` now runs in `goalTx`: a claim waits for a concurrent goal transaction
+  instead of racing it. The answers of a claim on a step without an open offer are unchanged.
 
 ## Acceptance criteria
 
@@ -305,6 +346,11 @@ asserts `package.json`'s version except AC-34.
 | AC-32 | Web: Mine tab shows `Assigned to you` with an `li.offer` for an offer to the user's machine (step id, `mesh accept <step>`), `Decline` removes it within 20 s and the hub has it `declined`; with none, `Nothing is assigned to you.`; the goal page step panel shows `p.offer` with the `offerText`. | Playwright (`test/e2e-web`) | Section, row, text or decline missing. |
 | AC-33 | `schemas/hub-api.openapi.json` matches `pnpm schemas` and lists the seven new routes; `HUB_API` matches `src/hub/app.ts` (rule, no scope). Docs: concepts, how-to and install guide cover the Docs table; plan §5.6 lists the seven routes; `docs/events.md` lists the five events; `MESH_SKILL` mentions `mesh_assign`, `mesh_offers`, `mesh_accept` and equals `skills/mesh/SKILL.md`. | `test/schemas.test.ts` + review | Stale schema, missing route/row, or skill mismatch. |
 | AC-34 | `package.json` version is `0.1.11`; `pnpm check` passes (lint, typecheck, boundaries, test, build); `acceptMatches`, `pickSession`, `offerText`, `offerLine` live in `src/core`; `parseAccept` and the offer types in `src/protocol`. | `pnpm check` | Any check fails or the version is not 0.1.11. |
+| AC-35 | Borrowed sid (B1): carol, with her token on her machine C and the sid of bob's session on machine B, gets 403 `session <sid> is not yours on this machine` on `POST /v1/steps/:id/claim` and `/accept` of a step offered to B, and the offer stays `offered`; bob's token on B with the sid of carol's session on B also gets 403 on accept. Alice's machine policy `["machine:m1"]` (m1 = her other machine): carol's assign with the sid of a session on m1 gets 403, and carol's assign without a sid has `auto: false` and `offer.byMachine` = carol's token machine. A token without a machine and without a sid gets 403 `<id> is offered to <name>, not to this machine` on accept. | World | A 200, an `accepted` offer, `auto: true`, or `byMachine` = m1. |
+| AC-36 | Concurrency (B2), two hubs on one store (SQLite file always; Postgres leg required when its URL is set), 20 rounds each: (a) concurrent assign + assign of one ready step → exactly one 200 and one 409 `already offered`, one `step.offered`, one machine-wide message; (b) concurrent assign (to B) + claim by carol → either assign 200 and claim 409 `<id> is offered to <name>`, or claim 200 and assign 409; never a held step whose last `step.offered` has no `step.accepted` or end event, and never a missing `offer` after a 200 assign; (c) concurrent expiry tick + accept with the clock past the deadline → exactly one of `step.offer_expired` / `step.accepted`, and the final `offer.state` matches it. | World (two hubs) | A double offer, a lost offer, both events, or a state that contradicts the event. |
+| AC-37 | Question on an accepted offer (B3): dave (a member, neither goal owner nor admin) assigns a step of alice's goal to bob's machine with his `sid`; bob accepts; bob's session asks a question on the step → its `toUsers` contains dave; dave's `/v1/attention` has it as `question`; `offer_question` reaches dave's session; dave's answer → 200. A question on a step without an accepted offer keeps `toUsers` as before. | World | `toUsers` lacks the offerer, or dave's answer gets 403. |
+| AC-38 | Offer ends (S2, S3): a replan that drops or blocks a step with an open offer ends it as `withdrawn` with `step.offer_withdrawn` payload `reason: "step <state>"`; `GET /v1/offers` and `/v1/attention` no longer list it. Releasing a step with an `accepted` offer removes `step.offer`; when carol then claims and finishes it, the offerer's session gets no `offer_done`. | World | Offer still open, missing event, or a report-back after release. |
+| AC-39 | Daemon retry (S1): the hub's reply to the daemon's accept is lost once (test fault injection); on a later pull the daemon calls again with the same `Idempotency-Key: offer-<message id>`, gets the replayed 200, binds the session once and acks `delivered`/`accepted`; the brief is pasted once. | World | A `failed` ack, no binding, or two pastes. |
 
 ## Open questions
 - (2026-11-11) Assumed `sid` in `POST /v1/steps/:id/assign` is the **offering** session (as in claim);
@@ -330,5 +376,17 @@ asserts `package.json`'s version except AC-34.
 - (2026-11-11) The web cannot accept (no session to claim for); it declines and shows `mesh accept`.
 - (2026-11-11) The accept policy is not shown in `mesh machines` text (MM-1/MM-2 output stays
   byte-for-byte); it is in `/v1/fleet` JSON. `assignments` stays on the daemon (not synced).
+- (2026-11-11, round 1 B1) The caller machine comes from the token; a `sid` counts only when it is
+  the caller's session on that machine (for a token without a machine: the caller's session).
+  Assumed a bad `sid` is refused with 403 rather than silently ignored, so the caller sees it.
+- (2026-11-11, round 1 B2) Chose "claim runs in `goalTx`" over extending `saveStepIf` with the
+  offer: no store contract change. It serialises claims against other goal transactions, which may
+  cost latency on a busy Postgres hub; the existing conditional claim save stays.
+- (2026-11-11, round 1 B3) Chose adding `offer.by` to `toUsers` over dropping the `Answer with:`
+  hint, so the offerer can answer.
+- (2026-11-11, round 1 S2/S3) An offer on a step that leaves `ready` without a claim ends as
+  `withdrawn` with a reason; releasing an accepted step removes the offer rather than adding a state.
+- (2026-11-11, round 1 S6) Under `shareSessions: steps` the hub has no record of an idle session, so
+  a `<machine>/<session>` target answers 404; the offer can still go to the machine alone.
 - (2026-11-11) The default `launchStep` passes the step repo's name to `mesh run`, which resolves it
   under `workspaceRoots`; a repo that is not there makes the launch fail and the offer stays listed.
