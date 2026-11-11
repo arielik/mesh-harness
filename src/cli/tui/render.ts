@@ -1,7 +1,7 @@
 // Pure rendering of the session list (plan §9). No I/O, so it can be snapshot-tested.
 
-import { age, messageStage, needsLabel, renderFleet, SESSION_STAGES, sessionLabel, sessionStage, type SessionStage } from "../../core/index.ts";
-import type { FleetView, Message, Session } from "../../protocol/index.ts";
+import { age, messageStage, needsLabel, offerLine, renderFleet, SESSION_STAGES, sessionLabel, sessionStage, type SessionStage } from "../../core/index.ts";
+import type { FleetView, Message, OfferView, Session } from "../../protocol/index.ts";
 
 /** Session groups come from the stage table in core (one source for every panel). */
 export type Group = SessionStage;
@@ -76,6 +76,8 @@ export interface View {
   status?: string | undefined;
   input?: { label: string; value: string } | undefined;
   color: boolean;
+  /** MM-3: how many steps are offered to this machine (header badge when > 0). */
+  offers?: number | undefined;
 }
 
 const C = { reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m", inverse: "\x1b[7m", yellow: "\x1b[33m", green: "\x1b[32m", red: "\x1b[31m" };
@@ -84,7 +86,7 @@ export function render(v: View): string[] {
   const paint = (code: string, t: string) => (v.color ? `${code}${t}${C.reset}` : t);
   const lines: string[] = [];
   const needs = v.sessions.filter((s) => s.state === "needs_you").length;
-  lines.push(paint(C.bold, fit(`${v.header}${needs ? `  ·  ${needs} need you` : ""}`, v.width)));
+  lines.push(paint(C.bold, fit(`${v.header}${needs ? `  ·  ${needs} need you` : ""}${v.offers ? `  ·  ${v.offers} offered to you` : ""}`, v.width)));
   lines.push("");
 
   const pendingBySid = new Map<string, number>();
@@ -121,7 +123,7 @@ export function render(v: View): string[] {
 
   const footer: string[] = [];
   if (v.input) footer.push(paint(C.bold, `${v.input.label}${v.input.value}▌`));
-  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · L labels · n next step · g goals · m machines · r refresh · ↑↓ move · q quit"));
+  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · L labels · n next step · o offers · g goals · m machines · r refresh · ↑↓ move · q quit"));
   if (failedDeliveries.length) footer.push(paint(C.red, fit(`${failedDeliveries.length} message(s) could not be delivered: ${failedDeliveries.map((m) => m.error ?? "?").slice(0, 2).join("; ")}`, v.width)));
   if (v.status) footer.push(fit(v.status, v.width));
   const room = v.height - footer.length - 1;
@@ -157,6 +159,26 @@ export function renderMachines(fleet: FleetView, v: { width: number; height: num
   if (fleet.machines.every((m) => m.current)) lines.push("  No other machines. Run mesh login on your other machines.");
   else for (const l of renderFleet(fleet, { skipCurrent: true }).split("\n")) lines.push(l === "" ? "" : `  ${l}`);
   const footer = [...(v.status ? [v.status] : []), MACHINES_FOOTER].map((l) => clip(l, v.width));
+  const room = Math.max(0, v.height - footer.length);
+  const body = lines.slice(0, room).map((l) => clip(l, v.width));
+  while (body.length < room) body.push("");
+  return [...body, ...footer].slice(-Math.max(0, v.height));
+}
+
+export const OFFERS_FOOTER = "⏎ accept · d decline · o back to sessions · details: mesh offers";
+
+/**
+ * The Assigned to you panel of the TUI (`o`, MM-3): steps offered to this machine. Exactly `height`
+ * lines; the footer is the last line and a status, when given, the one above it.
+ */
+export function renderOffers(
+  offers: readonly OfferView[],
+  v: { width: number; height: number; header: string; now: number; selected?: string | undefined; status?: string | undefined },
+): string[] {
+  const lines = [v.header, "", "ASSIGNED TO YOU"];
+  if (offers.length === 0) lines.push("  No offers for this machine.");
+  for (const o of offers) lines.push(`${o.step === v.selected ? "› " : "  "}${offerLine(o, v.now)}`);
+  const footer = [...(v.status ? [v.status] : []), OFFERS_FOOTER].map((l) => clip(l, v.width));
   const room = Math.max(0, v.height - footer.length);
   const body = lines.slice(0, room).map((l) => clip(l, v.width));
   while (body.length < room) body.push("");

@@ -161,6 +161,37 @@ In the TUI, `L` on a session opens `labels for <session>: ` with its current lab
 them (an empty line clears them), Esc cancels. A label that is not a topic prints
 `not a topic: <label>; mesh topic add <label>`; the label is set anyway.
 
+### Hand work to another machine
+
+Offer a step or a goal to another machine (yours or a teammate's), or to a session on it. Their
+accept policy decides whether it is taken at once; otherwise it waits for them. See
+[Offers and accept policy](concepts.md#offers-and-accept-policy).
+
+```bash
+mesh assign G7.api --to build-box                 # a step to one of your machines (nickname or id)
+#   Offered G7.api to build-box (auto-accept).
+mesh assign G7 --to bob/laptop --note "the API part"   # a goal's ready steps to bob's machine
+#   Offered G7.design to laptop (waits for them to accept).
+mesh assign G7 --to build-box/perf --stick        # a session by name; later ready steps go there too
+mesh withdraw G7.api                              # take an open offer back; mesh withdraw G7 ends a stick
+
+mesh offers                                       # what is offered to your machines (--json)
+#   G7.api "API" · payments-api · from @alice · to build-box · manual · expires in 28m
+mesh accept G7.api                                # an idle session here takes it (--session <s>, or --launch)
+mesh decline G7.api --note "busy today"
+
+mesh session accept perf --from self,user:bob     # whose offers this session takes automatically (--off, --clear)
+mesh setup --accept self,user:bob                 # the machine policy (default self; restart the daemon)
+mesh setup --assignments launch                   # deliver (default), launch or off
+```
+
+In the TUI the header counts the offers to this machine and `o` opens them: ⏎ accepts for an idle
+session, `d` declines. The web's **Mine** page lists them under **Assigned to you** with a
+**Decline** button and the `mesh accept` command (the web cannot accept: it has no session).
+
+Under `shareSessions: steps` the hub does not know an idle session, so a `<machine>/<session>`
+target answers 404 until that session holds a step; offer to the machine alone instead.
+
 ## 4. A goal from design to done
 
 ```bash

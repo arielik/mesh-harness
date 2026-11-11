@@ -702,6 +702,15 @@
                             "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
                           }
                         },
+                        "accept": {
+                          "minItems": 1,
+                          "maxItems": 20,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^(self|off|user:[^\\s,]{1,100}|machine:[^\\s,]{1,100})$"
+                          }
+                        },
                         "bgId": {
                           "type": "string"
                         },
@@ -878,6 +887,15 @@
                           "me",
                           "all"
                         ]
+                      },
+                      "accept": {
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^(self|off|user:[^\\s,]{1,100}|machine:[^\\s,]{1,100})$"
+                        }
                       },
                       "repos": {
                         "maxItems": 500,
@@ -2285,6 +2303,129 @@
         }
       }
     },
+    "/v1/goals/{id}/assign": {
+      "post": {
+        "operationId": "postVGoalsIdAssign",
+        "summary": "Offer every ready step of a goal; --stick: later ready steps too.",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "to": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "sid": {
+                    "type": "string"
+                  },
+                  "stick": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "to"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/goals/{id}/withdraw": {
+      "post": {
+        "operationId": "postVGoalsIdWithdraw",
+        "summary": "End a goal's stick and withdraw your open offers on it.",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
     "/v1/steps": {
       "get": {
         "operationId": "getVSteps",
@@ -3133,6 +3274,281 @@
           },
           "400": {
             "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/assign": {
+      "post": {
+        "operationId": "postVStepsIdAssign",
+        "summary": "Offer a ready step to a machine or session.",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "to": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "sid": {
+                    "type": "string"
+                  },
+                  "stick": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "to"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/accept": {
+      "post": {
+        "operationId": "postVStepsIdAccept",
+        "summary": "Accept a step offered to this machine: claim it for a session.",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "sid": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/decline": {
+      "post": {
+        "operationId": "postVStepsIdDecline",
+        "summary": "Decline an offer (the target machine's owner or a policy match).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/withdraw": {
+      "post": {
+        "operationId": "postVStepsIdWithdraw",
+        "summary": "Withdraw an open offer (the offerer or an admin).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/offers": {
+      "get": {
+        "operationId": "getVOffers",
+        "summary": "Open offers to the caller's machines.",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
           "401": {
             "description": "Login required."

@@ -1,4 +1,4 @@
-// Execution of the eight mesh MCP tools (plan §5.2). The shim sends the Claude pid; the daemon
+// Execution of the mesh MCP tools (plan §5.2). The shim sends the Claude pid; the daemon
 // finds the session, calls the hub, and keeps the session's step binding up to date.
 //
 // Local-first (M4): with the hub offline, the step a session holds keeps working. mesh_context
@@ -7,8 +7,22 @@
 // shared work, proposing a plan) say "offline", at once.
 
 import { join } from "node:path";
-import { pickNext, renderFleet, repoMatches, stepFacts, stepRecord, type FactEvent } from "../core/index.ts";
-import { PlanStep, TOOLS, type DoneResult, type FleetView, type Session, type Step, type StepContext, type ToolName, type ToolResult, type TrailFile } from "../protocol/index.ts";
+import { assignText, offerLine, pickNext, renderFleet, repoMatches, stepFacts, stepRecord, type FactEvent } from "../core/index.ts";
+import {
+  PlanStep,
+  TOOLS,
+  type AssignResult,
+  type DoneResult,
+  type FleetView,
+  type GoalAssignResult,
+  type OfferView,
+  type Session,
+  type Step,
+  type StepContext,
+  type ToolName,
+  type ToolResult,
+  type TrailFile,
+} from "../protocol/index.ts";
 import type { PendingCall } from "../store/index.ts";
 import { blobSha, findRepoRoot } from "./git.ts";
 import { HubRpcError, type HubLink } from "./hub-link.ts";
@@ -166,7 +180,32 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
       return ok(renderFleet(await host.link.rpc<FleetView>("GET", "/v1/fleet")));
     case "mesh_next": {
       const steps = await readySteps(host, (args.repo as string | undefined) ?? repoId);
-      return ok(steps.length ? steps.map(fmtStep).join("\n") : "No ready steps.");
+      // MM-3: the hub lists steps offered to this machine first.
+      const me = host.link.credentials()?.machine;
+      const line = (st: Step) => fmtStep(st) + (st.offer?.state === "offered" && me !== undefined && st.offer.to.machine === me ? ` · offered to you by @${st.offer.by}` : "");
+      return ok(steps.length ? steps.map(line).join("\n") : "No ready steps.");
+    }
+    case "mesh_assign": {
+      const target = String(args.target);
+      const to = String(args.to);
+      const stick = args.stick === true;
+      const kind = target.includes(".") ? "step" : "goal";
+      const path = kind === "step" ? `/v1/steps/${encodeURIComponent(target)}/assign` : `/v1/goals/${encodeURIComponent(target)}/assign`;
+      const body = { to, sid: s.sid, stick, ...(typeof args.note === "string" && args.note ? { note: args.note } : {}) };
+      const r = await host.link.rpc<AssignResult | GoalAssignResult>("POST", path, body, key);
+      return ok(assignText(kind, target, to, r, stick).join("\n"));
+    }
+    case "mesh_offers": {
+      const { offers } = await host.link.rpc<{ offers: OfferView[] }>("GET", "/v1/offers");
+      const now = host.local.now();
+      return ok(offers.length ? offers.map((o) => offerLine(o, now)).join("\n") : "No offers for your machines.");
+    }
+    case "mesh_accept": {
+      const id = String(args.step);
+      const step = await host.link.rpc<Step>("POST", `/v1/steps/${encodeURIComponent(id)}/accept`, { sid: s.sid }, key);
+      host.update(s.sid, { step: step.id, nudges: 0, escalated: false });
+      const { ctx } = await contextOf(host, step.id);
+      return ok(brief(ctx));
     }
     case "mesh_claim": {
       const id = String(args.step);

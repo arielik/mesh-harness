@@ -14,7 +14,9 @@ import {
   Approve,
   AnswerRequest,
   AskRequest,
+  AssignRequest,
   ClaimRequest,
+  DeclineRequest,
   CliExchange,
   Decide,
   DevicePoll,
@@ -231,6 +233,8 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/topics", "member", async (c, a) => c.json(await svc.createTopic(a, await body(c, NewTopic)), 201), "goals:write"),
     r("POST", "/v1/topics/:name/delete", "member", async (c, a) => c.json(await svc.deleteTopic(a, param(c, "name"))), "goals:write"),
     r("GET", "/v1/goals/:id/timeline", "member", async (c) => c.json({ timeline: await svc.timeline(param(c, "id")) }), "goals:read"),
+    r("POST", "/v1/goals/:id/assign", "member", async (c, a) => c.json(await svc.assignGoal(a, param(c, "id"), await body(c, AssignRequest)))),
+    r("POST", "/v1/goals/:id/withdraw", "member", async (c, a) => c.json(await svc.withdrawGoal(a, param(c, "id")))),
 
     // ---------- steps ----------
     r("GET", "/v1/steps", "member", async (c, a) =>
@@ -240,7 +244,7 @@ export function buildRoutes(svc: HubService): Route[] {
           ready: c.req.query("ready") === "1",
           repo: c.req.query("repo"),
           mine: c.req.query("mine") === "1" ? a.userId : undefined,
-        }),
+        }, a),
       }),
       "goals:read",
     ),
@@ -257,6 +261,11 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false }))),
     r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(await svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
     r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(await svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
+    r("POST", "/v1/steps/:id/assign", "member", async (c, a) => c.json(await svc.assignStep(a, param(c, "id"), await body(c, AssignRequest)))),
+    r("POST", "/v1/steps/:id/accept", "member", async (c, a) => c.json(await svc.acceptStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
+    r("POST", "/v1/steps/:id/decline", "member", async (c, a) => c.json(await svc.declineStep(a, param(c, "id"), (await body(c, DeclineRequest)).note))),
+    r("POST", "/v1/steps/:id/withdraw", "member", async (c, a) => c.json(await svc.withdrawStep(a, param(c, "id")))),
+    r("GET", "/v1/offers", "member", async (c, a) => c.json({ offers: await svc.offers(a) })),
 
     // ---------- questions, messages ----------
     r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),

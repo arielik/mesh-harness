@@ -1,9 +1,9 @@
 // Hub HTTP API request schemas and response shapes (plan §5.3–§5.6).
 
 import { z } from "zod";
-import type { Goal, Note, Plan, PlanAc, Question, Step, StepFacts, TrailFile } from "./goal.ts";
+import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, TrailFile } from "./goal.ts";
 import { AcState, Failure, Findings, PlanInput, Verdict } from "./goal.ts";
-import { ShareLevel } from "./config.ts";
+import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
@@ -32,8 +32,9 @@ export const SyncRequest = z.object({
   /**
    * Facts about the machine (MM-1): its share level, and its repo inventory (ids and names only).
    * Absent (an older daemon): the hub keeps what it has. `repos` absent: inventory unchanged.
+   * `accept` (MM-3): the machine's accept policy; absent: the hub keeps the stored one.
    */
-  machine: z.object({ share: ShareLevel, repos: z.array(Repo).max(500).optional() }).optional(),
+  machine: z.object({ share: ShareLevel, accept: AcceptPolicy.optional(), repos: z.array(Repo).max(500).optional() }).optional(),
 });
 export type SyncRequest = z.infer<typeof SyncRequest>;
 
@@ -133,6 +134,19 @@ export const Decide = z.object({ comment: z.string().max(4000).optional() });
 export const Approve = Decide.extend({ version: z.number().int().positive().optional() });
 
 export const ClaimRequest = z.object({ sid: z.string().optional() });
+/**
+ * MM-3: body of `POST /v1/steps/:id/assign` and `POST /v1/goals/:id/assign`. `to` = the target
+ * (`<machine>` or `<machine>/<session>`); `sid` = the offering session.
+ */
+export const AssignRequest = z.object({
+  to: z.string().min(1).max(200),
+  sid: z.string().optional(),
+  stick: z.boolean().default(false),
+  note: z.string().max(2000).optional(),
+});
+export type AssignRequest = z.infer<typeof AssignRequest>;
+/** MM-3: body of `POST /v1/steps/:id/decline`. */
+export const DeclineRequest = z.object({ note: z.string().max(2000).optional() });
 export const ReleaseRequest = z.object({ note: z.string().max(4000).optional() });
 export const NoteRequest = z.object({ text: z.string().min(1).max(8000), sid: z.string().optional() });
 export const DoneRequest = z.object({
@@ -222,6 +236,58 @@ export interface GoalDetail {
   plans: Plan[];
   /** Live state of each holder's session, by step id (stalled, needs you, …). */
   holders?: Record<string, { sid: string; state: string; needs?: string | undefined; user: string; agent?: string | undefined }> | undefined;
+  /** MM-3: each step's last offer, by step id; absent when no step has one. */
+  offers?: Record<string, OfferLine> | undefined;
+  /** MM-3: the target text of the goal's stick; absent when none. */
+  stick?: string | undefined;
+}
+
+/** MM-3: reply of `POST /v1/steps/:id/assign`. */
+export interface AssignResult {
+  step: Step;
+  auto: boolean;
+}
+
+/** MM-3: reply of `POST /v1/goals/:id/assign`: the steps offered now, and the policy verdict. */
+export interface GoalAssignResult {
+  goal: Goal;
+  steps: Step[];
+  auto: boolean;
+}
+
+/** MM-3: reply of `POST /v1/goals/:id/withdraw`: the step ids whose offers were withdrawn, sorted. */
+export interface GoalWithdrawResult {
+  goal: Goal;
+  withdrawn: string[];
+}
+
+/** MM-3: one open offer (`GET /v1/offers`). `to` = target text; `expiresAt = at + offerExpiryMs`. */
+export interface OfferView {
+  step: string;
+  goal: string;
+  title: string;
+  repo: string;
+  kind: StepKind;
+  machine: string;
+  sid?: string | undefined;
+  to: string;
+  by: string;
+  bySid?: string | undefined;
+  byMachine?: string | undefined;
+  at: number;
+  expiresAt: number;
+  auto: boolean;
+  note?: string | undefined;
+}
+
+/** MM-3: a step's last offer on the goal page. `accepted` = `<machine name>/<session name>` once accepted. */
+export interface OfferLine {
+  to: string;
+  state: OfferState;
+  by: string;
+  at: number;
+  accepted?: string | undefined;
+  note?: string | undefined;
 }
 
 export interface StepView {
@@ -263,7 +329,7 @@ export interface LiveMachine {
 }
 
 export interface Attention {
-  kind: "approval" | "question" | "failed" | "stalled" | "paused" | "parked" | "needs_you";
+  kind: "approval" | "question" | "failed" | "stalled" | "paused" | "parked" | "needs_you" | "offer" | "offer_expired";
   text: string;
   goal?: string | undefined;
   step?: string | undefined;
@@ -284,6 +350,8 @@ export interface LiveView {
 /** A session in `GET /v1/fleet` (MM-1). */
 export interface FleetSession extends LiveSession {
   lastEventAt: number;
+  /** MM-3: the session's accept override; absent when none. */
+  accept?: string[] | undefined;
 }
 
 /** One of the caller's machines in `GET /v1/fleet` (MM-1). */
@@ -301,6 +369,8 @@ export interface FleetMachine {
   reposAt?: number | undefined;
   /** MM-2: the machine's labels, sorted; `[]` when none. */
   labels: string[];
+  /** MM-3: the accept policy its daemon last reported; absent when never reported. */
+  accept?: string[] | undefined;
   /** This is the machine of the calling token. */
   current: boolean;
   sessions: FleetSession[];

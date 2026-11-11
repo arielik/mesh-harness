@@ -517,3 +517,20 @@ a {
   border-radius: 999px;
   padding: 0 0.5em;
 }
+
+/* MM-3: steps offered to the user's machines, above the machines; the step panel's offer line. */
+.mine .offers {
+  margin-bottom: 1.5rem;
+}
+.mine .offers ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.mine .offers li.offer {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.panel p.offer {
+  color: var(--muted);
+}

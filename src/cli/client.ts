@@ -1,4 +1,4 @@
-import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest } from "../protocol/index.ts";
+import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest, type OfferView, type Step } from "../protocol/index.ts";
 
 export class DaemonUnreachable extends Error {
   constructor(port: number) {
@@ -77,6 +77,26 @@ export class DaemonClient {
   /** MM-1: the hub's GET /v1/fleet, through the daemon. */
   async fleet(): Promise<FleetView> {
     return (await this.call("GET", "/local/fleet")) as FleetView;
+  }
+
+  /** MM-3: accept an offered step for a session of this machine (`target`, else one the daemon picks). */
+  async accept(step: string, target?: string): Promise<{ step: string; sid: string; message: string }> {
+    return (await this.call("POST", "/local/accept", { step, ...(target ? { target } : {}) })) as { step: string; sid: string; message: string };
+  }
+
+  /** MM-3: open offers to this machine. */
+  async offers(): Promise<OfferView[]> {
+    return ((await this.call("GET", "/local/offers")) as { offers: OfferView[] }).offers;
+  }
+
+  /** MM-3: decline an offer. */
+  async decline(step: string, note?: string): Promise<{ step: Step }> {
+    return (await this.call("POST", "/local/decline", { step, ...(note ? { note } : {}) })) as { step: Step };
+  }
+
+  /** MM-3: set a session's accept override, or with null clear it. */
+  async sessionAccept(target: string, accept: string[] | null): Promise<Session> {
+    return Session.parse(((await this.call("POST", "/local/session-accept", { target, accept })) as { session: unknown }).session);
   }
 
   /** Tell the daemon about a window `mesh run` opened for Claude. */

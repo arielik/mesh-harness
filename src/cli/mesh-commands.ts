@@ -25,7 +25,7 @@ import {
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { installPlugin, opencodeSupported, opencodeVersion, pluginStatus, uninstallPlugin, type PluginOptions } from "../opencode/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, paneSocket, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, parseLabels, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, parseAccept, parseLabels, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -33,6 +33,7 @@ import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./con
 export type { CliEnv } from "./context.ts";
 import { HubClient, loadCredentials } from "./hub-client.ts";
 import { hubCommands } from "./hub-commands.ts";
+import { offerCommands } from "./offer-commands.ts";
 import { assetsCommand } from "./assets.ts";
 import { ledgerCommand } from "./ledger.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
@@ -68,7 +69,7 @@ export function setupCommand(c: CliEnv): Command {
     name: "setup",
     summary: "install mesh into Claude Code, or OpenCode with --agent opencode|all (--uninstall to remove)",
     async run(args) {
-      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions", "share"]);
+      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions", "share", "accept", "assignments"]);
       const notifyArg = a.str("notify");
       if (notifyArg !== undefined && !["desktop", "terminal", "both", "off"].includes(notifyArg)) {
         c.io.err("--notify must be desktop, terminal, both or off");
@@ -81,6 +82,22 @@ export function setupCommand(c: CliEnv): Command {
         return 2;
       }
       const shareArg: ShareLevel | undefined = shareParsed?.data;
+      // MM-3: whose offers are accepted automatically, and what the daemon does with offers.
+      let acceptArg: string[] | undefined;
+      if (a.has("accept")) {
+        const r = parseAccept(a.str("accept") ?? "");
+        if ("error" in r) {
+          c.io.err(r.error);
+          return 2;
+        }
+        acceptArg = r.accept;
+      }
+      const assignRaw = a.has("assignments") ? (a.str("assignments") ?? "") : undefined;
+      if (assignRaw !== undefined && assignRaw !== "deliver" && assignRaw !== "launch" && assignRaw !== "off") {
+        c.io.err("--assignments must be deliver, launch or off");
+        return 2;
+      }
+      const assignArg = assignRaw as DaemonConfig["assignments"] | undefined;
       const agent = a.has("agent") ? agentChoice(a.str("agent")) : a.has("uninstall") ? "all" : "claude";
       if (!agent) {
         c.io.err("--agent must be claude, opencode or all");
@@ -134,8 +151,15 @@ export function setupCommand(c: CliEnv): Command {
         if (notifyArg) config.notify = notifyArg as NotifyMode;
       }
       if (shareArg) config = { ...config, shareSessions: shareArg };
+      if (acceptArg) config = { ...config, accept: acceptArg };
+      if (assignArg) config = { ...config, assignments: assignArg };
       saveConfig(c.paths, config);
       const shareLine = shareArg !== undefined || fresh ? SHARE_LINES[config.shareSessions] : "";
+      const acceptLine = !acceptArg
+        ? ""
+        : acceptArg.includes("off")
+          ? "No offer is accepted automatically. Restart the daemon to apply."
+          : `Offers from ${acceptArg.join(", ")} are accepted automatically. Restart the daemon to apply.`;
       const ocLines: string[] = [];
       if (opencode) {
         const v = await opencodeVersion(runner);
@@ -156,6 +180,7 @@ export function setupCommand(c: CliEnv): Command {
           [
             `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
             shareLine,
+            ...(acceptLine ? [acceptLine] : []),
             ...ocLines,
             "OpenCode sessions started from now on report to mesh. Next:",
             "  mesh up             # run the daemon here, or",
@@ -174,6 +199,7 @@ export function setupCommand(c: CliEnv): Command {
         [
           `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
           shareLine,
+          acceptLine,
           r.changed ? `Installed ${HOOK_KINDS.length} hooks (v${HOOKS_VERSION}) into ${c.paths.claudeSettings}.` : `Hooks (v${HOOKS_VERSION}) already installed in ${c.paths.claudeSettings}.`,
           "skipped" in mcp ? "Skipped the MCP server and the skill (--no-mcp)." : mcp.ok ? "Registered the mesh MCP server." : `Could not register the MCP server: ${"error" in mcp ? mcp.error : ""}`,
           skill?.foreign
@@ -648,5 +674,20 @@ export function statusCommand(c: CliEnv): Command {
 }
 
 export function meshCommands(c: CliEnv): Command[] {
-  return [setupCommand(c), doctorCommand(c), skillCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), labelCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), assetsCommand(c), ...hubCommands(c)];
+  return [
+    setupCommand(c),
+    doctorCommand(c),
+    skillCommand(c),
+    statusCommand(c),
+    lsCommand(c),
+    sayCommand(c),
+    labelCommand(c),
+    jumpCommand(c),
+    runCommand(c),
+    tuiCommand(c),
+    ledgerCommand(c),
+    assetsCommand(c),
+    ...hubCommands(c),
+    ...offerCommands(c, (args) => runCommand(c).run(args)),
+  ];
 }

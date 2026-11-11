@@ -61,3 +61,48 @@ describe("mesh show", () => {
     expect(out).toContain("mesh goal approve G17");
   });
 });
+
+// MM-3 AC-29: offers among a step's extras, the stick line after the topics line.
+describe("AC-29 offers in mesh show", () => {
+  const holderId = "G17.agent";
+  const withOffers = (extra: Record<string, unknown>) =>
+    ({
+      ...detail,
+      goal: { ...detail.goal, topics: ["perf"] },
+      ...extra,
+    }) as unknown as GoalDetail;
+  const accepted = { to: "m2", state: "accepted", by: "ariel", at: 1, accepted: "m2/perf-bench" };
+
+  it("test_AC29_render_offer_line", () => {
+    const out = renderGoal(withOffers({ offers: { [holderId]: accepted } }));
+    const line = out.split("\n").find((l) => /^\s+\S+ agent\s/.test(l));
+    expect(line, out).toBeDefined();
+    expect(line).toContain("offered to m2 → accepted by m2/perf-bench");
+    // After the holder.
+    expect((line as string).indexOf("@tom")).toBeGreaterThanOrEqual(0);
+    expect((line as string).indexOf("@tom")).toBeLessThan((line as string).indexOf("offered to m2"));
+    // Only that step carries it.
+    expect(out.split("\n").filter((l) => l.includes("offered to"))).toHaveLength(1);
+  });
+
+  it("test_AC29_render_open_offer", () => {
+    const out = renderGoal(withOffers({ offers: { "G17.old": { to: "m2/perf", state: "offered", by: "ariel", at: 1 } } }));
+    const line = out.split("\n").find((l) => /^\s+\S+ old\s/.test(l));
+    expect(line).toContain("offered to m2/perf by @ariel");
+  });
+
+  it("test_AC29_render_stick_line", () => {
+    const out = renderGoal(withOffers({ stick: "m2" })).split("\n");
+    const topics = out.findIndex((l) => l.startsWith("topics:"));
+    expect(topics, out.join("\n")).toBeGreaterThan(0);
+    expect(out[topics + 1]).toBe("sticks to m2: its next ready steps are offered there (mesh withdraw G17)");
+  });
+
+  it("test_AC29_old_snapshots_unchanged", () => {
+    // A goal without offers or stick renders exactly as without the new keys.
+    const plain = renderGoal(detail);
+    expect(renderGoal({ ...detail } as GoalDetail)).toBe(plain);
+    expect(plain).not.toContain("offered to");
+    expect(plain).not.toContain("sticks to");
+  });
+});

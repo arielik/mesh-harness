@@ -35,6 +35,11 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `message.delivered` | the daemon delivered or failed a message | `id`, `state`, `method` |
 | `machine.named` | a machine was named or its name cleared | `machine`, `nickname` (null when cleared) |
 | `machine.labelled` | a machine's labels changed | `machine`, `labels` |
+| `step.offered` | a step was offered to a machine (`mesh assign`, `mesh_assign`, a goal's stick); `user` = the offerer, `sid` = the offering session | `machine` (target machine id), `sid` (target session, when named), `auto`, `note`, `stick` |
+| `step.accepted` | the target machine accepted the offer (an accept, or a claim from that machine); `user`, `sid` = the accepting session | `machine`, `sid` |
+| `step.declined` | the offer was declined | `machine`, `note` |
+| `step.offer_expired` | the offer was not accepted within `thresholds.offer_expiry` | `machine` |
+| `step.offer_withdrawn` | the offerer or an admin withdrew it, the offerer claimed the step, or the step left `ready` | `machine`, `reason` (`claimed by the offerer`, `step <state>`) |
 | `hub.events_pruned` | retention ran | `count`, `days` |
 
 A plan replaced before anyone decided is stored as `superseded`, not `revised`. It emits no `plan.revised`, so design rounds count only human requests for changes.

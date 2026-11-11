@@ -22,7 +22,9 @@ import {
   DEFAULT_RULES,
   findSession,
   needsLabel,
+  pickSession,
   sessionLabel,
+  sessionName,
   type FactEvent,
   type Result,
   type Rules,
@@ -39,6 +41,7 @@ import {
   OpenCodePoll,
   OPENCODE_PLUGIN_VERSION,
   openCodeToHookEvent,
+  parseAccept,
   parseLabels,
   SayRequest,
   stopReply,
@@ -52,6 +55,9 @@ import {
   type Harness,
   type InboxMessage,
   type LabelsResult,
+  type OfferView,
+  type Step,
+  type StepView,
   type ToolName,
   type AgentEntry,
   type DaemonConfig,
@@ -69,7 +75,7 @@ import type { DaemonStore } from "../store/index.ts";
 import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
 import { commonDir, findGitDir, findRepoRoot, headCommit, repoForCwd } from "./git.ts";
 import { checkoutKey, initialLabels } from "./labels.ts";
-import { HubLink, type HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
+import { HubLink, HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
 import { REPO_SCAN_MS, repoInventory, scanRepos } from "./repos.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
 import { writePending, writeTrail } from "./trail.ts";
@@ -102,6 +108,11 @@ export interface DaemonDeps {
   alive?(pid: number): boolean;
   /** MM-1: the repos of the checkouts under the workspace roots (ids and names only). */
   scanRepos?(roots: readonly string[]): Repo[];
+  /**
+   * MM-3: start a session for an offered step (`assignments: launch`, no idle session): by default
+   * `mesh run <repo> --step <step> --no-tui`, detached. Without it a launch counts as failed.
+   */
+  launchStep?(repo: string, step: string): Promise<{ ok: boolean; error?: string }>;
 }
 
 /** `kill -0`: EPERM means the process exists but belongs to someone else. */
@@ -214,6 +225,22 @@ export class Daemon {
   private agentEvents = new Set<string>();
   /** session:step pairs already bound at the hub after a SessionStart. */
   private boundSteps = new Set<string>();
+  /** MM-3: machine-wide offer messages being handled now, and how handled ones were acked. */
+  private offersInFlight = new Set<number>();
+  private offersHandled = new Map<number, { state: "delivered" | "failed"; method?: string | undefined; acked: boolean }>();
+  /** MM-3: offer messages whose hub call or ack got no answer; a pull retries them. */
+  private offersAwaitingRetry = new Set<number>();
+  /** MM-3: sessions an in-flight offer picked, so a concurrent offer never picks the same one. */
+  /**
+   * Sessions reserved for offers (MM-3): the session an auto offer picked, by message id, kept until
+   * that message is acked or no longer pending, so a retry after a lost reply sends the same sid and
+   * no other offer takes it meanwhile; and the sessions a `mesh accept` is accepting right now.
+   */
+  private offerPicks = new Map<number, string>();
+  private localPicks = new Set<string>();
+  private reservedForOffer(sid: string): boolean {
+    return this.localPicks.has(sid) || [...this.offerPicks.values()].includes(sid);
+  }
 
   constructor(opts: {
     config: DaemonConfig;
@@ -238,8 +265,11 @@ export class Daemon {
         store: this.store,
         sessions: () => this.sessions.filter((s) => !isHidden(s)),
         share: () => this.config.shareSessions,
+        accept: () => this.config.accept,
         machineRepos: () => this.machineRepos(),
         onMessage: (m) => this.receive(m),
+        onPulled: (ids) => this.forgetOffers(ids),
+        retryDue: () => this.offersAwaitingRetry.size > 0,
         log: (l) => this.deps.log(l),
         now: () => this.deps.now(),
         ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
@@ -533,7 +563,13 @@ export class Daemon {
   }
 
   /** A message from the hub inbox: queue it for local delivery. */
-  private receive(m: InboxMessage): "queued" | "unknown" {
+  private receive(m: InboxMessage): "queued" | "unknown" | "handling" {
+    // MM-3: a machine-wide message (no session) is an offer the daemon handles itself.
+    if (m.toSid === "") {
+      if (m.kind !== "offer") return "unknown";
+      void this.handleOffer(m).catch((e) => this.deps.log(`offer ${m.id}: ${String(e)}`));
+      return "handling";
+    }
     const s = this.sessions.find((x) => x.sid === m.toSid && x.state !== "ended");
     if (!s) return "unknown";
     const goal = typeof m.data?.goal === "string" ? m.data.goal : undefined;
@@ -547,6 +583,180 @@ export class Daemon {
     this.store.queueMessage(s.sid, m.text, this.deps.now(), m.id);
     void this.deliverPending(s.sid).catch(() => undefined);
     return "queued";
+  }
+
+  /** Ack a machine-wide offer message and remember how, so a later pull does not handle it again. */
+  private async ackOffer(m: InboxMessage, state: "delivered" | "failed", method?: string): Promise<void> {
+    this.offersHandled.set(m.id, { state, method, acked: false });
+    await this.ackHandled(m.id);
+  }
+
+  /** Send (again) the ack of a handled offer; until the hub takes it, the offer awaits a retry. */
+  private async ackHandled(id: number): Promise<void> {
+    const h = this.offersHandled.get(id);
+    if (!h || !this.link) return;
+    const ok = await this.link.ack(id, h.state, h.method);
+    const now = this.offersHandled.get(id);
+    if (now) now.acked = now.acked || ok;
+    if (ok) this.offersAwaitingRetry.delete(id);
+    else this.offersAwaitingRetry.add(id);
+  }
+
+  /** After a pull: forget handled offers the hub took the ack of and no longer lists. */
+  private forgetOffers(listed: readonly number[]): void {
+    const pending = new Set(listed);
+    for (const [id, h] of this.offersHandled) if (h.acked && !pending.has(id)) this.offersHandled.delete(id);
+    for (const id of this.offersAwaitingRetry) if (!pending.has(id) && !this.offersInFlight.has(id)) this.offersAwaitingRetry.delete(id);
+    for (const id of this.offerPicks.keys()) if (!pending.has(id) && !this.offersInFlight.has(id)) this.offerPicks.delete(id);
+  }
+
+  /**
+   * MM-3: an offer to this machine. `assignments: off` declines it; an `auto` offer is accepted for
+   * an idle session (or, under `launch`, a new one); otherwise it is listed for the person. Hub
+   * calls carry `Idempotency-Key: offer-<message id>`, so a retry after a lost reply replays the
+   * hub's first answer. While the hub cannot be reached the message stays unacked.
+   */
+  private async handleOffer(m: InboxMessage): Promise<void> {
+    const link = this.link;
+    if (!link) return;
+    if (this.offersHandled.has(m.id)) return await this.ackHandled(m.id);
+    if (this.offersInFlight.has(m.id)) return;
+    this.offersInFlight.add(m.id);
+    try {
+      const d = m.data ?? {};
+      const step = typeof d.step === "string" ? d.step : undefined;
+      if (!step) return await this.ackOffer(m, "failed", "no step");
+      const repo = typeof d.repo === "string" ? d.repo : "";
+      const topics = Array.isArray(d.topics) ? d.topics.filter((t): t is string => typeof t === "string") : [];
+      const sid = typeof d.sid === "string" ? d.sid : undefined;
+      const by = typeof d.by === "string" ? d.by : m.fromUser;
+      const title = /^MESH: @\S+ offers step \S+ "(.*)" \(repo /.exec(m.text)?.[1] ?? step;
+      const key = `offer-${m.id}`;
+      const refused = (e: unknown) => e instanceof HubRpcError && e.status >= 400 && e.status < 500 && e.status !== 401;
+      const listed = async () => {
+        if (notifyChannels(this.config).any) await this.deps.notify("mesh", `@${by} offers ${step} "${title}": mesh offers`);
+        await this.ackOffer(m, "delivered", "listed");
+      };
+      if (this.config.assignments === "off") {
+        try {
+          await link.rpc("POST", `/v1/steps/${encodeURIComponent(step)}/decline`, { note: "this machine does not take assignments" }, key);
+        } catch (e) {
+          if (refused(e)) return await this.ackOffer(m, "failed", (e as Error).message);
+          this.offersAwaitingRetry.add(m.id);
+          return; // the hub is away: handled again on a later pull
+        }
+        return await this.ackOffer(m, "delivered", "declined");
+      }
+      if (d.auto === true) {
+        // A retry keeps the session it picked before (the hub may already hold the step for it);
+        // sessions reserved for other offers are left out: offers of one pull run concurrently.
+        const before = this.offerPicks.get(m.id);
+        const s =
+          (before ? this.sessions.find((x) => x.sid === before && x.state !== "ended") : undefined) ??
+          pickSession(this.sessions.filter((x) => !this.reservedForOffer(x.sid)), { repo, topics, ...(sid ? { sid } : {}) });
+        if (s) {
+          this.offerPicks.set(m.id, s.sid);
+          let accepted: Step | undefined;
+          try {
+            accepted = await link.rpc<Step>("POST", `/v1/steps/${encodeURIComponent(step)}/accept`, { sid: s.sid }, key);
+          } catch (e) {
+            if (refused(e)) {
+              this.offerPicks.delete(m.id);
+              return await this.ackOffer(m, "failed", (e as Error).message);
+            }
+            this.offersAwaitingRetry.add(m.id);
+            return; // reserved until the retry
+          }
+          // A retry replays the hub's first answer, which may name the session picked then.
+          const holder = accepted?.holderSid && this.sessions.some((x) => x.sid === accepted.holderSid && x.state !== "ended") ? accepted.holderSid : s.sid;
+          this.bindOffered(holder, step);
+          this.offerPicks.delete(m.id);
+          return await this.ackOffer(m, "delivered", "accepted");
+        }
+        if (this.config.assignments === "launch") {
+          const r = (await this.deps.launchStep?.(repo.slice(repo.lastIndexOf("/") + 1), step)) ?? { ok: false, error: "no launcher" };
+          if (r.ok) return await this.ackOffer(m, "delivered", "launched");
+          this.deps.log(`could not start a session for offered step ${step}: ${r.error ?? "unknown error"}`);
+        }
+      }
+      await listed();
+    } finally {
+      this.offersInFlight.delete(m.id);
+    }
+  }
+
+  /** A session took an offered step: bind it and queue the brief (delivered when the session is idle). */
+  private bindOffered(sid: string, step: string): void {
+    this.update(sid, { step, nudges: 0, escalated: false });
+    this.store.queueMessage(sid, stepMessage(step), this.deps.now());
+    void this.deliverPending(sid).catch(() => undefined);
+  }
+
+  /** `POST /local/accept`: accept an offered step for a session of this machine. */
+  async acceptLocal(b: { step?: unknown; target?: unknown }): Promise<{ step: string; sid: string; message: string }> {
+    const link = this.link;
+    if (!link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+    if (typeof b.step !== "string" || !b.step) throw new HttpError(400, "expected {step, target?}");
+    try {
+      const view = await link.rpc<StepView>("GET", `/v1/steps/${encodeURIComponent(b.step)}`);
+      const st = view.context.step;
+      let s: Session | undefined;
+      if (typeof b.target === "string" && b.target) {
+        s = findSession(this.sessions, b.target);
+        if (!s) throw new HttpError(404, `no live session matches "${b.target}"`);
+      } else {
+        const named = st.offer?.state === "offered" ? st.offer.to.sid : undefined;
+        s = pickSession(this.sessions.filter((x) => !this.reservedForOffer(x.sid)), { repo: st.repo, topics: view.context.goal.topics ?? [], ...(named ? { sid: named } : {}) });
+        if (!s) throw new HttpError(409, `no idle session for ${st.repo} on this machine; use --session <s> or --launch`);
+      }
+      // Reserved while the hub answers, so an auto offer handled meanwhile does not pick it too.
+      const picked = s.sid;
+      this.localPicks.add(picked);
+      try {
+        await link.rpc<Step>("POST", `/v1/steps/${encodeURIComponent(st.id)}/accept`, { sid: picked }, randomUUID());
+        this.bindOffered(picked, st.id);
+      } finally {
+        this.localPicks.delete(picked);
+      }
+      return { step: st.id, sid: s.sid, message: `${sessionName(s)} now holds ${st.id}` };
+    } catch (e) {
+      throw e instanceof HubRpcError ? new HttpError(e.status, e.message) : e;
+    }
+  }
+
+  /** `GET /local/offers`: open offers to this machine. */
+  async offersLocal(): Promise<{ offers: OfferView[] }> {
+    const c = this.link?.credentials();
+    if (!this.link || !c) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+    try {
+      const { offers } = await this.link.rpc<{ offers: OfferView[] }>("GET", "/v1/offers");
+      return { offers: offers.filter((o) => o.machine === c.machine) };
+    } catch (e) {
+      throw e instanceof HubRpcError ? new HttpError(e.status, e.message) : e;
+    }
+  }
+
+  /** `POST /local/decline`: decline an offer at the hub. */
+  async declineLocal(b: { step?: unknown; note?: unknown }): Promise<{ step: Step }> {
+    if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+    if (typeof b.step !== "string" || !b.step) throw new HttpError(400, "expected {step, note?}");
+    const note = typeof b.note === "string" && b.note ? b.note : undefined;
+    try {
+      return { step: await this.link.rpc<Step>("POST", `/v1/steps/${encodeURIComponent(b.step)}/decline`, note ? { note } : {}, randomUUID()) };
+    } catch (e) {
+      throw e instanceof HubRpcError ? new HttpError(e.status, e.message) : e;
+    }
+  }
+
+  /** `POST /local/session-accept`: set (or, with null, clear) a session's accept override. */
+  sessionAccept(b: { target?: unknown; accept?: unknown }): { session: Session } {
+    if (typeof b.target !== "string" || !b.target || (b.accept !== null && !Array.isArray(b.accept))) throw new HttpError(400, "expected {target, accept: [rules] | null}");
+    const s = findSession(this.sessions, b.target);
+    if (!s) throw new HttpError(404, `no live session matches "${b.target}"`);
+    if (b.accept === null) return { session: this.update(s.sid, { accept: undefined }) as Session };
+    const r = parseAccept((b.accept as unknown[]).map(String));
+    if ("error" in r) throw new HttpError(400, r.error);
+    return { session: this.update(s.sid, { accept: r.accept }) as Session };
   }
 
   private settle(m: Message, state: "delivered" | "failed", detail: string): void {
@@ -754,18 +964,22 @@ export class Daemon {
 
   /** Apply a normalised hook event (from any agent); returns the session's sid. */
   private applyEvent(ev: HookEvent): string {
+    const placeholders = new Set(this.sessions.filter((x) => x.launching).map((x) => x.sid));
     const result = applyHook(this.sessions, ev, this.ctx());
     this.commit(result);
     const sid = result.changed[0] as string;
     this.store.appendHookEvent(sid, ev);
-    if (ev.kind === "SessionStart" && ev.stepHint && this.link) {
+    // The step to bind: the hook's MESH_STEP, else the step of the `mesh run` placeholder this
+    // session just took over (MM-3: `mesh accept --launch` and the launcher open such windows).
+    const hint = ev.stepHint ?? (placeholders.has(sid) ? this.sessions.find((x) => x.sid === sid)?.step : undefined);
+    if (ev.kind === "SessionStart" && hint && this.link) {
       const s = this.sessions.find((x) => x.sid === sid);
       // Bind the step to this session at the hub (so its messages reach it), once per session and
       // step. A `mesh run` window's placeholder already carries the step: bind it anyway.
-      const key = `${sid}:${ev.stepHint}`;
-      if (s && (s.step !== ev.stepHint || !this.boundSteps.has(key))) {
+      const key = `${sid}:${hint}`;
+      if (s && (s.step !== hint || !this.boundSteps.has(key))) {
         this.boundSteps.add(key);
-        const step = ev.stepHint;
+        const step = hint;
         void this.link
           .rpc("POST", `/v1/steps/${encodeURIComponent(step)}/claim`, { sid }, `bind:${sid}:${step}`)
           .then(() => this.update(sid, { step, nudges: 0, escalated: false }))
@@ -1070,6 +1284,10 @@ export class Daemon {
         if (!b.target) throw new HttpError(400, "expected {target}");
         return send(res, 200, await this.assignNext(b.target));
       }
+      if (req.method === "POST" && path === "/local/accept") return send(res, 200, await this.acceptLocal((await readJson(req)) as Record<string, unknown>));
+      if (req.method === "GET" && path === "/local/offers") return send(res, 200, await this.offersLocal());
+      if (req.method === "POST" && path === "/local/decline") return send(res, 200, await this.declineLocal((await readJson(req)) as Record<string, unknown>));
+      if (req.method === "POST" && path === "/local/session-accept") return send(res, 200, this.sessionAccept((await readJson(req)) as Record<string, unknown>));
       if (req.method === "POST" && path === "/local/reconcile") {
         await this.reconcile();
         return send(res, 200, this.snapshot());

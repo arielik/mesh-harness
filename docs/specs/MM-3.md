@@ -402,3 +402,33 @@ asserts `package.json`'s version except AC-34.
   a `<machine>/<session>` target answers 404; the offer can still go to the machine alone.
 - (2026-11-11) The default `launchStep` passes the step repo's name to `mesh run`, which resolves it
   under `workspaceRoots`; a repo that is not there makes the launch fail and the offer stays listed.
+- (2026-11-11, implementation) `offer_question` is sent whenever a question is asked on a step whose
+  offer is `accepted`, also when the asker is the offerer (the spec names no exception).
+- (2026-11-11, implementation) `mesh decline <step>` and `mesh withdraw <goal|step>` print the id as
+  typed; `mesh assign` prints the ids from the hub's reply.
+- (2026-11-11, implementation) Under `assignments: off`, a decline the hub refuses (e.g. the offer
+  was withdrawn first) acks the machine-wide message `failed`.
+- (2026-11-11, implementation) The web Mine tab shows the machines even when `GET /v1/offers` fails
+  (an older hub): the offers section then reads `Nothing is assigned to you.`
+- (2026-11-11, implementation) Report-back messages go only to an offering session the hub has a
+  record of; under `shareSessions: steps` a step-less offering session therefore gets none until
+  it is synced (consistent with "none when it is absent, unknown or ended").
+- (2026-11-11, diff round 1 S2) The spec removes an accepted offer only on release, yet a reopen (a
+  dependent failed, or a done step downstream of it), a replan of the design step, a step dropped by
+  a new plan and a takeover also hand the step to a later holder. Assumed the release rule is meant
+  for every such hand-over (the concepts guide already says later holders' work is not reported):
+  each of them removes an accepted offer too. An offer in any other state is kept as it was.
+- (2026-11-11, diff round 1 B1) Offers of one inbox pull are handled concurrently; a session picked by an
+  offer still in flight is left out of later picks (also for `mesh accept`), so the next auto offer
+  goes to another idle session, is launched under `assignments: launch`, or is listed. When a retried
+  accept replays the hub's first answer, the daemon binds the session that answer names (if it is
+  still live here). (Diff round 2 S3/S4) The session an auto offer picked stays reserved, by message,
+  until that message is acked or no longer pending, and a retry sends the same sid; `mesh accept`
+  reserves its session while the hub answers.
+- (2026-11-11, diff round 1 S3) While the hub is offline, an inbox pull checks it at once only when an
+  offer waits for a retry (its hub call or ack got no answer); otherwise it keeps the probe backoff.
+- (2026-11-11, test-writer, diff review B2/S4) AC-27 and AC-40 tests assert, as the review asks,
+  that after `mesh accept <step> --launch` (or what the default `launchStep` runs) the new
+  session's first hook leaves the step held at the hub by that new sid (`holderSid`), not only the
+  offer `accepted`. Correction: the pre-change base already bound the sid when the first hook carried
+  `X-Mesh-Step` (as real hooks do); only a header-less first hook left `holderSid` unset. Both paths are tested.

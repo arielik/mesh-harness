@@ -8,7 +8,7 @@ import { sha256 } from "../../src/auth/index.ts";
 import { Daemon, defaultDeps } from "../../src/daemon/index.ts";
 import { repoForCwd } from "../../src/daemon/git.ts";
 import { buildHubConfig, startHub, type HubConfig, type RunningHub } from "../../src/hub/index.ts";
-import type { AgentEntry, Credentials, DaemonConfig, HookInput, LoginResult, Session } from "../../src/protocol/index.ts";
+import type { AgentEntry, Credentials, DaemonConfig, HookHeaders, HookInput, LoginResult, Session } from "../../src/protocol/index.ts";
 import { DaemonStore, HubStore } from "../../src/store/index.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON responses in assertions
@@ -36,6 +36,18 @@ export interface Person {
   hostname: string;
   /** Every POST /v1/sync body this daemon sent, oldest first. */
   syncs: Json[];
+  /** MM-3: every inbox ack this daemon sent to the hub (message id, state, method), oldest first. */
+  acks: { id: number; state: string; method?: string }[];
+  /** MM-3: every request this daemon sent to the hub (method, path, Idempotency-Key header). */
+  requests: { method: string; path: string; key: string | null }[];
+  /** MM-3: every `launchStep` call of this daemon (a fake: nothing is started). */
+  launches: { repo: string; step: string }[];
+  /** MM-3: what the `launchStep` fake answers (default `{ok: true}`). */
+  launchResult?: { ok: boolean; error?: string };
+  /** MM-3: the next request whose path matches is sent to the hub, but its reply is lost (a network error instead). */
+  dropReplyOnce(path: RegExp): void;
+  /** MM-3: awaited before a request whose path matches is sent to the hub (to hold it in flight). */
+  hold?: { path: RegExp; until: Promise<void> } | undefined;
 }
 
 export interface PersonOptions {
@@ -62,6 +74,7 @@ export class World {
   /** Every machine started, in order (one name may have several). */
   machines: Person[] = [];
   private dirs: string[] = [];
+  private drops = new Map<Person, RegExp[]>();
   private installs = 0;
 
   async start(users: string[], opts: { admins?: string[] } = {}): Promise<void> {
@@ -114,7 +127,17 @@ export class World {
     const credentialsPath = join(dir, "credentials.json");
     if (!opts.solo && !opts.noCredentials) writeFileSync(credentialsPath, JSON.stringify({ hub: this.hub.url, token: login.token, user: login.user, machine: login.machine }));
     const store = await DaemonStore.open(":memory:");
-    const config: DaemonConfig = { port: 0, key: "k".repeat(32), notify: true, workspaceRoots: opts.workspaceRoots ?? [], autopilot: "nudge", shareSessions: opts.shareSessions ?? "steps" };
+    // MM-3: the accept policy and assignments a parsed daemon.json without the fields has.
+    const config = {
+      port: 0,
+      key: "k".repeat(32),
+      notify: true,
+      workspaceRoots: opts.workspaceRoots ?? [],
+      autopilot: "nudge",
+      shareSessions: opts.shareSessions ?? "steps",
+      accept: ["self"],
+      assignments: "deliver",
+    } as DaemonConfig;
     const p: Person = {
       name,
       login,
@@ -132,7 +155,13 @@ export class World {
       config,
       hostname,
       syncs: [],
+      acks: [],
+      requests: [],
+      launches: [],
+      dropReplyOnce: (path) => void drops.push(path),
     };
+    const drops: RegExp[] = [];
+    this.drops.set(p, drops);
     p.daemon = this.makeDaemon(p, opts);
     await p.daemon.start(0);
     writeFileSync(p.configPath, JSON.stringify({ ...config, port: p.daemon.port }));
@@ -142,9 +171,13 @@ export class World {
   }
 
   /** Stop this machine's daemon and start it again (same store and credentials), e.g. with another share level. */
-  async restart(p: Person, change: Partial<Pick<DaemonConfig, "shareSessions" | "workspaceRoots">> = {}, opts: PersonOptions = {}): Promise<void> {
+  async restart(
+    p: Person,
+    change: Partial<Pick<DaemonConfig, "shareSessions" | "workspaceRoots">> & { accept?: string[]; assignments?: "deliver" | "launch" | "off" } = {},
+    opts: PersonOptions = {},
+  ): Promise<void> {
     await p.daemon.stop();
-    p.config = { ...p.config, ...change };
+    p.config = { ...p.config, ...change } as DaemonConfig;
     p.daemon = this.makeDaemon(p, opts);
     await p.daemon.start(0);
     writeFileSync(p.configPath, JSON.stringify({ ...p.config, port: p.daemon.port }));
@@ -152,6 +185,14 @@ export class World {
 
   private makeDaemon(p: Person, opts: PersonOptions): Daemon {
     const repoId = opts.repoId ?? `gitlab.lab/vpc/${p.repo}`;
+    const drops = this.drops.get(p) ?? [];
+    // MM-3: DaemonDeps.launchStep, a fake that records the call.
+    const launch = {
+      launchStep: async (repo: string, step: string) => {
+        p.launches.push({ repo, step });
+        return p.launchResult ?? { ok: true };
+      },
+    };
     return new Daemon({
       config: p.config,
       store: p.store,
@@ -178,8 +219,24 @@ export class World {
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           if (p.offline) throw new TypeError("fetch failed (simulated network loss)");
           if (init?.method === "POST" && String(url).endsWith("/v1/sync") && typeof init.body === "string") p.syncs.push(JSON.parse(init.body));
-          return fetch(url, init);
+          const path = new URL(String(url)).pathname;
+          const method = init?.method ?? "GET";
+          p.requests.push({ method, path, key: new Headers(init?.headers).get("idempotency-key") });
+          const ack = /^\/v1\/inbox\/(\d+)\/ack$/.exec(path);
+          if (ack && method === "POST" && typeof init?.body === "string") {
+            const b = JSON.parse(init.body) as { state: string; method?: string };
+            p.acks.push({ id: Number(ack[1]), state: b.state, ...(b.method !== undefined ? { method: b.method } : {}) });
+          }
+          if (p.hold && p.hold.path.test(path)) await p.hold.until;
+          const res = await fetch(url, init);
+          const i = drops.findIndex((re) => re.test(path));
+          if (i >= 0) {
+            drops.splice(i, 1);
+            throw new TypeError("fetch failed (simulated lost reply)");
+          }
+          return res;
         }) as typeof fetch,
+        ...launch,
       }),
       intervals: { reconcileMs: 0, transcriptMs: 0, tickMs: 0, deliveryMs: 0 },
     });
@@ -194,9 +251,10 @@ export class World {
     for (const d of this.dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   }
 
-  hook(p: Person, kind: "SessionStart" | "UserPromptSubmit" | "Stop" | "SessionEnd", pid: number, extra: Partial<HookInput> = {}) {
+  /** `headers`: extra hook headers, e.g. `{ step }` as a real hook sends `X-Mesh-Step: $MESH_STEP`. */
+  hook(p: Person, kind: "SessionStart" | "UserPromptSubmit" | "Stop" | "SessionEnd", pid: number, extra: Partial<HookInput> = {}, headers: Partial<HookHeaders> = {}) {
     const input: HookInput = { session_id: `claude-${pid}`, cwd: p.repoDir, hook_event_name: kind, transcript_path: `/t/${pid}.jsonl`, ...extra };
-    return p.daemon.handleHook(kind, input, { claudePid: String(pid), tmuxPane: `%${pid}` });
+    return p.daemon.handleHook(kind, input, { claudePid: String(pid), tmuxPane: `%${pid}`, ...headers });
   }
 
   tool(p: Person, pid: number, name: Parameters<Daemon["callTool"]>[0], args: Record<string, unknown> = {}) {
@@ -211,6 +269,11 @@ export class World {
   turn(p: Person, pid: number, said = "ok") {
     this.hook(p, "UserPromptSubmit", pid, { prompt: "work" });
     return this.hook(p, "Stop", pid, { stop_hook_active: false, last_assistant_message: said });
+  }
+
+  /** MM-3: the hub's tick once, at `w.clock` (offer expiry, pauses). */
+  async tick(): Promise<void> {
+    await this.hub.svc.tick();
   }
 
   async flush(): Promise<void> {

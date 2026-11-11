@@ -390,7 +390,7 @@ export function hubInit(path: string, users: string[], listen: string): { tokens
       ],
       bootstrap_admins: users.slice(0, 1).map((u) => `team:${u}`),
     },
-    thresholds: { takeover_after: "4h", pause_grace: "2m", machine_offline: "15m" },
+    thresholds: { takeover_after: "4h", pause_grace: "2m", machine_offline: "15m", offer_expiry: "30m" },
   };
   const header = [
     "# mesh hub configuration. Docs: docs/plan/implementation-plan.md §4.",

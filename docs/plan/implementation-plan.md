@@ -371,6 +371,13 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/messages` | Messages |
 | `GET /v1/fleet`, `POST /v1/machines/:id/name` | My mesh (v0.1.9): the caller's machines and their sessions; name a machine |
 | `POST /v1/machines/:id/labels` | Machine labels (v0.1.10): replace, or add/remove, the labels of one of the caller's machines |
+| `POST /v1/steps/:id/assign` | Assign (v0.1.11): offer a ready step to a machine or `<machine>/<session>`; the target's accept policy decides `auto` |
+| `POST /v1/steps/:id/accept` | Assign (v0.1.11): accept an offer from the target machine (claims the step for a session) |
+| `POST /v1/steps/:id/decline` | Assign (v0.1.11): decline an offer (the target machine's owner or a policy match) |
+| `POST /v1/steps/:id/withdraw` | Assign (v0.1.11): withdraw an open offer (the offerer or an admin) |
+| `POST /v1/goals/:id/assign` | Assign (v0.1.11): offer every ready step of a goal; `stick` offers its later ready steps too |
+| `POST /v1/goals/:id/withdraw` | Assign (v0.1.11): end a goal's stick and withdraw the caller's open offers on it |
+| `GET /v1/offers` | Assign (v0.1.11): open offers to the caller's machines |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

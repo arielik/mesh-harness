@@ -82,6 +82,7 @@ function AttentionList({ items, now, onApprove }: { items: Attention[]; now: num
           )}
           {(a.kind === "approval" || a.kind === "parked") && a.goal && a.step && <a href={`#/goal/${a.goal}`}>open {a.step}</a>}
           {a.kind === "question" && a.question !== undefined && <code className="hint">mesh answer {a.question} …</code>}
+          {a.kind === "offer" && a.step && <code className="hint">mesh accept {a.step}</code>}
         </li>
       ))}
     </ul>

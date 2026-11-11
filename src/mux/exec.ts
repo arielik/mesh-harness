@@ -13,6 +13,25 @@ export interface RunOptions {
   env?: Record<string, string | undefined>;
 }
 
+/**
+ * Start a program detached from this process (no shell, no output), e.g. `mesh run … --no-tui` for
+ * an offer the daemon launches (MM-3). Resolves once the program started, or with the error.
+ */
+export function spawnDetached(cmd: string, args: readonly string[]): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+      child.once("spawn", () => {
+        child.unref();
+        resolve({ ok: true });
+      });
+      child.once("error", (e) => resolve({ ok: false, error: String(e) }));
+    } catch (e) {
+      resolve({ ok: false, error: String(e) });
+    }
+  });
+}
+
 /** Run a program (no shell). Never rejects: failures come back as a non-zero code. */
 export type Runner = (cmd: string, args: readonly string[], opts?: RunOptions) => Promise<RunResult>;
 

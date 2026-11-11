@@ -8,9 +8,11 @@ import {
   AnswerRequest,
   Approve,
   AskRequest,
+  AssignRequest,
   ClaimRequest,
   CliExchange,
   Decide,
+  DeclineRequest,
   DevicePoll,
   DoneRequest,
   GateDecision,
@@ -114,6 +116,8 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/topics", rule: "member", scope: "goals:write", tag: "goals", body: NewTopic, status: 201, summary: "Define a topic." },
   { method: "POST", path: "/v1/topics/:name/delete", rule: "member", scope: "goals:write", tag: "goals", summary: "Delete a topic (its creator or an admin) and untag its goals." },
   { method: "GET", path: "/v1/goals/:id/timeline", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal's history." },
+  { method: "POST", path: "/v1/goals/:id/assign", rule: "member", tag: "goals", body: AssignRequest, summary: "Offer every ready step of a goal; --stick: later ready steps too." },
+  { method: "POST", path: "/v1/goals/:id/withdraw", rule: "member", tag: "goals", summary: "End a goal's stick and withdraw your open offers on it." },
 
   {
     method: "GET",
@@ -134,6 +138,11 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/steps/:id/reject", rule: "member", tag: "steps", body: GateDecision, summary: "Reject a gate step (optionally reopening steps)." },
   { method: "POST", path: "/v1/steps/:id/resume", rule: "member", tag: "steps", body: ResumeRequest, summary: "Resume a parked step." },
   { method: "POST", path: "/v1/steps/:id/take", rule: "member", tag: "steps", body: ClaimRequest, summary: "Take over a step held by someone else (after the takeover threshold)." },
+  { method: "POST", path: "/v1/steps/:id/assign", rule: "member", tag: "steps", body: AssignRequest, summary: "Offer a ready step to a machine or session." },
+  { method: "POST", path: "/v1/steps/:id/accept", rule: "member", tag: "steps", body: ClaimRequest, summary: "Accept a step offered to this machine: claim it for a session." },
+  { method: "POST", path: "/v1/steps/:id/decline", rule: "member", tag: "steps", body: DeclineRequest, summary: "Decline an offer (the target machine's owner or a policy match)." },
+  { method: "POST", path: "/v1/steps/:id/withdraw", rule: "member", tag: "steps", summary: "Withdraw an open offer (the offerer or an admin)." },
+  { method: "GET", path: "/v1/offers", rule: "member", tag: "steps", summary: "Open offers to the caller's machines." },
 
   { method: "POST", path: "/v1/questions", rule: "member", tag: "questions", body: AskRequest, status: 201, summary: "Ask a person a question (mesh_ask)." },
   { method: "POST", path: "/v1/questions/:id/answer", rule: "member", tag: "questions", body: AnswerRequest, summary: "Answer a question; the answer is delivered to the asking session." },

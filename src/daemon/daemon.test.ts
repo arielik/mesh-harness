@@ -15,7 +15,7 @@ const fixture = (name: string) => (JSON.parse(readFileSync(join(FIX, `${name}.js
 type Json = any;
 
 const KEY = "k".repeat(32);
-const CONFIG: DaemonConfig = { port: 0, key: KEY, notify: true, workspaceRoots: [], autopilot: "nudge", shareSessions: "steps" };
+const CONFIG = { port: 0, key: KEY, notify: true, workspaceRoots: [], autopilot: "nudge", shareSessions: "steps", accept: ["self"], assignments: "deliver" } as DaemonConfig;
 const SID = "f92c48b0-49ed-4650-b8f7-c87574da1f2f";
 const CWD = "/work/interactive";
 
@@ -588,5 +588,39 @@ describe("labels", () => {
       expect(rc.status).toBe(200);
       expect(Object.hasOwn(rc.json, "unknown")).toBe(false);
     });
+  });
+});
+
+// MM-3 AC-23: the offer routes of the local API on a daemon that is not logged in to a hub.
+describe("offers", () => {
+  const NOT_LOGGED_IN = { error: "not logged in to a hub; run: mesh login" };
+
+  it("test_AC23_accept_not_logged_in_409", async () => {
+    await post("session-start", fixture("interactive.SessionStart.startup"));
+    expect(await http("POST", "/local/accept", { step: "G1.a" })).toEqual({ status: 409, json: NOT_LOGGED_IN });
+    expect(await http("POST", "/local/accept", { step: "G1.a", target: "interactive" })).toEqual({ status: 409, json: NOT_LOGGED_IN });
+    expect((await sessions())[0].step).toBeUndefined();
+  });
+
+  it("test_AC23_offers_not_logged_in_409", async () => {
+    expect(await http("GET", "/local/offers")).toEqual({ status: 409, json: NOT_LOGGED_IN });
+  });
+
+  it("test_AC23_session_accept_local", async () => {
+    await post("session-start", fixture("interactive.SessionStart.startup"));
+    const set = await http("POST", "/local/session-accept", { target: "interactive", accept: ["user:bob", "self"] });
+    expect(set.status, JSON.stringify(set.json)).toBe(200);
+    expect(set.json.session.accept).toStrictEqual(["user:bob", "self"]);
+    expect((await sessions())[0].accept).toStrictEqual(["user:bob", "self"]);
+    expect(await http("POST", "/local/session-accept", { target: "interactive", accept: ["bob"] })).toEqual({
+      status: 400,
+      json: { error: "not an accept rule: bob (an accept rule is self, off, user:<id> or machine:<nickname or id>)" },
+    });
+    expect((await sessions())[0].accept).toStrictEqual(["user:bob", "self"]);
+    const clear = await http("POST", "/local/session-accept", { target: "interactive", accept: null });
+    expect(clear.status).toBe(200);
+    expect(Object.hasOwn(clear.json.session, "accept")).toBe(false);
+    expect(Object.hasOwn((await sessions())[0], "accept")).toBe(false);
+    expect(await http("POST", "/local/session-accept", { target: "nope", accept: ["self"] })).toEqual({ status: 404, json: { error: 'no live session matches "nope"' } });
   });
 });

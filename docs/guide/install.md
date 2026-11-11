@@ -92,11 +92,29 @@ mesh setup --share-sessions steps   # report step holders only
 
 `--share` is an alias of `--share-sessions`. An existing `daemon.json` keeps its level (one without the field means `steps`) until you give one.
 
-A session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, its labels, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
+A session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, its labels, its accept override (if any), agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
 
 The repo inventory (`me` and `all`) is the ids and names of the git checkouts under `workspaceRoots` (two folder levels deep) and of the current sessions' repos, never a path. The daemon rescans at most every 5 minutes and sends the list only when it changes. Under `steps` it sends an empty inventory, which clears one stored earlier.
 
+Every sync also carries the machine's **accept policy** (`accept` in `daemon.json`, below), so the hub can decide when an offer is made whether it is taken automatically. `assignments` stays on the machine.
+
 Upgrading: upgrade every hub replica to v0.1.9 before the daemons. A `me` daemon sends its sessions without a step only after its hub confirmed (in the sync reply) that it applies the visibility rule; until then it sends step holders only and logs `the hub does not support share level me; sending step holders only`. A v0.1.7 or v0.1.8 daemon set to `all` reports no share level, so its sessions without a step are shown to their owner only until it is updated.
+
+## Offers: `accept` and `assignments`
+
+Two fields of `daemon.json` say what happens when someone offers this machine work (`mesh assign`, see [Offers and accept policy](concepts.md#offers-and-accept-policy)):
+
+| Field | Values | Default |
+|---|---|---|
+| `accept` | whose offers are accepted automatically: a list of rules `self` (your own offers), `user:<id>`, `machine:<nickname or id>`, or `["off"]` alone | `["self"]` |
+| `assignments` | what the daemon does with an offer: `deliver` (accept an automatic offer for an idle session in the repo, else list it for you), `launch` (as `deliver`, but start a session with `mesh run <repo> --step <step> --no-tui` when none is idle), `off` (decline every offer) | `deliver` |
+
+```sh
+mesh setup --accept self,user:bob    # or: --accept off; restart the daemon
+mesh setup --assignments launch      # deliver, launch or off
+```
+
+A `daemon.json` without these fields works as before (the defaults). The hub sees `accept` (synced with the machine facts), not `assignments`.
 
 ## Hooks
 

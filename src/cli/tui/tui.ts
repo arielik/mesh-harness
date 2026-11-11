@@ -4,9 +4,9 @@
 import { spawn } from "node:child_process";
 import { attachCommand } from "../../claude/index.ts";
 import { jumpToPane, serverFromEnv } from "../../mux/index.ts";
-import { parseLabels, type FleetView, type Session, type SessionsResponse } from "../../protocol/index.ts";
+import { parseLabels, type FleetView, type OfferView, type Session, type SessionsResponse } from "../../protocol/index.ts";
 import type { DaemonClient, DaemonStatus } from "../client.ts";
-import { labelsLine, MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, whoOf, type GoalRow } from "./render.ts";
+import { labelsLine, MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, renderOffers, whoOf, type GoalRow } from "./render.ts";
 
 const ALT_ON = "\x1b[?1049h\x1b[?25l";
 const ALT_OFF = "\x1b[?25h\x1b[?1049l";
@@ -69,12 +69,22 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   let machines = false;
   let fleet: FleetView | undefined;
   let fleetTimer: NodeJS.Timeout | undefined;
+  /** MM-3: steps offered to this machine (refreshed every 5 s; the header badge), and the `o` panel. */
+  let offers: OfferView[] = [];
+  let offersOpen = false;
+  let selectedOffer: string | undefined;
   let stopped = false;
   let hubTag = "";
   let ticks = 0;
 
   const draw = () => {
     if (paused || stopped) return;
+    if (offersOpen) {
+      if (!offers.some((o) => o.step === selectedOffer)) selectedOffer = offers[0]?.step;
+      const lines = renderOffers(offers, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, now: Date.now(), selected: selectedOffer, status });
+      out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
+      return;
+    }
     if (machines) {
       const v = { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, status };
       const lines = fleet ? renderMachines(fleet, v) : [v.header, "", "MY MACHINES", "  loading…", ...(status ? [status] : []), MACHINES_FOOTER];
@@ -99,6 +109,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
       status,
       input: prompt ? { label: prompt.label, value: prompt.value } : undefined,
       color: true,
+      offers: offers.length,
     });
     out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
   };
@@ -146,6 +157,20 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
     }
     draw();
   };
+  const loadOffers = async () => {
+    try {
+      offers = await client.offers();
+    } catch {
+      offers = [];
+    }
+    draw();
+  };
+  const moveOffer = (delta: number) => {
+    if (offers.length === 0) return;
+    const i = Math.max(0, offers.findIndex((o) => o.step === selectedOffer));
+    selectedOffer = offers[Math.min(offers.length - 1, Math.max(0, i + delta))]?.step;
+    draw();
+  };
   const closeMachines = () => {
     machines = false;
     fleet = undefined;
@@ -155,10 +180,12 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
 
   return new Promise<number>((resolve) => {
     const timer = setInterval(() => void refresh(), 1_000);
+    const offersTimer = setInterval(() => void loadOffers(), 5_000);
     const onResize = () => draw();
     const quit = () => {
       stopped = true;
       clearInterval(timer);
+      clearInterval(offersTimer);
       if (fleetTimer) clearInterval(fleetTimer);
       out.off("resize", onResize);
       input.off("data", onData);
@@ -209,12 +236,52 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         return;
       }
       if (key === "q" || key === "\x03") return quit();
+      if (key === "o") {
+        if (offersOpen) {
+          offersOpen = false;
+          status = undefined;
+          return draw();
+        }
+        if (machines) closeMachines();
+        goals = undefined;
+        offersOpen = true;
+        status = undefined;
+        draw();
+        return await loadOffers();
+      }
+      if (offersOpen) {
+        if (key === "\x1b[A" || key === "k") return moveOffer(-1);
+        if (key === "\x1b[B" || key === "j") return moveOffer(1);
+        const step = selectedOffer;
+        if (!step) return;
+        if (key === "\r") {
+          status = `accepting ${step}…`;
+          draw();
+          try {
+            status = (await client.accept(step)).message;
+          } catch (e) {
+            status = e instanceof Error ? e.message : String(e);
+          }
+          return await loadOffers();
+        }
+        if (key === "d") {
+          try {
+            await client.decline(step);
+            status = `Declined ${step}.`;
+          } catch (e) {
+            status = e instanceof Error ? e.message : String(e);
+          }
+          return await loadOffers();
+        }
+        return;
+      }
       if (key === "m") {
         if (machines) {
           closeMachines();
           return draw();
         }
         goals = undefined;
+        offersOpen = false;
         machines = true;
         draw();
         await loadFleet();
@@ -223,6 +290,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
       }
       if (key === "g") {
         if (machines) closeMachines();
+        offersOpen = false;
         if (goals) goals = undefined;
         else {
           try {
@@ -280,5 +348,6 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
     out.on("resize", onResize);
     enter();
     void refresh(true);
+    void loadOffers();
   });
 }

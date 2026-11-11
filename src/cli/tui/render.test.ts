@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { renderFleet } from "../../core/index.ts";
 import type { FleetMachine, FleetSession, FleetView, Session } from "../../protocol/index.ts";
+import * as coreModule from "../../core/index.ts";
 import { age, groupOf, ordered, render, renderMachines } from "./render.ts";
+import * as renderModule from "./render.ts";
 
 const NOW = 10_000_000;
 const base = (sid: string, over: Partial<Session>): Session => ({
@@ -263,5 +265,76 @@ describe("AC-17 labels in the TUI", () => {
     expect(text).toContain("[gpu, perf-lab]");
     expect(text).toContain("[perf]");
     expect(renderFleet(fleet, { skipCurrent: true })).toContain("bob-desk · online · share me · 0 repos · [gpu, perf-lab]");
+  });
+});
+
+// MM-3 AC-31: the "offered to you" badge, the session footer with `o offers`, and the offers panel.
+describe("AC-31 offers in the TUI", () => {
+  const SESSIONS_FOOTER = "⏎ jump · s say · a autopilot · L labels · n next step · o offers · g goals · m machines · r refresh · ↑↓ move · q quit";
+  const OFFERS_FOOTER = "⏎ accept · d decline · o back to sessions · details: mesh offers";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new exports, read loosely
+  const R = renderModule as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new exports, read loosely
+  const Core = coreModule as any;
+  const view = (over: Record<string, unknown> = {}) => ({ sessions, messages: [], now: NOW, width: 120, height: 24, header: "mesh 0.0.0 · ariel", color: false, ...over }) as Parameters<typeof render>[0];
+  const offer = (step: string, over: Record<string, unknown> = {}) => ({
+    step,
+    goal: "G1",
+    title: `title ${step}`,
+    repo: "svc",
+    kind: "implement",
+    machine: "m-0000000b",
+    to: "m2",
+    by: "alice",
+    at: NOW - 60_000,
+    expiresAt: NOW + 29 * 60_000,
+    auto: false,
+    ...over,
+  });
+
+  it("test_AC31_header_badge", () => {
+    const header = render(view({ offers: 2 }))[0] as string;
+    expect(header).toContain("mesh 0.0.0 · ariel  ·  2 need you  ·  2 offered to you");
+  });
+
+  it("test_AC31_header_unchanged_without", () => {
+    const plain = render(view());
+    expect(render(view({ offers: 0 }))[0]).toBe(plain[0]);
+    expect(plain[0]).not.toContain("offered to you");
+    // Positive control: the badge shows with offers.
+    expect(render(view({ offers: 1 }))[0]).toContain("1 offered to you");
+  });
+
+  it("test_AC31_sessions_footer", () => {
+    const lines = render(view({ width: 200 }));
+    expect(lines.map((l) => l.trimEnd())).toContain(SESSIONS_FOOTER);
+  });
+
+  it("test_AC31_offers_panel", () => {
+    const o1 = offer("G1.a");
+    const o2 = offer("G1.b", { auto: true, note: "pls" });
+    const lines: string[] = R.renderOffers([o1, o2], { width: 200, height: 12, header: "H", now: NOW, selected: "G1.b", status: "ok" });
+    expect(lines).toHaveLength(12);
+    const t = lines.map((l) => l.trimEnd());
+    expect(t[0]).toBe("H");
+    expect(t[1]).toBe("");
+    expect(t[2]).toBe("ASSIGNED TO YOU");
+    expect(t).toContain(`  ${Core.offerLine(o1, NOW)}`);
+    expect(t).toContain(`› ${Core.offerLine(o2, NOW)}`);
+    expect(t[10]).toBe("ok");
+    expect(t[11]).toBe(OFFERS_FOOTER);
+  });
+
+  it("test_AC31_offers_empty", () => {
+    const lines: string[] = R.renderOffers([], { width: 100, height: 9, header: "H", now: NOW });
+    expect(lines).toHaveLength(9);
+    expect(lines.map((l) => l.trimEnd())).toContain("  No offers for this machine.");
+    expect(lines.at(-1)?.trimEnd()).toBe(OFFERS_FOOTER);
+  });
+
+  it("test_AC31_offers_clip", () => {
+    const lines: string[] = R.renderOffers([offer("G1.a"), offer("G1.b")], { width: 20, height: 10, header: "a very long header that is clipped", now: NOW, status: "a long status line too" });
+    expect(lines).toHaveLength(10);
+    for (const l of lines) expect([...l].length, l).toBeLessThanOrEqual(20);
   });
 });

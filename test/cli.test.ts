@@ -202,6 +202,136 @@ describe("AC-14 mesh label usage", () => {
   });
 });
 
+// MM-3: usage of the offer commands (refused before any hub or daemon call), `mesh help`, and
+// `mesh setup --accept/--assignments` (AC-25, AC-26, AC-28).
+describe("MM-3 offer commands: usage and help", () => {
+  type Cmd = { run(a: string[]): Promise<number> };
+  const find = (t: ReturnType<typeof env>, name: string) => meshCommands(t.c).find((x) => x.name === name) as Cmd | undefined;
+  const runCmd = async (t: ReturnType<typeof env>, name: string, args: string[]) => {
+    const c = find(t, name);
+    expect(c, `mesh ${name} exists`).toBeDefined();
+    t.err.length = 0;
+    t.out.length = 0;
+    return (c as Cmd).run(args);
+  };
+
+  it("test_AC25_missing_to_usage", async () => {
+    const t = env(tmp());
+    for (const args of [[], ["G1"], ["G1.a"], ["G1", "--stick"]]) {
+      expect(await runCmd(t, "assign", args), args.join(" ")).toBe(2);
+      const err = t.err.join("\n");
+      expect(err.startsWith('usage: mesh assign <goal|step> --to <machine>[/<session>] [--stick] [--note "…"]'), err).toBe(true);
+    }
+  });
+
+  it("test_AC26_accept_both_flags", async () => {
+    const t = env(tmp());
+    for (const args of [[], ["G1.a", "--session", "a", "--launch"]]) {
+      expect(await runCmd(t, "accept", args), args.join(" ")).toBe(2);
+      expect(t.err.join("\n")).toContain("usage: mesh accept <step> [--session <s> | --launch]");
+    }
+  });
+
+  it("test_AC26_decline_without_step", async () => {
+    const t = env(tmp());
+    expect(await runCmd(t, "decline", [])).toBe(2);
+    expect(t.err.join("\n")).toContain("usage:");
+  });
+
+  it("test_AC26_session_accept_bad_rule_no_call", async () => {
+    // No daemon is set up: the parse error comes first, so it is exit 2 (not "daemon not running").
+    const t = env(tmp());
+    expect(await runCmd(t, "session", ["accept", "perf", "--from", "bob"])).toBe(2);
+    expect(t.err.join("\n")).toContain("not an accept rule: bob (an accept rule is self, off, user:<id> or machine:<nickname or id>)");
+  });
+
+  it("test_AC26_session_accept_usage", async () => {
+    const t = env(tmp());
+    for (const args of [["accept", "perf"], ["accept", "perf", "--off", "--clear"], ["accept", "perf", "--from", "self", "--off"], ["accept"]]) {
+      expect(await runCmd(t, "session", args), args.join(" ")).toBe(2);
+      const err = t.err.join("\n");
+      expect(err.startsWith("usage: mesh session accept <session> --from <rule,…> | --off | --clear"), err).toBe(true);
+    }
+  });
+
+  it("test_AC26_help_lists", async () => {
+    const { dispatch } = await import("../src/cli/commands.ts");
+    const t = env(tmp());
+    const out: string[] = [];
+    expect(await dispatch(["help"], meshCommands(t.c), "0.0.0", (x) => out.push(x))).toBe(0);
+    const text = [...out, ...t.out].join("\n");
+    // Positive control: an existing command is listed the same way.
+    expect(text).toMatch(/^\s+machines\b/m);
+    for (const name of ["assign", "offers", "accept", "decline", "withdraw", "session"]) expect(text, name).toMatch(new RegExp(`^\\s+${name}\\b`, "m"));
+  });
+});
+
+describe("MM-3 mesh setup --accept / --assignments", () => {
+  const cfg = (t: ReturnType<typeof env>) => JSON.parse(readFileSync(t.paths.daemonConfig, "utf8")) as Record<string, unknown>;
+  const outText = (t: ReturnType<typeof env>) => t.out.join("\n");
+  async function existing() {
+    const t = env(tmp());
+    expect(await t.cmd("setup").run(["--port", "31240"])).toBe(0);
+    t.out.length = 0;
+    t.err.length = 0;
+    return t;
+  }
+
+  it("test_AC28_accept_user", async () => {
+    const t = await existing();
+    expect(await t.cmd("setup").run(["--accept", "user:bob"])).toBe(0);
+    expect(cfg(t).accept).toStrictEqual(["user:bob"]);
+    expect(outText(t)).toContain("Offers from user:bob are accepted automatically. Restart the daemon to apply.");
+  });
+
+  it("test_AC28_accept_multi", async () => {
+    const t = await existing();
+    expect(await t.cmd("setup").run(["--accept", "self,user:bob"])).toBe(0);
+    expect(cfg(t).accept).toStrictEqual(["self", "user:bob"]);
+    expect(outText(t)).toContain("Offers from self, user:bob are accepted automatically. Restart the daemon to apply.");
+  });
+
+  it("test_AC28_accept_off", async () => {
+    const t = await existing();
+    expect(await t.cmd("setup").run(["--accept", "off"])).toBe(0);
+    expect(cfg(t).accept).toStrictEqual(["off"]);
+    expect(outText(t)).toContain("No offer is accepted automatically. Restart the daemon to apply.");
+  });
+
+  it("test_AC28_accept_bad", async () => {
+    const t = await existing();
+    const before = readFileSync(t.paths.daemonConfig);
+    expect(await t.cmd("setup").run(["--accept", "bad"])).toBe(2);
+    expect(t.err.join("\n")).toContain("not an accept rule: bad (");
+    expect(readFileSync(t.paths.daemonConfig).equals(before)).toBe(true);
+  });
+
+  it("test_AC28_assignments_launch", async () => {
+    const t = await existing();
+    expect(await t.cmd("setup").run(["--assignments", "launch"])).toBe(0);
+    expect(cfg(t).assignments).toBe("launch");
+  });
+
+  it("test_AC28_assignments_bad", async () => {
+    const t = await existing();
+    const before = readFileSync(t.paths.daemonConfig);
+    expect(await t.cmd("setup").run(["--assignments", "x"])).toBe(2);
+    expect(t.err.join("\n")).toContain("--assignments must be deliver, launch or off");
+    expect(readFileSync(t.paths.daemonConfig).equals(before)).toBe(true);
+  });
+
+  it("test_AC28_other_setup_keeps", async () => {
+    const t = await existing();
+    const c = cfg(t);
+    writeFileSync(t.paths.daemonConfig, JSON.stringify({ ...c, accept: ["user:bob"], assignments: "off" }, null, 2), { mode: 0o600 });
+    expect(await t.cmd("setup").run(["--share", "me"])).toBe(0);
+    // Positive control: the setup ran (it wrote the share level).
+    expect(cfg(t).shareSessions).toBe("me");
+    expect(cfg(t).accept).toStrictEqual(["user:bob"]);
+    expect(cfg(t).assignments).toBe("off");
+  });
+});
+
 describe("mesh setup --agent opencode", () => {
   const runner: Runner = async (cmd, args) => (cmd === "opencode" && args[0] === "--version" ? ok("2.2.4\n") : ok());
 

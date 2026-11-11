@@ -509,3 +509,83 @@ describe("AC-02 labels in sessionMetadata and syncedSessions", () => {
     expect(out[0]?.labels).toStrictEqual(["a"]);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// MM-3 AC-05: the per-session accept override travels with the session record.
+
+describe("AC-05 accept in sessionMetadata", () => {
+  const withAccept = (sid: string, accept: string[], over: Partial<Session> = {}) => sess(sid, { ...over, ...({ accept } as Partial<Session>) });
+
+  it("test_AC05_metadata_copies_accept", () => {
+    const m = sessionMetadata(withAccept("s-a", ["user:bob"], { pid: 77, pane: "%7", cwd: "/x" })) as Session & { accept?: string[] };
+    expect(m.accept).toStrictEqual(["user:bob"]);
+    for (const k of PRIVATE_KEYS) expect(k in m, k).toBe(false);
+    expect(m.cwd).toBe("");
+  });
+
+  it("test_AC05_metadata_no_accept_no_key", () => {
+    expect(Object.hasOwn(sessionMetadata(sess("s-plain")), "accept")).toBe(false);
+    // Positive control: the same session with an override carries the key.
+    expect(Object.hasOwn(sessionMetadata(withAccept("s-plain", ["off"])), "accept")).toBe(true);
+  });
+});
+
+describe("MM-3 offline pull: a waiting offer retry checks the hub at once", () => {
+  async function fakeLink(retryDue: () => boolean) {
+    const dir = mkdtempSync(join(tmpdir(), "mesh-link-retry-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const credentialsPath = join(dir, "credentials.json");
+    writeFileSync(credentialsPath, JSON.stringify({ hub: "http://hub.test", token: "t", user: { id: "alice", name: "alice", roles: ["member"] } }));
+    const store = await DaemonStore.open(":memory:");
+    cleanups.push(() => store.close());
+    const calls: string[] = [];
+    const net = { up: false };
+    const link = new HubLink({
+      credentialsPath,
+      store,
+      sessions: () => [],
+      onMessage: () => "queued",
+      retryDue,
+      log: () => undefined,
+      now: () => 1_000_000,
+      timeoutMs: 300,
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url).replace(/^http:\/\/[^/]+/, "");
+        calls.push(`${init?.method ?? "GET"} ${path}`);
+        if (!net.up) throw new TypeError("fetch failed");
+        const body = path === "/health" ? { ok: true } : path === "/v1/inbox" ? { messages: [] } : {};
+        return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+    });
+    // One failed call takes the link offline; the clock never moves, so the probe backoff is not over.
+    await expect(link.rpc("GET", "/v1/me")).rejects.toMatchObject({ status: 503 });
+    expect(link.offline).toBe(true);
+    calls.length = 0;
+    return { link, calls, net };
+  }
+
+  it("without an offer waiting for a retry, an offline pull sends nothing before the probe backoff", async () => {
+    const t = await fakeLink(() => false);
+    t.net.up = true;
+    await t.link.pullInbox();
+    expect(t.calls).toEqual([]);
+    expect(t.link.offline).toBe(true);
+  });
+
+  it("with an offer waiting for a retry, an offline pull sends one /health at once and then pulls", async () => {
+    const t = await fakeLink(() => true);
+    t.net.up = true;
+    await t.link.pullInbox();
+    expect(t.calls[0]).toBe("GET /health");
+    expect(t.calls.filter((c) => c.endsWith("/health"))).toHaveLength(1);
+    expect(t.calls).toContain("GET /v1/inbox");
+    expect(t.link.offline).toBe(false);
+  });
+
+  it("with an offer waiting for a retry and the hub still down, the pull stops after the one /health", async () => {
+    const t = await fakeLink(() => true);
+    await t.link.pullInbox();
+    expect(t.calls).toEqual(["GET /health"]);
+    expect(t.link.offline).toBe(true);
+  });
+});

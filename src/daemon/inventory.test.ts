@@ -73,7 +73,7 @@ interface Boot {
   http(method: string, path: string): Promise<{ status: number; json: Json }>;
 }
 
-async function boot(opts: { share: DaemonConfig["shareSessions"]; roots?: string[]; loggedIn?: boolean; shareReply?: string }): Promise<Boot> {
+async function boot(opts: { share: DaemonConfig["shareSessions"]; roots?: string[]; loggedIn?: boolean; shareReply?: string; accept?: string[] }): Promise<Boot> {
   const dir = tmp("mesh-inv-");
   const credentialsPath = join(dir, "credentials.json");
   if (opts.loggedIn !== false) {
@@ -84,7 +84,7 @@ async function boot(opts: { share: DaemonConfig["shareSessions"]; roots?: string
   const requests: Boot["requests"] = [];
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const store = await DaemonStore.open(":memory:");
-  const config: DaemonConfig = { port: 0, key: KEY, notify: false, workspaceRoots: opts.roots ?? [], autopilot: "nudge", shareSessions: opts.share };
+  const config = { port: 0, key: KEY, notify: false, workspaceRoots: opts.roots ?? [], autopilot: "nudge", shareSessions: opts.share, accept: opts.accept ?? ["self"], assignments: "deliver" } as DaemonConfig;
   const daemon = new Daemon({
     config,
     store,
@@ -222,7 +222,8 @@ describe("AC-30 `steps` sends no repo inventory", () => {
 
   it("test_AC30_repos_sent_is_empty", async () => {
     const b = await stepsDaemon();
-    expect(b.syncs[0].machine).toEqual({ share: "steps", repos: [] });
+    // MM-3: the body also carries the accept policy (test_AC05_inventory_exact_body).
+    expect(b.syncs[0].machine).toStrictEqual({ share: "steps", accept: ["self"], repos: [] });
     for (const s of b.syncs) {
       expect(s.machine?.share).toBe("steps");
       if (s.machine && "repos" in s.machine) expect(s.machine.repos).toEqual([]);
@@ -257,5 +258,27 @@ describe("AC-21 GET /local/fleet", () => {
     const r = await b.http("GET", "/local/fleet");
     expect(r).toEqual({ status: 409, json: { error: "not logged in to a hub; run: mesh login" } });
     expect(b.requests.filter((x) => x.path === "/v1/fleet")).toEqual([]);
+  });
+});
+
+// MM-3 AC-05: every sync body's machine object carries the accept policy of the config.
+describe("AC-05 machine.accept in the sync body", () => {
+  it("test_AC05_inventory_exact_body", async () => {
+    const b = await boot({ share: "steps" });
+    await b.daemon.link?.flush();
+    expect(b.syncs.length).toBeGreaterThan(0);
+    for (const s of b.syncs) expect(s.machine?.accept).toStrictEqual(["self"]);
+    expect(b.syncs[0].machine).toStrictEqual({ share: "steps", accept: ["self"], repos: [] });
+  });
+
+  it("test_AC05_sync_body_config_unit", async () => {
+    const b = await boot({ share: "me", accept: ["user:alice", "machine:m1"] });
+    await b.daemon.link?.flush();
+    b.advance(400_000);
+    await b.daemon.link?.flush();
+    expect(b.syncs.length).toBeGreaterThanOrEqual(2);
+    // Positive control: these are MM-1 bodies with the share level.
+    for (const s of b.syncs) expect(s.machine?.share).toBe("me");
+    for (const s of b.syncs) expect(s.machine?.accept).toStrictEqual(["user:alice", "machine:m1"]);
   });
 });

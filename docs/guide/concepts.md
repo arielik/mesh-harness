@@ -89,3 +89,18 @@ Sessions already recorded keep their labels when the file or the remembered list
   - notes, releases, questions and results are queued;
   - actions that need other people say "offline" at once.
 - Everything is sent once when the hub is back. If the hub refuses a result made offline (for example, someone took the step over meanwhile), the result is kept as a note on the step and in the local record.
+
+## Offers and accept policy
+
+**Offer.** Someone hands a ready step to a machine, or to a session on it: `mesh assign G7.api --to build-box` or `--to build-box/perf`. An offer is an overlay on a `ready` step: `offered`, then `accepted`, `declined`, `expired` or `withdrawn`. The step keeps its last offer (the goal page and `mesh show` show it). A goal is assigned through its ready steps (in a new goal: its design step).
+
+- **Who.** Any member may offer a ready step that is not a gate. The target machine accepts it (a claim from that machine is an accept). The target machine's owner, or a user its accept policy names, may decline. The offerer or an admin may withdraw.
+- **Claim guard.** While a step is offered, only the target machine can take it; the offerer may still claim it from elsewhere, which withdraws the offer. Other claims are refused. Ready-step lists (`mesh next`, `mesh_next`) leave out steps offered to other machines and list those offered to this one first.
+- **Expiry.** An offer not accepted within `thresholds.offer_expiry` (hub configuration, default 30 minutes) expires; the step is ready for anyone again and the offerer sees it under attention.
+- **Stick.** `mesh assign <G> --stick` also offers every later ready step of the goal to the same target, until `mesh withdraw <G>`.
+- **Privacy.** The target of an offer, including a named session, is visible to everyone who can see the step, even a session the team cannot otherwise see (share level `me`). The offerer chose to name it.
+- **Report back.** The offering session (MCP `mesh_assign` sends it; the CLI sends none) gets a message when the offer is accepted, declined or expires, and later when the step is done, fails, or its holder asks a question (the offerer may answer it). Releasing, reopening, replanning or taking over an accepted step drops the offer, so later holders' work is not reported.
+
+**Accept policy.** Whose offers a machine takes automatically, decided by the hub when the offer is made: rules `self` (your own offers), `user:<id>`, `machine:<nickname or id>` (offers made from that machine; a nickname means one of your own machines), or `off`. The machine policy is `accept` in `daemon.json` (default `["self"]`), synced to the hub; a session may override it (`mesh session accept <session> --from user:bob`, `--off`, `--clear`). A machine whose daemon never reported a policy gets manual offers only.
+
+**Assignments.** What the daemon does with an offer (`assignments` in `daemon.json`): `deliver` accepts an automatic offer for an idle session in the repo (the one with the most goal-topic labels) and sends it the brief, else lists the offer for you (`mesh offers`, the TUI's `o`, the web's **Mine** page) and notifies you; `launch` starts a session when none is idle; `off` declines every offer.

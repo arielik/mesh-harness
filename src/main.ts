@@ -9,7 +9,7 @@ import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } 
 import { runShim } from "./mcp/index.ts";
 import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./store/index.ts";
 import { Daemon, defaultDeps } from "./daemon/index.ts";
-import { desktopNotify, paneText, pasteToPane, terminalNotify } from "./mux/index.ts";
+import { desktopNotify, paneText, pasteToPane, spawnDetached, terminalNotify } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
 import { notifyChannels, SERVICE_SCOPES, trustSystemCertificates, writeFileAtomic, type Credentials, type ServiceScope } from "./protocol/index.ts";
 import * as tls from "node:tls";
@@ -76,6 +76,8 @@ const up: Command = {
           ]);
           return sent.some(Boolean);
         },
+        // MM-3: an auto offer with no idle session under `assignments: launch` starts one.
+        launchStep: (repo, step) => spawnDetached(self[0] as string, [self[1] as string, "run", repo, "--step", step, "--no-tui"]),
         // MESH_BACKFILL=off: don't import past workflow runs (test daemons; privacy-minded setups).
         ...(process.env.MESH_BACKFILL === "off" ? { scanRuns: () => [] } : {}),
       }),

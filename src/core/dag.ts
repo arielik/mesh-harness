@@ -131,6 +131,7 @@ export function materialize(goal: string, version: number, plan: readonly PlanSt
     if (inPlan.has(old.id) || old.kind === "design" || old.state === "done" || old.state === "dropped") continue;
     const dropped: Step = { ...old, state: "dropped", updatedAt: now };
     delete dropped.holderSid;
+    if (dropped.offer?.state === "accepted") delete dropped.offer;
     out.set(old.id, dropped);
   }
   const all = new Map(existing.map((s) => [s.id, s]));
@@ -156,6 +157,8 @@ export function reopen(steps: readonly Step[], ids: readonly string[], now: numb
     const next: Step = { ...s, state: "ready", fixCycles: s.fixCycles + 1, updatedAt: now };
     delete next.outcome;
     delete next.holderSid;
+    // MM-3: a later holder's work is not reported to the offerer of an accepted offer.
+    if (next.offer?.state === "accepted") delete next.offer;
     all.set(id, next);
     changed.set(id, next);
   }
@@ -166,6 +169,7 @@ export function reopen(steps: readonly Step[], ids: readonly string[], now: numb
       const next: Step = { ...d, state: "blocked", updatedAt: now };
       delete next.outcome;
       delete next.holderSid;
+      if (next.offer?.state === "accepted") delete next.offer;
       all.set(d.id, next);
       changed.set(d.id, next);
       queue.push(d.id);

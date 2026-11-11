@@ -38,7 +38,7 @@ async function signIn(page: Page, token: string): Promise<void> {
 }
 
 async function openMine(page: Page): Promise<void> {
-  await page.getByRole("link", { name: "Mine" }).click();
+  await page.getByRole("link", { name: "Mine", exact: true }).click();
   await expect(page).toHaveURL(/#\/mine$/);
 }
 
@@ -171,5 +171,101 @@ test.describe("AC-19 labels on the Mine tab", () => {
     // What a daemon sends after `mesh label <s> zz`.
     await sync(request, bobA.token, [session("mine-s1", "mine-first-session", { ...ALPHA, labels: ["zz"], lastEventAt: Date.now() })]);
     await expect(row).toContainText("zz", { timeout: 20_000 });
+  });
+});
+
+// MM-3 (AC-32): `Assigned to you` on the Mine tab (one `li.offer` per open offer to the user's
+// machines, with Decline), and the `offer` item of the Live attention list.
+test("test_AC32_empty", async ({ page }) => {
+  // Nothing in this file offers a step to alice's machines.
+  await signIn(page, "alice-e2e-token");
+  await openMine(page);
+  // Positive control: alice's machine is listed, so the tab has loaded.
+  await expect(page.locator("section.machine", { hasText: "alice-mine" })).toHaveCount(1);
+  const section = page.locator("section.offers");
+  await expect(section.getByRole("heading", { name: "Assigned to you" })).toBeVisible();
+  await expect(section.locator("p", { hasText: "Nothing is assigned to you." })).toBeVisible();
+  await expect(section.locator("li.offer")).toHaveCount(0);
+});
+
+test.describe("AC-32 Assigned to you", () => {
+  let G = "";
+  /** Steps offered by bob to his machine `m2` (mine-laptop). */
+  let rowStep = "";
+  let liveStep = "";
+
+  const stepOf = async (request: APIRequestContext, id: string) => {
+    const r = await request.get(`/v1/steps/${id}`, { headers: { authorization: `Bearer ${bobA.token}` } });
+    expect(r.ok()).toBeTruthy();
+    return (await r.json()).context.step;
+  };
+
+  test.beforeAll(async ({ request }) => {
+    const auth = { authorization: `Bearer ${bobA.token}` };
+    const goal = await request.post("/v1/goals", { headers: auth, data: { title: "Offers for bob", primaryRepo: "alpha" } });
+    expect(goal.ok()).toBeTruthy();
+    G = (await goal.json()).id as string;
+    const plan = await request.post(`/v1/goals/${G}/plan`, {
+      headers: auth,
+      data: {
+        approve: true,
+        steps: [
+          { id: "row", repo: "alpha", kind: "implement", title: "Offer row title", brief: "r" },
+          { id: "live", repo: "alpha", kind: "implement", title: "Offer live title", brief: "l" },
+        ],
+      },
+    });
+    expect(plan.ok()).toBeTruthy();
+    rowStep = `${G}.row`;
+    liveStep = `${G}.live`;
+    for (const id of [rowStep, liveStep]) {
+      const r = await request.post(`/v1/steps/${id}/assign`, { headers: auth, data: { to: "m2" } });
+      expect(r.status()).toBe(200);
+    }
+  });
+
+  test("test_AC32_mine_offer_row", async ({ page }) => {
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const section = page.locator("section.offers");
+    await expect(section).toHaveCount(1);
+    await expect(section.getByRole("heading", { name: "Assigned to you" })).toBeVisible();
+    // Above the machines.
+    await expect(page.locator("section.machine").first()).toBeVisible();
+    const offersBox = await section.boundingBox();
+    const machineBox = await page.locator("section.machine").first().boundingBox();
+    expect(offersBox && machineBox && offersBox.y < machineBox.y).toBeTruthy();
+    const row = section.locator("li.offer", { hasText: rowStep });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("Offer row title");
+    await expect(row).toContainText("from @bob");
+    await expect(row).toContainText("to m2");
+    await expect(row.locator("code")).toHaveText(`mesh accept ${rowStep}`);
+    await expect(row.getByRole("button", { name: "Decline" })).toBeVisible();
+    await expect(section).not.toContainText("Nothing is assigned to you.");
+  });
+
+  test("test_AC32_decline", async ({ page, request }) => {
+    test.setTimeout(45_000);
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const row = page.locator("section.offers li.offer", { hasText: rowStep });
+    // Positive control: the row is there before the click.
+    await expect(row).toHaveCount(1);
+    const declined = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/v1/steps/${rowStep}/decline`));
+    await row.getByRole("button", { name: "Decline" }).click();
+    expect((await declined).status()).toBe(200);
+    // Refetched after the decline (well before the 15 s refresh), and within the spec's 20 s.
+    await expect(row).toHaveCount(0, { timeout: 3_000 });
+    expect((await stepOf(request, rowStep)).offer.state).toBe("declined");
+    // The other offer stays listed.
+    await expect(page.locator("section.offers li.offer", { hasText: liveStep })).toHaveCount(1);
+  });
+
+  test("test_AC32_live_attention_code", async ({ page }) => {
+    await signIn(page, "bob-e2e-token");
+    const item = page.locator("li.att-offer", { hasText: liveStep });
+    await expect(item).toHaveCount(1);
+    await expect(item.locator("code")).toHaveText(`mesh accept ${liveStep}`);
   });
 });

@@ -5,6 +5,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { AuthError, loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
 import {
+  acceptMatches,
+  endOffersLeavingReady,
+  machineName,
+  sessionName,
   agentContext,
   blindConflict,
   parsePreset,
@@ -37,6 +41,14 @@ import {
 } from "../core/index.ts";
 import type {
   AcState,
+  AssignRequest,
+  AssignResult,
+  GoalAssignResult,
+  GoalWithdrawResult,
+  OfferLine,
+  OfferTarget,
+  OfferView,
+  StepOffer,
   Attention,
   Failure,
   Round,
@@ -70,7 +82,7 @@ import type {
   ServiceScope,
 } from "../protocol/index.ts";
 import { ALL_TOPIC, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
-import { HubStore, type HubSession, type NewEvent, type UserRow } from "../store/index.ts";
+import { HubStore, type HubSession, type MachineRow, type NewEvent, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
@@ -181,9 +193,9 @@ export class HubService {
   }
 
   /**
-   * Save a step's transition from the state it was read in (`prev`). A claim does not wait for
-   * `goalTx`'s lock, so if one changed the step since the read, this answers 409 instead of
-   * overwriting it.
+   * Save a step's transition from the state it was read in (`prev`). Claims run in `goalTx` like the
+   * other step transitions, so this is a guard: should a write outside that lock have changed the
+   * step since the read, it answers 409 instead of overwriting it.
    */
   private async saveStepFrom(next: Step, prev: Step): Promise<void> {
     if (!(await this.store.saveStepIf(next, prev))) throw new HubError(409, `${prev.id} changed just now; try again`);
@@ -201,6 +213,365 @@ export class HubService {
     const m = await this.store.addMessage({ toMachine: hs.machineId, toSid, fromUser, kind, text, ...(data ? { data } : {}) }, this.now());
     this.store.afterCommit(() => this.bus.publish({ type: "wake", machine: hs.machineId }));
     return m.id;
+  }
+
+  // ---------- offers (MM-3) ----------
+
+  /**
+   * The caller machine of an offer decision: the token's machine; without one, the machine of the
+   * caller's own known session `sid`. `foreign`: `sid` is a session the hub has that belongs to
+   * another user, or (with a machine token) to another machine. A `sid` the hub has no record of
+   * is never foreign and never gives a machine.
+   */
+  private async callerMachine(actor: Actor, sid: string | undefined): Promise<{ machine?: MachineRow | undefined; foreign: boolean }> {
+    const hs = sid ? await this.store.getSession(sid) : undefined;
+    if (actor.machineId) {
+      const foreign = hs !== undefined && (hs.userId !== actor.userId || hs.machineId !== actor.machineId);
+      return { machine: await this.store.getMachine(actor.machineId), foreign };
+    }
+    const foreign = hs !== undefined && hs.userId !== actor.userId;
+    return { machine: hs && !foreign ? await this.store.getMachine(hs.machineId) : undefined, foreign };
+  }
+
+  private refuseForeign(r: { foreign: boolean }, sid: string | undefined): void {
+    if (r.foreign) throw new HubError(403, `session ${sid ?? ""} is not yours on this machine`);
+  }
+
+  /** A machine reference: an id, else the caller's nickname, else `<user>/<nickname>`. */
+  private async findMachine(actor: Actor, ref: string): Promise<MachineRow | undefined> {
+    const byId = await this.store.getMachine(ref);
+    if (byId) return byId;
+    const mine = await this.store.machineByNickname(actor.userId, ref);
+    if (mine) return mine;
+    const parts = ref.split("/");
+    if (parts.length === 2 && parts[0] && parts[1]) return await this.store.machineByNickname(parts[0], parts[1]);
+    return undefined;
+  }
+
+  private async machineOr404(actor: Actor, ref: string): Promise<MachineRow> {
+    const m = await this.findMachine(actor, ref);
+    if (!m) throw new HubError(404, `no machine ${ref}`);
+    return m;
+  }
+
+  /** A session reference on a machine, among the non-ended sessions the caller may see. */
+  private async findSessionOn(actor: Actor, m: MachineRow, ref: string): Promise<HubSession> {
+    const all = (await this.store.listSessions({ live: true })).filter(
+      (hs) => hs.machineId === m.id && hs.session.state !== "ended" && sessionVisible(actor.userId, { userId: hs.userId, step: hs.session.step }, m.share),
+    );
+    const bySid = all.find((hs) => hs.session.sid === ref);
+    if (bySid) return bySid;
+    const byName = all.filter((hs) => hs.session.name === ref);
+    const hits = byName.length ? byName : ref.length >= 4 ? all.filter((hs) => hs.session.sid.startsWith(ref)) : [];
+    if (hits.length === 0) throw new HubError(404, `no session ${ref} on ${machineName(m)}`);
+    if (hits.length > 1) throw new HubError(409, `"${ref}" matches several sessions on ${machineName(m)}`);
+    return hits[0] as HubSession;
+  }
+
+  /** `to` of an assign: `<machine>`, `<machine>/<session>`, `<user>/<nickname>` or `<user>/<nickname>/<session>`. */
+  private async resolveTarget(actor: Actor, to: string): Promise<{ machine: MachineRow; session?: HubSession | undefined }> {
+    const parts = to.split("/");
+    if (parts.length === 1) return { machine: await this.machineOr404(actor, to) };
+    if (parts.length === 2) {
+      const [a, b] = parts as [string, string];
+      const m = a ? await this.findMachine(actor, a) : undefined;
+      if (m) return { machine: m, session: await this.findSessionOn(actor, m, b) };
+      return { machine: await this.machineOr404(actor, to) };
+    }
+    if (parts.length === 3) {
+      const [a, b, c] = parts as [string, string, string];
+      const m = await this.machineOr404(actor, `${a}/${b}`);
+      return { machine: m, session: await this.findSessionOn(actor, m, c) };
+    }
+    throw new HubError(404, `no machine ${to}`);
+  }
+
+  private async machineNameOf(id: string): Promise<string> {
+    const m = await this.store.getMachine(id);
+    return m ? machineName(m) : id;
+  }
+
+  /** Target text: `<machine name>` or `<machine name>/<session name>`. */
+  private async targetText(to: OfferTarget): Promise<string> {
+    const name = await this.machineNameOf(to.machine);
+    if (!to.sid) return name;
+    const hs = await this.store.getSession(to.sid);
+    return `${name}/${hs ? sessionName(hs.session) : to.sid.slice(0, 8)}`;
+  }
+
+  /** The policy verdict for an offer: the named session's override, else the machine's policy. */
+  private autoFor(target: { machine: MachineRow; session?: HubSession | undefined }, by: { userId: string; machine?: MachineRow | undefined }): boolean {
+    const policy = target.session?.session.accept ?? target.machine.accept;
+    const bm = by.machine;
+    return acceptMatches(policy, { byUser: by.userId, byMachine: bm ? { id: bm.id, userId: bm.userId, ...(bm.nickname ? { nickname: bm.nickname } : {}) } : undefined }, { userId: target.machine.userId });
+  }
+
+  /** Queue a machine-wide message (`toSid: ""`) and wake that machine's daemon. */
+  private async machineMessage(machine: string, fromUser: string, kind: string, text: string, data: Record<string, unknown>): Promise<void> {
+    await this.store.addMessage({ toMachine: machine, toSid: "", fromUser, kind, text, data }, this.now());
+    this.store.afterCommit(() => this.bus.publish({ type: "wake", machine }));
+  }
+
+  /** Offer a ready step (inside `goalTx`): set the offer, message the target machine, emit `step.offered`. */
+  private async offerStep(
+    step: Step,
+    target: { machine: MachineRow; session?: HubSession | undefined },
+    by: { userId: string; sid?: string | undefined; machine?: MachineRow | undefined },
+    opts: { note?: string | undefined; stick: boolean; goal: Goal },
+  ): Promise<Step> {
+    const now = this.now();
+    const auto = this.autoFor(target, by);
+    const sid = target.session?.session.sid;
+    const offer: StepOffer = {
+      to: { machine: target.machine.id, ...(sid ? { sid } : {}) },
+      by: by.userId,
+      ...(by.sid ? { bySid: by.sid } : {}),
+      ...(by.machine ? { byMachine: by.machine.id } : {}),
+      at: now,
+      state: "offered",
+      auto,
+      ...(opts.stick ? { stick: true } : {}),
+      ...(opts.note ? { note: opts.note } : {}),
+    };
+    const next: Step = { ...step, offer, updatedAt: now };
+    await this.saveStepFrom(next, step);
+    await this.machineMessage(
+      target.machine.id,
+      by.userId,
+      "offer",
+      `MESH: @${by.userId} offers step ${step.id} "${step.title}" (repo ${step.repo}) to this machine${opts.note ? `: ${opts.note}` : ""}`,
+      { step: step.id, goal: step.goal, repo: step.repo, topics: opts.goal.topics ?? [], auto, by: by.userId, ...(sid ? { sid } : {}), ...(opts.note ? { note: opts.note } : {}) },
+    );
+    await this.emit({
+      type: "step.offered",
+      user: by.userId,
+      sid: by.sid,
+      goal: step.goal,
+      step: step.id,
+      payload: { machine: target.machine.id, ...(sid ? { sid } : {}), auto, ...(opts.note ? { note: opts.note } : {}), ...(opts.stick ? { stick: true } : {}) },
+    });
+    return next;
+  }
+
+  /** A message to the offering session (none when it is absent, unknown or ended). */
+  private async reportBack(step: Step, offer: StepOffer, kind: string, text: string): Promise<void> {
+    await this.message(offer.bySid, offer.by, kind, text, { step: step.id, goal: step.goal });
+  }
+
+  /** Emit `step.ready`; a goal with a stick then offers the step to the stick's target. */
+  private async emitReady(goalId: string, stepId: string): Promise<void> {
+    await this.emit({ type: "step.ready", goal: goalId, step: stepId });
+    const goal = await this.store.getGoal(goalId);
+    const stick = goal?.stick;
+    if (!goal || !stick) return;
+    const s = await this.store.getStep(stepId);
+    if (!s || s.state !== "ready" || s.kind === "gate" || s.offer?.state === "offered") return;
+    const machine = await this.store.getMachine(stick.to.machine);
+    if (!machine) return;
+    let session: HubSession | undefined;
+    if (stick.to.sid) {
+      session = await this.store.getSession(stick.to.sid);
+      if (!session || session.session.state === "ended" || session.machineId !== machine.id) return;
+    }
+    const byMachine = stick.byMachine ? await this.store.getMachine(stick.byMachine) : undefined;
+    await this.offerStep(s, { machine, session }, { userId: stick.by, sid: stick.bySid, machine: byMachine }, { stick: true, goal });
+  }
+
+  /** End offers of steps that left `ready` in this transaction (`endOffersLeavingReady`). */
+  private async emitOffersEnded(actor: Actor | undefined, ended: readonly Step[]): Promise<void> {
+    for (const s of ended) {
+      if (!s.offer) continue;
+      await this.emit({ type: "step.offer_withdrawn", user: actor?.userId, goal: s.goal, step: s.id, payload: { machine: s.offer.to.machine, reason: `step ${s.state}` } });
+    }
+  }
+
+  /** The claim itself (gate, parked and blind checks, the conditional save, `step.claimed`). */
+  private async claimInTx(actor: Actor, step: Step, sid: string | undefined, holderMachine: string | undefined): Promise<Step> {
+    if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it (mesh step approve ${step.id}, or the web dashboard)`);
+    if (step.state === "parked") throw new HubError(409, `${step.id} is parked (${step.parkedReason ?? "by a rule"}); a person resumes it (mesh step resume ${step.id})`);
+    const blind = blindConflict(step, await this.store.listSteps({ goal: step.goal }), { userId: actor.userId, sid }, this.config.blindGuard);
+    if (blind) throw new HubError(409, blind);
+    const r = claim(step, { userId: actor.userId, sid, machine: holderMachine }, this.now());
+    if (!r.ok) throw new HubError(r.status, r.error);
+    const claimed: Step = r.step.roundStartedAt === undefined ? { ...r.step, roundStartedAt: this.now() } : r.step;
+    // Conditional on the state read above: with several replicas, exactly one concurrent claim wins.
+    if (!(await this.store.claimStep(claimed, step))) throw new HubError(409, `${step.id} was claimed by someone else just now`);
+    const goal = await this.store.getGoal(step.goal);
+    if (goal && step.kind === "design" && goal.state === "backlog") await this.store.saveGoal({ ...goal, state: "design", updatedAt: this.now() });
+    await this.emit({ type: "step.claimed", user: actor.userId, sid, goal: step.goal, step: step.id });
+    return claimed;
+  }
+
+  /** After a claim that is an accept: the offer is `accepted`, `step.accepted`, report back. */
+  private async markAccepted(actor: Actor, claimed: Step, sid: string | undefined): Promise<Step> {
+    const offer = claimed.offer as StepOffer;
+    const now = this.now();
+    const next: Step = { ...claimed, offer: { ...offer, state: "accepted", decidedAt: now } };
+    await this.saveStepFrom(next, claimed);
+    await this.emit({ type: "step.accepted", user: actor.userId, sid, goal: claimed.goal, step: claimed.id, payload: { machine: offer.to.machine, ...(sid ? { sid } : {}) } });
+    const accepted = await this.holderText(next);
+    await this.reportBack(next, offer, "offer_accepted", `MESH: ${accepted} accepted ${claimed.id} "${claimed.title}".`);
+    return next;
+  }
+
+  /** `<machine name>/<session name>` of a step's holder (the machine name only without a session record). */
+  private async holderText(s: Step): Promise<string> {
+    const name = await this.machineNameOf(s.holderMachine ?? s.offer?.to.machine ?? "");
+    const hs = s.holderSid ? await this.store.getSession(s.holderSid) : undefined;
+    return hs ? `${name}/${sessionName(hs.session)}` : name;
+  }
+
+  async assignStep(actor: Actor, id: string, req: AssignRequest): Promise<AssignResult> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it`);
+      if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}, not ready`);
+      if (step.offer?.state === "offered") throw new HubError(409, `${step.id} is already offered to ${await this.targetText(step.offer.to)}; withdraw it first (mesh withdraw ${step.id})`);
+      const target = await this.resolveTarget(actor, req.to);
+      const caller = await this.callerMachine(actor, req.sid);
+      this.refuseForeign(caller, req.sid);
+      const goal = await this.goalOr404(step.goal);
+      const next = await this.offerStep(step, target, { userId: actor.userId, sid: req.sid, machine: caller.machine }, { note: req.note, stick: false, goal });
+      if (req.stick) await this.setStick(goal, next.offer as StepOffer);
+      return { step: next, auto: (next.offer as StepOffer).auto };
+    });
+  }
+
+  private async setStick(goal: Goal, o: Pick<StepOffer, "to" | "by" | "bySid" | "byMachine">): Promise<Goal> {
+    const now = this.now();
+    const g: Goal = { ...goal, stick: { to: o.to, by: o.by, ...(o.bySid ? { bySid: o.bySid } : {}), ...(o.byMachine ? { byMachine: o.byMachine } : {}), at: now }, updatedAt: now };
+    await this.store.saveGoal(g);
+    return g;
+  }
+
+  async assignGoal(actor: Actor, id: string, req: AssignRequest): Promise<GoalAssignResult> {
+    return await this.goalTx(async () => {
+      const goal = await this.goalOr404(id);
+      if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      const target = await this.resolveTarget(actor, req.to);
+      const caller = await this.callerMachine(actor, req.sid);
+      this.refuseForeign(caller, req.sid);
+      const ready = (await this.store.listSteps({ goal: goal.id }))
+        .filter((s) => s.state === "ready" && s.kind !== "gate" && s.offer?.state !== "offered")
+        .sort((a, b) => cmp(a.id, b.id));
+      if (ready.length === 0 && !req.stick) throw new HubError(409, `${goal.id} has no ready step to offer`);
+      const by = { userId: actor.userId, sid: req.sid, machine: caller.machine };
+      const offered: Step[] = [];
+      for (const s of ready) offered.push(await this.offerStep(s, target, by, { note: req.note, stick: false, goal }));
+      const sid = target.session?.session.sid;
+      const saved = req.stick
+        ? await this.setStick(goal, { to: { machine: target.machine.id, ...(sid ? { sid } : {}) }, by: actor.userId, bySid: req.sid, byMachine: caller.machine?.id })
+        : goal;
+      return { goal: saved, steps: offered, auto: this.autoFor(target, by) };
+    });
+  }
+
+  async acceptStep(actor: Actor, id: string, sid: string | undefined): Promise<Step> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      const offer = step.offer;
+      if (offer?.state !== "offered") throw new HubError(409, `${step.id} has no open offer`);
+      const caller = await this.callerMachine(actor, sid);
+      this.refuseForeign(caller, sid);
+      if (!caller.machine || caller.machine.id !== offer.to.machine) throw new HubError(403, `${step.id} is offered to ${await this.machineNameOf(offer.to.machine)}, not to this machine`);
+      const claimed = await this.claimInTx(actor, step, sid, caller.machine.id);
+      return await this.markAccepted(actor, claimed, sid);
+    });
+  }
+
+  async declineStep(actor: Actor, id: string, note: string | undefined): Promise<Step> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      const offer = step.offer;
+      if (offer?.state !== "offered") throw new HubError(409, `${step.id} has no open offer`);
+      const target = await this.store.getMachine(offer.to.machine);
+      const name = target ? machineName(target) : offer.to.machine;
+      const caller = await this.callerMachine(actor, undefined);
+      const named = offer.to.sid ? await this.store.getSession(offer.to.sid) : undefined;
+      const policy = named?.session.accept ?? target?.accept;
+      const cm = caller.machine;
+      const allowed =
+        target !== undefined &&
+        (target.userId === actor.userId ||
+          acceptMatches(policy, { byUser: actor.userId, byMachine: cm ? { id: cm.id, userId: cm.userId, ...(cm.nickname ? { nickname: cm.nickname } : {}) } : undefined }, { userId: target.userId }));
+      if (!allowed) throw new HubError(403, `only the owner of ${name} can decline ${step.id}`);
+      const now = this.now();
+      const { note: _assignNote, ...rest } = offer;
+      const next: Step = { ...step, offer: { ...rest, state: "declined", ...(note ? { note } : {}), decidedAt: now }, updatedAt: now };
+      await this.saveStepFrom(next, step);
+      await this.emit({ type: "step.declined", user: actor.userId, goal: step.goal, step: step.id, payload: { machine: offer.to.machine, ...(note ? { note } : {}) } });
+      await this.reportBack(step, offer, "offer_declined", `MESH: ${name} declined ${step.id} "${step.title}"${note ? `: ${note}` : ""}. It is ready again.`);
+      return next;
+    });
+  }
+
+  /** End an open offer as withdrawn (inside `goalTx`). */
+  private async withdrawOffer(actor: Actor, step: Step, reason?: string): Promise<Step> {
+    const offer = step.offer as StepOffer;
+    const now = this.now();
+    const next: Step = { ...step, offer: { ...offer, state: "withdrawn", decidedAt: now }, updatedAt: now };
+    await this.saveStepFrom(next, step);
+    await this.emit({ type: "step.offer_withdrawn", user: actor.userId, goal: step.goal, step: step.id, payload: { machine: offer.to.machine, ...(reason ? { reason } : {}) } });
+    return next;
+  }
+
+  async withdrawStep(actor: Actor, id: string): Promise<Step> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      const offer = step.offer;
+      if (offer?.state !== "offered") throw new HubError(409, `${step.id} has no open offer`);
+      if (actor.userId !== offer.by && !actor.roles.includes("admin")) throw new HubError(403, `only @${offer.by} or an admin can withdraw the offer of ${step.id}`);
+      return await this.withdrawOffer(actor, step);
+    });
+  }
+
+  async withdrawGoal(actor: Actor, id: string): Promise<GoalWithdrawResult> {
+    return await this.goalTx(async () => {
+      const goal = await this.goalOr404(id);
+      const admin = actor.roles.includes("admin");
+      const clear = goal.stick !== undefined && (goal.stick.by === actor.userId || admin);
+      const open = (await this.store.listSteps({ goal: goal.id })).filter((s) => s.offer?.state === "offered" && (admin || s.offer.by === actor.userId));
+      if (!clear && open.length === 0) throw new HubError(409, `${goal.id} has no stick and no open offer of yours`);
+      const withdrawn: string[] = [];
+      for (const s of open) withdrawn.push((await this.withdrawOffer(actor, s)).id);
+      let saved = goal;
+      if (clear) {
+        const { stick: _s, ...rest } = goal;
+        saved = { ...rest, updatedAt: this.now() };
+        await this.store.saveGoal(saved);
+      }
+      return { goal: saved, withdrawn: withdrawn.sort(cmp) };
+    });
+  }
+
+  /** Open offers on ready steps to any of the caller's machines, by offer time then step id. */
+  async offers(viewer: Actor): Promise<OfferView[]> {
+    return this.store.tx(async () => {
+      const mine = new Set((await this.store.listMachines({ userId: viewer.userId })).map((m) => m.id));
+      const out: OfferView[] = [];
+      for (const s of await this.store.listSteps({ state: "ready" })) {
+        const o = s.offer;
+        if (o?.state !== "offered" || !mine.has(o.to.machine)) continue;
+        out.push({
+          step: s.id,
+          goal: s.goal,
+          title: s.title,
+          repo: s.repo,
+          kind: s.kind,
+          machine: o.to.machine,
+          ...(o.to.sid ? { sid: o.to.sid } : {}),
+          to: await this.targetText(o.to),
+          by: o.by,
+          ...(o.bySid ? { bySid: o.bySid } : {}),
+          ...(o.byMachine ? { byMachine: o.byMachine } : {}),
+          at: o.at,
+          expiresAt: o.at + this.config.thresholds.offerExpiryMs,
+          auto: o.auto,
+          ...(o.note ? { note: o.note } : {}),
+        });
+      }
+      return out.sort((a, b) => a.at - b.at || cmp(a.step, b.step));
+    });
   }
 
   // ---------- auth ----------
@@ -528,7 +899,27 @@ export class HubService {
         const hs = await this.store.getSession(s.holderSid);
         if (hs) holders[s.id] = { sid: hs.session.sid, state: hs.session.state, ...(hs.session.needs ? { needs: hs.session.needs } : {}), ...(hs.session.agent ? { agent: hs.session.agent } : {}), user: hs.userId };
       }
-      return { goal, steps, plans: await this.store.listPlans(goal.id), holders };
+      const offers: Record<string, OfferLine> = {};
+      for (const s of steps) {
+        const o = s.offer;
+        if (!o) continue;
+        offers[s.id] = {
+          to: await this.targetText(o.to),
+          state: o.state,
+          by: o.by,
+          at: o.at,
+          ...(o.state === "accepted" ? { accepted: await this.holderText(s) } : {}),
+          ...(o.note ? { note: o.note } : {}),
+        };
+      }
+      return {
+        goal,
+        steps,
+        plans: await this.store.listPlans(goal.id),
+        holders,
+        ...(Object.keys(offers).length ? { offers } : {}),
+        ...(goal.stick ? { stick: await this.targetText(goal.stick.to) } : {}),
+      };
     });
   }
 
@@ -594,12 +985,14 @@ export class HubService {
       delete reopened.holderSid;
       delete reopened.holderMachine;
       delete reopened.claimedAt;
+      // MM-3: a later holder's work is not reported to the offerer of an accepted offer.
+      if (reopened.offer?.state === "accepted") delete reopened.offer;
       await this.saveStepFrom(reopened, design);
       await this.store.addNote({ step: reopened.id, user: actor.userId, text: `Replan requested${comment ? `: ${comment}` : ""}`, at: now });
       await this.store.saveGoal({ ...goal, state: "design", updatedAt: now });
       await this.message(previousSid, actor.userId, "replan", `MESH: ${actor.userId} asked to replan ${goal.id}${comment ? `: ${comment}` : ""}. Claim ${reopened.id} with mesh_claim, update the design and propose a new plan with mesh_plan.`);
       await this.emit({ type: "goal.replan", user: actor.userId, goal: goal.id, step: reopened.id, payload: { comment } });
-      await this.emit({ type: "step.ready", goal: goal.id, step: reopened.id });
+      await this.emitReady(goal.id, reopened.id);
     });
     return await this.goalDetail(goalId);
   }
@@ -673,6 +1066,9 @@ export class HubService {
         delete d.roundStartedAt;
         changes.push(d);
         await this.emit({ type: "step.done", user: actor.userId, goal: goal.id, step: d.id, payload: { summary: d.summary } });
+        if (design.offer?.state === "accepted") {
+          await this.reportBack(design, design.offer, "offer_done", `MESH: ${design.id} "${design.title}" (offered to ${await this.machineNameOf(design.offer.to.machine)}) is done: ${d.summary ?? ""}`);
+        }
       }
       const designSid = design?.holderSid;
       await this.message(
@@ -682,12 +1078,17 @@ export class HubService {
         `MESH: plan v${plan.version} for ${goal.id} was approved by ${actor.userId}${comment ? ` (${comment})` : ""}. mesh updated .mesh/goals/${goal.id}/plan.v${plan.version}.yaml with the approval; commit it with the design. The steps are open now.`,
         { goal: goal.id, version: plan.version },
       );
-      await this.store.saveSteps(changes);
-      const ready = recomputeReady(await this.store.listSteps({ goal: goal.id }), now);
+      const first = endOffersLeavingReady(existing, changes, now);
+      await this.store.saveSteps(first.steps);
+      const afterFirst = await this.store.listSteps({ goal: goal.id });
+      const second = endOffersLeavingReady(afterFirst, recomputeReady(afterFirst, now), now);
+      const ready = second.steps;
       await this.store.saveSteps(ready);
-      await this.store.saveGoal({ ...goal, state: "in_progress", updatedAt: now });
+      const fresh = await this.store.getGoal(goal.id);
+      await this.store.saveGoal({ ...(fresh ?? goal), state: "in_progress", updatedAt: now });
       await this.emit({ type: "plan.approved", user: actor.userId, goal: goal.id, payload: { version: plan.version } });
-      for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready")) await this.emit({ type: "step.ready", goal: goal.id, step: s.id });
+      await this.emitOffersEnded(actor, [...first.ended, ...second.ended]);
+      for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready")) await this.emitReady(goal.id, s.id);
       for (const s of m.upserts.filter((x) => x.state === "dropped")) await this.emit({ type: "step.dropped", goal: goal.id, step: s.id });
       for (const s of m.changedForHolder) {
         await this.message(s.holderSid, actor.userId, "replan", `MESH: the brief of your step ${s.id} changed in plan v${plan.version}. Call mesh_context to read it.`);
@@ -714,11 +1115,21 @@ export class HubService {
 
   // ---------- steps ----------
 
-  async listSteps(filter: { goal?: string | undefined; ready?: boolean; repo?: string | undefined; mine?: string | undefined }): Promise<Step[]> {
+  /**
+   * Steps, filtered. MM-3: with `ready` and a `viewer`, steps with an open offer to another machine
+   * than the viewer's token machine are left out (unless the viewer made the offer), and steps
+   * offered to the viewer's machine come first.
+   */
+  async listSteps(filter: { goal?: string | undefined; ready?: boolean; repo?: string | undefined; mine?: string | undefined }, viewer?: { userId: string; machineId?: string | undefined }): Promise<Step[]> {
     let steps = await this.store.listSteps({ goal: filter.goal, state: filter.ready ? "ready" : undefined, holderUser: filter.mine });
     if (filter.repo) {
       const want = filter.repo;
       steps = steps.filter((s) => !s.repo || s.repo === want || repoMatches({ id: want, name: want.slice(want.lastIndexOf("/") + 1) }, s.repo) || repoMatches({ id: s.repo, name: s.repo.slice(s.repo.lastIndexOf("/") + 1) }, want));
+    }
+    if (filter.ready && viewer) {
+      const here = (s: Step) => s.offer?.state === "offered" && viewer.machineId !== undefined && s.offer.to.machine === viewer.machineId;
+      steps = steps.filter((s) => s.offer?.state !== "offered" || here(s) || s.offer.by === viewer.userId);
+      steps = [...steps.filter(here), ...steps.filter((s) => !here(s))];
     }
     return steps;
   }
@@ -752,22 +1163,27 @@ export class HubService {
     return (sid ? (await this.store.getSession(sid))?.machineId : undefined) ?? actor.machineId;
   }
 
+  /**
+   * Claim a step. MM-3: runs in `goalTx`, so it never erases an offer committed before it. While the
+   * step has an open offer: a claim from the target machine is an accept, a claim by the offerer
+   * from elsewhere withdraws the offer, any other claim is refused.
+   */
   async claimStep(actor: Actor, stepId: string, sid: string | undefined): Promise<Step> {
-    return await this.store.tx(async () => {
+    return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
-      if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it (mesh step approve ${step.id}, or the web dashboard)`);
-      if (step.state === "parked") throw new HubError(409, `${step.id} is parked (${step.parkedReason ?? "by a rule"}); a person resumes it (mesh step resume ${step.id})`);
-      const blind = blindConflict(step, await this.store.listSteps({ goal: step.goal }), { userId: actor.userId, sid }, this.config.blindGuard);
-      if (blind) throw new HubError(409, blind);
-      const r = claim(step, { userId: actor.userId, sid, machine: await this.machineOf(actor, sid) }, this.now());
-      if (!r.ok) throw new HubError(r.status, r.error);
-      const claimed: Step = r.step.roundStartedAt === undefined ? { ...r.step, roundStartedAt: this.now() } : r.step;
-      // Conditional on the state read above: with several replicas, exactly one concurrent claim wins.
-      if (!(await this.store.claimStep(claimed, step))) throw new HubError(409, `${step.id} was claimed by someone else just now`);
-      const goal = await this.store.getGoal(step.goal);
-      if (goal && step.kind === "design" && goal.state === "backlog") await this.store.saveGoal({ ...goal, state: "design", updatedAt: this.now() });
-      await this.emit({ type: "step.claimed", user: actor.userId, sid, goal: step.goal, step: step.id });
-      return claimed;
+      const offer = step.offer;
+      if (offer?.state !== "offered") return await this.claimInTx(actor, step, sid, await this.machineOf(actor, sid));
+      const caller = await this.callerMachine(actor, sid);
+      this.refuseForeign(caller, sid);
+      if (caller.machine && caller.machine.id === offer.to.machine) {
+        const claimed = await this.claimInTx(actor, step, sid, caller.machine.id);
+        return await this.markAccepted(actor, claimed, sid);
+      }
+      if (actor.userId === offer.by) {
+        const claimed = await this.claimInTx(actor, step, sid, await this.machineOf(actor, sid));
+        return await this.withdrawOffer(actor, claimed, "claimed by the offerer");
+      }
+      throw new HubError(409, `${step.id} is offered to ${await this.machineNameOf(offer.to.machine)}`);
     });
   }
 
@@ -777,10 +1193,13 @@ export class HubService {
       const goal = await this.goalOr404(step.goal);
       const r = release(step, { userId: actor.userId }, isOwnerOrAdmin(actor, goal.ownerId), this.now());
       if (!r.ok) throw new HubError(r.status, r.error);
-      await this.saveStepFrom(r.step, step);
+      const next: Step = { ...r.step };
+      // MM-3: a later holder's work is not reported to the offerer of an accepted offer.
+      if (next.offer?.state === "accepted") delete next.offer;
+      await this.saveStepFrom(next, step);
       if (note) await this.store.addNote({ step: step.id, user: actor.userId, text: note, at: this.now() });
       await this.emit({ type: "step.released", user: actor.userId, goal: step.goal, step: step.id, payload: { note } });
-      return r.step;
+      return next;
     });
   }
 
@@ -900,7 +1319,9 @@ export class HubService {
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[r.step.id, r.step], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
       await this.saveStepFrom(r.step, step);
-      await this.store.saveSteps([...changed.values()].filter((s) => s.id !== r.step.id));
+      const others = endOffersLeavingReady(all, [...changed.values()].filter((s) => s.id !== r.step.id), now);
+      await this.store.saveSteps(others.steps);
+      await this.emitOffersEnded(actor, others.ended);
       await this.emit({
         at: now,
         type: outcome === "done" ? "step.done" : "step.failed",
@@ -910,6 +1331,10 @@ export class HubService {
         step: step.id,
         payload: { summary: input.summary, mr: input.mr, reopen: toReopen, round: round.n, ...(input.model ? { model: input.model } : {}), ...(input.verdict ? { verdict: input.verdict } : {}), ...(input.failures?.length ? { buckets: input.failures.map((f) => f.bucket) } : {}) },
       });
+      if (step.offer?.state === "accepted") {
+        const name = await this.machineNameOf(step.offer.to.machine);
+        await this.reportBack(step, step.offer, outcome === "done" ? "offer_done" : "offer_failed", `MESH: ${step.id} "${step.title}" (offered to ${name}) ${outcome === "done" ? "is done" : "failed"}: ${input.summary}`);
+      }
       const why = reopenText(step, round, input.summary);
       for (const s of reopened) {
         const before = all.find((x) => x.id === s.id);
@@ -918,7 +1343,7 @@ export class HubService {
         await this.message(before?.holderSid, actor.userId, "reopened", `MESH: step ${s.id} was reopened by ${step.id}: ${why}. Claim it again with mesh_claim to fix it.`);
       }
       const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
-      for (const id of nowReady) await this.emit({ type: "step.ready", goal: step.goal, step: id });
+      for (const id of nowReady) await this.emitReady(step.goal, id);
       const goalDone = steps.length > 0 && steps.every((s) => s.state === "done" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
       let files: TrailFile[] | undefined;
       if (goalDone && goal.state !== "done") {
@@ -963,14 +1388,16 @@ export class HubService {
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[decided.id, decided], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
       await this.saveStepFrom(decided, step);
-      await this.store.saveSteps([...changed.values()].filter((s) => s.id !== decided.id));
+      const others = endOffersLeavingReady(all, [...changed.values()].filter((s) => s.id !== decided.id), now);
+      await this.store.saveSteps(others.steps);
+      await this.emitOffersEnded(actor, others.ended);
       await this.emit({ type: input.approve ? "gate.approved" : "gate.rejected", user: actor.userId, goal: step.goal, step: step.id, payload: { gate: step.policy?.gate, rule: input.rule, comment: input.comment, reopen: explicit } });
       for (const s of reopenChanges.filter((x) => explicit.includes(x.id))) {
         await this.store.addNote({ step: s.id, user: actor.userId, text: `Reopened by gate ${step.id}: ${input.comment ?? "changes requested"}`, at: now });
         await this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: input.comment, fixCycles: s.fixCycles } });
       }
       const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
-      for (const id of nowReady) await this.emit({ type: "step.ready", goal: step.goal, step: id });
+      for (const id of nowReady) await this.emitReady(step.goal, id);
       const goalDone = steps.every((s) => s.state === "done" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
       let files: TrailFile[] | undefined;
       if (goalDone && goal.state !== "done") {
@@ -995,15 +1422,18 @@ export class HubService {
       delete next.parkedReason;
       delete next.parkedAt;
       delete next.outcome;
-      const all = (await this.store.listSteps({ goal: step.goal })).map((s) => (s.id === step.id ? next : s));
+      const before = await this.store.listSteps({ goal: step.goal });
+      const all = before.map((s) => (s.id === step.id ? next : s));
       const ready = recomputeReady(all, now);
       const final = ready.find((x) => x.id === step.id) ?? next;
       await this.saveStepFrom(final, step);
-      await this.store.saveSteps(ready.filter((x) => x.id !== step.id));
+      const others = endOffersLeavingReady(before, ready.filter((x) => x.id !== step.id), now);
+      await this.store.saveSteps(others.steps);
+      await this.emitOffersEnded(actor, others.ended);
       await this.store.addNote({ step: step.id, user: actor.userId, text: `Resumed by ${actor.userId}${comment ? `: ${comment}` : ""} (was: ${step.parkedReason ?? step.state})`, at: now });
       await this.emit({ type: "step.resumed", user: actor.userId, goal: step.goal, step: step.id, payload: { comment, was: step.parkedReason } });
-      if (final.state === "ready") await this.emit({ type: "step.ready", goal: step.goal, step: step.id });
-      return final;
+      if (final.state === "ready") await this.emitReady(step.goal, step.id);
+      return (await this.store.getStep(step.id)) ?? final;
     });
   }
 
@@ -1022,12 +1452,15 @@ export class HubService {
         rules: { takeoverAfterMs: this.config.thresholds.takeoverAfterMs },
       });
       if (!r.ok) throw new HubError(r.status, r.error);
-      await this.saveStepFrom(r.step, step);
+      const taken: Step = { ...r.step };
+      // MM-3: a later holder's work is not reported to the offerer of an accepted offer.
+      if (taken.offer?.state === "accepted") delete taken.offer;
+      await this.saveStepFrom(taken, step);
       if (previous && previous !== actor.userId) {
         await this.emit({ type: "step.taken_over", user: actor.userId, sid, goal: step.goal, step: step.id, payload: { from: previous } });
         await this.message(previousSid, actor.userId, "taken_over", `MESH: ${actor.userId} took over step ${step.id}. Stop working on it; your notes are kept.`);
       }
-      return r.step;
+      return taken;
     });
   }
 
@@ -1037,15 +1470,21 @@ export class HubService {
     return await this.store.tx(async () => {
       const step = input.step ? await this.store.getStep(input.step) : undefined;
       const owner = step ? (await this.store.getGoal(step.goal))?.ownerId : undefined;
+      // MM-3: the offerer of an accepted offer may answer questions on the step.
+      const offer = step?.offer?.state === "accepted" ? step.offer : undefined;
       const q = await this.store.addQuestion({
         ...(step ? { step: step.id } : {}),
         ...(input.sid ? { sid: input.sid } : {}),
         fromUser: actor.userId,
-        toUsers: [...new Set([actor.userId, ...(owner ? [owner] : [])])],
+        toUsers: [...new Set([actor.userId, ...(owner ? [owner] : []), ...(offer ? [offer.by] : [])])],
         text: input.text,
         at: this.now(),
       });
       await this.emit({ type: "question.asked", user: actor.userId, sid: input.sid, goal: step?.goal, step: step?.id, payload: { question: q.id } });
+      if (step && offer) {
+        const name = await this.machineNameOf(offer.to.machine);
+        await this.reportBack(step, offer, "offer_question", `MESH: question on ${step.id} (offered to ${name}) from @${actor.userId}: ${input.text}. Answer with: mesh answer ${q.id} <text>`);
+      }
       return q;
     });
   }
@@ -1101,7 +1540,9 @@ export class HubService {
         if (existing && existing.userId !== actor.userId) continue; // never overwrite another user's session
         await this.store.upsertSession(s, actor.userId, machine, now);
       }
-      const facts = req.machine ? { share: req.machine.share, ...(req.machine.repos ? { repos: req.machine.repos } : {}) } : undefined;
+      const facts = req.machine
+        ? { share: req.machine.share, ...(req.machine.repos ? { repos: req.machine.repos } : {}), ...(req.machine.accept ? { accept: req.machine.accept } : {}) }
+        : undefined;
       await this.store.touchMachine(machine, now, req.counts, facts);
       // MM-1: the stored share level tells the daemon this hub applies the visibility rule.
       const share = (await this.store.getMachine(machine))?.share;
@@ -1133,9 +1574,22 @@ export class HubService {
           out.push({ kind: "approval", text: `Plan v${plan?.version ?? "?"} for ${g.id} "${g.title}" awaits approval`, goal: g.id, at: plan?.proposedAt ?? g.updatedAt });
         }
       }
+      const machines = await this.store.listMachines();
+      const nameOf = (id: string) => {
+        const m = machines.find((x) => x.id === id);
+        return m ? machineName(m) : id;
+      };
+      const myMachines = new Set(machines.filter((m) => m.userId === viewer.userId).map((m) => m.id));
       for (const s of await this.store.listSteps({ state: "ready" })) {
         const g = goals.find((x) => x.id === s.goal);
         if (s.kind === "gate" && g && canApprove(viewer, g.ownerId)) out.push({ kind: "approval", text: `Gate ${s.policy?.gate ?? s.id} for ${s.goal} "${g.title}" waits for a decision`, goal: s.goal, step: s.id, at: s.updatedAt });
+        const o = s.offer;
+        if (o?.state === "offered" && myMachines.has(o.to.machine)) {
+          out.push({ kind: "offer", text: `@${o.by} offers ${s.id} "${s.title}" to ${nameOf(o.to.machine)}`, goal: s.goal, step: s.id, at: o.at });
+        }
+        if (o?.state === "expired" && o.by === viewer.userId) {
+          out.push({ kind: "offer_expired", text: `the offer of ${s.id} to ${nameOf(o.to.machine)} expired; it is ready again`, goal: s.goal, step: s.id, at: o.decidedAt ?? s.updatedAt });
+        }
       }
       for (const q of await this.store.openQuestions()) {
         if (q.toUsers.includes(viewer.userId)) out.push({ kind: "question", text: `${q.fromUser} asks: ${q.text}`, step: q.step, sid: q.sid, question: q.id, at: q.at });
@@ -1220,10 +1674,11 @@ export class HubService {
         repos: m.repos ?? [],
         ...(m.reposAt !== undefined ? { reposAt: m.reposAt } : {}),
         labels: m.labels ?? [],
+        ...(m.accept ? { accept: m.accept } : {}),
         current: m.id === viewer.machineId,
         sessions: sessions
           .filter((hs) => hs.machineId === m.id)
-          .map((hs) => ({ ...liveSession(hs), lastEventAt: hs.session.lastEventAt }))
+          .map((hs) => ({ ...liveSession(hs), lastEventAt: hs.session.lastEventAt, ...(hs.session.accept ? { accept: hs.session.accept } : {}) }))
           .sort((a, b) => b.lastEventAt - a.lastEventAt || cmp(a.sid, b.sid)),
       }));
       machines.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen || cmp(a.id, b.id));
@@ -1340,6 +1795,17 @@ export class HubService {
           await this.emit({ type: "step.paused", goal: s.goal, step: s.id, payload: { reason: ended ? "holder session ended" : "holder machine offline" } });
         }
       }
+      // MM-3: open offers not accepted in time expire; the step is ready for anyone again.
+      const expiry = this.config.thresholds.offerExpiryMs;
+      for (const s of await this.store.listSteps({ state: "ready" })) {
+        const o = s.offer;
+        if (o?.state !== "offered" || now - o.at < expiry) continue;
+        const next: Step = { ...s, offer: { ...o, state: "expired", decidedAt: now } };
+        if (!(await this.store.saveStepIf(next, s))) continue;
+        await this.emit({ type: "step.offer_expired", goal: s.goal, step: s.id, payload: { machine: o.to.machine } });
+        const name = await this.machineNameOf(o.to.machine);
+        await this.reportBack(s, o, "offer_expired", `MESH: the offer of ${s.id} "${s.title}" to ${name} expired (not accepted within ${Math.round(expiry / 60_000)} min). It is ready again.`);
+      }
     });
   }
 
@@ -1411,6 +1877,16 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `${String(payload.role ?? "agent")} finished ${String(payload.label ?? "")}`.trim();
     case "step.claimed":
       return `claimed ${s}`;
+    case "step.offered":
+      return `offered ${s} to ${hostnames?.get(String(payload.machine)) ?? String(payload.machine)}`;
+    case "step.accepted":
+      return `accepted ${s} on ${hostnames?.get(String(payload.machine)) ?? String(payload.machine)}`;
+    case "step.declined":
+      return `declined ${s} on ${hostnames?.get(String(payload.machine)) ?? String(payload.machine)}`;
+    case "step.offer_expired":
+      return `the offer of ${s} to ${hostnames?.get(String(payload.machine)) ?? String(payload.machine)} expired`;
+    case "step.offer_withdrawn":
+      return `withdrew the offer of ${s} to ${hostnames?.get(String(payload.machine)) ?? String(payload.machine)}`;
     case "step.done":
       return `finished ${s}`;
     case "step.failed":

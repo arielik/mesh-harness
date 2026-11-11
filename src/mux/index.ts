@@ -1,5 +1,5 @@
 // Terminal multiplexer (tmux) and desktop notification adapters (plan §6.4).
-export { run, type Runner } from "./exec.ts";
+export { run, spawnDetached, type Runner } from "./exec.ts";
 export { desktopNotify, osc9, processTty, terminalNotify, tmuxPassthrough, type TerminalTarget } from "./notify.ts";
 export {
   bindReturnKey,

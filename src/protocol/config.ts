@@ -8,6 +8,37 @@ import { z } from "zod";
 export const ShareLevel = z.enum(["steps", "me", "all"]);
 export type ShareLevel = z.infer<typeof ShareLevel>;
 
+/** MM-3: the rule syntax of an accept policy. */
+export const ACCEPT_RULE_TEXT = "an accept rule is self, off, user:<id> or machine:<nickname or id>";
+/** MM-3: one accept rule: `self`, `off`, `user:<id>` or `machine:<nickname or id>`. */
+export const AcceptRule = z.string().regex(/^(self|off|user:[^\s,]{1,100}|machine:[^\s,]{1,100})$/, ACCEPT_RULE_TEXT);
+/** MM-3: whose offers a machine (or session) accepts automatically; `off` only alone. */
+export const AcceptPolicy = z
+  .array(AcceptRule)
+  .min(1)
+  .max(20)
+  .refine((a) => !a.includes("off") || a.length === 1, "off cannot be combined with other rules");
+export type AcceptPolicy = z.infer<typeof AcceptPolicy>;
+
+/**
+ * Normalise an accept policy: a string is split on `,`; items are trimmed, empty items dropped,
+ * repeats removed, order kept. The first item that is not an `AcceptRule` is an error.
+ */
+export function parseAccept(input: string | readonly string[]): { accept: string[] } | { error: string } {
+  const items = typeof input === "string" ? input.split(",") : [...input];
+  const out: string[] = [];
+  for (const item of items) {
+    const t = item.trim();
+    if (t === "") continue;
+    if (!AcceptRule.safeParse(t).success) return { error: `not an accept rule: ${t} (${ACCEPT_RULE_TEXT})` };
+    if (!out.includes(t)) out.push(t);
+  }
+  if (out.length === 0) return { error: "give at least one rule, or off" };
+  if (out.includes("off") && out.length > 1) return { error: "off cannot be combined with other rules" };
+  if (out.length > 20) return { error: "at most 20 accept rules" };
+  return { accept: out };
+}
+
 /** ~/.config/mesh/daemon.json, written by `mesh setup` (mode 0600). */
 export const DaemonConfig = z.object({
   port: z.number().int().min(1024).max(65535),
@@ -29,6 +60,17 @@ export const DaemonConfig = z.object({
    * or message text), shown to their owner only. `all`: the same metadata, shown to the team.
    */
   shareSessions: ShareLevel.default("steps"),
+  /**
+   * MM-3: whose offers this machine accepts automatically (`self`, `user:<id>`,
+   * `machine:<nickname or id>`, or `off`). The hub sees it (synced with the machine facts).
+   */
+  accept: AcceptPolicy.default(["self"]),
+  /**
+   * MM-3: what the daemon does with an offer: `deliver` (auto-accept for an idle session, else list
+   * it for you), `launch` (as deliver, but start a session when none is idle), `off` (decline every
+   * offer). Local only; the hub does not see it.
+   */
+  assignments: z.enum(["deliver", "launch", "off"]).default("deliver"),
 });
 export type DaemonConfig = z.infer<typeof DaemonConfig>;
 export type NotifyMode = "desktop" | "terminal" | "both" | "off";

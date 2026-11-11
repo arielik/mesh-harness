@@ -1,4 +1,4 @@
-// The nine mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
+// The twelve mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
 // stdio shim (`mesh mcp`) and the daemon that executes them.
 
 import { z } from "zod";
@@ -60,6 +60,24 @@ export const TOOLS = {
   mesh_fleet: {
     description: "Every machine logged in as your user and what each session on it is doing (read-only).",
     input: {},
+  },
+  mesh_assign: {
+    description:
+      "Offer a mesh goal or step to another machine or session (<machine>/<session>); it is accepted automatically if their accept policy allows, else it waits for them.",
+    input: {
+      target: z.string().describe("goal id (G17) or step id (G17.dplane)"),
+      to: z.string().describe("machine nickname, id, or <machine>/<session>"),
+      stick: z.boolean().optional().describe("goals: later ready steps of the goal go to the same target"),
+      note: z.string().optional().describe("a note for the receiver"),
+    },
+  },
+  mesh_offers: {
+    description: "Steps offered to your machines, waiting for an accept.",
+    input: {},
+  },
+  mesh_accept: {
+    description: "Accept a step offered to this machine: this session takes it.",
+    input: { step: z.string().describe("full step id, e.g. G17.dplane") },
   },
 } as const;
 

@@ -184,9 +184,7 @@ describe("AC-21 docs and skill (labels)", () => {
 });
 
 describe("AC-22 version and placement", () => {
-  it("test_AC22_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.10");
-  });
+  // The MM-2 version pin (0.1.10) is superseded by MM-3 AC-34 (test_AC34_version below).
 
   it("test_AC22_placement", async () => {
     const protocol = (await import("../src/protocol/index.ts")) as Record<string, unknown>;
@@ -195,5 +193,79 @@ describe("AC-22 version and placement", () => {
     expect(typeof core.filterFleet).toBe("function");
     // Where `.mesh/agent.yaml` is read (src/daemon) is left to review and `pnpm boundaries`:
     // these tests do not assert on source text.
+  });
+});
+
+// MM-3 (AC-33, AC-34).
+const MM3_ROUTES: [string, string, string][] = [
+  ["POST", "/v1/steps/:id/assign", "steps"],
+  ["POST", "/v1/steps/:id/accept", "steps"],
+  ["POST", "/v1/steps/:id/decline", "steps"],
+  ["POST", "/v1/steps/:id/withdraw", "steps"],
+  ["POST", "/v1/goals/:id/assign", "goals"],
+  ["POST", "/v1/goals/:id/withdraw", "goals"],
+  ["GET", "/v1/offers", "steps"],
+];
+
+describe("AC-33 OpenAPI, route table, docs and skill (offers)", () => {
+  type Op = { tags?: string[]; operationId: string };
+  const openApiPath = (p: string) => p.replace(/:id/g, "{id}");
+
+  it("test_AC33_openapi_current", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+  });
+
+  it("test_AC33_openapi_routes", () => {
+    const committed = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, Op>> };
+    // Positive control: an MM-2 route is there.
+    expect(committed.paths["/v1/machines/{id}/labels"]?.post).toBeDefined();
+    for (const [method, path] of MM3_ROUTES) expect(committed.paths[openApiPath(path)]?.[method.toLowerCase()], `${method} ${path}`).toBeDefined();
+  });
+
+  it("test_AC33_hub_api_matches_app", () => {
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    const documented = HUB_API.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    for (const [method, path, tag] of MM3_ROUTES) {
+      expect(documented, `${method} ${path}`).toContain(`${method} ${path} member -`);
+      expect(HUB_API.find((r) => r.method === method && r.path === path)?.tag, `${method} ${path}`).toBe(tag);
+    }
+    expect(documented).toEqual(served);
+  });
+
+  it("test_AC33_docs_mention", () => {
+    const concepts = read("docs/guide/concepts.md");
+    expect(concepts).toContain("Offers and accept policy");
+    for (const t of ["offer_expiry", "--stick", "assignments"]) expect(concepts, t).toContain(t);
+    const howto = read("docs/guide/howto.md");
+    for (const t of ["Hand work to another machine", "mesh assign", "mesh offers", "mesh accept", "mesh decline", "mesh withdraw", "mesh session accept", "shareSessions: steps"]) expect(howto, t).toContain(t);
+    const install = read("docs/guide/install.md");
+    for (const t of ["accept", "assignments"]) expect(install, t).toContain(t);
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    expect(s56).toContain("POST /v1/machines/:id/labels");
+    for (const [method, path] of MM3_ROUTES) expect(s56, `${method} ${path}`).toContain(`${method} ${path}`);
+    const events = read("docs/events.md");
+    for (const e of ["step.offered", "step.accepted", "step.declined", "step.offer_expired", "step.offer_withdrawn"]) expect(events, e).toContain(`\`${e}\``);
+  });
+
+  it("test_AC33_skill", () => {
+    for (const t of ["mesh_assign", "mesh_offers", "mesh_accept"]) expect(MESH_SKILL, t).toContain(t);
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+  });
+});
+
+describe("AC-34 version and placement", () => {
+  it("test_AC34_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.11");
+  });
+
+  it("test_AC34_placement", async () => {
+    const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
+    for (const name of ["acceptMatches", "pickSession", "offerText", "offerLine"]) expect(typeof core[name], name).toBe("function");
+    const protocol = (await import("../src/protocol/index.ts")) as Record<string, unknown>;
+    for (const name of ["parseAccept", "AcceptRule", "AcceptPolicy", "ACCEPT_RULE_TEXT", "OfferState", "StepOffer"]) expect(protocol[name], name).toBeDefined();
+    // Positive control: an MM-2 export is found the same way.
+    expect(protocol.parseLabels).toBeDefined();
   });
 });

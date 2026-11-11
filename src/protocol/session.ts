@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AcceptPolicy } from "./config.ts";
 
 export const SessionState = z.enum(["working", "needs_you", "idle", "stalled", "ended"]);
 export type SessionState = z.infer<typeof SessionState>;
@@ -63,6 +64,8 @@ export const Session = z.object({
   name: z.string().optional(),
   /** What the session is for (MM-2), topic-name syntax; absent when none, never []. */
   labels: z.array(Label).max(MAX_LABELS).optional(),
+  /** MM-3: per-session accept override; absent = the machine policy applies. */
+  accept: AcceptPolicy.optional(),
   /** Short id of a background session (claude attach/stop <id>). */
   bgId: z.string().optional(),
   pane: z.string().optional(),

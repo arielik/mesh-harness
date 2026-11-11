@@ -3,7 +3,7 @@
 // metadata-only sync sends no hint.
 
 import { useCallback, useEffect, useState } from "react";
-import type { FleetMachine, FleetView } from "../../src/protocol/hub.ts";
+import type { FleetMachine, FleetView, OfferView } from "../../src/protocol/hub.ts";
 import { api } from "./api.ts";
 import { ago } from "./goals.tsx";
 
@@ -59,18 +59,56 @@ function Machine({ m, now }: { m: FleetMachine; now: number }) {
   );
 }
 
+/** MM-3: steps offered to the user's machines. The web declines; accepting needs a session (`mesh accept`). */
+function Offers({ offers, onDecline }: { offers: OfferView[]; onDecline: (step: string) => void }) {
+  return (
+    <section className="offers">
+      <h2>Assigned to you</h2>
+      {offers.length === 0 ? (
+        <p className="muted">Nothing is assigned to you.</p>
+      ) : (
+        <ul>
+          {offers.map((o) => (
+            <li className="offer" key={o.step}>
+              <strong>{o.step}</strong> "{o.title}" · from @{o.by} · to {o.to}
+              {o.note ? <span className="muted"> · {o.note}</span> : null}{" "}
+              <button type="button" onClick={() => onDecline(o.step)}>
+                Decline
+              </button>{" "}
+              <code>mesh accept {o.step}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function MinePage({ hint }: { hint: number }) {
   const [view, setView] = useState<FleetView>();
+  const [offers, setOffers] = useState<OfferView[]>([]);
   const [error, setError] = useState<string>();
 
   const load = useCallback(async () => {
     try {
-      setView(await api.fleet());
+      const [fleet, open] = await Promise.all([api.fleet(), api.offers().catch(() => [] as OfferView[])]);
+      setView(fleet);
+      setOffers(open);
       setError(undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  const decline = useCallback(
+    (step: string) => {
+      api.decline(step).then(
+        () => void load(),
+        (e: Error) => setError(e.message),
+      );
+    },
+    [load],
+  );
 
   useEffect(() => {
     const poll = window.setInterval(() => void load(), 15_000);
@@ -83,6 +121,7 @@ export function MinePage({ hint }: { hint: number }) {
 
   return (
     <div className="mine">
+      <Offers offers={offers} onDecline={decline} />
       <h2>My machines</h2>
       {error && <p className="error">{error}</p>}
       {!view ? (

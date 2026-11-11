@@ -87,8 +87,10 @@ export const HubConfigFile = z.object({
       takeover_after: duration.default(4 * 3_600_000),
       pause_grace: duration.default(2 * 60_000),
       machine_offline: duration.default(15 * 60_000),
+      /** MM-3: an offer not accepted within this time expires. */
+      offer_expiry: duration.default(30 * 60_000),
     })
-    .default({ takeover_after: 4 * 3_600_000, pause_grace: 2 * 60_000, machine_offline: 15 * 60_000 }),
+    .default({ takeover_after: 4 * 3_600_000, pause_grace: 2 * 60_000, machine_offline: 15 * 60_000, offer_expiry: 30 * 60_000 }),
 });
 
 export interface HubConfig {
@@ -100,7 +102,7 @@ export interface HubConfig {
   roleMappings: Record<string, RoleMapping>;
   bootstrapAdmins: string[];
   policies: SessionPolicies;
-  thresholds: { takeoverAfterMs: number; pauseGraceMs: number; machineOfflineMs: number };
+  thresholds: { takeoverAfterMs: number; pauseGraceMs: number; machineOfflineMs: number; offerExpiryMs: number };
   eventsRetentionDays: number;
   blindGuard: "person" | "session";
 }
@@ -162,7 +164,12 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     roleMappings,
     bootstrapAdmins: file.auth.bootstrap_admins,
     policies,
-    thresholds: { takeoverAfterMs: file.thresholds.takeover_after, pauseGraceMs: file.thresholds.pause_grace, machineOfflineMs: file.thresholds.machine_offline },
+    thresholds: {
+      takeoverAfterMs: file.thresholds.takeover_after,
+      pauseGraceMs: file.thresholds.pause_grace,
+      machineOfflineMs: file.thresholds.machine_offline,
+      offerExpiryMs: file.thresholds.offer_expiry,
+    },
     eventsRetentionDays: file.events_retention_days,
     blindGuard: file.blind_guard,
   };

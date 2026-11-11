@@ -38,6 +38,20 @@ export type StepKind = z.infer<typeof StepKind>;
 export const StepState = z.enum(["blocked", "ready", "claimed", "paused", "done", "failed", "parked", "dropped"]);
 export type StepState = z.infer<typeof StepState>;
 
+/** MM-3: the target of an offer or a goal's stick: a machine, and a session on it when named. */
+export const OfferTarget = z.object({ machine: z.string(), sid: z.string().optional() });
+export type OfferTarget = z.infer<typeof OfferTarget>;
+
+/** MM-3: where a goal's later ready steps are offered (`mesh assign <G> --stick`). */
+export const GoalStick = z.object({
+  to: OfferTarget,
+  by: z.string(),
+  bySid: z.string().optional(),
+  byMachine: z.string().optional(),
+  at: z.number(),
+});
+export type GoalStick = z.infer<typeof GoalStick>;
+
 export const Goal = z.object({
   id: z.string(),
   title: z.string(),
@@ -56,10 +70,35 @@ export const Goal = z.object({
   /** Topics this goal is tagged with, sorted (`all` is implicit and never listed). */
   topics: z.array(z.string()).optional(),
   priority: z.number().int(),
+  /** MM-3: later ready steps of this goal are offered to this target (`--stick`). */
+  stick: GoalStick.optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
 export type Goal = z.infer<typeof Goal>;
+
+/** MM-3: an offer's life: `offered` until it is accepted, declined, expired or withdrawn. */
+export const OfferState = z.enum(["offered", "accepted", "declined", "expired", "withdrawn"]);
+export type OfferState = z.infer<typeof OfferState>;
+
+/**
+ * MM-3: an offer of a ready step to a machine (and session). `by` = the offering user, `bySid` =
+ * the offering session, `byMachine` = the machine it was made from, `auto` = the hub's policy
+ * verdict, `stick` = made by a goal's stick.
+ */
+export const StepOffer = z.object({
+  to: OfferTarget,
+  by: z.string(),
+  bySid: z.string().optional(),
+  byMachine: z.string().optional(),
+  at: z.number(),
+  state: OfferState,
+  auto: z.boolean(),
+  stick: z.boolean().optional(),
+  note: z.string().optional(),
+  decidedAt: z.number().optional(),
+});
+export type StepOffer = z.infer<typeof StepOffer>;
 
 /** A file a step produced, as given to mesh_done; sha is the git blob id when mesh could read the file. */
 export const Artifact = z.object({ path: z.string().min(1).max(500), sha: z.string().optional() });
@@ -139,6 +178,8 @@ export const Step = z.object({
   policy: z.lazy(() => StepPolicy).optional(),
   parkedReason: z.string().optional(),
   parkedAt: z.number().optional(),
+  /** MM-3: the step's last offer (kept after it ends; a new offer replaces it). */
+  offer: StepOffer.optional(),
   updatedAt: z.number(),
 });
 export type Step = z.infer<typeof Step>;

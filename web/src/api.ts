@@ -1,5 +1,5 @@
 import type { Goal } from "../../src/protocol/goal.ts";
-import type { FleetView, GoalDetail, LiveView, ProviderInfo, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import type { FleetView, GoalDetail, LiveView, OfferView, ProviderInfo, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -26,6 +26,9 @@ const g = (id: string) => `/v1/goals/${encodeURIComponent(id)}`;
 export const api = {
   live: () => call<LiveView>("GET", "/v1/live"),
   fleet: () => call<FleetView>("GET", "/v1/fleet"),
+  /** MM-3: open offers to the user's machines; the web declines (accepting needs a session). */
+  offers: async () => (await call<{ offers: OfferView[] }>("GET", "/v1/offers")).offers,
+  decline: (step: string, note?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(step)}/decline`, note ? { note } : {}),
   providers: async () => (await call<{ providers: ProviderInfo[] }>("GET", "/auth/providers")).providers,
   loginToken: (provider: string, token: string) => call<{ user: { id: string } }>("POST", `/auth/${encodeURIComponent(provider)}/login`, { token, client: "web" }),
   loginNone: (provider: string) => call<{ user: { id: string } }>("POST", `/auth/${encodeURIComponent(provider)}/login`, { client: "web" }),

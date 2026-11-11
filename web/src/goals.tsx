@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { levels } from "../../src/core/dag.ts";
 import { partition, STEP_STAGES, stepStage } from "../../src/core/stages.ts";
 import type { Goal, Plan, Step } from "../../src/protocol/goal.ts";
-import type { GoalDetail, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import type { GoalDetail, OfferLine, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import { offerText } from "../../src/core/offers.ts";
 import { api } from "./api.ts";
 
 export function ago(now: number, at: number | undefined): string {
@@ -254,7 +255,7 @@ function Dag({ detail, selected, onSelect }: { detail: GoalDetail; selected?: st
   );
 }
 
-function StepPanel({ id, now, onChange }: { id: string; now: number; onChange: () => void }) {
+function StepPanel({ id, now, offer, onChange }: { id: string; now: number; offer?: OfferLine | undefined; onChange: () => void }) {
   const [view, setView] = useState<StepView>();
   const [error, setError] = useState<string>();
   const [comment, setComment] = useState("");
@@ -286,6 +287,7 @@ function StepPanel({ id, now, onChange }: { id: string; now: number; onChange: (
       </h3>
       <p className="brief">{step.brief}</p>
       {step.holderUser && <p>Holder: @{step.holderUser}</p>}
+      {offer && <p className="offer">{offerText(offer)}</p>}
       {step.summary && (
         <p>
           <strong>Summary:</strong> {step.summary} {step.mr && <code>{step.mr}</code>} {step.branch && <code>{step.branch}</code>}
@@ -590,7 +592,7 @@ export function GoalPage({ id }: { id: string }) {
           <div className="dagwrap">
             <Dag detail={detail} selected={selected} onSelect={setSelected} />
           </div>
-          {selected ? <StepPanel id={selected} now={now} onChange={load} /> : <p className="muted">Click a step for its brief, holder, notes and facts.</p>}
+          {selected ? <StepPanel id={selected} now={now} offer={detail.offers?.[selected]} onChange={load} /> : <p className="muted">Click a step for its brief, holder, notes and facts.</p>}
         </div>
       )}
       {tab === "design" && <DesignTab detail={detail} onDecide={decide} />}

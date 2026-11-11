@@ -1,17 +1,19 @@
 // M4.5 CLI pieces against real git: one worktree and branch per step, reused on a fix round.
 // MM-2 AC-15: `mesh run --label` records the labels for each start folder before the session starts.
+// MM-3 AC-27 / AC-40: `mesh accept <step> --launch` starts the session as `mesh run <repo> --step <step>` would.
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { run } from "../src/claude/index.ts";
+import { run, type RunResult, type Runner } from "../src/claude/index.ts";
+import { dispatch } from "../src/cli/commands.ts";
 import { meshCommands, stepWorktree, type CliEnv } from "../src/cli/mesh-commands.ts";
 import { Daemon, defaultDeps } from "../src/daemon/index.ts";
 import { resolvePaths, type DaemonConfig } from "../src/protocol/index.ts";
 import { DaemonStore } from "../src/store/index.ts";
-import { World, type Json } from "./helpers/world.ts";
+import { World, type Json, type Person } from "./helpers/world.ts";
 
 type Paths = ReturnType<typeof resolvePaths>;
 
@@ -355,5 +357,166 @@ describe.skipIf(!haveTmux)("AC-15 mesh run --label", () => {
     const err = r.err.join("\n");
     expect(err).toContain("usage: mesh run");
     expect(err).toContain("--label a,b");
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// MM-3 AC-27 (and AC-40, a brand-new sid): `mesh accept <step> --launch` starts the session as
+// `mesh run <repo> --step <step>` would. A fake runner records the tmux calls (nothing starts); a
+// real hub and daemon (World) answer the claim and adopt the new session at its first hook.
+
+interface TmuxCall {
+  args: string[];
+  cwd?: string;
+  /** What the fake answered (the pane id for new-session / new-window). */
+  stdout: string;
+}
+
+/** A fake runner: tmux has no session yet, each new pane gets `%<base + n>`; every tmux call is recorded. */
+function fakeRunner(base: number): { runner: Runner; calls: TmuxCall[] } {
+  const calls: TmuxCall[] = [];
+  let n = 0;
+  const runner: Runner = async (cmd, args, opts) => {
+    if (cmd !== "tmux") return { code: 0, stdout: "", stderr: "" };
+    const a = [...args];
+    let res: RunResult = { code: 0, stdout: "", stderr: "" };
+    if (a.includes("has-session")) res = { code: 1, stdout: "", stderr: "no server" };
+    else if (a.includes("new-session") || a.includes("new-window")) res = { code: 0, stdout: `%${base + ++n}\n`, stderr: "" };
+    calls.push({ args: a, ...(opts?.cwd ? { cwd: opts.cwd } : {}), stdout: res.stdout.trim() });
+    return res;
+  };
+  return { runner, calls };
+}
+
+/** A mesh command as on this World machine (its config folder), with the fake runner. */
+async function meshAs(p: Person, runner: Runner, args: string[]): Promise<{ code: number; out: string; err: string }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const paths = resolvePaths({ MESH_CONFIG_DIR: p.dir, MESH_STATE_DIR: join(p.dir, "state"), CLAUDE_CONFIG_DIR: join(p.dir, "claude") }, p.dir);
+  // Run from inside the checkout, so `<repo>` resolves there (not by scanning the temp folder's neighbours).
+  const c: CliEnv = { io: { out: (t) => out.push(t), err: (t) => err.push(t) }, paths, env: {}, cwd: p.repoDir, self: ["mesh"], version: "0.0.0", runner };
+  let code: number;
+  try {
+    code = await dispatch(args, meshCommands(c), "0.0.0", (t) => out.push(t));
+  } catch (e) {
+    err.push(`mesh: ${e instanceof Error ? e.message : String(e)}`);
+    code = 1;
+  }
+  return { code, out: out.join("\n"), err: err.join("\n") };
+}
+
+/** The tmux calls with this step id and the pane ids made neutral, to compare two runs. */
+const tmuxShape = (calls: TmuxCall[], step: string): Json =>
+  JSON.parse(
+    JSON.stringify(calls.map((x) => ({ args: x.args, cwd: x.cwd })))
+      .replaceAll(step, "<step>")
+      .replace(/%\d+/g, "%<pane>"),
+  );
+
+const isNewPane = (x: TmuxCall) => x.args.includes("new-window") || x.args.includes("new-session");
+
+/** The pane of the window that runs the step (its argv names the step). */
+const stepPane = (calls: TmuxCall[], step: string): number | undefined => {
+  const c = calls.find((x) => isNewPane(x) && x.args.some((a) => a.includes(step)));
+  return c ? Number(c.stdout.replace("%", "")) : undefined;
+};
+
+describe("AC-27 mesh accept --launch", () => {
+  let world: World | undefined;
+  afterEach(async () => {
+    await world?.stop();
+    world = undefined;
+  });
+
+  /** bob's machine B (`m2`, repo svc); alice (a login, no daemon) owns a goal with ready steps a and b. */
+  async function setup(): Promise<{ w: World; B: Person; alice: string; G: string }> {
+    const w = new World();
+    world = w;
+    await w.start(["alice", "bob", "carol"]);
+    const B = await w.person("bob", "svc", { hostname: "host-b" });
+    expect((await w.api(B, "POST", `/v1/machines/${w.machineOf(B)}/name`, { nickname: "m2" })).status).toBe(200);
+    const alice = (await w.login("alice", { hostname: "alice-a1" })).token;
+    const g = await w.call(alice, "POST", "/v1/goals", { title: "launch goal", primaryRepo: "svc" });
+    expect(g.status, JSON.stringify(g.json)).toBe(201);
+    const G = g.json.id as string;
+    const plan = ["a", "b"].map((id) => ({ id, repo: "svc", kind: "implement", title: `Title ${id}`, brief: "b", deps: [] }));
+    const p = await w.call(alice, "POST", `/v1/goals/${G}/plan`, { steps: plan, approve: true });
+    expect(p.status, JSON.stringify(p.json)).toBe(201);
+    return { w, B, alice, G };
+  }
+  const stepOf = async (w: World, token: string, id: string): Promise<Json> => (await w.call(token, "GET", `/v1/steps/${id}`)).json.context.step;
+
+  it("test_AC27_launch_accepts_and_starts", async () => {
+    const { w, B, alice, G } = await setup();
+    const plain = `${G}.a`;
+    const offered = `${G}.b`;
+    // The recorded call of `mesh run <repo> --step <step>` (a step without an offer).
+    const ref = fakeRunner(800);
+    const ran = await meshAs(B, ref.runner, ["run", "svc", "--step", plain]);
+    expect(ran.code, ran.err).toBe(0);
+    expect(ref.calls.some(isNewPane)).toBe(true);
+    // b offered to B (alice offers; bob's policy is self, so it waits for him), then mesh accept b --launch.
+    const a = await w.call(alice, "POST", `/v1/steps/${offered}/assign`, { to: "bob/m2" });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    expect((await stepOf(w, alice, offered)).offer.state).toBe("offered");
+    const launch = fakeRunner(900);
+    const r = await meshAs(B, launch.runner, ["accept", offered, "--launch"]);
+    expect(r.code, r.err).toBe(0);
+    // The same tmux calls as mesh run <repo> --step <step>.
+    expect(tmuxShape(launch.calls, offered)).toStrictEqual(tmuxShape(ref.calls, plain));
+    // The claim from this machine is the accept.
+    expect((await stepOf(w, alice, offered)).offer.state).toBe("accepted");
+    // The new session's first hook (AC-40: a brand-new sid, never synced): the offer is held by that sid.
+    const pane = stepPane(launch.calls, offered);
+    expect(pane, "the step's window").toBeDefined();
+    await w.hook(B, "SessionStart", pane as number);
+    const s = w.session(B, pane as number);
+    expect(s?.step).toBe(offered);
+    await w.flush();
+    await w.flush();
+    expect(await stepOf(w, alice, offered)).toMatchObject({ state: "claimed", holderSid: s.sid, offer: { state: "accepted" } });
+    expect((await w.hub.svc.store.events(0, 100_000)).filter((e) => e.type === "step.accepted" && e.step === offered)).toHaveLength(1);
+  }, 30_000);
+
+  it("test_AC27_launch_accepts_and_starts_step_header", async () => {
+    // The real path: mesh run sets MESH_STEP in the window, and the hook sends it as X-Mesh-Step.
+    const { w, B, alice, G } = await setup();
+    const offered = `${G}.b`;
+    const a = await w.call(alice, "POST", `/v1/steps/${offered}/assign`, { to: "bob/m2" });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    const launch = fakeRunner(920);
+    const r = await meshAs(B, launch.runner, ["accept", offered, "--launch"]);
+    expect(r.code, r.err).toBe(0);
+    expect((await stepOf(w, alice, offered)).offer.state).toBe("accepted");
+    const pane = stepPane(launch.calls, offered);
+    expect(pane, "the step's window").toBeDefined();
+    await w.hook(B, "SessionStart", pane as number, {}, { step: offered });
+    const s = w.session(B, pane as number);
+    expect(s?.step).toBe(offered);
+    await w.flush();
+    await w.flush();
+    expect(await stepOf(w, alice, offered)).toMatchObject({ state: "claimed", holderSid: s.sid, offer: { state: "accepted" } });
+    expect((await w.hub.svc.store.events(0, 100_000)).filter((e) => e.type === "step.accepted" && e.step === offered)).toHaveLength(1);
+  }, 30_000);
+
+  it("test_AC27_launch_other_machine_offer", async () => {
+    const { w, B, alice, G } = await setup();
+    const id = `${G}.b`;
+    const C = await w.person("carol", "svc", { hostname: "carol-c" });
+    expect((await w.api(C, "POST", `/v1/machines/${w.machineOf(C)}/name`, { nickname: "c" })).status).toBe(200);
+    const a = await w.call(alice, "POST", `/v1/steps/${id}/assign`, { to: "carol/c" });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    const launch = fakeRunner(950);
+    const r = await meshAs(B, launch.runner, ["accept", id, "--launch"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(`${id} is offered to c`);
+    expect(launch.calls.filter(isNewPane)).toEqual([]);
+    expect(await stepOf(w, alice, id)).toMatchObject({ state: "ready", offer: { state: "offered" } });
+    // Positive control: from carol's machine C the same command accepts and starts the session.
+    const fromC = fakeRunner(960);
+    const ok = await meshAs(C, fromC.runner, ["accept", id, "--launch"]);
+    expect(ok.code, ok.err).toBe(0);
+    expect(fromC.calls.some(isNewPane)).toBe(true);
+    expect((await stepOf(w, alice, id)).offer.state).toBe("accepted");
   }, 30_000);
 });

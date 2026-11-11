@@ -142,3 +142,34 @@ test("filter the board by topics and tag a goal on its page", async ({ page, req
   await topics.getByLabel("Add a topic").selectOption("e2e-perf");
   await expect(topics.locator(".chip")).toHaveText(["e2e-dplane×", "e2e-perf×"]);
 });
+
+// MM-3 AC-32: the step panel shows the step's offer (`p.offer`, the text of offerText).
+test("test_AC32_goal_step_panel", async ({ page, request }) => {
+  const login = await (await request.post("/auth/team/login", { data: { token: "bob-e2e-token", hostname: "e2e-offer-host", install: "e2e-offer-install" } })).json();
+  const auth = { authorization: `Bearer ${login.token as string}` };
+  const goal = await (await request.post("/v1/goals", { headers: auth, data: { title: "Offered steps", primaryRepo: "frr" } })).json();
+  const plan = await request.post(`/v1/goals/${goal.id}/plan`, {
+    headers: auth,
+    data: {
+      approve: true,
+      steps: [
+        { id: "build", repo: "frr", kind: "implement", title: "build", brief: "b" },
+        { id: "docs", repo: "frr", kind: "implement", title: "docs", brief: "d" },
+      ],
+    },
+  });
+  expect(plan.ok()).toBeTruthy();
+  // Offered to the machine by its id: the target text is its hostname (it has no nickname).
+  const offered = await request.post(`/v1/steps/${goal.id}.build/assign`, { headers: auth, data: { to: login.machine } });
+  expect(offered.status()).toBe(200);
+  await signIn(page);
+  await page.goto(`/#/goal/${goal.id}`);
+  await page.locator(`[data-step="${goal.id}.build"]`).click();
+  const panel = page.getByLabel("step details");
+  await expect(panel).toContainText(`mesh run frr --step ${goal.id}.build`);
+  await expect(panel.locator("p.offer")).toHaveText("offered to e2e-offer-host by @bob");
+  // A step without an offer has no p.offer (its panel shows otherwise).
+  await page.locator(`[data-step="${goal.id}.docs"]`).click();
+  await expect(panel).toContainText(`mesh run frr --step ${goal.id}.docs`);
+  await expect(panel.locator("p.offer")).toHaveCount(0);
+});

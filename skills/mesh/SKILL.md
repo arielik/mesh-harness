@@ -9,7 +9,7 @@ description: How to work inside mesh-harness, which tracks Claude Code sessions 
 
 mesh tracks this Claude Code session for your person and, when you hold a **step**, connects you
 to a shared plan. A goal (for example `G17`) has a plan of steps (`G17.api`, `G17.web`, …).
-Each step is held by one session at a time. The mesh MCP server gives you nine tools for this.
+Each step is held by one session at a time. The mesh MCP server gives you twelve tools for this.
 
 ## If you hold a step
 
@@ -45,6 +45,19 @@ and anything surprising.
   checkout's default is `labels: [a, b]` in `.mesh/agent.yaml`; your person sets a session's
   labels with `mesh label` and a machine's with `mesh machine label`.
 
+## Offers (assign)
+
+- `mesh_assign` offers a goal (`G17`) or a step (`G17.api`) to another machine
+  (`to: "<machine>"`) or a session on it (`to: "<machine>/<session>"`). Their accept policy
+  decides whether it is taken automatically; otherwise it waits for them. You hear back by message
+  when it is accepted, declined, expires, and later when it is done, fails or has a question.
+  `stick: true` on a goal offers its later ready steps to the same target too.
+- `mesh_offers` lists steps offered to your person's machines; `mesh_accept` takes one for this
+  session (it returns the brief, as `mesh_claim` does). Only accept when your person asked.
+- `mesh_next` lists steps offered to this machine first.
+- A step offered to you and accepted for this session arrives as a message that tells you to call
+  `mesh_context`: do that, then work on it as on any step you hold.
+
 ## Asking your person
 
 When you need a decision to continue a step, call `mesh_ask` with the question, then **end your
@@ -79,4 +92,8 @@ your person.
 | `mesh machine name <nickname>` | give this machine a short name (`--machine` names another) |
 | `mesh label <session> a,b` | say what a session is for (`--add`, `--rm`, `--clear`); `mesh run --label a,b` labels new sessions |
 | `mesh machine label a,b` | label this machine (`--add`, `--rm`, `--clear`, `--machine` for another) |
+| `mesh assign <goal\|step> --to <machine>[/<session>]` | offer work to another machine or session (`--stick`, `--note`) |
+| `mesh offers` | steps offered to your machines; `mesh accept <step>` / `mesh decline <step>` |
+| `mesh withdraw <goal\|step>` | withdraw an offer, or end a goal's stick |
+| `mesh session accept <session> --from <rules>` | whose offers a session accepts automatically (`--off`, `--clear`) |
 | `mesh doctor` | check the installation |

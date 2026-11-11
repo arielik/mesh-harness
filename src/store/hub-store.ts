@@ -151,12 +151,15 @@ export interface MachineRow {
   reposAt?: number;
   /** MM-2: what the machine has or is for, sorted; absent when none. */
   labels?: string[];
+  /** MM-3: the accept policy its daemon last reported; absent when never reported. */
+  accept?: string[];
 }
 
-/** Facts a sync reports about its machine (MM-1). */
+/** Facts a sync reports about its machine (MM-1; `accept`: MM-3). */
 export interface MachineFacts {
   share?: ShareLevel | undefined;
   repos?: Repo[] | undefined;
+  accept?: string[] | undefined;
 }
 
 export interface HubSession {
@@ -256,7 +259,7 @@ type MachineDbRow = {
   extra?: string | null;
 };
 /** The JSON column `machine.extra`: per-machine facts beyond the indexed columns. */
-type MachineExtra = { repos?: Repo[]; reposAt?: number; labels?: string[] };
+type MachineExtra = { repos?: Repo[]; reposAt?: number; labels?: string[]; accept?: string[] };
 const machineExtra = (raw: string | null | undefined): MachineExtra => (raw ? (JSON.parse(raw) as MachineExtra) : {});
 const machineFrom = (r: MachineDbRow): MachineRow => {
   const x = machineExtra(r.extra);
@@ -272,6 +275,7 @@ const machineFrom = (r: MachineDbRow): MachineRow => {
     ...(Array.isArray(x.repos) ? { repos: x.repos } : {}),
     ...(typeof x.reposAt === "number" ? { reposAt: x.reposAt } : {}),
     ...(Array.isArray(x.labels) && x.labels.length ? { labels: x.labels } : {}),
+    ...(Array.isArray(x.accept) ? { accept: x.accept } : {}),
   };
 };
 
@@ -481,14 +485,17 @@ export class HubStore {
    * so two syncs of one machine never lose each other's keys. A sync never changes the labels (MM-2).
    */
   async touchMachine(id: string, now: number, counts: Record<string, number>, facts?: MachineFacts): Promise<void> {
-    if (facts?.share === undefined && facts?.repos === undefined) {
+    if (facts?.share === undefined && facts?.repos === undefined && facts?.accept === undefined) {
       await this.db.run("UPDATE machine SET last_seen = ?, counts = ? WHERE id = ?", now, json(counts), id);
       return;
     }
     await this.tx(async () => {
       const r = await this.db.get<{ extra: string | null }>(`SELECT extra FROM machine WHERE id = ?${this.db.dialect.forUpdate}`, id);
       if (!r) return;
-      const extra = facts.repos !== undefined ? json({ ...machineExtra(r.extra), repos: facts.repos, reposAt: now }) : r.extra;
+      let x = machineExtra(r.extra);
+      if (facts.repos !== undefined) x = { ...x, repos: facts.repos, reposAt: now };
+      if (facts.accept !== undefined) x = { ...x, accept: [...facts.accept] };
+      const extra = facts.repos !== undefined || facts.accept !== undefined ? json(x) : r.extra;
       await this.db.run("UPDATE machine SET last_seen = ?, counts = ?, share = COALESCE(?, share), extra = ? WHERE id = ?", now, json(counts), facts.share ?? null, extra, id);
     });
   }

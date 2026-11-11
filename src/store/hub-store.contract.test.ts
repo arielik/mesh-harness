@@ -642,6 +642,100 @@ function contract(d: Driver) {
       expect(await labelsOf(s, "m1")).toStrictEqual(["c"]);
     });
   });
+
+  // MM-3: the accept policy on the machine row (AC-06), machine-wide messages.
+  describe("MM-3 machine accept", () => {
+    const A = { id: "example.org/team/a", name: "a" };
+    const B = { id: "example.org/team/b", name: "b" };
+    // Machine facts gain `accept` (not in the MM-2 type).
+    type Facts = Parameters<HubStore["touchMachine"]>[3];
+    const facts = (f: Record<string, unknown>) => f as Facts;
+
+    async function machines(s: HubStore): Promise<void> {
+      await s.upsertIdentity({ provider: "oidc", subject: "1", name: "Ada", groups: [] }, T0);
+      await s.upsertMachine({ id: "m1", userId: "ada", hostname: "one" }, T0);
+      await s.upsertMachine({ id: "m2", userId: "ada", hostname: "two" }, T0);
+    }
+    const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
+
+    it("test_AC06_schema_version_6", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(6);
+      expect(HUB_MIGRATIONS.length).toBe(6);
+      expect(HUB_MIGRATIONS_PG.length).toBe(6);
+    });
+
+    /** m1 with repos, labels, share and nickname, then an accept-only touch. */
+    async function full(s: HubStore) {
+      await machines(s);
+      await s.touchMachine("m1", T0 + 1, { idle: 1 }, { share: "me", repos: [A] });
+      await s.setMachineLabels("m1", ["gpu"]);
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      const before = await s.getMachine("m1");
+      expect(before).toMatchObject({ share: "me", repos: [A], reposAt: T0 + 1, labels: ["gpu"], nickname: "desk" });
+      await s.touchMachine("m1", T0 + 2, { idle: 1 }, facts({ accept: ["self"] }));
+      return before;
+    }
+
+    it("test_AC06_touch_with_accept_keeps_others", async () => {
+      const s = await store();
+      const before = await full(s);
+      expect(await s.getMachine("m1")).toStrictEqual({ ...before, lastSeen: T0 + 2, accept: ["self"] });
+      expect(((await s.listMachines()).find((m) => m.id === "m1") as { accept?: string[] }).accept).toStrictEqual(["self"]);
+    });
+
+    it("test_AC06_touch_repos_only_keeps_accept", async () => {
+      const s = await store();
+      await full(s);
+      await s.touchMachine("m1", T0 + 3, { idle: 1 }, { repos: [B] });
+      const row = await s.getMachine("m1");
+      // Positive control: the touch ran.
+      expect(row).toMatchObject({ repos: [B], reposAt: T0 + 3 });
+      expect(await acceptOf(s, "m1")).toStrictEqual(["self"]);
+      await s.touchMachine("m1", T0 + 4, { idle: 1 });
+      expect(await acceptOf(s, "m1")).toStrictEqual(["self"]);
+      // A new policy replaces the old one.
+      await s.touchMachine("m1", T0 + 5, { idle: 1 }, facts({ accept: ["user:bea", "self"] }));
+      expect(await acceptOf(s, "m1")).toStrictEqual(["user:bea", "self"]);
+    });
+
+    it("test_AC06_set_labels_keeps_accept", async () => {
+      const s = await store();
+      await full(s);
+      await s.setMachineLabels("m1", ["a", "b"]);
+      expect((await s.getMachine("m1"))?.labels).toStrictEqual(["a", "b"]);
+      expect(await acceptOf(s, "m1")).toStrictEqual(["self"]);
+    });
+
+    it("test_AC06_nickname_keeps_accept", async () => {
+      const s = await store();
+      await full(s);
+      expect(await s.setMachineNickname("m1", "lab")).toBe(true);
+      expect((await s.getMachine("m1"))?.nickname).toBe("lab");
+      expect(await acceptOf(s, "m1")).toStrictEqual(["self"]);
+    });
+
+    it("test_AC06_no_accept_no_key", async () => {
+      const s = await store();
+      await machines(s);
+      await s.touchMachine("m2", T0 + 2, { idle: 1 }, { share: "me", repos: [A] });
+      await s.touchMachine("m1", T0 + 2, { idle: 1 }, facts({ accept: ["self"] }));
+      // Positive control: m1 has it; m2, never given one, has no key.
+      expect(await acceptOf(s, "m1")).toStrictEqual(["self"]);
+      const m2 = await s.getMachine("m2");
+      expect(m2).not.toHaveProperty("accept");
+      expect(m2).toStrictEqual({ id: "m2", userId: "ada", hostname: "two", lastSeen: T0 + 2, counts: { idle: 1 }, share: "me", repos: [A], reposAt: T0 + 2 });
+    });
+
+    it("test_AC06_machine_wide_message", async () => {
+      const s = await store();
+      await machines(s);
+      const m = await s.addMessage({ toMachine: "m1", toSid: "", fromUser: "ada", kind: "offer", text: "MESH: offer", data: { step: "G1.a" } }, T0);
+      await s.addMessage({ toMachine: "m1", toSid: "s1", fromUser: "ada", kind: "note", text: "to a session" }, T0 + 1);
+      const inbox = await s.inbox("m1");
+      expect(inbox.map((x) => x.text)).toEqual(["MESH: offer", "to a session"]);
+      expect(inbox.find((x) => x.id === m.id)).toMatchObject({ toSid: "", kind: "offer", data: { step: "G1.a" } });
+    });
+  });
 }
 
 describe("store contract: sqlite", () => contract(sqlite));
