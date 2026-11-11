@@ -61,6 +61,8 @@ export interface HubApiRoute {
 }
 
 const TOPIC_QUERY = "topic names, repeated or comma-separated: only goals with every one (`all`: every goal)";
+/** MM-4: the query of the suggest routes. */
+const SUGGEST_QUERY = { team: "1: also everyone's machines", any: "1: also machines without the repo" };
 
 export const RevokeRequest = z.object({ userId: z.string().optional(), machineId: z.string().optional() });
 
@@ -117,6 +119,7 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/topics/:name/delete", rule: "member", scope: "goals:write", tag: "goals", summary: "Delete a topic (its creator or an admin) and untag its goals." },
   { method: "GET", path: "/v1/goals/:id/timeline", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal's history." },
   { method: "POST", path: "/v1/goals/:id/assign", rule: "member", tag: "goals", body: AssignRequest, summary: "Offer every ready step of a goal; --stick: later ready steps too." },
+  { method: "GET", path: "/v1/goals/:id/suggest", rule: "member", tag: "goals", query: SUGGEST_QUERY, summary: "Machines to offer a goal's ready steps to, best first, each with a reason (read-only)." },
   { method: "POST", path: "/v1/goals/:id/withdraw", rule: "member", tag: "goals", summary: "End a goal's stick and withdraw your open offers on it." },
 
   {
@@ -139,6 +142,7 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/steps/:id/resume", rule: "member", tag: "steps", body: ResumeRequest, summary: "Resume a parked step." },
   { method: "POST", path: "/v1/steps/:id/take", rule: "member", tag: "steps", body: ClaimRequest, summary: "Take over a step held by someone else (after the takeover threshold)." },
   { method: "POST", path: "/v1/steps/:id/assign", rule: "member", tag: "steps", body: AssignRequest, summary: "Offer a ready step to a machine or session." },
+  { method: "GET", path: "/v1/steps/:id/suggest", rule: "member", tag: "steps", query: SUGGEST_QUERY, summary: "Machines to offer a ready step to, best first, each with a reason (read-only)." },
   { method: "POST", path: "/v1/steps/:id/accept", rule: "member", tag: "steps", body: ClaimRequest, summary: "Accept a step offered to this machine: claim it for a session." },
   { method: "POST", path: "/v1/steps/:id/decline", rule: "member", tag: "steps", body: DeclineRequest, summary: "Decline an offer (the target machine's owner or a policy match)." },
   { method: "POST", path: "/v1/steps/:id/withdraw", rule: "member", tag: "steps", summary: "Withdraw an open offer (the offerer or an admin)." },
@@ -146,7 +150,7 @@ export const HUB_API: readonly HubApiRoute[] = [
 
   { method: "POST", path: "/v1/questions", rule: "member", tag: "questions", body: AskRequest, status: 201, summary: "Ask a person a question (mesh_ask)." },
   { method: "POST", path: "/v1/questions/:id/answer", rule: "member", tag: "questions", body: AnswerRequest, summary: "Answer a question; the answer is delivered to the asking session." },
-  { method: "POST", path: "/v1/messages", rule: "member", tag: "questions", body: MessageRequest, status: 201, summary: "Send a message to a session or to whoever holds a step." },
+  { method: "POST", path: "/v1/messages", rule: "member", tag: "questions", body: MessageRequest, status: 201, summary: "Send a message to a session (by sid or <machine>/<session>) or to whoever holds a step." },
 
   {
     method: "GET",

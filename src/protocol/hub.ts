@@ -171,7 +171,17 @@ export const GateDecision = z.object({ comment: z.string().max(4000).optional(),
 export const ResumeRequest = z.object({ comment: z.string().max(4000).optional() });
 export const AskRequest = z.object({ text: z.string().min(1).max(4000), sid: z.string().optional(), step: z.string().optional() });
 export const AnswerRequest = z.object({ text: z.string().min(1).max(4000) });
-export const MessageRequest = z.object({ toSid: z.string().optional(), toStep: z.string().optional(), text: z.string().min(1).max(8000) }).refine((m) => m.toSid || m.toStep, "toSid or toStep is required");
+/** `to` (MM-4): `<machine>/<session>` or `<user>/<nickname>/<session>`, resolved like an assign target. */
+export const MessageRequest = z
+  .object({ toSid: z.string().optional(), to: z.string().min(1).max(200).optional(), toStep: z.string().optional(), text: z.string().min(1).max(8000) })
+  .refine((m) => m.toSid || m.to || m.toStep, "toSid, to or toStep is required");
+
+/** Reply of `POST /v1/messages`. `to` (MM-4): `<machine name>/<session name>`, only when the request used `to`. */
+export interface MessageResult {
+  id: number;
+  toSid: string;
+  to?: string | undefined;
+}
 
 export interface UserView {
   id: string;
@@ -253,6 +263,40 @@ export interface GoalAssignResult {
   goal: Goal;
   steps: Step[];
   auto: boolean;
+}
+
+/**
+ * MM-4: one machine of `GET /v1/steps/:id/suggest` / `GET /v1/goals/:id/suggest`. `machine` = id;
+ * `user` = owner; `name` = machine name; `to` = what to pass as `--to`; `repo` = has every subject
+ * repo; `idle` = idle candidate sessions; `session` = sid of the best one (a hint; absent when
+ * `idle` is 0); `sessionLabels` / `machineLabels` = wanted labels of that session / the machine,
+ * sorted; `auto` = the machine policy's verdict for an offer from the caller.
+ */
+export interface Suggestion {
+  machine: string;
+  user: string;
+  name: string;
+  to: string;
+  online: boolean;
+  lastSeen: number;
+  repo: boolean;
+  idle: number;
+  session?: string | undefined;
+  sessionLabels: string[];
+  machineLabels: string[];
+  auto: boolean;
+  reason: string;
+}
+
+/** MM-4: reply of the suggest routes; `suggestions` in rank order. */
+export interface SuggestView {
+  target: string;
+  steps: string[];
+  repos: string[];
+  topics: string[];
+  team: boolean;
+  any: boolean;
+  suggestions: Suggestion[];
 }
 
 /** MM-3: reply of `POST /v1/goals/:id/withdraw`: the step ids whose offers were withdrawn, sorted. */

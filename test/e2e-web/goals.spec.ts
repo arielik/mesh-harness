@@ -173,3 +173,239 @@ test("test_AC32_goal_step_panel", async ({ page, request }) => {
   await expect(panel).toContainText(`mesh run frr --step ${goal.id}.docs`);
   await expect(panel.locator("p.offer")).toHaveCount(0);
 });
+
+// ---------------------------------------------------------------------------------------------
+// MM-4 AC-15 / AC-16: the Assign button on a ready step and on a goal, the ranked picker. The e2e
+// hub is shared across spec files: every repo, host and nickname here is unique per test, and rows
+// are found only by `data-machine`, never counted.
+
+interface Machine {
+  token: string;
+  machine: string;
+}
+let mm4 = 0;
+const runId = () => `${Date.now().toString(36)}${(++mm4).toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+const repoOf = (id: string) => ({ id, name: id.slice(id.lastIndexOf("/") + 1) });
+
+async function machineOf(request: APIRequestContext, token: string, tag: string, repos: string[], nickname?: string): Promise<Machine> {
+  const r = await request.post("/auth/team/login", { data: { token, hostname: `host-${tag}`, install: `inst-${tag}`.slice(0, 64) } });
+  expect(r.ok()).toBeTruthy();
+  const j = await r.json();
+  const m = { token: j.token as string, machine: j.machine as string };
+  const s = await request.post("/v1/sync", {
+    headers: { authorization: `Bearer ${m.token}` },
+    data: { events: [], counts: {}, sessions: [], machine: { share: "me", accept: ["self"], repos: repos.map(repoOf) } },
+  });
+  expect(s.ok()).toBeTruthy();
+  if (nickname) expect((await request.post(`/v1/machines/${m.machine}/name`, { headers: { authorization: `Bearer ${m.token}` }, data: { nickname } })).ok()).toBeTruthy();
+  return m;
+}
+
+interface StepIn {
+  id: string;
+  repo: string;
+  deps?: string[];
+  kind?: string;
+}
+async function goalOf(request: APIRequestContext, m: Machine, title: string, steps: StepIn[]): Promise<string> {
+  const auth = { authorization: `Bearer ${m.token}` };
+  const goal = await (await request.post("/v1/goals", { headers: auth, data: { title } })).json();
+  const plan = await request.post(`/v1/goals/${goal.id}/plan`, {
+    headers: auth,
+    data: { approve: true, steps: steps.map((s) => ({ id: s.id, repo: s.repo, kind: s.kind ?? "implement", title: s.id, brief: `Brief of step ${s.id}.`, deps: s.deps ?? [], ...(s.kind === "gate" ? { gate: "R1" } : {}) })) },
+  });
+  expect(plan.ok()).toBeTruthy();
+  return goal.id as string;
+}
+
+async function hubStep(request: APIRequestContext, m: Machine, id: string) {
+  return (await (await request.get(`/v1/steps/${id}`, { headers: { authorization: `Bearer ${m.token}` } })).json()).context.step;
+}
+
+async function signInAs(page: Page, token: string) {
+  await page.goto("/");
+  await page.getByLabel("Token token").fill(token);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+}
+
+/** bob's machine (nicknamed, inventory alpha-<run>), alice's machine with the same repo, and bob's goal with ready steps a and b. */
+async function assignCast(request: APIRequestContext) {
+  const run = runId();
+  const repo = `git.example.com/e2e/alpha-${run}`;
+  const bob = await machineOf(request, "bob-e2e-token", `bob-${run}`, [repo], `b-${run}`.slice(0, 32));
+  const alice = await machineOf(request, "alice-e2e-token", `alice-${run}`, [repo]);
+  const G = await goalOf(request, bob, `Assign ${run}`, [
+    { id: "a", repo },
+    { id: "b", repo },
+  ]);
+  return { run, repo, bob, alice, G };
+}
+
+async function openStepPicker(page: Page, G: string, id: string) {
+  await page.goto(`/#/goal/${G}`);
+  await page.locator(`[data-step="${id}"]`).click();
+  await page.getByLabel("step details").getByRole("button", { name: "Assign step" }).click();
+  const picker = page.getByLabel("assign picker");
+  await expect(picker).toBeVisible();
+  return picker;
+}
+
+test("test_AC15_step_assign_picker", async ({ page, request }) => {
+  const k = await assignCast(request);
+  const id = `${k.G}.a`;
+  await signInAs(page, "bob-e2e-token");
+  const picker = await openStepPicker(page, k.G, id);
+  await expect(picker.getByLabel("Team machines")).not.toBeChecked();
+  await expect(picker.getByLabel("Without the repo")).not.toBeChecked();
+  const view = await (await request.get(`/v1/steps/${id}/suggest`, { headers: { authorization: `Bearer ${k.bob.token}` } })).json();
+  const mine = (view.suggestions as { machine: string; to: string; reason: string }[]).find((s) => s.machine === k.bob.machine);
+  expect(mine).toBeDefined();
+  const row = picker.locator(`li.suggestion[data-machine="${k.bob.machine}"]`);
+  await expect(row.locator("strong.to")).toHaveText(mine?.to as string);
+  await expect(row.locator("span.reason")).toHaveText(mine?.reason as string);
+
+  // test_AC15_assign_click
+  await row.getByRole("button", { name: `Assign to ${mine?.to}` }).click();
+  await expect(picker).toBeHidden();
+  await expect(page.locator("p.assigned")).toHaveText(`Offered ${id} to ${mine?.to} (auto-accept).`);
+  await expect(page.getByLabel("step details").locator("p.offer")).toBeVisible({ timeout: 20_000 });
+  const step = await hubStep(request, k.bob, id);
+  expect(step.offer.state).toBe("offered");
+  expect(step.offer.to.machine).toBe(k.bob.machine);
+  await page.locator(`[data-step="${id}"]`).click();
+  await expect(page.getByLabel("step details").getByRole("button", { name: "Assign step" })).toHaveCount(0);
+});
+
+test("test_AC15_team_checkbox", async ({ page, request }) => {
+  const k = await assignCast(request);
+  await signInAs(page, "bob-e2e-token");
+  const picker = await openStepPicker(page, k.G, `${k.G}.b`);
+  await expect(picker.locator(`li.suggestion[data-machine="${k.bob.machine}"]`)).toBeVisible();
+  await expect(picker.locator(`li.suggestion[data-machine="${k.alice.machine}"]`)).toHaveCount(0);
+  await picker.getByLabel("Team machines").check();
+  await expect(picker.locator(`li.suggestion[data-machine="${k.alice.machine}"]`)).toBeVisible();
+});
+
+test("test_AC15_any_checkbox", async ({ page, request }) => {
+  const k = await assignCast(request);
+  const bare = await machineOf(request, "bob-e2e-token", `bob-norepo-${k.run}`, []);
+  await signInAs(page, "bob-e2e-token");
+  const picker = await openStepPicker(page, k.G, `${k.G}.b`);
+  await expect(picker.locator(`li.suggestion[data-machine="${k.bob.machine}"]`)).toBeVisible();
+  await expect(picker.locator(`li.suggestion[data-machine="${bare.machine}"]`)).toHaveCount(0);
+  await picker.getByLabel("Without the repo").check();
+  await expect(picker.locator(`li.suggestion[data-machine="${bare.machine}"]`)).toBeVisible();
+});
+
+test("test_AC15_assign_error", async ({ page, request }) => {
+  const k = await assignCast(request);
+  const id = `${k.G}.a`;
+  await signInAs(page, "bob-e2e-token");
+  const picker = await openStepPicker(page, k.G, id);
+  const row = picker.locator(`li.suggestion[data-machine="${k.bob.machine}"]`);
+  await expect(row).toBeVisible();
+  // The step stops being ready after the picker opened.
+  expect((await request.post(`/v1/steps/${id}/claim`, { headers: { authorization: `Bearer ${k.bob.token}` }, data: {} })).ok()).toBeTruthy();
+  await row.getByRole("button", { name: /^Assign to / }).click();
+  await expect(page.locator("p.error")).toContainText(id);
+  await expect(picker).toBeVisible();
+});
+
+test("test_AC16_goal_assign", async ({ page, request }) => {
+  const run = runId();
+  const repo = `git.example.com/e2e/alpha-${run}`;
+  const bob = await machineOf(request, "bob-e2e-token", `bob-${run}`, [repo], `g-${run}`.slice(0, 32));
+  const G = await goalOf(request, bob, `Goal assign ${run}`, [{ id: "a", repo }]);
+  await signInAs(page, "bob-e2e-token");
+  await page.goto(`/#/goal/${G}`);
+  await expect(page.locator(`[data-step="${G}.a"]`)).toBeVisible();
+  const asked = page.waitForRequest((r) => r.url().includes(`/v1/goals/${G}/suggest`));
+  await page.getByRole("button", { name: "Assign goal" }).click();
+  await asked;
+  const picker = page.getByLabel("assign picker");
+  const row = picker.locator(`li.suggestion[data-machine="${bob.machine}"]`);
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: /^Assign to / }).click();
+  await expect(picker).toBeHidden();
+  const step = await hubStep(request, bob, `${G}.a`);
+  expect(step.offer.state).toBe("offered");
+  expect(step.offer.to.machine).toBe(bob.machine);
+});
+
+test("test_AC16_no_goal_button", async ({ page, request }) => {
+  const run = runId();
+  const repo = `git.example.com/e2e/alpha-${run}`;
+  const bob = await machineOf(request, "bob-e2e-token", `bob-${run}`, [repo]);
+  const auth = { authorization: `Bearer ${bob.token}` };
+  const gateOnly = await goalOf(request, bob, `Gate only ${run}`, [{ id: "g", repo, kind: "gate" }]);
+  const blockedOnly = await goalOf(request, bob, `Blocked only ${run}`, [
+    { id: "a", repo },
+    { id: "b", repo, deps: ["a"] },
+  ]);
+  expect((await request.post(`/v1/steps/${blockedOnly}.a/claim`, { headers: auth, data: {} })).ok()).toBeTruthy();
+  const done = await goalOf(request, bob, `Done ${run}`, [{ id: "a", repo }]);
+  expect((await request.post(`/v1/steps/${done}.a/claim`, { headers: auth, data: {} })).ok()).toBeTruthy();
+  expect((await request.post(`/v1/steps/${done}.a/done`, { headers: auth, data: { summary: "ok" } })).ok()).toBeTruthy();
+  const open = await goalOf(request, bob, `Open ${run}`, [{ id: "a", repo }]);
+  try {
+    await signInAs(page, "bob-e2e-token");
+    // Positive control: a goal with an offerable step shows the button.
+    await page.goto(`/#/goal/${open}`);
+    await expect(page.getByRole("button", { name: "Assign goal" })).toBeVisible();
+    for (const G of [gateOnly, blockedOnly, done]) {
+      await page.goto(`/#/goal/${G}`);
+      await expect(page.getByText(new RegExp(`^${G} · `))).toBeVisible();
+      await expect(page.getByRole("button", { name: "Assign goal" }), G).toHaveCount(0);
+    }
+  } finally {
+    await passGate(request, bob, `${gateOnly}.g`);
+  }
+});
+
+/** Pass a ready gate, so it does not stay in an admin's attention list (the e2e hub is shared). */
+async function passGate(request: APIRequestContext, m: Machine, id: string) {
+  await request.post(`/v1/steps/${id}/approve`, { headers: { authorization: `Bearer ${m.token}` }, data: { comment: "e2e cleanup" } });
+}
+
+test("test_AC16_no_step_button", async ({ page, request }) => {
+  const run = runId();
+  const repo = `git.example.com/e2e/alpha-${run}`;
+  const bob = await machineOf(request, "bob-e2e-token", `bob-${run}`, [repo]);
+  const G = await goalOf(request, bob, `Step buttons ${run}`, [
+    { id: "a", repo },
+    { id: "o", repo },
+    { id: "g", repo, kind: "gate" },
+    { id: "z", repo, deps: ["a"] },
+  ]);
+  expect((await request.post(`/v1/steps/${G}.o/assign`, { headers: { authorization: `Bearer ${bob.token}` }, data: { to: bob.machine } })).ok()).toBeTruthy();
+  try {
+    await signInAs(page, "bob-e2e-token");
+    await page.goto(`/#/goal/${G}`);
+    const panel = page.getByLabel("step details");
+    // Positive control: a ready step without an offer shows the button.
+    await page.locator(`[data-step="${G}.a"]`).click();
+    await expect(panel.getByRole("button", { name: "Assign step" })).toBeVisible();
+    for (const s of ["g", "z", "o"]) {
+      await page.locator(`[data-step="${G}.${s}"]`).click();
+      await expect(panel).toContainText(`Brief of step ${s}.`);
+      await expect(panel.getByRole("button", { name: "Assign step" }), s).toHaveCount(0);
+    }
+  } finally {
+    await passGate(request, bob, `${G}.g`);
+  }
+});
+
+test("test_AC16_empty_list_and_cancel", async ({ page, request }) => {
+  const run = runId();
+  const bob = await machineOf(request, "bob-e2e-token", `bob-${run}`, []);
+  const G = await goalOf(request, bob, `Nobody has it ${run}`, [{ id: "a", repo: `git.example.com/e2e/nobody-${run}` }]);
+  await signInAs(page, "bob-e2e-token");
+  const picker = await openStepPicker(page, G, `${G}.a`);
+  await expect(picker.locator("p.empty")).toHaveText("No machine to suggest.");
+  await expect(picker.locator("li.suggestion")).toHaveCount(0);
+  // test_AC16_cancel
+  await picker.getByRole("button", { name: "Cancel" }).click();
+  await expect(picker).toBeHidden();
+  expect((await hubStep(request, bob, `${G}.a`)).offer).toBeUndefined();
+});

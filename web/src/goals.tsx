@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { levels } from "../../src/core/dag.ts";
 import { partition, STEP_STAGES, stepStage } from "../../src/core/stages.ts";
 import type { Goal, Plan, Step } from "../../src/protocol/goal.ts";
-import type { GoalDetail, OfferLine, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
-import { offerText } from "../../src/core/offers.ts";
+import type { GoalDetail, OfferLine, StepView, SuggestView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import { assignText, offerText } from "../../src/core/offers.ts";
 import { api } from "./api.ts";
 
 export function ago(now: number, at: number | undefined): string {
@@ -255,16 +255,79 @@ function Dag({ detail, selected, onSelect }: { detail: GoalDetail; selected?: st
   );
 }
 
+/** MM-4: ranked machines for a step or a goal; one click offers it. */
+function AssignPicker({ kind, target, onAssigned, onCancel }: { kind: "step" | "goal"; target: string; onAssigned: (text: string) => void; onCancel: () => void }) {
+  const [team, setTeam] = useState(false);
+  const [any, setAny] = useState(false);
+  const [view, setView] = useState<SuggestView>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    const o = { team, any };
+    (kind === "step" ? api.suggestStep(target, o) : api.suggestGoal(target, o)).then(
+      (v) => {
+        if (!live) return;
+        setView(v);
+        setError(undefined);
+      },
+      (e: Error) => live && setError(e.message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [kind, target, team, any]);
+  const assign = (to: string) => {
+    const p = kind === "step" ? api.assignStep(target, to) : api.assignGoal(target, to);
+    p.then(
+      (r) => onAssigned(assignText(kind, target, to, r, false).join(" ")),
+      (e: Error) => setError(e.message),
+    );
+  };
+  return (
+    <div className="card picker" aria-label="assign picker">
+      <p className="picker-flags">
+        <label>
+          <input type="checkbox" checked={team} onChange={(e) => setTeam(e.target.checked)} /> Team machines
+        </label>
+        <label>
+          <input type="checkbox" checked={any} onChange={(e) => setAny(e.target.checked)} /> Without the repo
+        </label>
+      </p>
+      {view && view.suggestions.length === 0 && <p className="empty">No machine to suggest.</p>}
+      {view && view.suggestions.length > 0 && (
+        <ul>
+          {view.suggestions.map((s) => (
+            <li key={s.machine} className="suggestion" data-machine={s.machine}>
+              <strong className="to">{s.to}</strong> <span className="reason">{s.reason}</span>{" "}
+              <button className="small" aria-label={`Assign to ${s.to}`} onClick={() => assign(s.to)}>
+                Assign
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && <p className="error">{error}</p>}
+      <button className="small" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 function StepPanel({ id, now, offer, onChange }: { id: string; now: number; offer?: OfferLine | undefined; onChange: () => void }) {
   const [view, setView] = useState<StepView>();
   const [error, setError] = useState<string>();
   const [comment, setComment] = useState("");
   const [reopenIds, setReopenIds] = useState("");
+  const [picking, setPicking] = useState(false);
+  const [assigned, setAssigned] = useState<string>();
   const reload = useCallback(() => {
     api.step(id).then(setView, (e: Error) => setError(e.message));
   }, [id]);
   useEffect(() => {
     setView(undefined);
+    setPicking(false);
+    setAssigned(undefined);
     reload();
   }, [reload]);
   const act = (p: Promise<unknown>) =>
@@ -288,6 +351,27 @@ function StepPanel({ id, now, offer, onChange }: { id: string; now: number; offe
       <p className="brief">{step.brief}</p>
       {step.holderUser && <p>Holder: @{step.holderUser}</p>}
       {offer && <p className="offer">{offerText(offer)}</p>}
+      {assigned && <p className="assigned">{assigned}</p>}
+      {step.state === "ready" && step.kind !== "gate" && offer?.state !== "offered" && !picking && (
+        <p>
+          <button className="small" aria-label="Assign step" onClick={() => setPicking(true)}>
+            Assign
+          </button>
+        </p>
+      )}
+      {picking && (
+        <AssignPicker
+          kind="step"
+          target={step.id}
+          onAssigned={(text) => {
+            setPicking(false);
+            setAssigned(text);
+            reload();
+            onChange();
+          }}
+          onCancel={() => setPicking(false)}
+        />
+      )}
       {step.summary && (
         <p>
           <strong>Summary:</strong> {step.summary} {step.mr && <code>{step.mr}</code>} {step.branch && <code>{step.branch}</code>}
@@ -519,6 +603,8 @@ export function GoalPage({ id }: { id: string }) {
   const [tab, setTab] = useState<"steps" | "design" | "timeline">("steps");
   const [selected, setSelected] = useState<string>();
   const [error, setError] = useState<string>();
+  const [picking, setPicking] = useState(false);
+  const [assigned, setAssigned] = useState<string>();
   const load = useCallback(() => {
     api.goal(id).then((d) => {
       setDetail(d);
@@ -542,6 +628,8 @@ export function GoalPage({ id }: { id: string }) {
   const g = detail.goal;
   const now = Date.now();
   const visible = detail.steps.filter((s) => s.state !== "dropped");
+  const offerable = detail.steps.filter((s) => s.state === "ready" && s.kind !== "gate" && detail.offers?.[s.id]?.state !== "offered");
+  const canAssign = g.state !== "done" && g.state !== "dropped" && offerable.length > 0;
   const decide = (kind: "approve" | "revise", comment: string) => {
     const p = kind === "approve" ? api.approve(g.id, comment.trim() || undefined) : api.revise(g.id, comment.trim());
     p.then(
@@ -568,7 +656,25 @@ export function GoalPage({ id }: { id: string }) {
             Replan
           </button>
         )}
+        {canAssign && !picking && (
+          <button className="small" style={{ marginLeft: 12 }} aria-label="Assign goal" onClick={() => setPicking(true)}>
+            Assign
+          </button>
+        )}
       </p>
+      {picking && (
+        <AssignPicker
+          kind="goal"
+          target={g.id}
+          onAssigned={(text) => {
+            setPicking(false);
+            setAssigned(text);
+            load();
+          }}
+          onCancel={() => setPicking(false)}
+        />
+      )}
+      {assigned && <p className="assigned">{assigned}</p>}
       <GoalTopics goal={g} onChange={load} onError={setError} />
       {error && <p className="error">{error}</p>}
       <p className="stages" aria-label="step stages">

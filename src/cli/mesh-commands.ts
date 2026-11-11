@@ -25,7 +25,7 @@ import {
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { installPlugin, opencodeSupported, opencodeVersion, pluginStatus, uninstallPlugin, type PluginOptions } from "../opencode/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, paneSocket, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, parseAccept, parseLabels, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, parseAccept, parseLabels, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type MessageResult, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -69,7 +69,7 @@ export function setupCommand(c: CliEnv): Command {
     name: "setup",
     summary: "install mesh into Claude Code, or OpenCode with --agent opencode|all (--uninstall to remove)",
     async run(args) {
-      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions", "share", "accept", "assignments"]);
+      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions", "share", "accept", "assignments", "max-sessions"]);
       const notifyArg = a.str("notify");
       if (notifyArg !== undefined && !["desktop", "terminal", "both", "off"].includes(notifyArg)) {
         c.io.err("--notify must be desktop, terminal, both or off");
@@ -98,6 +98,18 @@ export function setupCommand(c: CliEnv): Command {
         return 2;
       }
       const assignArg = assignRaw as DaemonConfig["assignments"] | undefined;
+      // MM-4: how many live sessions an offer may launch into.
+      let maxArg: number | "off" | undefined;
+      if (a.has("max-sessions")) {
+        const raw = a.str("max-sessions") ?? "";
+        const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
+        if (raw === "off") maxArg = "off";
+        else if (Number.isInteger(n) && n >= 1 && n <= 1000) maxArg = n;
+        else {
+          c.io.err("--max-sessions must be a whole number from 1 to 1000, or off");
+          return 2;
+        }
+      }
       const agent = a.has("agent") ? agentChoice(a.str("agent")) : a.has("uninstall") ? "all" : "claude";
       if (!agent) {
         c.io.err("--agent must be claude, opencode or all");
@@ -153,6 +165,10 @@ export function setupCommand(c: CliEnv): Command {
       if (shareArg) config = { ...config, shareSessions: shareArg };
       if (acceptArg) config = { ...config, accept: acceptArg };
       if (assignArg) config = { ...config, assignments: assignArg };
+      if (maxArg === "off") {
+        const { maxSessions: _, ...rest } = config;
+        config = rest;
+      } else if (maxArg !== undefined) config = { ...config, maxSessions: maxArg };
       saveConfig(c.paths, config);
       const shareLine = shareArg !== undefined || fresh ? SHARE_LINES[config.shareSessions] : "";
       const acceptLine = !acceptArg
@@ -160,6 +176,12 @@ export function setupCommand(c: CliEnv): Command {
         : acceptArg.includes("off")
           ? "No offer is accepted automatically. Restart the daemon to apply."
           : `Offers from ${acceptArg.join(", ")} are accepted automatically. Restart the daemon to apply.`;
+      const maxLine =
+        maxArg === undefined
+          ? ""
+          : maxArg === "off"
+            ? "An offer may start a session however many are live. Restart the daemon to apply."
+            : `An offer starts a session only while fewer than ${maxArg} are live. Restart the daemon to apply.`;
       const ocLines: string[] = [];
       if (opencode) {
         const v = await opencodeVersion(runner);
@@ -181,6 +203,7 @@ export function setupCommand(c: CliEnv): Command {
             `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
             shareLine,
             ...(acceptLine ? [acceptLine] : []),
+            ...(maxLine ? [maxLine] : []),
             ...ocLines,
             "OpenCode sessions started from now on report to mesh. Next:",
             "  mesh up             # run the daemon here, or",
@@ -200,6 +223,7 @@ export function setupCommand(c: CliEnv): Command {
           `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
           shareLine,
           acceptLine,
+          maxLine,
           r.changed ? `Installed ${HOOK_KINDS.length} hooks (v${HOOKS_VERSION}) into ${c.paths.claudeSettings}.` : `Hooks (v${HOOKS_VERSION}) already installed in ${c.paths.claudeSettings}.`,
           "skipped" in mcp ? "Skipped the MCP server and the skill (--no-mcp)." : mcp.ok ? "Registered the mesh MCP server." : `Could not register the MCP server: ${"error" in mcp ? mcp.error : ""}`,
           skill?.foreign
@@ -358,12 +382,23 @@ export function lsCommand(c: CliEnv): Command {
 export function sayCommand(c: CliEnv): Command {
   return {
     name: "say",
-    summary: "send a message to a session: mesh say <session> <text>",
+    summary: "send a message to a session: mesh say <session> <text>, or <machine>/<session> for another machine",
     async run(args) {
       const [target, ...words] = args;
       if (!target || words.length === 0) {
-        c.io.err("usage: mesh say <session> <text>");
+        c.io.err("usage: mesh say <session> <text>\n       mesh say <machine>/<session> <text>");
         return 2;
+      }
+      if (target.includes("/")) {
+        // MM-4: a session on any machine, resolved by the hub like an assign target.
+        try {
+          const r = await HubClient.from(c.paths).post<MessageResult>("/v1/messages", { to: target, text: words.join(" ") });
+          c.io.out(`Sent to ${r.to ?? target}; mesh delivers it as soon as the session can take it.`);
+          return 0;
+        } catch (e) {
+          c.io.err(e instanceof Error ? e.message : String(e));
+          return 1;
+        }
       }
       const r = await client(c).say(target, words.join(" "));
       c.io.out(r.message.state === "delivered" ? "Delivered." : "Queued; mesh delivers it as soon as the session can take it.");

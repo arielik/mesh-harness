@@ -1,5 +1,5 @@
 import type { Goal } from "../../src/protocol/goal.ts";
-import type { FleetView, GoalDetail, LiveView, OfferView, ProviderInfo, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import type { AssignResult, FleetView, GoalAssignResult, GoalDetail, LiveView, OfferView, ProviderInfo, StepView, SuggestView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -22,6 +22,11 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 const g = (id: string) => `/v1/goals/${encodeURIComponent(id)}`;
+/** MM-4: the suggest query: `team=1` / `any=1` only for flags that are on. */
+const suggestQuery = (o: { team?: boolean; any?: boolean }) => {
+  const q = [o.team ? "team=1" : "", o.any ? "any=1" : ""].filter(Boolean).join("&");
+  return q ? `?${q}` : "";
+};
 
 export const api = {
   live: () => call<LiveView>("GET", "/v1/live"),
@@ -46,5 +51,10 @@ export const api = {
   approveStep: (id: string, comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/approve`, comment ? { comment } : {}),
   rejectStep: (id: string, reopen: string[], comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/reject`, { reopen, ...(comment ? { comment } : {}) }),
   resumeStep: (id: string, comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/resume`, comment ? { comment } : {}),
+  /** MM-4: ranked machines for a ready step or a goal, and the one-click assign (no sid, no stick). */
+  suggestStep: (id: string, o: { team?: boolean; any?: boolean }) => call<SuggestView>("GET", `/v1/steps/${encodeURIComponent(id)}/suggest${suggestQuery(o)}`),
+  suggestGoal: (id: string, o: { team?: boolean; any?: boolean }) => call<SuggestView>("GET", `${g(id)}/suggest${suggestQuery(o)}`),
+  assignStep: (id: string, to: string) => call<AssignResult>("POST", `/v1/steps/${encodeURIComponent(id)}/assign`, { to }),
+  assignGoal: (id: string, to: string) => call<GoalAssignResult>("POST", `${g(id)}/assign`, { to }),
   newGoal: (title: string, primaryRepo?: string, topics: string[] = []) => call<Goal>("POST", "/v1/goals", { title, ...(primaryRepo ? { primaryRepo } : {}), ...(topics.length ? { topics } : {}) }),
 };

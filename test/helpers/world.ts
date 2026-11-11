@@ -48,6 +48,8 @@ export interface Person {
   dropReplyOnce(path: RegExp): void;
   /** MM-3: awaited before a request whose path matches is sent to the hub (to hold it in flight). */
   hold?: { path: RegExp; until: Promise<void> } | undefined;
+  /** MM-4: every line this daemon passed to `deps.log`, oldest first (printed too under WORLD_LOG). */
+  logs: string[];
 }
 
 export interface PersonOptions {
@@ -158,6 +160,7 @@ export class World {
       acks: [],
       requests: [],
       launches: [],
+      logs: [],
       dropReplyOnce: (path) => void drops.push(path),
     };
     const drops: RegExp[] = [];
@@ -173,11 +176,17 @@ export class World {
   /** Stop this machine's daemon and start it again (same store and credentials), e.g. with another share level. */
   async restart(
     p: Person,
-    change: Partial<Pick<DaemonConfig, "shareSessions" | "workspaceRoots">> & { accept?: string[]; assignments?: "deliver" | "launch" | "off" } = {},
+    change: Partial<Pick<DaemonConfig, "shareSessions" | "workspaceRoots">> & {
+      accept?: string[];
+      assignments?: "deliver" | "launch" | "off";
+      /** MM-4: the cap on live sessions for a launch; `undefined` removes the field. */
+      maxSessions?: number | undefined;
+    } = {},
     opts: PersonOptions = {},
   ): Promise<void> {
     await p.daemon.stop();
     p.config = { ...p.config, ...change } as DaemonConfig;
+    if ("maxSessions" in change && change.maxSessions === undefined) delete (p.config as Record<string, unknown>).maxSessions;
     p.daemon = this.makeDaemon(p, opts);
     await p.daemon.start(0);
     writeFileSync(p.configPath, JSON.stringify({ ...p.config, port: p.daemon.port }));
@@ -214,7 +223,10 @@ export class World {
         // Sessions in the person's own checkout belong to its repo; any other folder is read from git.
         repoForCwd: (cwd) => (cwd === p.repoDir || cwd.startsWith(`${p.repoDir}/`) ? { id: repoId, name: p.repo } : repoForCwd(cwd)),
         mtime: () => undefined,
-        log: (l) => process.env.WORLD_LOG && console.log(`[${p.name}] ${l}`),
+        log: (l) => {
+          p.logs.push(l);
+          if (process.env.WORLD_LOG) console.log(`[${p.name}] ${l}`);
+        },
         hubTimeoutMs: 500,
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           if (p.offline) throw new TypeError("fetch failed (simulated network loss)");

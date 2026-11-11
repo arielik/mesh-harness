@@ -67,6 +67,8 @@ async function body<T>(c: Context<Env>, schema: ZodType<T>): Promise<T> {
 const param = (c: Context<Env>, name: string) => decodeURIComponent(c.req.param(name) ?? "");
 /** `?topic=a&topic=b` or `?topic=a,b`: goals must carry every one. */
 const topicsQuery = (c: Context<Env>): string[] => (c.req.queries("topic") ?? []).flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
+/** MM-4: `team=1` / `any=1` of the suggest routes; any other value is off. */
+const suggestFlags = (c: Context<Env>) => ({ team: c.req.query("team") === "1", any: c.req.query("any") === "1" });
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
@@ -234,6 +236,7 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/topics/:name/delete", "member", async (c, a) => c.json(await svc.deleteTopic(a, param(c, "name"))), "goals:write"),
     r("GET", "/v1/goals/:id/timeline", "member", async (c) => c.json({ timeline: await svc.timeline(param(c, "id")) }), "goals:read"),
     r("POST", "/v1/goals/:id/assign", "member", async (c, a) => c.json(await svc.assignGoal(a, param(c, "id"), await body(c, AssignRequest)))),
+    r("GET", "/v1/goals/:id/suggest", "member", async (c, a) => c.json(await svc.suggestGoal(a, param(c, "id"), suggestFlags(c)))),
     r("POST", "/v1/goals/:id/withdraw", "member", async (c, a) => c.json(await svc.withdrawGoal(a, param(c, "id")))),
 
     // ---------- steps ----------
@@ -262,6 +265,7 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(await svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
     r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(await svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     r("POST", "/v1/steps/:id/assign", "member", async (c, a) => c.json(await svc.assignStep(a, param(c, "id"), await body(c, AssignRequest)))),
+    r("GET", "/v1/steps/:id/suggest", "member", async (c, a) => c.json(await svc.suggestStep(a, param(c, "id"), suggestFlags(c)))),
     r("POST", "/v1/steps/:id/accept", "member", async (c, a) => c.json(await svc.acceptStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     r("POST", "/v1/steps/:id/decline", "member", async (c, a) => c.json(await svc.declineStep(a, param(c, "id"), (await body(c, DeclineRequest)).note))),
     r("POST", "/v1/steps/:id/withdraw", "member", async (c, a) => c.json(await svc.withdrawStep(a, param(c, "id")))),

@@ -257,7 +257,7 @@ describe("AC-33 OpenAPI, route table, docs and skill (offers)", () => {
 
 describe("AC-34 version and placement", () => {
   it("test_AC34_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.11");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.12");
   });
 
   it("test_AC34_placement", async () => {
@@ -267,5 +267,82 @@ describe("AC-34 version and placement", () => {
     for (const name of ["parseAccept", "AcceptRule", "AcceptPolicy", "ACCEPT_RULE_TEXT", "OfferState", "StepOffer"]) expect(protocol[name], name).toBeDefined();
     // Positive control: an MM-2 export is found the same way.
     expect(protocol.parseLabels).toBeDefined();
+  });
+});
+
+// MM-4 (AC-17, AC-18).
+const MM4_ROUTES: [string, string, string][] = [
+  ["GET", "/v1/steps/:id/suggest", "steps"],
+  ["GET", "/v1/goals/:id/suggest", "goals"],
+];
+
+describe("AC-17 OpenAPI and route table (suggest)", () => {
+  type Param = { name: string; in: string };
+  type Prop = { type?: string; maxLength?: number; minLength?: number };
+  type Op = { tags?: string[]; parameters?: Param[]; requestBody?: { content: Record<string, { schema: { properties?: Record<string, Prop> } }> } };
+  const committed = () => JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, Op>> };
+  const openApiPath = (p: string) => p.replace(/:id/g, "{id}");
+
+  it("test_AC17_openapi_fresh", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+  });
+
+  it("test_AC17_suggest_paths", () => {
+    const doc = committed();
+    // Positive control: an MM-3 route is there.
+    expect(doc.paths["/v1/steps/{id}/assign"]?.post).toBeDefined();
+    for (const [method, path, tag] of MM4_ROUTES) {
+      const op = doc.paths[openApiPath(path)]?.[method.toLowerCase()];
+      expect(op, `${method} ${path}`).toBeDefined();
+      expect(op?.tags, `${method} ${path}`).toContain(tag);
+      const query = (op?.parameters ?? []).filter((p) => p.in === "query").map((p) => p.name);
+      expect(query, `${method} ${path}`).toEqual(expect.arrayContaining(["team", "any"]));
+    }
+  });
+
+  it("test_AC17_message_to", () => {
+    const op = committed().paths["/v1/messages"]?.post;
+    const props: Record<string, Prop> = op?.requestBody?.content["application/json"]?.schema.properties ?? {};
+    // Positive control: the existing field is there.
+    expect(props.toSid?.type).toBe("string");
+    expect(props.to?.type).toBe("string");
+    expect(props.to?.maxLength).toBe(200);
+    expect(props.to?.minLength).toBe(1);
+  });
+
+  it("test_AC17_hub_api_matches_app", () => {
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    const documented = HUB_API.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    for (const [method, path, tag] of MM4_ROUTES) {
+      expect(documented, `${method} ${path}`).toContain(`${method} ${path} member -`);
+      expect(HUB_API.find((r) => r.method === method && r.path === path)?.tag, `${method} ${path}`).toBe(tag);
+    }
+    expect(documented).toEqual(served);
+  });
+});
+
+describe("AC-18 docs and skill (suggest)", () => {
+  it("test_AC18_skill_equals_file", () => {
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+  });
+
+  it("test_AC18_skill_rows", () => {
+    // Positive control: an MM-3 row is there.
+    expect(MESH_SKILL).toContain("mesh_assign");
+    expect(MESH_SKILL).toContain("mesh assign <goal\\|step> --suggest");
+    expect(MESH_SKILL).toContain("mesh say <machine>/<session>");
+  });
+
+  it("test_AC18_docs_mentions", () => {
+    const concepts = read("docs/guide/concepts.md");
+    for (const t of ["Suggest", "maxSessions"]) expect(concepts, t).toContain(t);
+    const howto = read("docs/guide/howto.md");
+    for (const t of ["--suggest", "Assign", "mesh say"]) expect(howto, t).toContain(t);
+    const install = read("docs/guide/install.md");
+    for (const t of ["maxSessions", "--max-sessions"]) expect(install, t).toContain(t);
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    for (const t of ["/v1/steps/:id/suggest", "/v1/goals/:id/suggest", "v0.1.12"]) expect(s56, t).toContain(t);
   });
 });

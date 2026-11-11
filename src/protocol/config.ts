@@ -71,6 +71,11 @@ export const DaemonConfig = z.object({
    * offer). Local only; the hub does not see it.
    */
   assignments: z.enum(["deliver", "launch", "off"]).default("deliver"),
+  /**
+   * MM-4: under `assignments: launch`, an offer starts a session only while fewer than this many
+   * sessions are live on the machine. Absent = no limit. Local only.
+   */
+  maxSessions: z.number().int().min(1).max(1000).optional(),
 });
 export type DaemonConfig = z.infer<typeof DaemonConfig>;
 export type NotifyMode = "desktop" | "terminal" | "both" | "off";

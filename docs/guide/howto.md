@@ -183,7 +183,26 @@ mesh decline G7.api --note "busy today"
 mesh session accept perf --from self,user:bob     # whose offers this session takes automatically (--off, --clear)
 mesh setup --accept self,user:bob                 # the machine policy (default self; restart the daemon)
 mesh setup --assignments launch                   # deliver (default), launch or off
+mesh setup --max-sessions 4                       # under launch: no new session while 4 are live (off: no limit)
+
+mesh say build-box/perf "rebase on main first"    # a message to a session on another machine (bob/laptop/<session> for a teammate's)
+#   Sent to build-box/perf; mesh delivers it as soon as the session can take it.
 ```
+
+Not sure which machine to pick? Ask for a ranked list:
+
+```bash
+mesh assign G7 --suggest                          # your machines that have the repo, best first
+#   Suggestions for G7 (best first):
+#   1. build-box · auto-accept · online · has payments-api · 1 idle session · perf labelled payments · machine labels payments
+#   2. laptop · auto-accept · last seen 3h ago · has payments-api · no idle session
+#   Assign with: mesh assign G7 --to build-box
+mesh assign G7 --suggest --team                   # also teammates' machines (bob/laptop …)
+mesh assign G7.api --suggest --any --json         # also machines without the repo; the full view as JSON
+```
+
+On the web, a ready step's panel and a goal's header have an **Assign** button: it opens the same
+ranked list (with **Team machines** and **Without the repo** switches) and offers with one click.
 
 In the TUI the header counts the offers to this machine and `o` opens them: ⏎ accepts for an idle
 session, `d` declines. The web's **Mine** page lists them under **Assigned to you** with a

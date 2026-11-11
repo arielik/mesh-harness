@@ -95,12 +95,14 @@ your person.
 | \`mesh next\` | steps that are ready |
 | \`mesh run <repo> --step <step>\` | start a session that holds a step |
 | \`mesh say <session> "<text>"\` | send a message to a session |
+| \`mesh say <machine>/<session> "<text>"\` | send a message to a session on another machine |
 | \`mesh machines\` | every machine logged in as you and what each session on it does |
 | \`mesh machines --label a,b\` | only sessions with every one of these labels |
 | \`mesh machine name <nickname>\` | give this machine a short name (\`--machine\` names another) |
 | \`mesh label <session> a,b\` | say what a session is for (\`--add\`, \`--rm\`, \`--clear\`); \`mesh run --label a,b\` labels new sessions |
 | \`mesh machine label a,b\` | label this machine (\`--add\`, \`--rm\`, \`--clear\`, \`--machine\` for another) |
 | \`mesh assign <goal\\|step> --to <machine>[/<session>]\` | offer work to another machine or session (\`--stick\`, \`--note\`) |
+| \`mesh assign <goal\\|step> --suggest\` | ranked machines to offer work to (\`--team\`, \`--any\`) |
 | \`mesh offers\` | steps offered to your machines; \`mesh accept <step>\` / \`mesh decline <step>\` |
 | \`mesh withdraw <goal\\|step>\` | withdraw an offer, or end a goal's stick |
 | \`mesh session accept <session> --from <rules>\` | whose offers a session accepts automatically (\`--off\`, \`--clear\`) |

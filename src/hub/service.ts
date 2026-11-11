@@ -6,6 +6,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { AuthError, loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
 import {
   acceptMatches,
+  suggest,
   endOffersLeavingReady,
   machineName,
   sessionName,
@@ -44,6 +45,8 @@ import type {
   AssignRequest,
   AssignResult,
   GoalAssignResult,
+  MessageResult,
+  SuggestView,
   GoalWithdrawResult,
   OfferLine,
   OfferTarget,
@@ -451,9 +454,7 @@ export class HubService {
       const target = await this.resolveTarget(actor, req.to);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
-      const ready = (await this.store.listSteps({ goal: goal.id }))
-        .filter((s) => s.state === "ready" && s.kind !== "gate" && s.offer?.state !== "offered")
-        .sort((a, b) => cmp(a.id, b.id));
+      const ready = await this.offerableSteps(goal.id);
       if (ready.length === 0 && !req.stick) throw new HubError(409, `${goal.id} has no ready step to offer`);
       const by = { userId: actor.userId, sid: req.sid, machine: caller.machine };
       const offered: Step[] = [];
@@ -463,6 +464,53 @@ export class HubService {
         ? await this.setStick(goal, { to: { machine: target.machine.id, ...(sid ? { sid } : {}) }, by: actor.userId, bySid: req.sid, byMachine: caller.machine?.id })
         : goal;
       return { goal: saved, steps: offered, auto: this.autoFor(target, by) };
+    });
+  }
+
+  /** The steps a goal assign offers: ready, not a gate, no open offer; by id. */
+  private async offerableSteps(goalId: string): Promise<Step[]> {
+    return (await this.store.listSteps({ goal: goalId }))
+      .filter((s) => s.state === "ready" && s.kind !== "gate" && s.offer?.state !== "offered")
+      .sort((a, b) => cmp(a.id, b.id));
+  }
+
+  // ---------- suggest (MM-4) ----------
+
+  /** Ranked machines for a subject (inside a read-only transaction). */
+  private async suggestView(actor: Actor, target: string, steps: string[], repos: string[], topics: string[], q: { team: boolean; any: boolean }): Promise<SuggestView> {
+    const all = q.team ? await this.store.listMachines() : await this.store.listMachines({ userId: actor.userId });
+    const mine = all.filter((m) => m.userId === actor.userId);
+    const callerNicknames = new Set(mine.flatMap((m) => (m.nickname ? [m.nickname] : [])));
+    const cm = actor.machineId ? await this.store.getMachine(actor.machineId) : undefined;
+    const callerMachine = cm ? { id: cm.id, userId: cm.userId, ...(cm.nickname ? { nickname: cm.nickname } : {}) } : undefined;
+    const sessions = await this.store.listSessions({ live: true });
+    const suggestions = suggest({ caller: actor.userId, callerMachine, now: this.now(), onlineMs: ONLINE_MS, repos, topics, any: q.any, machines: all, callerNicknames, sessions });
+    return { target, steps, repos, topics, team: q.team, any: q.any, suggestions };
+  }
+
+  /** `GET /v1/steps/:id/suggest`: read-only, no event. */
+  async suggestStep(actor: Actor, id: string, q: { team: boolean; any: boolean }): Promise<SuggestView> {
+    return this.store.tx(async () => {
+      const step = await this.stepOr404(id);
+      if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it`);
+      if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}, not ready`);
+      const topics = (await this.store.getGoal(step.goal))?.topics ?? [];
+      return await this.suggestView(actor, step.id, [step.id], step.repo ? [step.repo] : [], [...topics], q);
+    });
+  }
+
+  /** `GET /v1/goals/:id/suggest`: the subject is the steps a goal assign would offer. Read-only. */
+  async suggestGoal(actor: Actor, id: string, q: { team: boolean; any: boolean }): Promise<SuggestView> {
+    return this.store.tx(async () => {
+      const goal = await this.goalOr404(id);
+      if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      const offerable = await this.offerableSteps(goal.id);
+      const repos = offerable.length
+        ? [...new Set(offerable.map((s) => s.repo).filter((r): r is string => !!r))].sort(cmp)
+        : goal.primaryRepo
+          ? [goal.primaryRepo]
+          : [];
+      return await this.suggestView(actor, goal.id, offerable.map((s) => s.id), repos, [...(goal.topics ?? [])], q);
     });
   }
 
@@ -1503,8 +1551,18 @@ export class HubService {
     });
   }
 
-  async say(actor: Actor, input: { toSid?: string | undefined; toStep?: string | undefined; text: string }): Promise<{ id: number; toSid: string }> {
+  async say(actor: Actor, input: { toSid?: string | undefined; to?: string | undefined; toStep?: string | undefined; text: string }): Promise<MessageResult> {
     return await this.store.tx(async () => {
+      if (input.toSid === undefined && input.to !== undefined) {
+        // MM-4: `<machine>/<session>`, resolved like an assign target (only visible sessions match).
+        const t = await this.resolveTarget(actor, input.to);
+        if (!t.session) throw new HubError(400, "say needs a session: <machine>/<session>");
+        const target = t.session.session.sid;
+        const id = await this.message(target, actor.userId, "say", input.text);
+        if (id === undefined) throw new HubError(404, `session ${target} is not live on any machine`);
+        await this.emit({ type: "message.sent", user: actor.userId, sid: target, payload: { id } });
+        return { id, toSid: target, to: `${machineName(t.machine)}/${sessionName(t.session.session)}` };
+      }
       const sid = input.toSid ?? (input.toStep ? (await this.stepOr404(input.toStep)).holderSid : undefined);
       if (!sid) throw new HubError(409, `${input.toStep} has no session holding it`);
       if (input.toSid !== undefined) {

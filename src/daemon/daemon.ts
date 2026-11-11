@@ -191,6 +191,8 @@ export const DEFAULT_INTERVALS: Intervals = { reconcileMs: 5_000, transcriptMs: 
 /** Ended sessions stay visible this long. */
 const SHOW_ENDED_MS = 10 * 60_000;
 const MAX_BODY = 1 << 20;
+/** MM-4: how long a launch for an offer counts toward maxSessions before its session shows up. */
+const LAUNCH_PENDING_MS = 120_000;
 
 class HttpError extends Error {
   status: number;
@@ -227,6 +229,8 @@ export class Daemon {
   private boundSteps = new Set<string>();
   /** MM-3: machine-wide offer messages being handled now, and how handled ones were acked. */
   private offersInFlight = new Set<number>();
+  /** MM-4: launches started for an offer (by offer message id), counted for maxSessions until seen or expired. */
+  private pendingLaunches = new Map<number, { step: string; at: number }>();
   private offersHandled = new Map<number, { state: "delivered" | "failed"; method?: string | undefined; acked: boolean }>();
   /** MM-3: offer messages whose hub call or ack got no answer; a pull retries them. */
   private offersAwaitingRetry = new Set<number>();
@@ -674,7 +678,24 @@ export class Daemon {
           return await this.ackOffer(m, "delivered", "accepted");
         }
         if (this.config.assignments === "launch") {
-          const r = (await this.deps.launchStep?.(repo.slice(repo.lastIndexOf("/") + 1), step)) ?? { ok: false, error: "no launcher" };
+          // MM-4: check and reserve a place with no await in between, so the offers of one pull
+          // (handled concurrently) respect maxSessions together.
+          const max = this.config.maxSessions;
+          if (max !== undefined) {
+            const n = this.liveCount();
+            if (n >= max) {
+              this.deps.log(`not starting a session for offered step ${step}: ${n} live sessions, maxSessions ${max}`);
+              return await listed();
+            }
+            this.pendingLaunches.set(m.id, { step, at: this.deps.now() });
+          }
+          let r: { ok: boolean; error?: string };
+          try {
+            r = (await this.deps.launchStep?.(repo.slice(repo.lastIndexOf("/") + 1), step)) ?? { ok: false, error: "no launcher" };
+          } catch (e) {
+            r = { ok: false, error: String(e) };
+          }
+          if (!r.ok) this.pendingLaunches.delete(m.id);
           if (r.ok) return await this.ackOffer(m, "delivered", "launched");
           this.deps.log(`could not start a session for offered step ${step}: ${r.error ?? "unknown error"}`);
         }
@@ -683,6 +704,20 @@ export class Daemon {
     } finally {
       this.offersInFlight.delete(m.id);
     }
+  }
+
+  /**
+   * MM-4: live sessions for `maxSessions`: the non-ended sessions (any agent or kind, launching
+   * included) plus launches started for an offer that no session holding that step has shown yet,
+   * each for at most LAUNCH_PENDING_MS.
+   */
+  private liveCount(): number {
+    const now = this.deps.now();
+    const live = this.sessions.filter((x) => x.state !== "ended");
+    for (const [id, p] of this.pendingLaunches) {
+      if (now - p.at >= LAUNCH_PENDING_MS || live.some((x) => x.step === p.step)) this.pendingLaunches.delete(id);
+    }
+    return live.length + this.pendingLaunches.size;
   }
 
   /** A session took an offered step: bind it and queue the brief (delivered when the session is idle). */

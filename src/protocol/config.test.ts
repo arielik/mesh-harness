@@ -148,3 +148,26 @@ describe("accept", () => {
     expect(Object.hasOwn(S.parse(minimalSession), "accept")).toBe(false);
   });
 });
+
+// MM-4 AC-14: `maxSessions` (absent = no limit; an integer 1–1000).
+describe("maxSessions", () => {
+  const minimal = { port: 31944, key: "0123456789abcdef" };
+  const mm3 = { ...minimal, notify: true, workspaceRoots: ["/w"], autopilot: "nudge", shareSessions: "me", accept: ["user:bob"], assignments: "launch" };
+
+  it("test_AC14_parse_absent", () => {
+    const c = DaemonConfig.parse(mm3) as Record<string, unknown>;
+    expect(Object.hasOwn(c, "maxSessions")).toBe(false);
+    expect(c).toMatchObject({ port: 31944, key: "0123456789abcdef", notify: true, workspaceRoots: ["/w"], autopilot: "nudge", shareSessions: "me", accept: ["user:bob"], assignments: "launch" });
+    // The same file with the field parses to the same config plus the field.
+    const withField = DaemonConfig.parse({ ...mm3, maxSessions: 3 }) as Record<string, unknown>;
+    expect(withField.maxSessions).toBe(3);
+    const rest = { ...withField };
+    delete rest.maxSessions;
+    expect(rest).toStrictEqual(c);
+  });
+
+  it("test_AC14_parse_values", () => {
+    for (const n of [1, 3, 1000]) expect((DaemonConfig.parse({ ...minimal, maxSessions: n }) as Record<string, unknown>).maxSessions, String(n)).toBe(n);
+    for (const bad of [0, 1001, 2.5, "3", -1, null]) expect(DaemonConfig.safeParse({ ...minimal, maxSessions: bad }).success, String(bad)).toBe(false);
+  });
+});

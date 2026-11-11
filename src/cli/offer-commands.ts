@@ -1,13 +1,14 @@
 // Assign (MM-3): mesh assign, offers, accept, decline, withdraw, and mesh session accept.
 
 import { assignText, offerLine, sessionName } from "../core/index.ts";
-import { parseAccept, type AssignResult, type GoalAssignResult, type GoalWithdrawResult, type OfferView, type Step, type StepView } from "../protocol/index.ts";
+import { parseAccept, type AssignResult, type GoalAssignResult, type GoalWithdrawResult, type OfferView, type Step, type StepView, type SuggestView } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
 import { HubClient } from "./hub-client.ts";
 
-const ASSIGN_USAGE = 'usage: mesh assign <goal|step> --to <machine>[/<session>] [--stick] [--note "…"]';
+const ASSIGN_USAGE =
+  'usage: mesh assign <goal|step> --to <machine>[/<session>] [--stick] [--note "…"]\n       mesh assign <goal|step> --suggest [--team] [--any] [--json]';
 const ACCEPT_USAGE = "usage: mesh accept <step> [--session <s> | --launch]";
 const DECLINE_USAGE = 'usage: mesh decline <step> [--note "…"]';
 const WITHDRAW_USAGE = "usage: mesh withdraw <goal|step>";
@@ -29,15 +30,22 @@ async function orFail(c: CliEnv, fn: () => Promise<number>): Promise<number> {
 export function assignCommand(c: CliEnv): Command {
   return {
     name: "assign",
-    summary: `offer a goal or step to another machine or session: mesh assign <goal|step> --to <machine>[/<session>] [--stick] [--note "…"]`,
+    summary: `offer a goal or step to another machine or session: mesh assign <goal|step> --to <machine>[/<session>] [--stick] [--note "…"]; ranked machines: mesh assign <goal|step> --suggest [--team] [--any] [--json]`,
     async run(args) {
       const a = parseArgs(args, ["to", "note"]);
       const [target] = a.positional;
       const to = a.str("to");
-      if (!target || !to) {
+      const suggestMode = a.has("suggest");
+      const usage =
+        !target ||
+        (suggestMode && (a.has("to") || a.has("stick") || a.has("note"))) ||
+        (!suggestMode && (a.has("team") || a.has("any") || a.has("json") || !to));
+      if (usage || !target) {
         c.io.err(ASSIGN_USAGE);
         return 2;
       }
+      if (suggestMode) return await suggestAssign(c, target, { team: a.has("team"), any: a.has("any"), json: a.has("json") });
+      if (!to) return 2;
       const stick = a.has("stick");
       const note = a.str("note");
       const body = { to, stick, ...(note ? { note } : {}) };
@@ -53,6 +61,33 @@ export function assignCommand(c: CliEnv): Command {
       });
     },
   };
+}
+
+/** `mesh assign <goal|step> --suggest`: ranked machines from the hub (MM-4). */
+async function suggestAssign(c: CliEnv, target: string, o: { team: boolean; any: boolean; json: boolean }): Promise<number> {
+  const query = [o.team ? "team=1" : "", o.any ? "any=1" : ""].filter(Boolean).join("&");
+  const path = `${isStep(target) ? "/v1/steps" : "/v1/goals"}/${enc(target)}/suggest${query ? `?${query}` : ""}`;
+  return orFail(c, async () => {
+    const view = await HubClient.from(c.paths).get<SuggestView | null>(path);
+    // An older hub answers an unknown GET with its catch-all 200 (HTML or text).
+    if (!view || typeof view !== "object" || !Array.isArray(view.suggestions)) {
+      c.io.err("the hub does not offer suggestions (it needs v0.1.12 or later)");
+      return 1;
+    }
+    if (o.json) {
+      c.io.out(JSON.stringify(view, null, 2));
+      return 0;
+    }
+    const first = view.suggestions[0];
+    if (!first) {
+      c.io.out(`No machine to suggest for ${target}; try --team or --any.`);
+      return 0;
+    }
+    c.io.out(`Suggestions for ${target} (best first):`);
+    view.suggestions.forEach((s, i) => c.io.out(`${i + 1}. ${s.to} · ${s.reason}`));
+    c.io.out(`Assign with: mesh assign ${target} --to ${first.to}${Array.isArray(view.steps) && view.steps.length === 0 ? " --stick" : ""}`);
+    return 0;
+  });
 }
 
 export function offersCommand(c: CliEnv): Command {

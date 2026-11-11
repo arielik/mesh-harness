@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -538,5 +539,150 @@ describe.skipIf(!haveTmux)("mesh run (real tmux, fake claude)", () => {
     mkdirSync(join(root, "frr", ".git"), { recursive: true });
     const t = env(root);
     expect(await t.cmd("run").run(["frr", "--bg"])).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// MM-4: `mesh assign` usage with --suggest (AC-10), `mesh help` (AC-10), `mesh setup --max-sessions` (AC-14).
+
+const MM3_ASSIGN_USAGE = 'usage: mesh assign <goal|step> --to <machine>[/<session>] [--stick] [--note "…"]';
+const ASSIGN_USAGE = `${MM3_ASSIGN_USAGE}\n       mesh assign <goal|step> --suggest [--team] [--any] [--json]`;
+
+describe("AC-10 mesh assign usage with --suggest", () => {
+  /** A counting stub hub; the CLI's credentials point at it. Every request answers 404 JSON. */
+  async function rig() {
+    const t = env(tmp());
+    const seen: string[] = [];
+    const server = createServer((req, res) => {
+      seen.push(`${req.method} ${req.url}`);
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "no machine m2" }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    mkdirSync(t.paths.configDir, { recursive: true });
+    writeFileSync(t.paths.credentials, JSON.stringify({ hub: `http://127.0.0.1:${port}`, token: "t", user: { id: "alice", name: "alice", roles: [] }, machine: "m-00000001" }));
+    const run = async (args: string[]) => {
+      t.out.length = 0;
+      t.err.length = 0;
+      const code = await t.cmd("assign").run(args);
+      return { code, err: t.err.join("\n"), out: t.out.join("\n") };
+    };
+    return { t, seen, run, close: () => new Promise((r) => server.close(r)) };
+  }
+
+  const CASES: [string, string[][]][] = [
+    ["test_AC10_suggest_with_to", [["G1", "--suggest", "--to", "m2"]]],
+    ["test_AC10_suggest_with_stick", [["G1", "--suggest", "--stick"]]],
+    ["test_AC10_suggest_with_note", [["G1", "--suggest", "--note", "x"]]],
+    ["test_AC10_team_without_suggest", [["G1", "--to", "m2", "--team"], ["G1", "--team"]]],
+    ["test_AC10_any_without_suggest", [["G1", "--any"], ["G1", "--to", "m2", "--any"]]],
+    ["test_AC10_json_without_suggest", [["G1", "--to", "m2", "--json"]]],
+    ["test_AC10_neither", [["G1"], ["G1.a"]]],
+    ["test_AC10_no_target", [[], ["--suggest"]]],
+  ];
+
+  for (const [name, argsList] of CASES)
+    it(name, async () => {
+      const r = await rig();
+      try {
+        for (const args of argsList) {
+          const x = await r.run(args);
+          expect(x.code, args.join(" ")).toBe(2);
+          expect(x.err.trim(), args.join(" ")).toBe(ASSIGN_USAGE);
+          // test_AC10_first_line_mm3
+          expect(x.err.split("\n")[0], args.join(" ")).toBe(MM3_ASSIGN_USAGE);
+        }
+        // test_AC10_no_hub_call
+        expect(r.seen).toEqual([]);
+      } finally {
+        await r.close();
+      }
+    });
+
+  it("test_AC10_no_hub_call_control", async () => {
+    // A valid --to call does reach the stub (so the zero count above means no call was made).
+    const r = await rig();
+    try {
+      const x = await r.run(["G1.a", "--to", "m2"]);
+      expect(x.code).toBe(1);
+      expect(r.seen.length).toBeGreaterThan(0);
+    } finally {
+      await r.close();
+    }
+  });
+
+  it("test_AC10_help_lines", async () => {
+    const { dispatch } = await import("../src/cli/commands.ts");
+    const t = env(tmp());
+    const out: string[] = [];
+    expect(await dispatch(["help"], meshCommands(t.c), "0.0.0", (x) => out.push(x))).toBe(0);
+    const text = [...out, ...t.out].join("\n");
+    expect(text).toContain("send a message to a session: mesh say <session> <text>, or <machine>/<session> for another machine");
+    const assignLine = text.split("\n").find((l) => /^\s+assign\b/.test(l));
+    expect(assignLine, "assign is listed").toBeDefined();
+    expect(assignLine).toContain("--suggest");
+  });
+});
+
+describe("AC-14 mesh setup --max-sessions", () => {
+  const MAX_BAD = "--max-sessions must be a whole number from 1 to 1000, or off";
+  const MAX_ON = (n: number) => `An offer starts a session only while fewer than ${n} are live. Restart the daemon to apply.`;
+  const MAX_OFF = "An offer may start a session however many are live. Restart the daemon to apply.";
+  const cfg = (t: ReturnType<typeof env>) => JSON.parse(readFileSync(t.paths.daemonConfig, "utf8")) as Record<string, unknown>;
+  async function existing() {
+    const t = env(tmp());
+    expect(await t.cmd("setup").run(["--port", "31250"])).toBe(0);
+    t.out.length = 0;
+    t.err.length = 0;
+    return t;
+  }
+
+  it("test_AC14_setup_n", async () => {
+    const t = await existing();
+    const before = cfg(t);
+    expect(await t.cmd("setup").run(["--max-sessions", "3"])).toBe(0);
+    expect(cfg(t)).toStrictEqual({ ...before, maxSessions: 3 });
+    expect(t.out.join("\n")).toContain(MAX_ON(3));
+  });
+
+  it("test_AC14_setup_off", async () => {
+    const t = await existing();
+    expect(await t.cmd("setup").run(["--max-sessions", "3"])).toBe(0);
+    expect(cfg(t).maxSessions).toBe(3);
+    t.out.length = 0;
+    expect(await t.cmd("setup").run(["--max-sessions", "off"])).toBe(0);
+    expect(Object.hasOwn(cfg(t), "maxSessions")).toBe(false);
+    expect(t.out.join("\n")).toContain(MAX_OFF);
+  });
+
+  it("test_AC14_setup_bad", async () => {
+    const t = await existing();
+    // Positive control: a good value is written (so the refusals below are the parser, not a broken flag).
+    expect(await t.cmd("setup").run(["--max-sessions", "5"])).toBe(0);
+    const before = readFileSync(t.paths.daemonConfig);
+    for (const args of [["--max-sessions", "x"], ["--max-sessions", "0"], ["--max-sessions", "1001"], ["--max-sessions", "2.5"], ["--max-sessions"]]) {
+      t.err.length = 0;
+      expect(await t.cmd("setup").run(args), args.join(" ")).toBe(2);
+      expect(t.err.join("\n").trim(), args.join(" ")).toBe(MAX_BAD);
+      expect(readFileSync(t.paths.daemonConfig).equals(before), args.join(" ")).toBe(true);
+    }
+  });
+
+  it("test_AC14_setup_bounds_ok", async () => {
+    const t = await existing();
+    for (const n of [1, 1000]) {
+      expect(await t.cmd("setup").run(["--max-sessions", String(n)]), String(n)).toBe(0);
+      expect(cfg(t).maxSessions).toBe(n);
+    }
+  });
+
+  it("test_AC14_setup_without_flag_keeps", async () => {
+    const t = await existing();
+    writeFileSync(t.paths.daemonConfig, JSON.stringify({ ...cfg(t), maxSessions: 4 }, null, 2), { mode: 0o600 });
+    expect(await t.cmd("setup").run(["--share", "me"])).toBe(0);
+    // Positive control: the setup ran (it wrote the share level).
+    expect(cfg(t).shareSessions).toBe("me");
+    expect(cfg(t).maxSessions).toBe(4);
   });
 });

@@ -519,4 +519,22 @@ describe("AC-27 mesh accept --launch", () => {
     expect(fromC.calls.some(isNewPane)).toBe(true);
     expect((await stepOf(w, alice, id)).offer.state).toBe("accepted");
   }, 30_000);
+
+  // MM-4 AC-13 (scope guard): `maxSessions` gates only the daemon's own launch for an offer, never
+  // `mesh accept --launch` (a person's explicit choice).
+  it("test_AC13_accept_launch_not_gated", async () => {
+    const { w, B, alice, G } = await setup();
+    await w.restart(B, { assignments: "launch", maxSessions: 1 });
+    w.hook(B, "SessionStart", 970);
+    w.hook(B, "UserPromptSubmit", 970, { prompt: "work" });
+    await w.flush();
+    const id = `${G}.b`;
+    const a = await w.call(alice, "POST", `/v1/steps/${id}/assign`, { to: "bob/m2" });
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    const launch = fakeRunner(980);
+    const r = await meshAs(B, launch.runner, ["accept", id, "--launch"]);
+    expect(r.code, r.err).toBe(0);
+    expect(stepPane(launch.calls, id), "the step's window").toBeDefined();
+    expect((await stepOf(w, alice, id)).offer.state).toBe("accepted");
+  }, 30_000);
 });

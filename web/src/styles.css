@@ -534,3 +534,29 @@ a {
 .panel p.offer {
   color: var(--muted);
 }
+
+/* MM-4: the assign picker (step panel and goal header) and the line after an assign. */
+.picker {
+  margin: 0.5rem 0 1rem;
+}
+.picker .picker-flags label {
+  margin-right: 1rem;
+}
+.picker ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.5rem;
+}
+.picker li.suggestion {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.picker .reason {
+  color: var(--muted);
+}
+.picker p.empty {
+  color: var(--muted);
+}
+p.assigned {
+  color: var(--muted);
+}

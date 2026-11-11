@@ -2382,6 +2382,59 @@
         }
       }
     },
+    "/v1/goals/{id}/suggest": {
+      "get": {
+        "operationId": "getVGoalsIdSuggest",
+        "summary": "Machines to offer a goal's ready steps to, best first, each with a reason (read-only).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team",
+            "in": "query",
+            "required": false,
+            "description": "1: also everyone's machines",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "any",
+            "in": "query",
+            "required": false,
+            "description": "1: also machines without the repo",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
     "/v1/goals/{id}/withdraw": {
       "post": {
         "operationId": "postVGoalsIdWithdraw",
@@ -3360,6 +3413,59 @@
         }
       }
     },
+    "/v1/steps/{id}/suggest": {
+      "get": {
+        "operationId": "getVStepsIdSuggest",
+        "summary": "Machines to offer a ready step to, best first, each with a reason (read-only).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team",
+            "in": "query",
+            "required": false,
+            "description": "1: also everyone's machines",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "any",
+            "in": "query",
+            "required": false,
+            "description": "1: also machines without the repo",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
     "/v1/steps/{id}/accept": {
       "post": {
         "operationId": "postVStepsIdAccept",
@@ -3693,7 +3799,7 @@
     "/v1/messages": {
       "post": {
         "operationId": "postVMessages",
-        "summary": "Send a message to a session or to whoever holds a step.",
+        "summary": "Send a message to a session (by sid or <machine>/<session>) or to whoever holds a step.",
         "description": "Any logged-in user (bearer token or web session).",
         "tags": [
           "questions"
@@ -3719,6 +3825,11 @@
                 "properties": {
                   "toSid": {
                     "type": "string"
+                  },
+                  "to": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
                   },
                   "toStep": {
                     "type": "string"

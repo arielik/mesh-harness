@@ -100,21 +100,23 @@ Every sync also carries the machine's **accept policy** (`accept` in `daemon.jso
 
 Upgrading: upgrade every hub replica to v0.1.9 before the daemons. A `me` daemon sends its sessions without a step only after its hub confirmed (in the sync reply) that it applies the visibility rule; until then it sends step holders only and logs `the hub does not support share level me; sending step holders only`. A v0.1.7 or v0.1.8 daemon set to `all` reports no share level, so its sessions without a step are shown to their owner only until it is updated.
 
-## Offers: `accept` and `assignments`
+## Offers: `accept`, `assignments` and `maxSessions`
 
-Two fields of `daemon.json` say what happens when someone offers this machine work (`mesh assign`, see [Offers and accept policy](concepts.md#offers-and-accept-policy)):
+These fields of `daemon.json` say what happens when someone offers this machine work (`mesh assign`, see [Offers and accept policy](concepts.md#offers-and-accept-policy)):
 
 | Field | Values | Default |
 |---|---|---|
 | `accept` | whose offers are accepted automatically: a list of rules `self` (your own offers), `user:<id>`, `machine:<nickname or id>`, or `["off"]` alone | `["self"]` |
 | `assignments` | what the daemon does with an offer: `deliver` (accept an automatic offer for an idle session in the repo, else list it for you), `launch` (as `deliver`, but start a session with `mesh run <repo> --step <step> --no-tui` when none is idle), `off` (decline every offer) | `deliver` |
+| `maxSessions` | under `assignments: launch`: an offer starts a session only while fewer than this many sessions are live on the machine (non-ended sessions, plus sessions launched for an offer in the last two minutes that have not shown up yet); otherwise the offer is listed for you. A whole number from 1 to 1000. It does not limit `mesh run`, `mesh accept --launch` or sessions you start yourself | absent (no limit) |
 
 ```sh
 mesh setup --accept self,user:bob    # or: --accept off; restart the daemon
 mesh setup --assignments launch      # deliver, launch or off
+mesh setup --max-sessions 4          # or: --max-sessions off (no limit); restart the daemon
 ```
 
-A `daemon.json` without these fields works as before (the defaults). The hub sees `accept` (synced with the machine facts), not `assignments`.
+A `daemon.json` without these fields works as before (the defaults). The hub sees `accept` (synced with the machine facts), not `assignments` or `maxSessions`.
 
 ## Hooks
 
