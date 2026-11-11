@@ -118,6 +118,7 @@ describe("AC-22 renderMachines", () => {
     counts: {},
     share: "me",
     repos: [],
+    labels: [],
     current: false,
     sessions: [],
     ...over,
@@ -201,5 +202,66 @@ describe("AC-22 renderMachines", () => {
   it("test_AC22_session_footer_has_m", () => {
     const lines = render({ sessions, messages: [], now: NOW, width: 160, height: 20, header: "mesh", color: false });
     expect(lines.join("\n")).toContain("m machines");
+  });
+});
+
+// MM-2 AC-17: labels in the session list and the machines panel.
+describe("AC-17 labels in the TUI", () => {
+  const labelled = [
+    base("e", { name: "docs-bg", kind: "background", bgId: "93474861", state: "idle", lastMessage: "Docs updated.", lastStopAt: NOW - 30_000, labels: ["gpu", "perf"] }),
+    base("c", { repo: { id: "x/proto-defs", name: "proto-defs" }, state: "working", turns: 14, lastTurnStartAt: NOW - 180_000, lastEventAt: NOW - 5_000, labels: ["perf"] }),
+    base("u", { name: "plain-one", state: "idle", lastMessage: "All good.", lastStopAt: NOW - 30_000 }),
+  ];
+  const lines = () => render({ sessions: labelled, messages: [], now: NOW, width: 120, height: 24, header: "mesh", color: false });
+  const row = (name: string) => lines().find((l) => l.includes(name)) ?? "";
+
+  it("test_AC17_labelled_row", () => {
+    expect(row("docs-bg")).toContain("docs-bg");
+    expect(row("docs-bg")).toContain("[gpu, perf] done: Docs updated.");
+    expect(row("proto-defs")).toContain("[perf] working · turn 14");
+  });
+
+  it("test_AC17_footer_L_labels", () => {
+    expect(lines().join("\n")).toContain("L labels");
+    // The same footer at the snapshot width.
+    const narrow = render({ sessions, messages: [], now: NOW, width: 160, height: 20, header: "mesh", color: false });
+    expect(narrow.join("\n")).toContain("L labels");
+  });
+
+  it("test_AC17_unlabelled_rows_unchanged", () => {
+    // Positive control first: a labelled row has brackets.
+    expect(row("docs-bg")).toContain("[");
+    const plain = row("plain-one");
+    expect(plain).toContain("done: All good.");
+    expect(plain).not.toContain("[");
+    // The same session rendered alone, without any labelled neighbour, gives the same row.
+    const alone = render({ sessions: [labelled[2] as Session], messages: [], now: NOW, width: 120, height: 24, header: "mesh", color: false }).find((l) => l.includes("plain-one"));
+    expect(plain).toBe(alone);
+  });
+
+  it("test_AC17_machines_view_labels", () => {
+    const now = 1_000_000_000_000;
+    const fleet: FleetView = {
+      now,
+      user: { id: "bob", name: "bob", roles: ["member"] },
+      machines: [
+        {
+          id: "m-0000000b",
+          hostname: "bob-desk",
+          online: true,
+          lastSeen: now - 5_000,
+          counts: {},
+          share: "me",
+          repos: [],
+          labels: ["perf-lab", "gpu"],
+          current: false,
+          sessions: [{ sid: "s-desk", machine: "m-0000000b", user: "bob", state: "idle", lastEventAt: now - 60_000, repo: "beta", name: "remote-work", labels: ["perf"] }],
+        },
+      ],
+    };
+    const text = renderMachines(fleet, { width: 120, height: 20, header: "mesh" }).join("\n");
+    expect(text).toContain("[gpu, perf-lab]");
+    expect(text).toContain("[perf]");
+    expect(renderFleet(fleet, { skipCurrent: true })).toContain("bob-desk · online · share me · 0 repos · [gpu, perf-lab]");
   });
 });

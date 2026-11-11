@@ -25,7 +25,7 @@ import {
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { installPlugin, opencodeSupported, opencodeVersion, pluginStatus, uninstallPlugin, type PluginOptions } from "../opencode/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, paneSocket, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, parseLabels, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -36,7 +36,8 @@ import { hubCommands } from "./hub-commands.ts";
 import { assetsCommand } from "./assets.ts";
 import { ledgerCommand } from "./ledger.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
-import { age, groupOf, ordered, since } from "./tui/render.ts";
+import { notATopic } from "./machine-commands.ts";
+import { age, groupOf, labelsLine, ordered, since } from "./tui/render.ts";
 import { jump, runTui } from "./tui/tui.ts";
 
 
@@ -345,6 +346,42 @@ export function sayCommand(c: CliEnv): Command {
   };
 }
 
+const LABEL_USAGE = "usage: mesh label <session> <label,…> [--add|--rm]\n       mesh label <session> --clear";
+
+/** `mesh label` (MM-2): say what a session is for. */
+export function labelCommand(c: CliEnv): Command {
+  return {
+    name: "label",
+    summary: "say what a session is for: mesh label <session> <label,…> [--add|--rm] | --clear",
+    async run(args) {
+      const a = parseArgs(args);
+      const [target, raw] = a.positional;
+      const clear = a.has("clear");
+      const add = a.has("add");
+      const rm = a.has("rm");
+      if (!target || (!raw && !clear) || (raw && clear) || (add && rm) || (clear && (add || rm)) || a.positional.length > 2) {
+        c.io.err(LABEL_USAGE);
+        return 2;
+      }
+      const r = clear ? { labels: [] as string[] } : parseLabels(raw as string);
+      if ("error" in r) {
+        c.io.err(r.error);
+        return 2;
+      }
+      let res: { session: Session; unknown?: string[] };
+      try {
+        res = await client(c).labels(target, r.labels, add ? "add" : rm ? "rm" : "set");
+      } catch (e) {
+        c.io.err(e instanceof Error ? e.message : String(e));
+        return 1;
+      }
+      c.io.out(labelsLine(res.session));
+      for (const line of notATopic(res.unknown)) c.io.err(line);
+      return 0;
+    },
+  };
+}
+
 export function jumpCommand(c: CliEnv): Command {
   return {
     name: "jump",
@@ -381,9 +418,20 @@ export function tuiCommand(c: CliEnv): Command {
 export function runCommand(c: CliEnv): Command {
   return {
     name: "run",
-    summary: "start claude (or opencode: --agent opencode) in tmux, one window per repo: mesh run <repo…> [--step S [--worktree] [--base REF] | --design G] [--auto L] [--bg --prompt P]",
+    summary: "start claude (or opencode: --agent opencode) in tmux, one window per repo: mesh run <repo…> [--step S [--worktree] [--base REF] | --design G] [--auto L] [--label a,b] [--bg --prompt P]",
     async run(args) {
-      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design", "base", "agent"]);
+      const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design", "base", "agent", "label"]);
+      // MM-2: labels are checked before anything happens (no claim, no tmux, no agent).
+      const rawLabels = a.str("label");
+      let runLabels: string[] | undefined;
+      if (rawLabels !== undefined) {
+        const r = parseLabels(rawLabels);
+        if ("error" in r) {
+          c.io.err(r.error);
+          return 2;
+        }
+        runLabels = r.labels;
+      }
       const agent = a.str("agent") ?? "claude";
       if (agent !== "claude" && agent !== "opencode") {
         c.io.err("--agent must be claude or opencode");
@@ -407,7 +455,7 @@ export function runCommand(c: CliEnv): Command {
         }
       }
       if (a.positional.length === 0) {
-        c.io.err("usage: mesh run <repo…> [--model M] [--prompt P] [--bg] [--session NAME] [--no-tui] [--no-bind]");
+        c.io.err("usage: mesh run <repo…> [--model M] [--prompt P] [--label a,b] [--bg] [--session NAME] [--no-tui] [--no-bind]");
         return 2;
       }
       let config: DaemonConfig | undefined;
@@ -462,6 +510,21 @@ export function runCommand(c: CliEnv): Command {
           writeFileSync(file, `${JSON.stringify({ permissions: { deny: claimed.policy.forbid.flatMap((p) => [`Read(${p})`, `Edit(${p})`]) } }, null, 2)}\n`);
           extraArgv.push("--settings", file);
           c.io.out(`The session may not read: ${claimed.policy.forbid.join(", ")} (Claude Code deny rules; shell commands are not covered).`);
+        }
+      }
+      // MM-2: remember the labels for each checkout a session starts in, so the new session gets them.
+      if (runLabels !== undefined && config) {
+        let warned = false;
+        for (const dir of dirs) {
+          try {
+            const r = await new DaemonClient(config).rememberLabels(dir, runLabels);
+            if (!warned) {
+              for (const line of notATopic(r.unknown)) c.io.err(line);
+              warned = true;
+            }
+          } catch (e) {
+            c.io.err(`warning: could not record the labels for ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       }
       const prompt =
@@ -585,5 +648,5 @@ export function statusCommand(c: CliEnv): Command {
 }
 
 export function meshCommands(c: CliEnv): Command[] {
-  return [setupCommand(c), doctorCommand(c), skillCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), assetsCommand(c), ...hubCommands(c)];
+  return [setupCommand(c), doctorCommand(c), skillCommand(c), statusCommand(c), lsCommand(c), sayCommand(c), labelCommand(c), jumpCommand(c), runCommand(c), tuiCommand(c), ledgerCommand(c), assetsCommand(c), ...hubCommands(c)];
 }

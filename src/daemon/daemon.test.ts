@@ -1,7 +1,9 @@
 import { request } from "node:http";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fakeCheckout, fakeWorktree } from "../../test/helpers/git-tree.ts";
 import type { AgentEntry, DaemonConfig } from "../protocol/index.ts";
 import { DaemonStore } from "../store/index.ts";
 import { Daemon, defaultDeps, transcriptGuess, type DaemonDeps } from "./daemon.ts";
@@ -26,6 +28,8 @@ interface Fakes {
   /** What each tmux pane shows (absent: the pane is gone). */
   screens: Record<string, string>;
   mtimes: Record<string, number>;
+  /** Every line the daemon logged. */
+  logs: string[];
 }
 
 let daemon: Daemon;
@@ -54,7 +58,7 @@ async function boot(existing?: DaemonStore) {
     repoForCwd: (cwd) => (cwd === CWD ? { id: "gitlab.lab/vpc/interactive", name: "interactive" } : undefined),
     mtime: (p) => f.mtimes[p],
     paneText: async (pane) => f.screens[pane],
-    log: () => undefined,
+    log: (l) => void f.logs.push(l),
   });
   daemon = new Daemon({ config: CONFIG, store, deps, intervals: { reconcileMs: 0, transcriptMs: 0, tickMs: 0, deliveryMs: 0 } });
   await daemon.start(0);
@@ -62,7 +66,7 @@ async function boot(existing?: DaemonStore) {
 
 beforeEach(async () => {
   ids = 0;
-  f = { agents: [], pastes: [], wakes: [], notes: [], now: 1_000_000, screens: {}, mtimes: {} };
+  f = { agents: [], pastes: [], wakes: [], notes: [], now: 1_000_000, screens: {}, mtimes: {}, logs: [] };
   await boot();
 });
 afterEach(async () => {
@@ -277,5 +281,312 @@ describe("sessions that started before mesh setup", () => {
     const [s] = await sessions();
     expect(s).toMatchObject({ state: "working", transcriptMtime: f.now - 60_000 });
     expect(s.hooksVersion).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// MM-2: labels (AC-03 repo default, AC-04 remembered per checkout, AC-05 POST /local/labels,
+// AC-06 no hub → no `unknown`).
+
+describe("labels", () => {
+  // Copied from the spec, not imported, so a changed text turns the tests red.
+  const RULE = "a label is 1-40 characters: lowercase letters, digits, '.', '_' or '-', starting with a letter or digit";
+  const BAD_BODY = "expected {target, labels, mode: set|add|rm} or {cwd, labels}";
+  const L = (n: number) => Array.from({ length: n }, (_, i) => `l${String(i + 1).padStart(2, "0")}`);
+
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const d of roots.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const tmp = () => {
+    const d = realpathSync(mkdtempSync(join(tmpdir(), "mesh-labels-")));
+    roots.push(d);
+    return d;
+  };
+  /** A checkout (a `.git` folder) with `.mesh/agent.yaml` holding `yaml` when given. */
+  const checkout = (yaml?: string, dir = join(tmp(), "repo")) => {
+    fakeCheckout(dir);
+    if (yaml !== undefined) agentYaml(dir, yaml);
+    return dir;
+  };
+  const agentYaml = (dir: string, yaml: string) => {
+    mkdirSync(join(dir, ".mesh"), { recursive: true });
+    writeFileSync(join(dir, ".mesh", "agent.yaml"), yaml);
+  };
+  const sub = (dir: string, ...parts: string[]) => {
+    const d = join(dir, ...parts);
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+
+  let pids = 5000;
+  /** A SessionStart hook from a new session in `cwd`; returns the recorded session. */
+  async function hookAt(cwd: string, pid = ++pids): Promise<Json> {
+    const r = await post(
+      "session-start",
+      { session_id: `claude-${pid}`, cwd, hook_event_name: "SessionStart", transcript_path: `/t/${pid}.jsonl`, source: "startup" },
+      { "x-claude-pid": String(pid), "x-tmux-pane": `%${pid}` },
+    );
+    expect(r.status).toBe(200);
+    const s = (await sessions()).find((x) => x.pid === pid);
+    expect(s, `session for pid ${pid} recorded`).toBeDefined();
+    return s;
+  }
+  const byPid = async (pid: number) => (await sessions()).find((x) => x.pid === pid);
+  const bySid = async (sid: string) => (await sessions()).find((x) => x.sid === sid);
+  const labelsCall = (body: unknown) => http("POST", "/local/labels", body);
+  const label = (target: string, labels: string[], mode: string) => labelsCall({ target, labels, mode });
+  const remember = (cwd: string, labels: string[]) => labelsCall({ cwd, labels });
+
+  describe("AC-03 repo default from .mesh/agent.yaml", () => {
+    it("test_AC03_repo_default_at_top", async () => {
+      const c = checkout("labels: [Perf, dataplane]\n");
+      const s = await hookAt(c);
+      expect(s.labels).toStrictEqual(["dataplane", "perf"]);
+    });
+
+    it("test_AC03_repo_default_from_subfolder", async () => {
+      const c = checkout("labels: [Perf, dataplane]\n");
+      const s = await hookAt(sub(c, "a", "b"));
+      expect(s.labels).toStrictEqual(["dataplane", "perf"]);
+    });
+
+    it("test_AC03_other_keys_ignored", async () => {
+      const c = checkout("labels: [x]\nowner: someone\n");
+      expect((await hookAt(c)).labels).toStrictEqual(["x"]);
+    });
+
+    it("test_AC03_no_file", async () => {
+      const c = checkout();
+      const s = await hookAt(c);
+      expect(s.state).toBe("idle");
+      expect(Object.hasOwn(s, "labels")).toBe(false);
+    });
+
+    it.each([
+      ["test_AC03_invalid_yaml", "labels: [a,\n"],
+      ["test_AC03_labels_not_a_list", 'labels: "x"\n'],
+      ["test_AC03_bad_label_in_file", 'labels: ["bad label"]\n'],
+      ["test_AC03_too_many_in_file", `labels: [${L(11).join(", ")}]\n`],
+    ])("%s", async (_name, yaml) => {
+      const c = checkout(yaml);
+      const file = join(c, ".mesh", "agent.yaml");
+      const s = await hookAt(c);
+      expect(s.state).toBe("idle");
+      expect(Object.hasOwn(s, "labels"), JSON.stringify(s.labels)).toBe(false);
+      expect(f.logs.filter((l) => l.includes(file))).toHaveLength(1);
+      // Positive control: a valid file in a fresh checkout is read by the same daemon.
+      const good = checkout("labels: [ok]\n");
+      expect((await hookAt(good)).labels).toStrictEqual(["ok"]);
+    });
+
+    it("test_AC03_not_a_checkout", async () => {
+      const dir = tmp();
+      agentYaml(dir, "labels: [x]\n");
+      const s = await hookAt(dir);
+      expect(Object.hasOwn(s, "labels")).toBe(false);
+    });
+  });
+
+  describe("AC-04 remembered labels per checkout", () => {
+    it("test_AC04_cwd_answer_is_checkout_top", async () => {
+      const c = checkout("labels: [perf]\n");
+      const r = await remember(sub(c, "sub"), ["GPU"]);
+      expect(r.status).toBe(200);
+      expect(r.json.cwd).toBe(c);
+      expect(r.json.labels).toStrictEqual(["gpu"]);
+      expect(Object.hasOwn(r.json, "unknown")).toBe(false);
+    });
+
+    it("test_AC04_cwd_outside_checkout_key_is_cwd", async () => {
+      const d = tmp();
+      const r = await remember(d, ["a"]);
+      expect(r.status).toBe(200);
+      expect(r.json).toMatchObject({ cwd: d, labels: ["a"] });
+      // A new session in that folder gets the list.
+      expect((await hookAt(d)).labels).toStrictEqual(["a"]);
+    });
+
+    it("test_AC04_cwd_invalid_400", async () => {
+      const c = checkout("labels: [perf]\n");
+      expect(await remember(c, ["bad label"])).toEqual({ status: 400, json: { error: `not a label: bad label (${RULE})` } });
+      expect((await hookAt(c)).labels).toStrictEqual(["perf"]);
+    });
+
+    it("test_AC04_new_session_gets_remembered", async () => {
+      const c = checkout("labels: [perf]\n");
+      expect((await remember(sub(c, "sub"), ["GPU"])).status).toBe(200);
+      expect((await hookAt(sub(c, "other"))).labels).toStrictEqual(["gpu"]);
+      expect((await hookAt(c)).labels).toStrictEqual(["gpu"]);
+    });
+
+    it("test_AC04_launch_placeholder_gets_remembered", async () => {
+      const c = checkout("labels: [perf]\n");
+      expect((await remember(c, ["gpu"])).status).toBe(200);
+      f.screens["%77"] = "starting";
+      const r = await http("POST", "/local/launch", { pane: "%77", cwd: c, name: "repo·x" });
+      expect(r.status).toBe(200);
+      expect(r.json.session.labels).toStrictEqual(["gpu"]);
+      expect((await bySid(r.json.session.sid)).labels).toStrictEqual(["gpu"]);
+      // Its first hook adopts it; the labels stay.
+      await post("session-start", { session_id: "claude-77", cwd: c, hook_event_name: "SessionStart", transcript_path: "/t/77.jsonl", source: "startup" }, { "x-claude-pid": "77", "x-tmux-pane": "%77" });
+      const adopted = await byPid(77);
+      expect(adopted.sid).toBe(r.json.session.sid);
+      expect(adopted.launching).toBeUndefined();
+      expect(adopted.labels).toStrictEqual(["gpu"]);
+    });
+
+    it("test_AC04_worktree_is_own_checkout", async () => {
+      const root = tmp();
+      const c = checkout("labels: [perf]\n", join(root, "main"));
+      const wt = fakeWorktree(join(root, "wt"), join(c, ".git", "worktrees", "wt"), "https://example.org/team/repo.git");
+      agentYaml(wt, "labels: [wt]\n");
+      expect((await remember(c, ["gpu"])).status).toBe(200);
+      expect((await hookAt(wt)).labels).toStrictEqual(["wt"]);
+      // Positive control: the main checkout got the remembered list.
+      expect((await hookAt(c)).labels).toStrictEqual(["gpu"]);
+    });
+
+    it("test_AC04_live_session_keeps_labels", async () => {
+      const c = checkout("labels: [perf]\n");
+      const s = await hookAt(c);
+      expect(s.labels).toStrictEqual(["perf"]);
+      expect((await remember(c, ["gpu"])).status).toBe(200);
+      expect((await bySid(s.sid)).labels).toStrictEqual(["perf"]);
+    });
+
+    it("test_AC04_empty_remembered_beats_file", async () => {
+      const c = checkout("labels: [perf]\n");
+      expect((await hookAt(c)).labels).toStrictEqual(["perf"]);
+      const r = await remember(c, []);
+      expect(r.status).toBe(200);
+      expect(r.json.labels).toStrictEqual([]);
+      expect(Object.hasOwn(await hookAt(c), "labels")).toBe(false);
+    });
+
+    it("test_AC04_survives_restart", async () => {
+      const c = checkout("labels: [perf]\n");
+      const path = join(tmp(), "daemon.db");
+      await daemon.stop();
+      const first = await DaemonStore.open(path);
+      await boot(first);
+      expect((await remember(c, ["gpu"])).status).toBe(200);
+      await daemon.stop();
+      first.close();
+      const second = await DaemonStore.open(path);
+      await boot(second);
+      expect((await hookAt(c)).labels).toStrictEqual(["gpu"]);
+    });
+
+    it("test_AC04_no_session_change", async () => {
+      const c = checkout("labels: [perf]\n");
+      await hookAt(c);
+      await hookAt(sub(c, "x"));
+      const before = await sessions();
+      expect((await remember(c, ["gpu"])).status).toBe(200);
+      expect(await sessions()).toStrictEqual(before);
+    });
+  });
+
+  describe("AC-05 POST /local/labels with a target", () => {
+    async function two() {
+      const c = checkout("labels: [perf]\n");
+      const s1 = await hookAt(c);
+      const s2 = await hookAt(sub(c, "s2"));
+      expect(s1.labels).toStrictEqual(["perf"]);
+      expect(s2.labels).toStrictEqual(["perf"]);
+      return { c, s1, s2 };
+    }
+
+    it("test_AC05_set_add_rm_sequence", async () => {
+      const { s1 } = await two();
+      const steps: [string[], string, string[]][] = [
+        [["b", "a"], "set", ["a", "b"]],
+        [["c"], "add", ["a", "b", "c"]],
+        [["a", "x"], "rm", ["b", "c"]],
+      ];
+      for (const [labels, mode, want] of steps) {
+        const r = await label(s1.sid, labels, mode);
+        expect(r.status, mode).toBe(200);
+        expect(r.json.session.sid).toBe(s1.sid);
+        expect(r.json.session.labels).toStrictEqual(want);
+        expect((await bySid(s1.sid)).labels).toStrictEqual(want);
+      }
+    });
+
+    it("test_AC05_set_empty_removes_key", async () => {
+      const { s1 } = await two();
+      const r = await label(s1.sid, [], "set");
+      expect(r.status).toBe(200);
+      expect(Object.hasOwn(r.json.session, "labels")).toBe(false);
+      expect(Object.hasOwn(await bySid(s1.sid), "labels")).toBe(false);
+    });
+
+    it("test_AC05_add_normalises", async () => {
+      const { s1 } = await two();
+      const r = await label(s1.sid, ["Z "], "add");
+      expect(r.status).toBe(200);
+      expect(r.json.session.labels).toStrictEqual(["perf", "z"]);
+    });
+
+    it("test_AC05_remembered_for_checkout", async () => {
+      const { c, s1 } = await two();
+      expect((await label(s1.sid, ["b", "a"], "set")).status).toBe(200);
+      expect((await hookAt(sub(c, "later"))).labels).toStrictEqual(["a", "b"]);
+    });
+
+    it("test_AC05_other_session_unchanged", async () => {
+      const { s1, s2 } = await two();
+      await label(s1.sid, ["b", "a"], "set");
+      await label(s1.sid, ["c"], "add");
+      await label(s1.sid, ["a", "x"], "rm");
+      expect((await bySid(s1.sid)).labels).toStrictEqual(["b", "c"]);
+      expect((await bySid(s2.sid)).labels).toStrictEqual(["perf"]);
+    });
+
+    it("test_AC05_unknown_target_404", async () => {
+      await two();
+      expect(await label("nope", ["a"], "set")).toEqual({ status: 404, json: { error: 'no live session matches "nope"' } });
+    });
+
+    it("test_AC05_eleven_refused_nothing_changes", async () => {
+      const { c, s1 } = await two();
+      expect((await label(s1.sid, L(10), "set")).status).toBe(200);
+      const r = await label(s1.sid, ["zz"], "add");
+      expect(r).toEqual({ status: 400, json: { error: "at most 10 labels" } });
+      expect((await bySid(s1.sid)).labels).toStrictEqual(L(10));
+      expect((await hookAt(sub(c, "after"))).labels).toStrictEqual(L(10));
+      // Directly with set, too.
+      expect(await label(s1.sid, L(11), "set")).toEqual({ status: 400, json: { error: "at most 10 labels" } });
+      expect((await bySid(s1.sid)).labels).toStrictEqual(L(10));
+    });
+
+    it("test_AC05_invalid_label_400", async () => {
+      const { s1 } = await two();
+      expect(await label(s1.sid, ["bad label"], "set")).toEqual({ status: 400, json: { error: `not a label: bad label (${RULE})` } });
+      expect((await bySid(s1.sid)).labels).toStrictEqual(["perf"]);
+    });
+
+    it("test_AC05_bad_body_400", async () => {
+      const { s1 } = await two();
+      for (const body of [{ labels: ["a"] }, { target: s1.sid, labels: ["a"] }, { target: s1.sid, labels: ["a"], mode: "merge" }]) {
+        expect(await labelsCall(body), JSON.stringify(body)).toEqual({ status: 400, json: { error: BAD_BODY } });
+      }
+      expect((await bySid(s1.sid)).labels).toStrictEqual(["perf"]);
+    });
+  });
+
+  describe("AC-06 without a hub", () => {
+    it("test_AC06_no_hub_no_key", async () => {
+      const c = checkout();
+      const s = await hookAt(c);
+      const r = await label(s.sid, ["gpu"], "set");
+      expect(r.status).toBe(200);
+      expect(r.json.session.labels).toStrictEqual(["gpu"]);
+      expect(Object.hasOwn(r.json, "unknown")).toBe(false);
+      const rc = await remember(c, ["gpu"]);
+      expect(rc.status).toBe(200);
+      expect(Object.hasOwn(rc.json, "unknown")).toBe(false);
+    });
   });
 });

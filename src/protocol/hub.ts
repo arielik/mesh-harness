@@ -59,6 +59,29 @@ export function nicknameOk(n: string): boolean {
 /** Body of `POST /v1/machines/:id/name`: a nickname, or null to clear it. */
 export const MachineName = z.object({ nickname: z.string().refine(nicknameOk, NICKNAME_RULE).nullable() });
 
+const LabelItems = z.array(z.string().max(40)).max(20);
+/**
+ * Body of `POST /v1/machines/:id/labels` (MM-2): replace the list, or add/remove labels (at least one
+ * item in total). The hub normalises the items with `parseLabels`.
+ */
+export const MachineLabels = z.union([
+  z.object({ labels: LabelItems }).strict(),
+  z
+    .object({ add: LabelItems.optional(), remove: LabelItems.optional() })
+    .strict()
+    .refine((b) => (b.add?.length ?? 0) + (b.remove?.length ?? 0) > 0, "give labels to add or remove"),
+]);
+export type MachineLabels = z.infer<typeof MachineLabels>;
+
+/** Reply of `POST /v1/machines/:id/labels`. `unknown`: those of `labels` that are not defined topics, sorted. */
+export interface MachineLabelsView {
+  id: string;
+  hostname: string;
+  nickname?: string | undefined;
+  labels: string[];
+  unknown: string[];
+}
+
 export const AckRequest = z.object({ state: z.enum(["delivered", "failed"]), method: z.string().optional() });
 
 /**
@@ -226,6 +249,8 @@ export interface LiveSession {
   needs?: string | undefined;
   autopilot?: string | undefined;
   lastTurnAt?: number | undefined;
+  /** MM-2: the session's labels; absent when none. */
+  labels?: string[] | undefined;
 }
 
 export interface LiveMachine {
@@ -274,6 +299,8 @@ export interface FleetMachine {
   /** `[]` when none was reported. */
   repos: Repo[];
   reposAt?: number | undefined;
+  /** MM-2: the machine's labels, sorted; `[]` when none. */
+  labels: string[];
   /** This is the machine of the calling token. */
   current: boolean;
   sessions: FleetSession[];

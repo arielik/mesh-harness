@@ -13,6 +13,12 @@ function Machine({ m, now }: { m: FleetMachine; now: number }) {
     <section className="machine card">
       <h3>
         <span className={`dot ${m.online ? "on" : "off"}`} /> {m.nickname ? `${m.nickname} (${m.hostname})` : m.hostname}
+        {m.labels?.length ? (
+          <>
+            {" "}
+            <span className="labels">{m.labels.join(", ")}</span>
+          </>
+        ) : null}
         {m.current && <span className="muted"> · this machine</span>}
       </h3>
       <p className="muted">
@@ -28,6 +34,7 @@ function Machine({ m, now }: { m: FleetMachine; now: number }) {
               <th>name</th>
               <th>state</th>
               <th>step</th>
+              <th>labels</th>
               <th>age</th>
             </tr>
           </thead>
@@ -41,6 +48,7 @@ function Machine({ m, now }: { m: FleetMachine; now: number }) {
                   {s.needs ? ` (${s.needs})` : ""}
                 </td>
                 <td>{s.step ?? "no step"}</td>
+                <td>{s.labels?.join(", ") ?? ""}</td>
                 <td className="age">{ago(now, s.lastEventAt)}</td>
               </tr>
             ))}

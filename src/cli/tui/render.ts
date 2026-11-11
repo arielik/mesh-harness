@@ -43,6 +43,16 @@ function detail(s: Session, now: number): string {
   }
 }
 
+/** How a session is named in messages: its name, else its repo, else the start of its sid. */
+export function whoOf(s: Session): string {
+  return s.name ?? s.repo?.name ?? s.sid.slice(0, 8);
+}
+
+/** `<who>: labels a, b` or `<who>: no labels` (MM-2). */
+export function labelsLine(s: Session): string {
+  return s.labels?.length ? `${whoOf(s)}: labels ${s.labels.join(", ")}` : `${whoOf(s)}: no labels`;
+}
+
 /** Time since the session last did something: its last hook, or its transcript's last write. */
 export function since(s: Session, now: number): number {
   const transcript = s.transcriptMtime ?? 0;
@@ -103,14 +113,15 @@ export function render(v: View): string[] {
     const auto = s.autopilot && s.autopilot !== "nudge" ? `${s.autopilot} ` : "";
     const right = `${pending ? `✉${pending} ` : ""}${auto}${s.bgId ? "bg " : ""}${age(since(s, v.now)).padStart(4)}`;
     const left = `  ${ICON[g]} ${fit(shown(s), labelW)}  ${stepW ? `${fit(s.step ?? "—", stepW)}  ` : ""}`;
-    const middle = fit(detail(s, v.now), Math.max(0, v.width - left.length - right.length - 1));
+    const text = (s.labels?.length ? `[${s.labels.join(", ")}] ` : "") + detail(s, v.now);
+    const middle = fit(text, Math.max(0, v.width - left.length - right.length - 1));
     const row = `${left}${middle} ${right}`;
     lines.push(s.sid === v.selected ? paint(C.inverse, row) : row);
   }
 
   const footer: string[] = [];
   if (v.input) footer.push(paint(C.bold, `${v.input.label}${v.input.value}▌`));
-  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · n next step · g goals · m machines · r refresh · ↑↓ move · q quit"));
+  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · L labels · n next step · g goals · m machines · r refresh · ↑↓ move · q quit"));
   if (failedDeliveries.length) footer.push(paint(C.red, fit(`${failedDeliveries.length} message(s) could not be delivered: ${failedDeliveries.map((m) => m.error ?? "?").slice(0, 2).join("; ")}`, v.width)));
   if (v.status) footer.push(fit(v.status, v.width));
   const room = v.height - footer.length - 1;

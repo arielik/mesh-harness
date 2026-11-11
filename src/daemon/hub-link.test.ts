@@ -472,3 +472,40 @@ describe("AC-16 repos re-sent only on change (hub link)", () => {
     expect((await h.sync()).machine).not.toHaveProperty("repos");
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// MM-2 AC-02: session labels travel with the session record.
+
+describe("AC-02 labels in sessionMetadata and syncedSessions", () => {
+  it("test_AC02_metadata_copies_labels", () => {
+    const m = sessionMetadata(sess("s-l", { labels: ["perf"], cwd: "/x" }));
+    expect(m.labels).toStrictEqual(["perf"]);
+    for (const k of PRIVATE_KEYS) expect(k in m, k).toBe(false);
+    expect(m.cwd).toBe("");
+  });
+
+  it("test_AC02_metadata_no_labels_no_key", () => {
+    const m = sessionMetadata(sess("s-plain"));
+    expect(Object.hasOwn(m, "labels")).toBe(false);
+    // Positive control: the same session with labels carries the key.
+    expect(Object.hasOwn(sessionMetadata(sess("s-plain", { labels: ["a"] })), "labels")).toBe(true);
+  });
+
+  const list = [sess("holder", { step: "G1.a", labels: ["a"], lastEventAt: 5 }), sess("free", { labels: ["b"], lastEventAt: 7 }), sess("plain", { lastEventAt: 9 })];
+  const bySid = (out: Session[]) => new Map(out.map((s) => [s.sid, s]));
+
+  it("test_AC02_synced_me_carries_labels", () => {
+    const out = bySid(syncedSessions(list, "me"));
+    expect([...out.keys()].sort()).toEqual(["free", "holder", "plain"]);
+    expect(out.get("holder")?.labels).toStrictEqual(["a"]);
+    expect(out.get("free")?.labels).toStrictEqual(["b"]);
+    expect(out.get("free")?.cwd).toBe("");
+    expect(Object.hasOwn(out.get("plain") as Session, "labels")).toBe(false);
+  });
+
+  it("test_AC02_synced_steps_drops_free", () => {
+    const out = syncedSessions(list, "steps");
+    expect(out.map((s) => s.sid)).toEqual(["holder"]);
+    expect(out[0]?.labels).toStrictEqual(["a"]);
+  });
+});

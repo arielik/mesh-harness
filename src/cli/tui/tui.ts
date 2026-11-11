@@ -4,9 +4,9 @@
 import { spawn } from "node:child_process";
 import { attachCommand } from "../../claude/index.ts";
 import { jumpToPane, serverFromEnv } from "../../mux/index.ts";
-import type { FleetView, Session, SessionsResponse } from "../../protocol/index.ts";
+import { parseLabels, type FleetView, type Session, type SessionsResponse } from "../../protocol/index.ts";
 import type { DaemonClient, DaemonStatus } from "../client.ts";
-import { MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, type GoalRow } from "./render.ts";
+import { labelsLine, MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, whoOf, type GoalRow } from "./render.ts";
 
 const ALT_ON = "\x1b[?1049h\x1b[?25l";
 const ALT_OFF = "\x1b[?25h\x1b[?1049l";
@@ -62,7 +62,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   let data: SessionsResponse = { sessions: [], messages: [] };
   let selected: string | undefined;
   let status: string | undefined = undefined;
-  let prompt: { label: string; value: string; target: string } | undefined;
+  let prompt: { kind: "say" | "labels"; label: string; value: string; target: string } | undefined;
   let paused = false;
   let goals: GoalRow[] | undefined;
   /** MM-1: the My machines panel (`m`) is open; `fleet` is its data, refreshed every 5 s. */
@@ -174,7 +174,20 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         if (key === "\r") {
           const p = prompt;
           prompt = undefined;
-          if (p.value.trim()) {
+          if (p.kind === "labels") {
+            // MM-2: an empty value clears the labels; an invalid one changes nothing.
+            const r = parseLabels(p.value);
+            if ("error" in r) {
+              status = r.error;
+              return draw();
+            }
+            try {
+              const res = await client.labels(p.target, r.labels, "set");
+              status = labelsLine(res.session) + (res.unknown ?? []).map((l) => ` · not a topic: ${l}; mesh topic add ${l}`).join("");
+            } catch (e) {
+              status = e instanceof Error ? e.message : String(e);
+            }
+          } else if (p.value.trim()) {
             try {
               const r = await client.say(p.target, p.value.trim());
               status = `message ${r.message.state === "delivered" ? "delivered" : "queued"} for ${p.label.replace(/^say to |: $/g, "")}`;
@@ -255,7 +268,10 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         }
         await refresh();
       } else if (key === "s") {
-        prompt = { label: `say to ${s.name ?? s.repo?.name ?? s.sid.slice(0, 8)}: `, value: "", target: s.sid };
+        prompt = { kind: "say", label: `say to ${s.name ?? s.repo?.name ?? s.sid.slice(0, 8)}: `, value: "", target: s.sid };
+        draw();
+      } else if (key === "L") {
+        prompt = { kind: "labels", label: `labels for ${whoOf(s)}: `, value: (s.labels ?? []).join(", "), target: s.sid };
         draw();
       }
     };

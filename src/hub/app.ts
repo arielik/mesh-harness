@@ -21,6 +21,7 @@ import {
   DoneRequest,
   IDEMPOTENCY_HEADER,
   LoginDirect,
+  MachineLabels,
   MachineName,
   MessageRequest,
   NewGoal,
@@ -172,6 +173,7 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a, topicsQuery(c))), "live:read"),
     r("GET", "/v1/fleet", "member", async (c, a) => c.json(await svc.fleet(a)), "live:read"),
     r("POST", "/v1/machines/:id/name", "member", async (c, a) => c.json(await svc.renameMachine(a, param(c, "id"), (await body(c, MachineName)).nickname))),
+    r("POST", "/v1/machines/:id/labels", "member", async (c, a) => c.json(await svc.labelMachine(a, param(c, "id"), await body(c, MachineLabels)))),
     r("GET", "/v1/attention", "member", async (c, a) => c.json({ attention: await svc.attentionFor(a) })),
     r("GET", "/v1/stream", "member", (c, a) =>
       streamSSE(c, async (stream) => {

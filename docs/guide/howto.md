@@ -120,10 +120,10 @@ Log in from each machine you work on. Then, from any of them:
 ```bash
 mesh machines                      # or: mesh fleet; --json for the raw view
 #   laptop (alice-laptop) · online · share me · 4 repos · this machine
-#     payments-api · fix refunds · working · no step · 12s
+#     payments-api · fix refunds · working · no step · [perf] · 12s
 #     web · G3.web · needs_you (permission) · G3.web · 2m
 #
-#   build-box · last seen 3h ago · share me · 12 repos
+#   build-box · last seen 3h ago · share me · 12 repos · [gpu]
 #     no sessions
 mesh machine name laptop           # name this machine
 mesh machine name gpu --machine build-box   # name another one (id, nickname or hostname)
@@ -137,6 +137,29 @@ Sessions without a step appear only from machines whose share level is `me` or `
 --share-sessions me`, the default for new setups); see [What the hub sees](install.md#what-the-hub-sees).
 The repo count comes from `workspaceRoots` in `daemon.json` (for example `["~/src"]`) plus the
 repos of the current sessions; only ids and names are sent.
+
+### Label sessions and machines
+
+Labels say what a session or machine is for. They use the topic-name syntax, at most 10 each; see
+[Label](concepts.md) for the rules.
+
+```yaml
+# .mesh/agent.yaml at the top of a checkout: the repo default for new sessions there
+labels: [perf, dataplane]
+```
+
+```bash
+mesh run payments-api --label perf          # new sessions in this checkout get perf (replaces the repo default)
+mesh label fix-refunds perf,gpu             # set a live session's labels (also remembered for its checkout)
+mesh label fix-refunds x --add              # add; --rm removes; --clear removes all
+mesh machine label gpu,perf-lab             # label this machine (stored on the hub)
+mesh machine label gpu --machine build-box  # label another of your machines; --add, --rm, --clear
+mesh machines --label perf                  # only what carries every given label
+```
+
+In the TUI, `L` on a session opens `labels for <session>: ` with its current labels; Enter sets
+them (an empty line clears them), Esc cancels. A label that is not a topic prints
+`not a topic: <label>; mesh topic add <label>`; the label is set anyway.
 
 ## 4. A goal from design to done
 

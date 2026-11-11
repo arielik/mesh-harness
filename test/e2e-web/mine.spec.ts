@@ -109,3 +109,67 @@ test("test_AC23_new_session_within_20s", async ({ page, request }) => {
   ]);
   await expect(page.locator("section.machine", { hasText: "mine-laptop" })).toContainText("late-arrival", { timeout: 20_000 });
 });
+
+// MM-2 (AC-19): machine labels in the title line (`span.labels`) and a `labels` column for sessions.
+test.describe("AC-19 labels on the Mine tab", () => {
+  const ALPHA = { repo: { id: "example.org/team/alpha", name: "alpha" } };
+
+  async function labelMachine(request: APIRequestContext, who: { token: string; machine: string }, labels: string[]): Promise<void> {
+    const r = await request.post(`/v1/machines/${who.machine}/labels`, { headers: { authorization: `Bearer ${who.token}` }, data: { labels } });
+    expect(r.status()).toBe(200);
+  }
+
+  /** The text of each cell of the row of `name`, keyed by its column header. */
+  async function cells(page: Page, machine: string, name: string): Promise<Record<string, string>> {
+    const section = page.locator("section.machine", { hasText: machine });
+    const headers = (await section.locator("th").allTextContents()).map((t) => t.trim());
+    const row = section.locator("tr", { hasText: name });
+    const values = (await row.locator("td").allTextContents()).map((t) => t.trim());
+    return Object.fromEntries(headers.map((h, i) => [h, values[i] ?? ""]));
+  }
+
+  test("test_AC19_machine_labels_span", async ({ page, request }) => {
+    await labelMachine(request, bobA, ["perf-lab", "gpu"]);
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const labels = page.locator("section.machine", { hasText: "mine-laptop" }).locator("span.labels");
+    await expect(labels).toHaveCount(1);
+    await expect(labels).toHaveText("gpu, perf-lab");
+  });
+
+  test("test_AC19_unlabelled_machine_no_span", async ({ page, request }) => {
+    await labelMachine(request, bobA, ["gpu"]);
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    // Positive control: the labelled machine has the span.
+    await expect(page.locator("section.machine", { hasText: "mine-laptop" }).locator("span.labels")).toHaveCount(1);
+    await expect(page.locator("section.machine", { hasText: "mine-empty" }).locator("span.labels")).toHaveCount(0);
+  });
+
+  test("test_AC19_sessions_labels_column", async ({ page, request }) => {
+    await sync(request, bobA.token, [session("mine-s1", "mine-first-session", { ...ALPHA, labels: ["perf"] }), session("mine-s3", "unlabelled-one", { lastEventAt: Date.now() })]);
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const section = page.locator("section.machine", { hasText: "mine-laptop" });
+    await expect(section).toContainText("unlabelled-one");
+    const headers = (await section.locator("th").allTextContents()).map((t) => t.trim());
+    const at = headers.indexOf("labels");
+    expect(at).toBeGreaterThan(0);
+    expect(headers[at - 1]).toBe("step");
+    expect(headers[at + 1]).toBe("age");
+    expect((await cells(page, "mine-laptop", "mine-first-session")).labels).toBe("perf");
+    expect((await cells(page, "mine-laptop", "unlabelled-one")).labels).toBe("");
+  });
+
+  test("test_AC19_live_refresh", async ({ page, request }) => {
+    test.setTimeout(45_000);
+    await sync(request, bobA.token, [session("mine-s1", "mine-first-session", { ...ALPHA, labels: ["perf"] })]);
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const row = page.locator("section.machine", { hasText: "mine-laptop" }).locator("tr", { hasText: "mine-first-session" });
+    await expect(row).toContainText("perf");
+    // What a daemon sends after `mesh label <s> zz`.
+    await sync(request, bobA.token, [session("mine-s1", "mine-first-session", { ...ALPHA, labels: ["zz"], lastEventAt: Date.now() })]);
+    await expect(row).toContainText("zz", { timeout: 20_000 });
+  });
+});

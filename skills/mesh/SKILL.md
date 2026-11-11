@@ -41,6 +41,9 @@ and anything surprising.
   waits for a person to approve it; do not start the steps yourself.
 - `mesh_fleet` lists every machine logged in as your person's user and what each session on
   it is doing (read-only). Your person sees the same with `mesh machines`.
+- Labels say what a session or machine is for (`perf`, `gpu`), in the topic-name syntax. A
+  checkout's default is `labels: [a, b]` in `.mesh/agent.yaml`; your person sets a session's
+  labels with `mesh label` and a machine's with `mesh machine label`.
 
 ## Asking your person
 
@@ -72,5 +75,8 @@ your person.
 | `mesh run <repo> --step <step>` | start a session that holds a step |
 | `mesh say <session> "<text>"` | send a message to a session |
 | `mesh machines` | every machine logged in as you and what each session on it does |
+| `mesh machines --label a,b` | only sessions with every one of these labels |
 | `mesh machine name <nickname>` | give this machine a short name (`--machine` names another) |
+| `mesh label <session> a,b` | say what a session is for (`--add`, `--rm`, `--clear`); `mesh run --label a,b` labels new sessions |
+| `mesh machine label a,b` | label this machine (`--add`, `--rm`, `--clear`, `--machine` for another) |
 | `mesh doctor` | check the installation |

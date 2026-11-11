@@ -58,6 +58,7 @@ const FLEET: FleetView = {
       share: "me",
       repos: [{ id: "example.org/team/alpha", name: "alpha" }],
       reposAt: 4_000_000,
+      labels: [],
       current: true,
       sessions: [{ sid: "s1", machine: "m-0000000a", user: "bob", state: "idle", lastEventAt: 4_900_000 }],
     },

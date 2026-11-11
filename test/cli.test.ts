@@ -164,6 +164,44 @@ describe("mesh setup share level", () => {
   });
 });
 
+// MM-2 AC-14: `mesh label` usage (refused before any daemon call) and `mesh help`.
+describe("AC-14 mesh label usage", () => {
+  const USAGE = "usage: mesh label <session> <label,…> [--add|--rm]";
+
+  it("test_AC14_usage_exit_2", async () => {
+    const t = env(tmp());
+    const label = meshCommands(t.c).find((x) => x.name === "label") as { run(a: string[]): Promise<number> } | undefined;
+    expect(label, "mesh label exists").toBeDefined();
+    for (const args of [[], ["s1"], ["s1", "a", "--clear"], ["s1", "a", "--add", "--rm"]]) {
+      t.err.length = 0;
+      expect(await (label as { run(a: string[]): Promise<number> }).run(args), args.join(" ")).toBe(2);
+      const err = t.err.join("\n");
+      expect(err.startsWith(USAGE), err).toBe(true);
+      expect(err).toContain("mesh label <session> --clear");
+    }
+  });
+
+  it("test_AC14_bad_label_exit_2_without_daemon", async () => {
+    // No daemon is set up: the parse error comes first, so it is exit 2 (not "daemon not running").
+    const t = env(tmp());
+    const label = meshCommands(t.c).find((x) => x.name === "label") as { run(a: string[]): Promise<number> } | undefined;
+    expect(label, "mesh label exists").toBeDefined();
+    expect(await (label as { run(a: string[]): Promise<number> }).run(["s1", "bad label"])).toBe(2);
+    expect(t.err.join("\n")).toContain("not a label: bad label (");
+  });
+
+  it("test_AC14_help_lists_label", async () => {
+    const { dispatch } = await import("../src/cli/commands.ts");
+    const t = env(tmp());
+    const out: string[] = [];
+    expect(await dispatch(["help"], meshCommands(t.c), "0.0.0", (x) => out.push(x))).toBe(0);
+    const text = [...out, ...t.out].join("\n");
+    expect(text).toMatch(/^\s+label\b/m);
+    // Positive control: an existing command is listed the same way.
+    expect(text).toMatch(/^\s+machines\b/m);
+  });
+});
+
 describe("mesh setup --agent opencode", () => {
   const runner: Runner = async (cmd, args) => (cmd === "opencode" && args[0] === "--version" ? ok("2.2.4\n") : ok());
 

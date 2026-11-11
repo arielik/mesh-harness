@@ -55,6 +55,17 @@ export class DaemonClient {
     return Session.parse(await this.call("POST", "/local/autopilot", { target, level }));
   }
 
+  /** MM-2: set, add or remove a live session's labels (remembered for its checkout too). */
+  async labels(target: string, labels: string[], mode: "set" | "add" | "rm"): Promise<{ session: Session; unknown?: string[] }> {
+    const r = (await this.call("POST", "/local/labels", { target, labels, mode })) as { session: unknown; unknown?: string[] };
+    return { session: Session.parse(r.session), ...(r.unknown ? { unknown: r.unknown } : {}) };
+  }
+
+  /** MM-2: remember labels for the checkout of `cwd`; a session recorded there afterwards gets them. */
+  async rememberLabels(cwd: string, labels: string[]): Promise<{ cwd: string; labels: string[]; unknown?: string[] }> {
+    return (await this.call("POST", "/local/labels", { cwd, labels })) as { cwd: string; labels: string[]; unknown?: string[] };
+  }
+
   async next(target: string): Promise<{ step?: string; message: string }> {
     return (await this.call("POST", "/local/next", { target })) as { step?: string; message: string };
   }

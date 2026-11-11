@@ -34,10 +34,12 @@ import {
   notifyChannels,
   KEY_HEADER,
   LaunchRequest,
+  MAX_LABELS,
   OpenCodeEvent,
   OpenCodePoll,
   OPENCODE_PLUGIN_VERSION,
   openCodeToHookEvent,
+  parseLabels,
   SayRequest,
   stopReply,
   toHookEvent,
@@ -49,6 +51,7 @@ import {
   type FleetView,
   type Harness,
   type InboxMessage,
+  type LabelsResult,
   type ToolName,
   type AgentEntry,
   type DaemonConfig,
@@ -65,6 +68,7 @@ import {
 import type { DaemonStore } from "../store/index.ts";
 import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
 import { commonDir, findGitDir, findRepoRoot, headCommit, repoForCwd } from "./git.ts";
+import { checkoutKey, initialLabels } from "./labels.ts";
 import { HubLink, type HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
 import { REPO_SCAN_MS, repoInventory, scanRepos } from "./repos.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
@@ -331,6 +335,11 @@ export class Daemon {
     if (result.changed.length === 0) return;
     const changed = this.sessions.filter((s) => result.changed.includes(s.sid));
     for (const s of changed) {
+      // MM-2: a session recorded for the first time gets its checkout's labels.
+      if (!before.has(s.sid) && s.labels === undefined && s.cwd) {
+        const l = initialLabels(s.cwd, (k) => this.store.checkoutLabels(k), (line) => this.deps.log(line));
+        if (l?.length) s.labels = l;
+      }
       if (!s.repo && s.cwd) {
         const repo = this.deps.repoForCwd(s.cwd);
         if (repo) s.repo = repo;
@@ -579,6 +588,62 @@ export class Daemon {
         : { text: "mesh doesn't know this Claude session yet (are the hooks installed? run `mesh doctor`).", isError: true };
     }
     return runTool(this.toolHost(), s, tool, call.args, call.key);
+  }
+
+  /**
+   * MM-2 `POST /local/labels`: set, add or remove a live session's labels (and remember the new list
+   * for its checkout), or remember a list for the checkout of a cwd. Every check runs before any
+   * write, so a refused call changes nothing.
+   */
+  async labels(body: unknown): Promise<LabelsResult> {
+    const USAGE = "expected {target, labels, mode: set|add|rm} or {cwd, labels}";
+    const b = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+    const raw = b.labels;
+    if (!Array.isArray(raw) || !raw.every((l) => typeof l === "string")) throw new HttpError(400, USAGE);
+    if (typeof b.target === "string" && b.target) {
+      const mode = b.mode;
+      if (mode !== "set" && mode !== "add" && mode !== "rm") throw new HttpError(400, USAGE);
+      const s = findSession(this.sessions, b.target);
+      if (!s) throw new HttpError(404, `no live session matches "${b.target}"`);
+      const r = parseLabels(raw as string[]);
+      if ("error" in r) throw new HttpError(400, r.error);
+      const cur = s.labels ?? [];
+      const next =
+        mode === "set" ? r.labels : mode === "add" ? [...new Set([...cur, ...r.labels])].sort() : cur.filter((l) => !r.labels.includes(l));
+      if (next.length > MAX_LABELS) throw new HttpError(400, `at most ${MAX_LABELS} labels`);
+      const updated = this.update(s.sid, { labels: next.length ? next : undefined }) as Session;
+      if (s.cwd) this.store.setCheckoutLabels(checkoutKey(s.cwd), next);
+      return { session: updated, ...(await this.unknownOf(next)) };
+    }
+    if (typeof b.cwd === "string" && b.cwd) {
+      const r = parseLabels(raw as string[]);
+      if ("error" in r) throw new HttpError(400, r.error);
+      const key = checkoutKey(b.cwd);
+      this.store.setCheckoutLabels(key, r.labels);
+      return { cwd: key, labels: r.labels, ...(await this.unknownOf(r.labels)) };
+    }
+    throw new HttpError(400, USAGE);
+  }
+
+  /** Labels that are not topics on the hub; `{}` when no hub could be asked (within 2 s). */
+  private async unknownOf(labels: readonly string[]): Promise<{ unknown?: string[] }> {
+    const link = this.link;
+    if (!link?.credentials()) return {};
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const timeout = new Promise<undefined>((done) => {
+        timer = setTimeout(() => done(undefined), 2_000);
+        timer.unref();
+      });
+      const reply = await Promise.race([link.rpc<{ topics: { name: string }[] }>("GET", "/v1/topics"), timeout]);
+      if (!reply || !Array.isArray(reply.topics)) return {};
+      const defined = new Set(reply.topics.map((t) => t.name));
+      return { unknown: labels.filter((l) => !defined.has(l)).sort() };
+    } catch {
+      return {};
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Claim the next ready step for a session's repo and send it its brief (TUI `n`). */
@@ -972,6 +1037,7 @@ export class Daemon {
         if (!body.success) throw new HttpError(400, "expected {pane, cwd}");
         return send(res, 200, { session: (await this.launch(body.data)) ?? null });
       }
+      if (req.method === "POST" && path === "/local/labels") return send(res, 200, await this.labels(await readJson(req)));
       if (req.method === "POST" && path === "/local/say") {
         const body = SayRequest.safeParse(await readJson(req));
         if (!body.success) throw new HttpError(400, "expected {target, text}");

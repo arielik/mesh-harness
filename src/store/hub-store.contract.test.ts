@@ -552,6 +552,96 @@ function contract(d: Driver) {
       expect(await s.listMachines()).toStrictEqual(before);
     });
   });
+
+  // MM-2: machine labels on the hub machine row (AC-08).
+  describe("MM-2 machine labels", () => {
+    const A = { id: "example.org/team/a", name: "a" };
+    const B = { id: "example.org/team/b", name: "b" };
+
+    async function machines(s: HubStore): Promise<void> {
+      await s.upsertIdentity({ provider: "oidc", subject: "1", name: "Ada", groups: [] }, T0);
+      await s.upsertMachine({ id: "m1", userId: "ada", hostname: "one" }, T0);
+      await s.upsertMachine({ id: "m2", userId: "ada", hostname: "two" }, T0);
+      await s.touchMachine("m1", T0 + 1, { idle: 1 });
+    }
+    const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
+
+    it("test_AC08_schema_version_6", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(6);
+      expect(HUB_MIGRATIONS.length).toBe(6);
+      expect(HUB_MIGRATIONS_PG.length).toBe(6);
+    });
+
+    it("test_AC08_set_and_get", async () => {
+      const s = await store();
+      await machines(s);
+      await s.setMachineLabels("m1", ["gpu", "perf"]);
+      expect(await labelsOf(s, "m1")).toStrictEqual(["gpu", "perf"]);
+      expect((await s.listMachines()).find((m) => m.id === "m1")?.labels).toStrictEqual(["gpu", "perf"]);
+      // The other machine is untouched.
+      expect(await s.getMachine("m2")).not.toHaveProperty("labels");
+    });
+
+    it("test_AC08_clear_restores_row", async () => {
+      const s = await store();
+      await machines(s);
+      const before = await s.getMachine("m1");
+      expect(before).not.toHaveProperty("labels");
+      await s.setMachineLabels("m1", ["gpu"]);
+      expect(await labelsOf(s, "m1")).toStrictEqual(["gpu"]);
+      await s.setMachineLabels("m1", []);
+      const after = await s.getMachine("m1");
+      expect(after).not.toHaveProperty("labels");
+      expect(after).toStrictEqual(before);
+    });
+
+    it("test_AC08_keeps_other_fields", async () => {
+      const s = await store();
+      await machines(s);
+      await s.touchMachine("m1", T0 + 2, { idle: 1 }, { share: "me", repos: [A] });
+      expect(await s.setMachineNickname("m1", "desk")).toBe(true);
+      const before = await s.getMachine("m1");
+      expect(before).toMatchObject({ share: "me", repos: [A], reposAt: T0 + 2, nickname: "desk" });
+      await s.setMachineLabels("m1", ["a"]);
+      const after = await s.getMachine("m1");
+      expect(after).toStrictEqual({ ...before, labels: ["a"] });
+    });
+
+    it("test_AC08_touch_keeps_labels", async () => {
+      const s = await store();
+      await machines(s);
+      await s.touchMachine("m1", T0 + 2, { idle: 1 }, { share: "me", repos: [A] });
+      await s.setMachineLabels("m1", ["a"]);
+      await s.touchMachine("m1", T0 + 3, { idle: 2 }, { share: "all", repos: [B] });
+      const row = await s.getMachine("m1");
+      // Positive control: the touch ran.
+      expect(row).toMatchObject({ share: "all", repos: [B], reposAt: T0 + 3, lastSeen: T0 + 3 });
+      expect(row?.labels).toStrictEqual(["a"]);
+      await s.touchMachine("m1", T0 + 4, { idle: 2 });
+      expect(await labelsOf(s, "m1")).toStrictEqual(["a"]);
+    });
+
+    it("test_AC08_unknown_id_noop", async () => {
+      const s = await store();
+      await machines(s);
+      const before = await s.listMachines();
+      await expect(s.setMachineLabels("nope", ["a"])).resolves.toBeUndefined();
+      expect(await s.getMachine("nope")).toBeUndefined();
+      expect(await s.listMachines()).toStrictEqual(before);
+      // Positive control: a known id is changed by the same call.
+      await s.setMachineLabels("m2", ["a"]);
+      expect(await labelsOf(s, "m2")).toStrictEqual(["a"]);
+    });
+
+    it("test_AC08_replace_not_merge", async () => {
+      const s = await store();
+      await machines(s);
+      await s.setMachineLabels("m1", ["a", "b"]);
+      expect(await labelsOf(s, "m1")).toStrictEqual(["a", "b"]);
+      await s.setMachineLabels("m1", ["c"]);
+      expect(await labelsOf(s, "m1")).toStrictEqual(["c"]);
+    });
+  });
 }
 
 describe("store contract: sqlite", () => contract(sqlite));

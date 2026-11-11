@@ -122,8 +122,78 @@ describe("AC-25 docs and skill", () => {
   });
 });
 
-describe("AC-26 version", () => {
-  it("test_AC26_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.9");
+// MM-2 (AC-20, AC-21, AC-22). The MM-1 version pin (AC-26, 0.1.9) is superseded by AC-22.
+
+describe("AC-20 OpenAPI and route table (labels)", () => {
+  type Op = { tags?: string[]; requestBody?: unknown; operationId: string };
+  const doc = () => hubOpenApi() as { paths: Record<string, Record<string, Op>> };
+
+  it("test_AC20_openapi_fresh", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+    const committed = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, unknown> };
+    expect(Object.keys(committed.paths)).toContain("/v1/machines/{id}/labels");
+  });
+
+  it("test_AC20_openapi_lists_labels_route", () => {
+    const op = doc().paths["/v1/machines/{id}/labels"]?.post;
+    expect(op).toBeDefined();
+    expect(op?.tags).toContain("daemon");
+    expect(op?.requestBody).toBeDefined();
+    expect(JSON.stringify(op?.requestBody)).toMatch(/labels/);
+    expect(JSON.stringify(op?.requestBody)).toMatch(/add/);
+    expect(JSON.stringify(op?.requestBody)).toMatch(/remove/);
+  });
+
+  it("test_AC20_HUB_API_matches_app", () => {
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    const documented = HUB_API.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
+    expect(documented).toContain("POST /v1/machines/:id/name member -");
+    expect(documented).toContain("POST /v1/machines/:id/labels member -");
+    expect(HUB_API.find((r) => r.method === "POST" && r.path === "/v1/machines/:id/labels")?.tag).toBe("daemon");
+    expect(documented).toEqual(served);
+  });
+});
+
+describe("AC-21 docs and skill (labels)", () => {
+  it("test_AC21_skill_mentions_labels", () => {
+    for (const t of ["mesh label", ".mesh/agent.yaml", "mesh machines --label"]) expect(MESH_SKILL).toContain(t);
+  });
+
+  it("test_AC21_skill_file_equals", () => {
+    const file = read("skills/mesh/SKILL.md");
+    expect(file).toContain("mesh label");
+    expect(file).toBe(MESH_SKILL);
+  });
+
+  it("test_AC21_docs_mention", () => {
+    const concepts = read("docs/guide/concepts.md");
+    // concepts.md is a glossary: a "Labels" heading or a bold "**Label.**" entry.
+    expect(concepts).toMatch(/^#+ .*Labels|^\*\*Labels?\.\*\*/m);
+    expect(concepts).toContain(".mesh/agent.yaml");
+    expect(concepts).toContain("not a topic");
+    const howto = read("docs/guide/howto.md");
+    for (const t of ["Label sessions and machines", ".mesh/agent.yaml", "mesh run", "--label", "mesh label", "mesh machine label", "mesh machines --label"]) expect(howto).toContain(t);
+    const install = read("docs/guide/install.md");
+    const hubSees = install.slice(install.indexOf("What the hub sees"));
+    expect(install).toContain("What the hub sees");
+    expect(hubSees).toMatch(/label/i);
+    expect(read("docs/plan/implementation-plan.md")).toContain("POST /v1/machines/:id/labels");
+    expect(read("docs/events.md")).toContain("machine.labelled");
+  });
+});
+
+describe("AC-22 version and placement", () => {
+  it("test_AC22_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.10");
+  });
+
+  it("test_AC22_placement", async () => {
+    const protocol = (await import("../src/protocol/index.ts")) as Record<string, unknown>;
+    for (const name of ["parseLabels", "Label", "LABEL_RULE", "MAX_LABELS"]) expect(protocol[name], name).toBeDefined();
+    const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
+    expect(typeof core.filterFleet).toBe("function");
+    // Where `.mesh/agent.yaml` is read (src/daemon) is left to review and `pnpm boundaries`:
+    // these tests do not assert on source text.
   });
 });

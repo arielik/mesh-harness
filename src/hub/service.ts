@@ -51,6 +51,8 @@ import type {
   FleetView,
   LiveSession,
   LiveView,
+  MachineLabels,
+  MachineLabelsView,
   LoginResult,
   Plan,
   PlanInput,
@@ -67,7 +69,7 @@ import type {
   UserView,
   ServiceScope,
 } from "../protocol/index.ts";
-import { ALL_TOPIC, TopicName, goalHasTopics, normalizeTopics } from "../protocol/index.ts";
+import { ALL_TOPIC, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { HubStore, type HubSession, type NewEvent, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
@@ -1217,6 +1219,7 @@ export class HubService {
         ...(m.share ? { share: m.share } : {}),
         repos: m.repos ?? [],
         ...(m.reposAt !== undefined ? { reposAt: m.reposAt } : {}),
+        labels: m.labels ?? [],
         current: m.id === viewer.machineId,
         sessions: sessions
           .filter((hs) => hs.machineId === m.id)
@@ -1244,6 +1247,36 @@ export class HubService {
       }
       await this.emit({ type: "machine.named", user: actor.userId, payload: { machine: id, nickname: next ?? null } });
       return view(next);
+    });
+  }
+
+  /**
+   * Label one of the caller's own machines (MM-2): replace the list, or add/remove labels. Admins
+   * get no exception. Concurrent changes of one machine run one after another.
+   */
+  async labelMachine(actor: Actor, id: string, change: MachineLabels): Promise<MachineLabelsView> {
+    const norm = (items: readonly string[]): string[] => {
+      const r = parseLabels(items);
+      if ("error" in r) throw new HubError(400, r.error);
+      return r.labels;
+    };
+    const replace = "labels" in change ? norm(change.labels) : undefined;
+    const add = "labels" in change ? [] : norm(change.add ?? []);
+    const remove = "labels" in change ? [] : norm(change.remove ?? []);
+    return await this.store.tx(async () => {
+      await this.store.serialize();
+      const m = await this.store.getMachine(id);
+      if (!m) throw new HubError(404, `no machine ${id}`);
+      if (m.userId !== actor.userId) throw new HubError(403, "not your machine");
+      const before = m.labels ?? [];
+      const next = replace ?? [...new Set([...before, ...add])].filter((l) => !remove.includes(l)).sort(cmp);
+      if (next.length > MAX_LABELS) throw new HubError(400, `at most ${MAX_LABELS} labels`);
+      if (next.join(",") !== before.join(",")) {
+        await this.store.setMachineLabels(id, next);
+        await this.emit({ type: "machine.labelled", user: actor.userId, payload: { machine: id, labels: next } });
+      }
+      const defined = new Set([ALL_TOPIC, ...(await this.store.listTopics()).map((t) => t.name)]);
+      return { id: m.id, hostname: m.hostname, ...(m.nickname ? { nickname: m.nickname } : {}), labels: next, unknown: next.filter((l) => !defined.has(l)) };
     });
   }
 
@@ -1340,6 +1373,7 @@ function liveSession(hs: HubSession): LiveSession {
     needs: hs.session.needs,
     autopilot: hs.session.autopilot,
     lastTurnAt: hs.session.lastTurnStartAt,
+    ...(hs.session.labels?.length ? { labels: hs.session.labels } : {}),
   };
 }
 
@@ -1350,6 +1384,11 @@ function describe(type: string, subject: string | undefined, payload: Record<str
     case "machine.named": {
       const host = hostnames?.get(String(payload.machine)) ?? String(payload.machine);
       return payload.nickname ? `named machine ${host} ${String(payload.nickname)}` : `cleared the name of machine ${host}`;
+    }
+    case "machine.labelled": {
+      const host = hostnames?.get(String(payload.machine)) ?? String(payload.machine);
+      const ls = (payload.labels as string[] | undefined) ?? [];
+      return ls.length ? `labelled machine ${host} ${ls.join(", ")}` : `cleared the labels of machine ${host}`;
     }
     case "goal.created":
       return `created ${s} "${String(payload.title ?? "")}"`;

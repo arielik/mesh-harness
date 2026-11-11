@@ -179,3 +179,29 @@ describe("DaemonStore", () => {
     st.close();
   });
 });
+
+// MM-2 AC-04: labels remembered per checkout key.
+describe("AC-04 DaemonStore checkout labels", () => {
+  it("test_AC04_store_checkoutLabels_roundtrip", async () => {
+    const path = join(tmp(), "daemon.db");
+    const a = await DaemonStore.open(path);
+    expect(a.checkoutLabels("/k")).toBeUndefined();
+    a.setCheckoutLabels("/k", ["a"]);
+    expect(a.checkoutLabels("/k")).toStrictEqual(["a"]);
+    // Another key is independent.
+    a.setCheckoutLabels("/other", ["x", "y"]);
+    expect(a.checkoutLabels("/k")).toStrictEqual(["a"]);
+    // Replace, not merge.
+    a.setCheckoutLabels("/k", ["b"]);
+    expect(a.checkoutLabels("/k")).toStrictEqual(["b"]);
+    // An empty list is remembered as such (not "none").
+    a.setCheckoutLabels("/k", []);
+    expect(a.checkoutLabels("/k")).toStrictEqual([]);
+    a.close();
+    const b = await DaemonStore.open(path);
+    expect(b.checkoutLabels("/k")).toStrictEqual([]);
+    expect(b.checkoutLabels("/other")).toStrictEqual(["x", "y"]);
+    expect(b.checkoutLabels("/never")).toBeUndefined();
+    b.close();
+  });
+});

@@ -92,7 +92,7 @@ mesh setup --share-sessions steps   # report step holders only
 
 `--share` is an alias of `--share-sessions`. An existing `daemon.json` keeps its level (one without the field means `steps`) until you give one.
 
-A session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
+A session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, its labels, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
 
 The repo inventory (`me` and `all`) is the ids and names of the git checkouts under `workspaceRoots` (two folder levels deep) and of the current sessions' repos, never a path. The daemon rescans at most every 5 minutes and sends the list only when it changes. Under `steps` it sends an empty inventory, which clears one stored earlier.
 

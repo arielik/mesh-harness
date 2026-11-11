@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FleetMachine, FleetSession, FleetView } from "../protocol/index.ts";
-import { renderFleet } from "./fleet.ts";
+import { filterFleet, renderFleet } from "./fleet.ts";
 
 const NOW = 1_000_000_000_000;
 const S = 1_000;
@@ -28,6 +28,7 @@ const machine = (id: string, over: Partial<FleetMachine> = {}): FleetMachine => 
   counts: {},
   share: "me",
   repos: [],
+  labels: [],
   current: false,
   sessions: [],
   ...over,
@@ -122,5 +123,133 @@ describe("AC-17 renderFleet", () => {
     vi.setSystemTime(NOW + 365 * 24 * H);
     expect(renderFleet(view([desk, old]))).toBe(before);
     expect(before).toBe(`${DESK_TEXT}\n\n${OLD_TEXT}`);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// MM-2 AC-11: renderFleet with labels.
+
+describe("AC-11 renderFleet with labels", () => {
+  const twoRepos = [repo("alpha"), repo("beta")];
+
+  it("test_AC11_machine_labels_current", () => {
+    const m = machine("m-0000000c", { hostname: "bob-box", repos: twoRepos, labels: ["perf-lab", "gpu"], current: true });
+    expect(renderFleet(view([m]))).toBe("bob-box · online · share me · 2 repos · [gpu, perf-lab] · this machine\n  no sessions");
+  });
+
+  it("test_AC11_machine_labels_not_current", () => {
+    const m = machine("m-0000000c", { hostname: "bob-box", repos: twoRepos, labels: ["perf-lab", "gpu"], current: false });
+    const out = renderFleet(view([m]));
+    expect(out).toBe("bob-box · online · share me · 2 repos · [gpu, perf-lab]\n  no sessions");
+    expect(out).not.toContain("this machine");
+  });
+
+  it("test_AC11_session_labels", () => {
+    const m = machine("m-0000000c", {
+      hostname: "bob-box",
+      sessions: [session("s-1", { repo: "alpha", name: "tune", state: "working", step: "S", labels: ["perf"], lastEventAt: NOW - 45 * S })],
+    });
+    expect(renderFleet(view([m]))).toBe("bob-box · online · share me · 0 repos\n  alpha · tune · working · S · [perf] · 45s");
+  });
+
+  it("test_AC11_session_labels_no_step_sorted", () => {
+    const m = machine("m-0000000c", {
+      hostname: "bob-box",
+      sessions: [session("s-1", { repo: "alpha", name: "tune", labels: ["perf", "gpu"], lastEventAt: NOW - 3 * M })],
+    });
+    expect(renderFleet(view([m]))).toBe("bob-box · online · share me · 0 repos\n  alpha · tune · idle · no step · [gpu, perf] · 3m");
+  });
+
+  it("test_AC11_empty_labels_no_brackets", () => {
+    const withKey = machine("m-0000000c", { hostname: "bob-box", labels: [], sessions: [session("s-1", { repo: "r", name: "n" })] });
+    const out = renderFleet(view([withKey]));
+    expect(out).not.toContain("[");
+    expect(out).toBe("bob-box · online · share me · 0 repos\n  r · n · idle · no step · 3m");
+    // The MM-1 fixtures (now carrying `labels: []`) render exactly as before.
+    expect(renderFleet(view([desk, old]))).toBe(`${DESK_TEXT}\n\n${OLD_TEXT}`);
+  });
+
+  it("test_AC11_both_in_one_view", () => {
+    const m = machine("m-0000000a", {
+      hostname: "bob-desk",
+      nickname: "desk",
+      repos: [repo("alpha")],
+      labels: ["gpu"],
+      current: true,
+      sessions: [session("s-desk-1", { repo: "alpha", name: "fix-login", state: "working", step: "G3.api", labels: ["dataplane"], lastEventAt: NOW - 45 * S })],
+    });
+    expect(renderFleet(view([m, old]))).toBe(
+      `desk (bob-desk) · online · share me · 1 repo · [gpu] · this machine\n  alpha · fix-login · working · G3.api · [dataplane] · 45s\n\n${OLD_TEXT}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// MM-2 AC-12: filterFleet.
+
+describe("AC-12 filterFleet", () => {
+  const s = (sid: string, labels: string[]) => session(sid, labels.length ? { labels } : {});
+  const M1 = machine("m-00000001", { hostname: "one", labels: ["perf"], sessions: [s("a", []), s("b", ["gpu"])] });
+  const M2 = machine("m-00000002", { hostname: "two", sessions: [s("c", ["perf"]), s("d", ["gpu"]), s("e", ["gpu", "perf"])] });
+  const M3 = machine("m-00000003", { hostname: "three", current: true, sessions: [s("f", [])] });
+  const M4 = machine("m-00000004", { hostname: "four", labels: ["gpu", "perf"], sessions: [s("g", [])] });
+  const v = view([M1, M2, M3, M4]);
+  const shape = (fv: FleetView) => fv.machines.map((m) => [m.id, m.sessions.map((x) => x.sid)]);
+
+  it("test_AC12_empty_returns_view", () => {
+    expect(filterFleet(v, [])).toStrictEqual(v);
+  });
+
+  it("test_AC12_single_label", () => {
+    expect(shape(filterFleet(v, ["perf"]))).toEqual([
+      ["m-00000001", ["a", "b"]],
+      ["m-00000002", ["c", "e"]],
+      ["m-00000004", ["g"]],
+    ]);
+  });
+
+  it("test_AC12_two_labels_all_must_match", () => {
+    expect(shape(filterFleet(v, ["perf", "gpu"]))).toEqual([
+      ["m-00000002", ["e"]],
+      ["m-00000004", ["g"]],
+    ]);
+    // Order of the given labels does not matter.
+    expect(shape(filterFleet(v, ["gpu", "perf"]))).toEqual(shape(filterFleet(v, ["perf", "gpu"])));
+  });
+
+  it("test_AC12_no_match_empty", () => {
+    const out = filterFleet(v, ["nope"]);
+    expect(out.machines).toEqual([]);
+    expect(out.now).toBe(v.now);
+  });
+
+  it("test_AC12_other_fields_and_order", () => {
+    for (const labels of [["perf"], ["perf", "gpu"]]) {
+      const out = filterFleet(v, labels);
+      expect(out.now).toBe(v.now);
+      expect(out.user).toStrictEqual(v.user);
+      expect(out.machines.length).toBeGreaterThan(0);
+      for (const m of out.machines) {
+        const src = v.machines.find((x) => x.id === m.id) as FleetMachine;
+        const { sessions: _a, ...rest } = m;
+        const { sessions: _b, ...srcRest } = src;
+        expect(rest).toStrictEqual(srcRest);
+        for (const x of m.sessions) expect(x).toStrictEqual(src.sessions.find((y) => y.sid === x.sid));
+      }
+    }
+    // A kept current machine stays current.
+    const withCurrent = view([machine("m-00000009", { hostname: "here", current: true, labels: ["perf"] }), M2]);
+    const out = filterFleet(withCurrent, ["perf"]);
+    expect(out.machines.map((m) => [m.id, m.current])).toEqual([
+      ["m-00000009", true],
+      ["m-00000002", false],
+    ]);
+  });
+
+  it("test_AC12_no_mutation", () => {
+    const copy = structuredClone(v);
+    filterFleet(v, ["perf"]);
+    filterFleet(v, ["perf", "gpu"]);
+    expect(v).toStrictEqual(copy);
   });
 });

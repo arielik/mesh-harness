@@ -267,6 +267,20 @@ export class DaemonStore {
     this.db.run("INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, v);
   }
 
+  /**
+   * MM-2: the labels remembered for a checkout key (`mesh run --label`, `mesh label`); undefined
+   * when none was ever remembered, `[]` when an empty list was.
+   */
+  checkoutLabels(key: string): string[] | undefined {
+    const v = this.getKv(`checkout-labels:${key}`);
+    return v === undefined ? undefined : (JSON.parse(v) as string[]);
+  }
+
+  /** MM-2: remember (replace) the labels of a checkout key. */
+  setCheckoutLabels(key: string, labels: readonly string[]): void {
+    this.setKv(`checkout-labels:${key}`, JSON.stringify([...labels]));
+  }
+
   message(id: number): Message | undefined {
     const r = this.db.get<MessageRow>("SELECT * FROM message WHERE id = ?", id);
     return r ? toMessage(r) : undefined;

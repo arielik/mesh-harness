@@ -73,6 +73,7 @@ export function sessionMetadata(s: Session): Session {
     ...(s.repo ? { repo: s.repo } : {}),
     kind: s.kind,
     ...(s.name !== undefined ? { name: s.name } : {}),
+    ...(s.labels?.length ? { labels: s.labels } : {}),
     state: s.state,
     ...(s.needs ? { needs: s.needs } : {}),
     quiet: s.quiet,

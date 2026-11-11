@@ -149,6 +149,8 @@ export interface MachineRow {
   /** MM-1: the repo inventory (ids and names only) its daemon last reported, and when. */
   repos?: Repo[];
   reposAt?: number;
+  /** MM-2: what the machine has or is for, sorted; absent when none. */
+  labels?: string[];
 }
 
 /** Facts a sync reports about its machine (MM-1). */
@@ -254,7 +256,7 @@ type MachineDbRow = {
   extra?: string | null;
 };
 /** The JSON column `machine.extra`: per-machine facts beyond the indexed columns. */
-type MachineExtra = { repos?: Repo[]; reposAt?: number };
+type MachineExtra = { repos?: Repo[]; reposAt?: number; labels?: string[] };
 const machineExtra = (raw: string | null | undefined): MachineExtra => (raw ? (JSON.parse(raw) as MachineExtra) : {});
 const machineFrom = (r: MachineDbRow): MachineRow => {
   const x = machineExtra(r.extra);
@@ -269,6 +271,7 @@ const machineFrom = (r: MachineDbRow): MachineRow => {
     ...(r.nickname ? { nickname: r.nickname } : {}),
     ...(Array.isArray(x.repos) ? { repos: x.repos } : {}),
     ...(typeof x.reposAt === "number" ? { reposAt: x.reposAt } : {}),
+    ...(Array.isArray(x.labels) && x.labels.length ? { labels: x.labels } : {}),
   };
 };
 
@@ -475,7 +478,7 @@ export class HubStore {
    * A sync from this machine: last seen and counts, plus (MM-1) the facts it reported. A given
    * `share` is stored; given `repos` replace the inventory and set `reposAt = now`.
    * `extra` is read and rewritten under a row lock (Postgres `FOR UPDATE`; SQLite's write lock),
-   * so two syncs of one machine never lose each other's keys.
+   * so two syncs of one machine never lose each other's keys. A sync never changes the labels (MM-2).
    */
   async touchMachine(id: string, now: number, counts: Record<string, number>, facts?: MachineFacts): Promise<void> {
     if (facts?.share === undefined && facts?.repos === undefined) {
@@ -507,6 +510,20 @@ export class HubStore {
       }
       await this.db.run("UPDATE machine SET nickname = ? WHERE id = ?", nickname ?? null, id);
       return true;
+    });
+  }
+
+  /**
+   * MM-2: replace a machine's labels; `[]` removes them. Keeps every other fact (repos, share,
+   * nickname). An unknown id changes nothing.
+   */
+  async setMachineLabels(id: string, labels: readonly string[]): Promise<void> {
+    await this.tx(async () => {
+      const r = await this.db.get<{ extra: string | null }>(`SELECT extra FROM machine WHERE id = ?${this.db.dialect.forUpdate}`, id);
+      if (!r) return;
+      const rest = machineExtra(r.extra);
+      delete rest.labels;
+      await this.db.run("UPDATE machine SET extra = ? WHERE id = ?", json(labels.length ? { ...rest, labels: [...labels] } : rest), id);
     });
   }
 

@@ -19,6 +19,30 @@ export function agentOf(s: { agent?: AgentKind | undefined }): AgentKind {
 }
 
 export const Repo = z.object({ id: z.string(), name: z.string() });
+
+/** MM-2: what a session or machine is for. Labels use the topic-name syntax. */
+export const LABEL_RULE = "a label is 1-40 characters: lowercase letters, digits, '.', '_' or '-', starting with a letter or digit";
+export const MAX_LABELS = 10;
+export const Label = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,39}$/, LABEL_RULE);
+
+/**
+ * Normalise labels: a string is split on `,`; each item is trimmed and lowercased; empty items are
+ * dropped, repeats removed, the result sorted. The first item that is not a `Label` is an error, as
+ * are more than `MAX_LABELS` distinct labels.
+ */
+export function parseLabels(input: string | readonly string[]): { labels: string[] } | { error: string } {
+  const items = typeof input === "string" ? input.split(",") : [...input];
+  const set = new Set<string>();
+  for (const item of items) {
+    const t = item.trim();
+    if (t === "") continue;
+    const l = t.toLowerCase();
+    if (!Label.safeParse(l).success) return { error: `not a label: ${t} (${LABEL_RULE})` };
+    set.add(l);
+  }
+  if (set.size > MAX_LABELS) return { error: `at most ${MAX_LABELS} labels` };
+  return { labels: [...set].sort() };
+}
 export type Repo = z.infer<typeof Repo>;
 
 /** An agent session (Claude Code or OpenCode) as tracked by the local daemon (plan §3.1, §3.3). */
@@ -37,6 +61,8 @@ export const Session = z.object({
   repo: Repo.optional(),
   kind: SessionKind,
   name: z.string().optional(),
+  /** What the session is for (MM-2), topic-name syntax; absent when none, never []. */
+  labels: z.array(Label).max(MAX_LABELS).optional(),
   /** Short id of a background session (claude attach/stop <id>). */
   bgId: z.string().optional(),
   pane: z.string().optional(),
@@ -111,6 +137,11 @@ export type Message = z.infer<typeof Message>;
 /** GET /local/sessions */
 export const SessionsResponse = z.object({ sessions: z.array(Session), messages: z.array(Message) });
 export type SessionsResponse = z.infer<typeof SessionsResponse>;
+
+/** Reply of `POST /local/labels` (MM-2). `unknown`: labels that are not defined topics; absent when no hub could be asked. */
+export type LabelsResult =
+  | { session: Session; unknown?: string[] | undefined }
+  | { cwd: string; labels: string[]; unknown?: string[] | undefined };
 
 /** POST /local/say */
 export const SayRequest = z.object({ target: z.string().min(1), text: z.string().min(1).max(8000) });

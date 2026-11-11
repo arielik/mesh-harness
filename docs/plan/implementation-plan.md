@@ -370,6 +370,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET /v1/steps?ready=1&repo=`, `GET /v1/steps/:id/context`, `POST /v1/steps/:id/{claim,release,note,done,take}` | Steps |
 | `POST /v1/messages` | Messages |
 | `GET /v1/fleet`, `POST /v1/machines/:id/name` | My mesh (v0.1.9): the caller's machines and their sessions; name a machine |
+| `POST /v1/machines/:id/labels` | Machine labels (v0.1.10): replace, or add/remove, the labels of one of the caller's machines |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---
