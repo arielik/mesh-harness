@@ -24,6 +24,7 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
   const done = visible.filter((s) => s.state === "done").length;
   lines.push(paint("1", `${g.id} · ${g.title}`));
   lines.push(`${g.state.replace(/_/g, " ")} · owner @${g.ownerId} · ${done}/${visible.length} steps done${g.primaryRepo ? ` · ${g.primaryRepo}` : ""}`);
+  if (g.topics?.length) lines.push(`topics: ${g.topics.join(", ")}`);
   lines.push(`steps: ${stageSummary(d.steps, stepStage, STEP_STAGES)}`);
   const plans = d.plans;
   const latest = plans.at(-1);

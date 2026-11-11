@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { levels } from "../../src/core/dag.ts";
 import { partition, STEP_STAGES, stepStage } from "../../src/core/stages.ts";
 import type { Goal, Plan, Step } from "../../src/protocol/goal.ts";
-import type { GoalDetail, StepView, TimelineEntry } from "../../src/protocol/hub.ts";
+import type { GoalDetail, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
 import { api } from "./api.ts";
 
 export function ago(now: number, at: number | undefined): string {
@@ -25,15 +25,100 @@ const COLUMNS: { title: string; states: Goal["state"][] }[] = [
   { title: "Done", states: ["done"] },
 ];
 
+/** The topic filter, kept per viewer (a convenience only: the board works without it). */
+const TOPIC_KEY = "mesh.goals.topics";
+function savedTopics(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(TOPIC_KEY) ?? "[]") as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Topic chips: `all` clears the filter; other chips toggle, and goals must carry every chip on. */
+function TopicBar({ topics, selected, onChange, onDefine }: { topics: TopicView[]; selected: string[]; onChange: (t: string[]) => void; onDefine: (name: string) => void }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  return (
+    <div className="topics" role="group" aria-label="Filter goals by topic">
+      {topics.map((t) => {
+        const on = t.name === "all" ? selected.length === 0 : selected.includes(t.name);
+        return (
+          <button
+            key={t.name}
+            type="button"
+            className={`chip${on ? " on" : ""}`}
+            aria-pressed={on}
+            title={t.description ?? ""}
+            onClick={() => onChange(t.name === "all" ? [] : on ? selected.filter((x) => x !== t.name) : [...selected, t.name])}
+          >
+            {t.name} <span className="count">{t.goals}</span>
+          </button>
+        );
+      })}
+      {adding ? (
+        <form
+          className="inline"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!name.trim()) return;
+            onDefine(name.trim());
+            setName("");
+            setAdding(false);
+          }}
+        >
+          <input aria-label="New topic name" placeholder="topic name" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+        </form>
+      ) : (
+        <button type="button" className="chip add" onClick={() => setAdding(true)}>
+          + topic
+        </button>
+      )}
+      {selected.length > 1 && <span className="muted small-text">goals with all of: {selected.join(" + ")}</span>}
+    </div>
+  );
+}
+
+export function TopicChips({ topics }: { topics?: readonly string[] | undefined }) {
+  if (!topics?.length) return null;
+  return (
+    <span className="chips">
+      {topics.map((t) => (
+        <span key={t} className="chip static">
+          {t}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function GoalsBoard({ progress, onRefresh }: { progress: Record<string, { done: number; total: number; holders: string[] }>; onRefresh: () => void }) {
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [topics, setTopics] = useState<TopicView[]>([]);
+  const [selected, setSelected] = useState<string[]>(savedTopics);
   const [title, setTitle] = useState("");
   const [repo, setRepo] = useState("");
   const [error, setError] = useState<string>();
   const load = useCallback(() => {
-    api.goals().then(setGoals, (e: Error) => setError(e.message));
+    api.topics().then(
+      (ts) => {
+        setTopics(ts);
+        // A topic someone deleted drops out of the filter.
+        setSelected((sel) => sel.filter((s) => ts.some((t) => t.name === s)));
+      },
+      (e: Error) => setError(e.message),
+    );
   }, []);
   useEffect(load, [load, progress]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(TOPIC_KEY, JSON.stringify(selected));
+    } catch {
+      /* storage blocked: the filter just isn't remembered */
+    }
+    api.goals(selected).then(setGoals, (e: Error) => setError(e.message));
+  }, [selected, progress]);
   const now = Date.now();
   const recent = (g: Goal) => g.state !== "done" || now - g.updatedAt < 14 * 86_400_000;
   return (
@@ -43,7 +128,7 @@ export function GoalsBoard({ progress, onRefresh }: { progress: Record<string, {
         onSubmit={(e) => {
           e.preventDefault();
           if (!title.trim()) return;
-          api.newGoal(title.trim(), repo.trim() || undefined).then(
+          api.newGoal(title.trim(), repo.trim() || undefined, selected).then(
             () => {
               setTitle("");
               setRepo("");
@@ -56,8 +141,22 @@ export function GoalsBoard({ progress, onRefresh }: { progress: Record<string, {
       >
         <input aria-label="New goal title" placeholder="New goal…" value={title} onChange={(e) => setTitle(e.target.value)} />
         <input aria-label="Primary repo" placeholder="primary repo (optional)" value={repo} onChange={(e) => setRepo(e.target.value)} />
-        <button type="submit">Create</button>
+        <button type="submit">Create{selected.length ? ` in ${selected.join(" + ")}` : ""}</button>
       </form>
+      <TopicBar
+        topics={topics}
+        selected={selected}
+        onChange={setSelected}
+        onDefine={(name) =>
+          api.newTopic(name).then(
+            () => {
+              setError(undefined);
+              load();
+            },
+            (err: Error) => setError(err.message),
+          )
+        }
+      />
       {error && <p className="error">{error}</p>}
       <div className="board">
         {COLUMNS.map((col) => {
@@ -78,6 +177,7 @@ export function GoalsBoard({ progress, onRefresh }: { progress: Record<string, {
                       @{g.ownerId}
                       {g.primaryRepo ? ` · ${g.primaryRepo}` : ""} · {ago(now, g.updatedAt)}
                     </div>
+                    <TopicChips topics={g.topics} />
                     {p && p.total > 0 && (
                       <div className="row">
                         <div className="bar">
@@ -376,6 +476,41 @@ function DesignTab({ detail, onDecide }: { detail: GoalDetail; onDecide: (kind: 
   );
 }
 
+/** A goal's topics with × to untag, and a picker of the defined topics to tag. */
+function GoalTopics({ goal, onChange, onError }: { goal: Goal; onChange: () => void; onError: (m: string) => void }) {
+  const [all, setAll] = useState<TopicView[]>([]);
+  useEffect(() => {
+    api.topics().then(setAll, (e: Error) => onError(e.message));
+  }, [goal.id, onError]);
+  const have = goal.topics ?? [];
+  const change = (c: { add?: string[]; remove?: string[] }) => api.goalTopics(goal.id, c).then(onChange, (e: Error) => onError(e.message));
+  const free = all.filter((t) => t.name !== "all" && !have.includes(t.name));
+  return (
+    <p className="topics" aria-label="topics">
+      <span className="muted small-text">topics</span>
+      {have.map((t) => (
+        <span key={t} className="chip static">
+          {t}
+          <button type="button" className="x" aria-label={`Remove topic ${t}`} onClick={() => void change({ remove: [t] })}>
+            ×
+          </button>
+        </span>
+      ))}
+      {free.length > 0 && (
+        <select aria-label="Add a topic" value="" onChange={(e) => e.target.value && void change({ add: [e.target.value] })}>
+          <option value="">+ add</option>
+          {free.map((t) => (
+            <option key={t.name} value={t.name}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+      )}
+      {have.length === 0 && free.length === 0 && <span className="muted small-text">none yet; define topics on the Goals page</span>}
+    </p>
+  );
+}
+
 export function GoalPage({ id }: { id: string }) {
   const [detail, setDetail] = useState<GoalDetail>();
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
@@ -432,6 +567,7 @@ export function GoalPage({ id }: { id: string }) {
           </button>
         )}
       </p>
+      <GoalTopics goal={g} onChange={load} onError={setError} />
       {error && <p className="error">{error}</p>}
       <p className="stages" aria-label="step stages">
         {partition(detail.steps, stepStage, STEP_STAGES)

@@ -279,6 +279,26 @@ describe("mesh login", () => {
       expect(await cmd("goal").run(["new", "IPv6", "underlay"])).toBe(0);
       expect(await cmd("goal").run(["ls"])).toBe(0);
       expect(out.join("\n")).toMatch(/G1\s+backlog/);
+
+      // Topics: define, tag at creation and later, filter with AND.
+      out.length = 0;
+      expect(await cmd("topic").run(["add", "dataplane", "packet", "path"])).toBe(0);
+      expect(await cmd("topic").run(["add", "performance"])).toBe(0);
+      expect(await cmd("goal").run(["new", "fast", "path", "--topics", "dataplane,performance"])).toBe(0);
+      expect(out.at(-1)).toContain("[dataplane, performance]");
+      expect(await cmd("goal").run(["tag", "G1", "dataplane"])).toBe(0);
+      expect(out.at(-1)).toBe("G1 topics: dataplane (and all)");
+      out.length = 0;
+      expect(await cmd("goal").run(["ls", "--topic", "dataplane,performance"])).toBe(0);
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatch(/^G2\s.*fast path\s+\[dataplane, performance\]$/);
+      out.length = 0;
+      expect(await cmd("topic").run(["ls"])).toBe(0);
+      expect(out[0]).toMatch(/^all\s+2 goals\s+every goal$/);
+      expect(out[1]).toMatch(/^dataplane\s+2 goals\s+packet path\s+\(@alice\)$/);
+      expect(await cmd("goal").run(["untag", "G2", "performance"])).toBe(0);
+      expect(await cmd("topic").run(["rm", "performance"])).toBe(0);
+      expect(out.at(-1)).toBe("Deleted topic performance.");
       expect(await cmd("logout").run([])).toBe(0);
       expect(await cmd("whoami").run([]).catch((e: Error) => e.message)).toContain("not logged in");
     } finally {

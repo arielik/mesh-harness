@@ -113,3 +113,32 @@ test("decide a gate step and resume a parked one on the Goal page", async ({ pag
   await page.getByRole("button", { name: "Resume" }).click();
   await expect(page.locator(`[data-step="${goal.id}.verify"]`)).toContainText("ready");
 });
+
+test("filter the board by topics and tag a goal on its page", async ({ page, request }) => {
+  const auth = await bobApi(request);
+  for (const name of ["e2e-dplane", "e2e-perf"]) expect((await request.post("/v1/topics", { headers: auth, data: { name } })).ok()).toBeTruthy();
+  const both = await (await request.post("/v1/goals", { headers: auth, data: { title: "Topics both", topics: ["e2e-dplane", "e2e-perf"] } })).json();
+  await request.post("/v1/goals", { headers: auth, data: { title: "Topics one", topics: ["e2e-dplane"] } });
+  await signIn(page);
+  await page.goto("/#/goals");
+  const bar = page.getByRole("group", { name: "Filter goals by topic" });
+  await bar.getByRole("button", { name: /^e2e-dplane/ }).click();
+  await expect(page.locator(".board")).toContainText("Topics one");
+  await expect(page.locator(".board")).toContainText("Topics both");
+  await bar.getByRole("button", { name: /^e2e-perf/ }).click();
+  await expect(page.locator(".board")).toContainText("Topics both");
+  await expect(page.locator(".board")).not.toContainText("Topics one");
+  // A goal made while filtering gets the selected topics.
+  await page.getByLabel("New goal title").fill("Topics new");
+  await page.getByRole("button", { name: "Create in e2e-dplane + e2e-perf" }).click();
+  await expect(page.locator(".board")).toContainText("Topics new");
+  await bar.getByRole("button", { name: /^all/ }).click();
+  await expect(page.locator(".board")).toContainText("Topics one");
+
+  await page.goto(`/#/goal/${both.id}`);
+  const topics = page.getByLabel("topics", { exact: true });
+  await topics.getByRole("button", { name: "Remove topic e2e-perf" }).click();
+  await expect(topics.locator(".chip")).toHaveText(["e2e-dplane×"]);
+  await topics.getByLabel("Add a topic").selectOption("e2e-perf");
+  await expect(topics.locator(".chip")).toHaveText(["e2e-dplane×", "e2e-perf×"]);
+});

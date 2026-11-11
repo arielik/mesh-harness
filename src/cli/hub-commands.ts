@@ -9,7 +9,7 @@ import { stringify, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { sha256 } from "../auth/index.ts";
 import { BUILTIN_PRESETS, instantiate, parsePreset, presetText, repoMatches, type Preset } from "../core/index.ts";
-import { PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type Step, type TrailFile } from "../protocol/index.ts";
+import { PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type Step, type TopicView, type TrailFile } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
@@ -132,8 +132,9 @@ function readPlan(file: string): PlanInput {
 export function goalCommand(c: CliEnv): Command {
   const usage = [
     "usage:",
-    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--refs spec=SPEC-7,backlog=ROW-42] [--preset sdd-split] [--reworks G3] [--issue URL] [--priority 0-9]',
-    "  mesh goal ls",
+    '  mesh goal new "<title>" [--repo R] [--repos a,b] [--topics a,b] [--refs spec=SPEC-7,backlog=ROW-42] [--preset sdd-split] [--reworks G3] [--issue URL] [--priority 0-9]',
+    "  mesh goal ls [--topic a,b]          # only goals with every topic given",
+    "  mesh goal tag <G> <topic>…          # untag <G> <topic>… to take topics off",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",
     "  mesh goal plan <G> --preset sdd-split --repo R [--acs acs.yaml] [--no-approve]",
@@ -144,10 +145,10 @@ export function goalCommand(c: CliEnv): Command {
   ].join("\n");
   return {
     name: "goal",
-    summary: "goals and plans: new, ls, show, plan, approve, revise",
+    summary: "goals and plans: new, ls, show, tag, plan, approve, revise",
     async run(args) {
       const [sub, ...rest] = args;
-      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs"]);
+      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs", "topic", "topics"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "new": {
@@ -161,15 +162,27 @@ export function goalCommand(c: CliEnv): Command {
             ...(a.str("issue") ? { issueUrl: a.str("issue") } : {}),
             ...(a.str("priority") ? { priority: Number(a.str("priority")) } : {}),
             ...(a.str("reworks") ? { reworks: (a.str("reworks") as string).split(",").map((r) => r.trim()).filter(Boolean) } : {}),
+            ...(a.str("topics") ?? a.str("topic") ? { topics: list(a.str("topics") ?? a.str("topic")) } : {}),
             ...(a.str("preset") ? { preset: { name: a.str("preset") as string, text: presetText(findPreset(c.cwd, a.str("preset") as string)) } } : {}),
           });
-          c.io.out(`Created ${g.id} "${g.title}". Start the design with: mesh run --design ${g.id}`);
+          c.io.out(`Created ${g.id} "${g.title}"${g.topics?.length ? ` [${g.topics.join(", ")}]` : ""}. Start the design with: mesh run --design ${g.id}`);
           return 0;
         }
         case "ls": {
-          const { goals } = await hub().get<{ goals: Goal[] }>("/v1/goals");
-          if (goals.length === 0) c.io.out("No goals yet. Create one: mesh goal new \"<title>\"");
-          for (const g of goals) c.io.out(`${g.id.padEnd(5)} ${g.state.padEnd(18)} @${g.ownerId.padEnd(12)} ${g.title}`);
+          const topics = list(a.str("topic") ?? a.str("topics"));
+          const q = topics.length ? `?${new URLSearchParams({ topic: topics.join(",") }).toString()}` : "";
+          const { goals } = await hub().get<{ goals: Goal[] }>(`/v1/goals${q}`);
+          if (goals.length === 0) c.io.out(topics.length ? `No goals with topic ${topics.join(" and ")}.` : "No goals yet. Create one: mesh goal new \"<title>\"");
+          for (const g of goals) c.io.out(`${g.id.padEnd(5)} ${g.state.padEnd(18)} @${g.ownerId.padEnd(12)} ${g.title}${g.topics?.length ? `  [${g.topics.join(", ")}]` : ""}`);
+          return 0;
+        }
+        case "tag":
+        case "untag": {
+          const [id, ...names] = a.positional;
+          const topics = list(names.join(","));
+          if (!id || topics.length === 0) break;
+          const g = await hub().post<Goal>(`/v1/goals/${encodeURIComponent(id)}/topics`, sub === "tag" ? { add: topics } : { remove: topics });
+          c.io.out(`${g.id} topics: ${g.topics?.length ? g.topics.join(", ") : "none"} (and all)`);
           return 0;
         }
         case "show": {
@@ -222,6 +235,46 @@ export function goalCommand(c: CliEnv): Command {
             const w = writeTrailHere(c.cwd, files);
             c.io.out(w.length ? `Wrote ${w.join(", ")}` : "Not inside a git checkout; nothing written.");
           } else for (const f of files) c.io.out(`# ${f.path}\n${f.text}`);
+          return 0;
+        }
+      }
+      c.io.err(usage);
+      return 2;
+    },
+  };
+}
+
+/** "a, b,c" → ["a", "b", "c"]. */
+function list(v: string | undefined): string[] {
+  return (v ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+}
+
+export function topicCommand(c: CliEnv): Command {
+  const usage = ["usage:", "  mesh topic ls", '  mesh topic add <name> ["<description>"]', "  mesh topic rm <name>      # its creator or an admin; untags its goals", "Every goal is in the topic all."].join("\n");
+  return {
+    name: "topic",
+    summary: "topics that label goals: ls, add, rm",
+    async run(args) {
+      const [sub, name, ...words] = args;
+      const hub = () => HubClient.from(c.paths);
+      switch (sub) {
+        case undefined:
+        case "ls": {
+          const { topics } = await hub().get<{ topics: TopicView[] }>("/v1/topics");
+          for (const t of topics) c.io.out(`${t.name.padEnd(20)} ${String(t.goals).padStart(4)} goal${t.goals === 1 ? " " : "s"}  ${t.description ?? ""}${t.createdBy ? `  (@${t.createdBy})` : ""}`.trimEnd());
+          if (topics.length === 1) c.io.out('No topics yet. Define one: mesh topic add dataplane "packet path work"');
+          return 0;
+        }
+        case "add": {
+          if (!name) break;
+          const t = await hub().post<TopicView>("/v1/topics", { name, ...(words.length ? { description: words.join(" ") } : {}) });
+          c.io.out(`Defined topic ${t.name}. Tag goals with: mesh goal tag <G> ${t.name}`);
+          return 0;
+        }
+        case "rm": {
+          if (!name) break;
+          const r = await hub().post<{ name: string; goals: string[] }>(`/v1/topics/${encodeURIComponent(name)}/delete`, {});
+          c.io.out(`Deleted topic ${r.name}${r.goals.length ? `; untagged ${r.goals.join(", ")}` : ""}.`);
           return 0;
         }
       }
@@ -417,5 +470,5 @@ export function presetCommand(c: CliEnv): Command {
 }
 
 export function hubCommands(c: CliEnv): Command[] {
-  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), showCommand(c), nextCommand(c), takeCommand(c), stepCommand(c), presetCommand(c), answerCommand(c), autopilotCommand(c)];
+  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), topicCommand(c), showCommand(c), nextCommand(c), takeCommand(c), stepCommand(c), presetCommand(c), answerCommand(c), autopilotCommand(c)];
 }

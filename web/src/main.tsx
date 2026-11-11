@@ -2,7 +2,7 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Attention, LiveView, ProviderInfo } from "../../src/protocol/hub.ts";
 import { api, ApiError } from "./api.ts";
-import { GoalPage, GoalsBoard } from "./goals.tsx";
+import { GoalPage, GoalsBoard, TopicChips } from "./goals.tsx";
 import "./styles.css";
 
 function ago(now: number, at: number | undefined): string {
@@ -154,6 +154,7 @@ function Live({ data, onApprove }: { data: LiveView; onApprove: (goal: string) =
                   </td>
                   <td>
                     <a href={`#/goal/${g.id}`}>{g.title}</a>
+                    <TopicChips topics={g.topics} />
                   </td>
                   <td className="muted">{g.state.replace("_", " ")}</td>
                   <td>

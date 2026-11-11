@@ -150,6 +150,23 @@ mesh run payments-web --step G3.web --auto chain
 
 Each agent finishes with `mesh_done`. mesh writes `.mesh/goals/G3/steps/<step>.md` into the repo, and the agent commits it with the work. When the last step is done, `goal.yaml` gets the roll-up.
 
+### Group goals by topic
+
+Topics are labels for goals, such as `dataplane` or `performance`. Every goal is in the topic `all`. Define the other topics once, then tag goals with them:
+
+```bash
+mesh topic add dataplane "packet path work"
+mesh topic add performance
+mesh goal new "OVS fast path" --repo frr-dplane-ovs --topics dataplane,performance
+mesh goal tag G3 dataplane              # mesh goal untag G3 dataplane takes it off
+mesh goal ls --topic dataplane          # goals tagged dataplane
+mesh goal ls --topic dataplane,performance   # goals tagged with both
+mesh topic ls                           # topics and how many goals each has
+mesh topic rm performance               # its creator or an admin; untags its goals
+```
+
+Any member can tag or untag a goal. A topic has to be defined before you can use it, so a typo such as `dataplan` is refused, not created. A name is up to 40 characters: lowercase letters, digits, `.`, `_` and `-`. On the web, the Goals page has a chip per topic. Turn chips on to show only the goals that carry all of them; a goal you create there gets the topics you have on. A goal's page lists its topics, with × to remove one and a picker to add one. API: `GET /v1/goals?topic=dataplane,performance`, `GET /v1/topics`, `POST /v1/topics`, `POST /v1/goals/<G>/topics` with `{"add": [...], "remove": [...]}`.
+
 ## 5. Run the SDD cycle as mesh steps
 
 The `sdd-split` template is the full cycle:

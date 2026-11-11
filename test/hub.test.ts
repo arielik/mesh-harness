@@ -456,3 +456,80 @@ describe("config", () => {
     expect(at(undefined, { MESH_HUB_DB: "/var/lib/mesh/hub.db" })).toBe("/var/lib/mesh/hub.db");
   });
 });
+
+describe("goal topics", () => {
+  const ids = (r: { json: Json }) => (r.json.goals as { id: string }[]).map((g) => g.id);
+
+  it("define topics, tag goals, and list goals that carry every topic asked for", async () => {
+    const alice = await login("alice");
+    const bob = await login("bob");
+    expect((await call("POST", "/v1/topics", alice.token, { name: "Dataplane", description: "packets" })).status).toBe(201);
+    expect((await call("POST", "/v1/topics", alice.token, { name: "performance" })).status).toBe(201);
+    expect((await call("POST", "/v1/topics", bob.token, { name: "dataplane" })).status).toBe(409);
+    expect((await call("POST", "/v1/topics", bob.token, { name: "all" })).status).toBe(409);
+    expect((await call("POST", "/v1/topics", bob.token, { name: "has space" })).status).toBe(400);
+
+    const g1 = await call("POST", "/v1/goals", alice.token, { title: "fast path", topics: ["dataplane", "PERFORMANCE", "all"] });
+    expect(g1.status).toBe(201);
+    expect(g1.json.topics).toEqual(["dataplane", "performance"]);
+    const g2 = await call("POST", "/v1/goals", alice.token, { title: "dplane refactor", topics: ["dataplane"] });
+    const g3 = await call("POST", "/v1/goals", alice.token, { title: "docs" });
+    expect(g3.json.topics).toBeUndefined();
+    expect((await call("POST", "/v1/goals", alice.token, { title: "typo", topics: ["dataplan"] })).status).toBe(400);
+
+    expect(ids(await call("GET", "/v1/goals", alice.token))).toEqual([g1.json.id, g2.json.id, g3.json.id]);
+    expect(ids(await call("GET", "/v1/goals?topic=all", alice.token))).toHaveLength(3);
+    expect(ids(await call("GET", "/v1/goals?topic=dataplane", alice.token))).toEqual([g1.json.id, g2.json.id]);
+    expect(ids(await call("GET", "/v1/goals?topic=dataplane&topic=performance", alice.token))).toEqual([g1.json.id]);
+    expect(ids(await call("GET", "/v1/goals?topic=dataplane,performance", alice.token))).toEqual([g1.json.id]);
+    expect((await call("GET", "/v1/goals?topic=nope", alice.token)).status).toBe(400);
+
+    // Any member tags and untags; the goal's topics stay sorted and unique.
+    const t = await call("POST", `/v1/goals/${g3.json.id}/topics`, bob.token, { add: ["performance", "dataplane"] });
+    expect(t.status).toBe(200);
+    expect(t.json.topics).toEqual(["dataplane", "performance"]);
+    const u = await call("POST", `/v1/goals/${g3.json.id}/topics`, bob.token, { remove: ["dataplane", "performance"] });
+    expect(u.json.topics).toBeUndefined();
+    expect((await call("POST", `/v1/goals/${g3.json.id}/topics`, bob.token, {})).status).toBe(400);
+
+    const topics = (await call("GET", "/v1/topics", bob.token)).json.topics;
+    expect(topics).toEqual([
+      { name: "all", description: "every goal", goals: 3 },
+      expect.objectContaining({ name: "dataplane", description: "packets", createdBy: "alice", goals: 2 }),
+      expect.objectContaining({ name: "performance", createdBy: "alice", goals: 1 }),
+    ]);
+
+    const live = (await call("GET", "/v1/live?topic=performance", alice.token)).json;
+    expect(live.goals.map((g: Json) => [g.id, g.topics])).toEqual([[g1.json.id, ["dataplane", "performance"]]]);
+
+    const events = (await call("GET", "/v1/live", alice.token)).json.activity.map((e: Json) => e.text);
+    expect(events).toContain("defined topic dataplane");
+    expect(events).toContain(`tagged ${g3.json.id} dataplane, performance`);
+  });
+
+  it("only the creator or an admin deletes a topic, which untags its goals", async () => {
+    const alice = await login("alice");
+    const bob = await login("bob");
+    const root = await login("root");
+    await call("POST", "/v1/topics", alice.token, { name: "dataplane" });
+    const g = await call("POST", "/v1/goals", alice.token, { title: "x", topics: ["dataplane"] });
+    expect((await call("POST", "/v1/topics/dataplane/delete", bob.token)).status).toBe(403);
+    expect((await call("POST", "/v1/topics/all/delete", root.token)).status).toBe(409);
+    const d = await call("POST", "/v1/topics/dataplane/delete", root.token);
+    expect(d.json).toEqual({ name: "dataplane", goals: [g.json.id] });
+    expect((await call("GET", `/v1/goals/${g.json.id}`, alice.token)).json.goal.topics).toBeUndefined();
+    expect((await call("POST", "/v1/topics/dataplane/delete", alice.token)).status).toBe(404);
+  });
+
+  it("service tokens: goals:read lists topics, goals:write defines and tags", async () => {
+    const reader = await hub.svc.serviceToken("viewer", ["goals:read"]);
+    const writer = await hub.svc.serviceToken("mesh-ai", ["goals:read", "goals:write"]);
+    expect((await call("GET", "/v1/topics", reader)).status).toBe(200);
+    expect((await call("POST", "/v1/topics", reader, { name: "x" })).status).toBe(403);
+    expect((await call("POST", "/v1/topics", writer, { name: "x" })).status).toBe(201);
+    const g = await call("POST", "/v1/goals", writer, { title: "from a service", topics: ["x"] });
+    expect(g.status).toBe(201);
+    expect((await call("POST", `/v1/goals/${g.json.id}/topics`, writer, { remove: ["x"] })).status).toBe(200);
+    expect((await call("GET", "/v1/goals?topic=x", reader)).json.goals).toEqual([]);
+  });
+});

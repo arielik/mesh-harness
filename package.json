@@ -1,6 +1,6 @@
 {
   "name": "mesh-harness",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "mesh-harness: one place to see and steer all your Claude Code sessions",
   "type": "module",
   "license": "PolyForm-Noncommercial-1.0.0",

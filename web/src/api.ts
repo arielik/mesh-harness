@@ -1,5 +1,5 @@
 import type { Goal } from "../../src/protocol/goal.ts";
-import type { GoalDetail, LiveView, ProviderInfo, StepView, TimelineEntry } from "../../src/protocol/hub.ts";
+import type { GoalDetail, LiveView, ProviderInfo, StepView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -29,7 +29,10 @@ export const api = {
   loginToken: (provider: string, token: string) => call<{ user: { id: string } }>("POST", `/auth/${encodeURIComponent(provider)}/login`, { token, client: "web" }),
   loginNone: (provider: string) => call<{ user: { id: string } }>("POST", `/auth/${encodeURIComponent(provider)}/login`, { client: "web" }),
   logout: () => call("POST", "/auth/logout"),
-  goals: async () => (await call<{ goals: Goal[] }>("GET", "/v1/goals")).goals,
+  goals: async (topics: readonly string[] = []) => (await call<{ goals: Goal[] }>("GET", `/v1/goals${topics.length ? `?topic=${encodeURIComponent(topics.join(","))}` : ""}`)).goals,
+  topics: async () => (await call<{ topics: TopicView[] }>("GET", "/v1/topics")).topics,
+  newTopic: (name: string, description?: string) => call<TopicView>("POST", "/v1/topics", { name, ...(description ? { description } : {}) }),
+  goalTopics: (id: string, change: { add?: string[]; remove?: string[] }) => call<Goal>("POST", `${g(id)}/topics`, change),
   goal: (id: string) => call<GoalDetail>("GET", g(id)),
   timeline: async (id: string) => (await call<{ timeline: TimelineEntry[] }>("GET", `${g(id)}/timeline`)).timeline,
   step: (id: string) => call<StepView>("GET", `/v1/steps/${encodeURIComponent(id)}`),
@@ -39,5 +42,5 @@ export const api = {
   approveStep: (id: string, comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/approve`, comment ? { comment } : {}),
   rejectStep: (id: string, reopen: string[], comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/reject`, { reopen, ...(comment ? { comment } : {}) }),
   resumeStep: (id: string, comment?: string) => call<unknown>("POST", `/v1/steps/${encodeURIComponent(id)}/resume`, comment ? { comment } : {}),
-  newGoal: (title: string, primaryRepo?: string) => call<Goal>("POST", "/v1/goals", { title, ...(primaryRepo ? { primaryRepo } : {}) }),
+  newGoal: (title: string, primaryRepo?: string, topics: string[] = []) => call<Goal>("POST", "/v1/goals", { title, ...(primaryRepo ? { primaryRepo } : {}), ...(topics.length ? { topics } : {}) }),
 };

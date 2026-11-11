@@ -1,7 +1,7 @@
 // Hub persistence (plan §3.2, §8). Rows keep a few indexed columns plus the JSON value.
 
 import { randomUUID } from "node:crypto";
-import { Goal, Plan, Question, ServiceScope, Session, Step, type Note } from "../protocol/index.ts";
+import { Goal, Plan, Question, ServiceScope, Session, Step, Topic, type Note } from "../protocol/index.ts";
 import { openDb, SOLE_LEADER, type Channel, type Db, type Leader } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
@@ -47,6 +47,8 @@ export const HUB_MIGRATIONS: readonly string[] = [
   `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
   // v0.1.6: a service token's scopes, comma-separated (NULL: the event feed only).
   `ALTER TABLE token ADD COLUMN scopes TEXT;`,
+  // v0.1.8: topics, the labels people define for goals (a goal's own topics live in its value).
+  `CREATE TABLE topic (name TEXT PRIMARY KEY, value TEXT NOT NULL, created_at INTEGER NOT NULL);`,
 ];
 
 /**
@@ -94,6 +96,7 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    CREATE INDEX event_goal ON event (goal);`,
   `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
   `ALTER TABLE token ADD COLUMN scopes TEXT;`,
+  `CREATE TABLE topic (name TEXT PRIMARY KEY, value TEXT NOT NULL, created_at BIGINT NOT NULL);`,
 ];
 
 export type TokenKind = "device" | "web" | "service";
@@ -470,6 +473,27 @@ export class HubStore {
 
   async listGoals(): Promise<Goal[]> {
     return (await this.db.all<{ value: string }>("SELECT value FROM goal ORDER BY num")).map((r) => Goal.parse(JSON.parse(r.value)));
+  }
+
+  // ---------- topics ----------
+
+  /** Define a topic; false when one with that name exists. */
+  async createTopic(t: Topic): Promise<boolean> {
+    const topic = Topic.parse(t);
+    return (await this.db.run("INSERT INTO topic (name, value, created_at) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING", topic.name, json(topic), topic.createdAt)).changes > 0;
+  }
+
+  async getTopic(name: string): Promise<Topic | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM topic WHERE name = ?", name);
+    return r ? Topic.parse(JSON.parse(r.value)) : undefined;
+  }
+
+  async listTopics(): Promise<Topic[]> {
+    return (await this.db.all<{ value: string }>("SELECT value FROM topic ORDER BY name")).map((r) => Topic.parse(JSON.parse(r.value)));
+  }
+
+  async deleteTopic(name: string): Promise<boolean> {
+    return (await this.db.run("DELETE FROM topic WHERE name = ?", name)).changes > 0;
   }
 
   async savePlan(p: Plan): Promise<void> {

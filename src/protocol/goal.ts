@@ -1,5 +1,32 @@
 import { z } from "zod";
 
+/**
+ * A topic is a label for goals ("dataplane", "performance"). People define topics, then tag goals
+ * with them. Every goal is in the implicit topic `all`, which is never stored on a goal.
+ */
+export const ALL_TOPIC = "all";
+export const TopicName = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9._-]{0,39}$/, "a topic is 1-40 characters: lowercase letters, digits, '.', '_' or '-', starting with a letter or digit");
+export const Topic = z.object({
+  name: TopicName,
+  description: z.string().max(200).optional(),
+  createdBy: z.string(),
+  createdAt: z.number(),
+});
+export type Topic = z.infer<typeof Topic>;
+
+/** Normalise a list of topic names: trimmed, lowercased, without `all`, without repeats, sorted. */
+export function normalizeTopics(names: readonly string[]): string[] {
+  return [...new Set(names.map((n) => n.trim().toLowerCase()).filter((n) => n && n !== ALL_TOPIC))].sort();
+}
+
+/** True when the goal carries every topic in `want` (`all` and an empty list match every goal). */
+export function goalHasTopics(goal: { topics?: readonly string[] | undefined }, want: readonly string[]): boolean {
+  const have = new Set(goal.topics ?? []);
+  return normalizeTopics(want).every((t) => have.has(t));
+}
+
 export const GoalState = z.enum(["backlog", "design", "awaiting_approval", "in_progress", "done", "dropped"]);
 export type GoalState = z.infer<typeof GoalState>;
 
@@ -26,6 +53,8 @@ export const Goal = z.object({
   preset: z.object({ name: z.string(), text: z.string() }).optional(),
   /** Ids the team's own process uses for this work, e.g. {spec: "SPEC-7", backlog: "ROW-42"}. */
   refs: z.record(z.string(), z.string()).optional(),
+  /** Topics this goal is tagged with, sorted (`all` is implicit and never listed). */
+  topics: z.array(z.string()).optional(),
   priority: z.number().int(),
   createdAt: z.number(),
   updatedAt: z.number(),

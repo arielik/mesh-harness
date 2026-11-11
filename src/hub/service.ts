@@ -43,6 +43,8 @@ import type {
   DoneResult,
   Goal,
   GoalDetail,
+  Topic,
+  TopicView,
   InboxMessage,
   LiveView,
   LoginResult,
@@ -60,6 +62,7 @@ import type {
   UserView,
   ServiceScope,
 } from "../protocol/index.ts";
+import { ALL_TOPIC, TopicName, goalHasTopics, normalizeTopics } from "../protocol/index.ts";
 import { HubStore, type NewEvent, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
@@ -368,10 +371,12 @@ export class HubService {
       reworks?: string[] | undefined;
       preset?: { name: string; text: string } | undefined;
       priority: number;
+      topics?: string[] | undefined;
     },
   ): Promise<Goal> {
     return await this.store.tx(async () => {
       const now = this.now();
+      const topics = await this.knownTopics(input.topics ?? []);
       const goal = await this.store.createGoal({
         title: input.title,
         ownerId: actor.userId,
@@ -382,6 +387,7 @@ export class HubService {
         ...(input.refs && Object.keys(input.refs).length ? { refs: input.refs } : {}),
         ...(input.reworks?.length ? { reworks: input.reworks } : {}),
         ...(input.preset ? { preset: input.preset } : {}),
+        ...(topics.length ? { topics } : {}),
         priority: input.priority,
         createdAt: now,
         updatedAt: now,
@@ -412,14 +418,97 @@ export class HubService {
         updatedAt: now,
       };
       await this.store.saveSteps([design]);
-      await this.emit({ type: "goal.created", user: actor.userId, goal: goal.id, payload: { title: goal.title } });
+      await this.emit({ type: "goal.created", user: actor.userId, goal: goal.id, payload: { title: goal.title, ...(topics.length ? { topics } : {}) } });
       await this.emit({ type: "step.ready", goal: goal.id, step: design.id });
       return goal;
     });
   }
 
-  async listGoals(): Promise<Goal[]> {
-    return await this.store.listGoals();
+  /** All goals, or those carrying every topic in `topics` (`all` matches every goal). */
+  async listGoals(topics: readonly string[] = []): Promise<Goal[]> {
+    const want = await this.knownTopics(topics);
+    return (await this.store.listGoals()).filter((g) => goalHasTopics(g, want));
+  }
+
+  // ---------- topics ----------
+
+  /** `all` first (every goal), then the defined topics by name, each with its number of goals. */
+  async listTopics(): Promise<TopicView[]> {
+    return this.store.tx(async () => {
+      const goals = await this.store.listGoals();
+      const count = new Map<string, number>();
+      for (const g of goals) for (const t of g.topics ?? []) count.set(t, (count.get(t) ?? 0) + 1);
+      const defined = (await this.store.listTopics()).map((t) => ({ ...t, goals: count.get(t.name) ?? 0 }));
+      return [{ name: ALL_TOPIC, description: "every goal", goals: goals.length }, ...defined];
+    });
+  }
+
+  async createTopic(actor: Actor, input: { name: string; description?: string | undefined }): Promise<TopicView> {
+    const name = topicName(input.name);
+    if (name === ALL_TOPIC) throw new HubError(409, `"${ALL_TOPIC}" is built in: every goal is in it`);
+    return await this.store.tx(async () => {
+      const topic: Topic = { name, ...(input.description?.trim() ? { description: input.description.trim() } : {}), createdBy: actor.userId, createdAt: this.now() };
+      if (!(await this.store.createTopic(topic))) throw new HubError(409, `topic ${name} exists`);
+      await this.emit({ type: "topic.created", user: actor.userId, payload: { topic: name } });
+      return { ...topic, goals: 0 };
+    });
+  }
+
+  /** Delete a topic (its creator or an admin) and take it off every goal. */
+  async deleteTopic(actor: Actor, raw: string): Promise<{ name: string; goals: string[] }> {
+    const name = topicName(raw);
+    if (name === ALL_TOPIC) throw new HubError(409, `"${ALL_TOPIC}" is built in and can't be deleted`);
+    return await this.store.tx(async () => {
+      await this.store.serialize();
+      const topic = await this.store.getTopic(name);
+      if (!topic) throw new HubError(404, `no topic ${name}`);
+      if (topic.createdBy !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `only ${topic.createdBy} or an admin can delete topic ${name}`);
+      const now = this.now();
+      const touched: string[] = [];
+      for (const g of await this.store.listGoals()) {
+        if (!g.topics?.includes(name)) continue;
+        const rest = g.topics.filter((t) => t !== name);
+        const { topics: _drop, ...without } = g;
+        await this.store.saveGoal({ ...without, ...(rest.length ? { topics: rest } : {}), updatedAt: now });
+        touched.push(g.id);
+      }
+      await this.store.deleteTopic(name);
+      await this.emit({ type: "topic.deleted", user: actor.userId, payload: { topic: name, goals: touched } });
+      return { name, goals: touched };
+    });
+  }
+
+  /** Tag or untag a goal. Any member may: topics are shared labels, not ownership. */
+  async changeGoalTopics(actor: Actor, id: string, change: { add: string[]; remove: string[] }): Promise<Goal> {
+    return await this.store.tx(async () => {
+      await this.store.serialize();
+      const goal = await this.goalOr404(id);
+      const add = await this.knownTopics(change.add);
+      const remove = new Set(normalizeTopics(change.remove.map(topicName)));
+      const before = goal.topics ?? [];
+      const after = normalizeTopics([...before.filter((t) => !remove.has(t)), ...add]);
+      if (after.join(",") === before.join(",")) return goal;
+      const { topics: _old, ...rest } = goal;
+      const next: Goal = { ...rest, ...(after.length ? { topics: after } : {}), updatedAt: this.now() };
+      await this.store.saveGoal(next);
+      await this.emit({
+        type: "goal.topics",
+        user: actor.userId,
+        goal: goal.id,
+        payload: { added: after.filter((t) => !before.includes(t)), removed: before.filter((t) => !after.includes(t)), topics: after },
+      });
+      return next;
+    });
+  }
+
+  /** Normalised topic names that all exist (400 naming the unknown ones). `all` is dropped. */
+  private async knownTopics(names: readonly string[]): Promise<string[]> {
+    const want = normalizeTopics(names.map(topicName));
+    if (want.length === 0) return [];
+    const defined = new Set((await this.store.listTopics()).map((t) => t.name));
+    const unknown = want.filter((t) => !defined.has(t));
+    if (unknown.length) throw new HubError(400, `unknown topic${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")} (define with: mesh topic add <name>)`);
+    return want;
   }
 
   async goalDetail(id: string): Promise<GoalDetail> {
@@ -1054,8 +1143,9 @@ export class HubService {
     });
   }
 
-  async live(viewer: Actor): Promise<LiveView> {
+  async live(viewer: Actor, topics: readonly string[] = []): Promise<LiveView> {
     return this.store.tx(async () => {
+      const want = await this.knownTopics(topics);
       const now = this.now();
       const users = (await this.store.listUsers()).filter((u) => !(u.roles.includes("service") && !u.roles.includes("member")));
       const machines = await this.store.listMachines();
@@ -1081,13 +1171,14 @@ export class HubService {
         return { user: this.userView(u), online: ms.some((m) => m.online), machines: ms, sessions: ss };
       });
       const goals: LiveView["goals"] = [];
-      for (const g of await this.store.listGoals()) {
+      for (const g of (await this.store.listGoals()).filter((x) => goalHasTopics(x, want))) {
         const steps = (await this.store.listSteps({ goal: g.id })).filter((s) => s.state !== "dropped");
         goals.push({
           id: g.id,
           title: g.title,
           state: g.state,
           owner: g.ownerId,
+          topics: g.topics ?? [],
           done: steps.filter((s) => s.state === "done").length,
           total: steps.length,
           holders: [...new Set(steps.filter((s) => s.holderUser && (s.state === "claimed" || s.state === "paused")).map((s) => s.holderUser as string))],
@@ -1181,6 +1272,15 @@ function describe(type: string, subject: string | undefined, payload: Record<str
   switch (type) {
     case "goal.created":
       return `created ${s} "${String(payload.title ?? "")}"`;
+    case "goal.topics": {
+      const add = (payload.added as string[] | undefined) ?? [];
+      const rm = (payload.removed as string[] | undefined) ?? [];
+      return [add.length ? `tagged ${s} ${add.join(", ")}` : "", rm.length ? `${add.length ? "and untagged" : `untagged ${s}`} ${rm.join(", ")}` : ""].filter(Boolean).join(" ");
+    }
+    case "topic.created":
+      return `defined topic ${String(payload.topic)}`;
+    case "topic.deleted":
+      return `deleted topic ${String(payload.topic)}`;
     case "plan.proposed":
       return `proposed plan v${String(payload.version)} for ${s}`;
     case "plan.approved":
@@ -1226,4 +1326,12 @@ function describe(type: string, subject: string | undefined, payload: Record<str
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }
+}
+
+/** A topic name from a request: trimmed and lowercased, 400 when it isn't a valid name. */
+function topicName(raw: string): string {
+  const name = raw.trim().toLowerCase();
+  const p = TopicName.safeParse(name);
+  if (!p.success) throw new HubError(400, `bad topic "${raw}": ${p.error.issues[0]?.message ?? "invalid"}`);
+  return name;
 }

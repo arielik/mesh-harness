@@ -52,7 +52,29 @@ export const NewGoal = z.object({
   reworks: z.array(z.string().max(100)).max(20).optional(),
   preset: z.object({ name: z.string().min(1).max(60), text: z.string().min(1).max(20_000) }).optional(),
   priority: z.number().int().min(0).max(9).default(3),
+  /** Topics to tag the goal with; each must already exist (`all` is implicit). */
+  topics: z.array(z.string().max(40)).max(20).optional(),
 });
+
+export const NewTopic = z.object({
+  name: z.string().min(1).max(40),
+  description: z.string().max(200).optional(),
+});
+export const GoalTopicsChange = z
+  .object({
+    add: z.array(z.string().max(40)).max(20).default([]),
+    remove: z.array(z.string().max(40)).max(20).default([]),
+  })
+  .refine((b) => b.add.length + b.remove.length > 0, "give topics to add or remove");
+
+/** A topic as the hub lists it: with the number of goals tagged with it (for `all`: every goal). */
+export interface TopicView {
+  name: string;
+  description?: string | undefined;
+  createdBy?: string | undefined;
+  createdAt?: number | undefined;
+  goals: number;
+}
 
 export const ProposePlan = PlanInput.extend({ approve: z.boolean().default(false) });
 export const Replan = z.object({ comment: z.string().max(4000).optional() });
@@ -200,7 +222,7 @@ export interface LiveView {
   now: number;
   me: UserView;
   people: { user: UserView; online: boolean; machines: LiveMachine[]; sessions: LiveSession[] }[];
-  goals: { id: string; title: string; state: string; owner: string; done: number; total: number; holders: string[] }[];
+  goals: { id: string; title: string; state: string; owner: string; topics: string[]; done: number; total: number; holders: string[] }[];
   attention: Attention[];
   activity: { seq: number; at: number; type: string; user?: string | undefined; goal?: string | undefined; step?: string | undefined; text: string }[];
 }

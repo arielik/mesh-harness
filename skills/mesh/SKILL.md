@@ -62,7 +62,8 @@ your person.
 | Command | What it does |
 | --- | --- |
 | `mesh` | the session list, the ones that need attention first |
-| `mesh goal new "<title>" --repo <repo>` | create a goal |
+| `mesh goal new "<title>" --repo <repo>` | create a goal (`--topics a,b` tags it) |
+| `mesh goal ls --topic a,b` | goals tagged with every topic given; `mesh topic ls` lists the topics |
 | `mesh show <goal>` | a goal, its plan and its steps |
 | `mesh goal approve <goal>` | approve a proposed plan |
 | `mesh next` | steps that are ready |

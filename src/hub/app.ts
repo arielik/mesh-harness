@@ -23,6 +23,8 @@ import {
   LoginDirect,
   MessageRequest,
   NewGoal,
+  NewTopic,
+  GoalTopicsChange,
   NoteRequest,
   ProposePlan,
   ReleaseRequest,
@@ -59,6 +61,8 @@ async function body<T>(c: Context<Env>, schema: ZodType<T>): Promise<T> {
 }
 
 const param = (c: Context<Env>, name: string) => decodeURIComponent(c.req.param(name) ?? "");
+/** `?topic=a&topic=b` or `?topic=a,b`: goals must carry every one. */
+const topicsQuery = (c: Context<Env>): string[] => (c.req.queries("topic") ?? []).flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
@@ -164,7 +168,7 @@ export function buildRoutes(svc: HubService): Route[] {
     }),
 
     // ---------- dashboard ----------
-    r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a)), "live:read"),
+    r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a, topicsQuery(c))), "live:read"),
     r("GET", "/v1/attention", "member", async (c, a) => c.json({ attention: await svc.attentionFor(a) })),
     r("GET", "/v1/stream", "member", (c, a) =>
       streamSSE(c, async (stream) => {
@@ -204,7 +208,7 @@ export function buildRoutes(svc: HubService): Route[] {
     ),
 
     // ---------- goals ----------
-    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals() }), "goals:read"),
+    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals(topicsQuery(c)) }), "goals:read"),
     r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201), "goals:write"),
     r("GET", "/v1/goals/:id", "member", async (c) => c.json(await svc.goalDetail(param(c, "id"))), "goals:read"),
     r("POST", "/v1/goals/:id/plan", "member", async (c, a) => c.json(await svc.proposePlan(a, param(c, "id"), await body(c, ProposePlan)), 201)),
@@ -215,6 +219,12 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(await svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment))),
     r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
     r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) }), "goals:read"),
+    r("POST", "/v1/goals/:id/topics", "member", async (c, a) => c.json(await svc.changeGoalTopics(a, param(c, "id"), await body(c, GoalTopicsChange))), "goals:write"),
+
+    // ---------- topics ----------
+    r("GET", "/v1/topics", "member", async (c) => c.json({ topics: await svc.listTopics() }), "goals:read"),
+    r("POST", "/v1/topics", "member", async (c, a) => c.json(await svc.createTopic(a, await body(c, NewTopic)), 201), "goals:write"),
+    r("POST", "/v1/topics/:name/delete", "member", async (c, a) => c.json(await svc.deleteTopic(a, param(c, "name"))), "goals:write"),
     r("GET", "/v1/goals/:id/timeline", "member", async (c) => c.json({ timeline: await svc.timeline(param(c, "id")) }), "goals:read"),
 
     // ---------- steps ----------

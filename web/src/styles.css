@@ -423,3 +423,67 @@ a {
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+.topics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+.topics form.inline {
+  display: inline;
+}
+.topics input,
+.topics select {
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+  margin: 0;
+}
+.chip {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1px 8px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+.chip .count {
+  color: var(--muted);
+  margin-left: 2px;
+}
+.chip.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+.chip.on .count {
+  color: inherit;
+  opacity: 0.8;
+}
+.chip.add {
+  color: var(--muted);
+  border-style: dashed;
+}
+.chip.static {
+  cursor: default;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.chip .x {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 0 0 2px;
+  cursor: pointer;
+  font: inherit;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}

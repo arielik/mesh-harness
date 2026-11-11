@@ -17,6 +17,8 @@ import {
   LoginDirect,
   MessageRequest,
   NewGoal,
+  NewTopic,
+  GoalTopicsChange,
   NoteRequest,
   ProposePlan,
   ReleaseRequest,
@@ -54,6 +56,8 @@ export interface HubApiRoute {
   sse?: boolean;
 }
 
+const TOPIC_QUERY = "topic names, repeated or comma-separated: only goals with every one (`all`: every goal)";
+
 export const RevokeRequest = z.object({ userId: z.string().optional(), machineId: z.string().optional() });
 
 export const HUB_API: readonly HubApiRoute[] = [
@@ -88,11 +92,11 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/sync", rule: "member", tag: "daemon", body: SyncRequest, summary: "A daemon reports its sessions and facts (batched, idempotent)." },
   { method: "GET", path: "/v1/inbox", rule: "member", tag: "daemon", summary: "Messages waiting for the calling machine's sessions." },
   { method: "POST", path: "/v1/inbox/:id/ack", rule: "member", tag: "daemon", body: AckRequest, summary: "Mark an inbox message delivered or failed." },
-  { method: "GET", path: "/v1/live", rule: "member", scope: "live:read", tag: "daemon", summary: "Live sessions across the team." },
+  { method: "GET", path: "/v1/live", rule: "member", scope: "live:read", tag: "daemon", query: { topic: TOPIC_QUERY }, summary: "Live sessions across the team, and goals (filtered by topic)." },
   { method: "GET", path: "/v1/attention", rule: "member", tag: "daemon", summary: "What needs the calling user: questions, gates, stalled steps." },
   { method: "GET", path: "/v1/stream", rule: "member", scope: "live:read", tag: "daemon", sse: true, summary: "Server-sent hints (changed, wake). Lossy by design: clients refetch." },
 
-  { method: "GET", path: "/v1/goals", rule: "member", scope: "goals:read", tag: "goals", summary: "All goals." },
+  { method: "GET", path: "/v1/goals", rule: "member", scope: "goals:read", tag: "goals", query: { topic: TOPIC_QUERY }, summary: "All goals, or those with the given topics." },
   { method: "POST", path: "/v1/goals", rule: "member", scope: "goals:write", tag: "goals", body: NewGoal, status: 201, summary: "Create a goal." },
   { method: "GET", path: "/v1/goals/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal with its plans and steps." },
   { method: "POST", path: "/v1/goals/:id/plan", rule: "member", tag: "goals", body: ProposePlan, status: 201, summary: "Propose a plan (design sessions)." },
@@ -100,6 +104,10 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/goals/:id/revise", rule: "member", tag: "goals", body: Decide, summary: "Ask the design session to revise the proposed plan." },
   { method: "POST", path: "/v1/goals/:id/replan", rule: "member", tag: "goals", body: Replan, summary: "Reopen design for a goal with an approved plan." },
   { method: "GET", path: "/v1/goals/:id/files", rule: "member", scope: "goals:read", tag: "goals", summary: "The record files of a goal, as the ledger writes them." },
+  { method: "POST", path: "/v1/goals/:id/topics", rule: "member", scope: "goals:write", tag: "goals", body: GoalTopicsChange, summary: "Tag a goal with topics or untag it (any member)." },
+  { method: "GET", path: "/v1/topics", rule: "member", scope: "goals:read", tag: "goals", summary: "Topics with their goal counts; `all` (every goal) first." },
+  { method: "POST", path: "/v1/topics", rule: "member", scope: "goals:write", tag: "goals", body: NewTopic, status: 201, summary: "Define a topic." },
+  { method: "POST", path: "/v1/topics/:name/delete", rule: "member", scope: "goals:write", tag: "goals", summary: "Delete a topic (its creator or an admin) and untag its goals." },
   { method: "GET", path: "/v1/goals/:id/timeline", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal's history." },
 
   {

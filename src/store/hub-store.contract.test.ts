@@ -245,6 +245,18 @@ function contract(d: Driver) {
       expect((await s.listSessions()).map((x) => x.session.sid)).toEqual(["s1"]);
     });
 
+    it("defines, lists and deletes topics; a name is defined once", async () => {
+      const s = await store();
+      expect(await s.createTopic({ name: "perf", createdBy: "ada", createdAt: T0 })).toBe(true);
+      expect(await s.createTopic({ name: "dataplane", description: "packets", createdBy: "ada", createdAt: T0 + 1 })).toBe(true);
+      expect(await s.createTopic({ name: "perf", createdBy: "bob", createdAt: T0 + 2 })).toBe(false);
+      expect((await s.listTopics()).map((t) => t.name)).toEqual(["dataplane", "perf"]);
+      expect(await s.getTopic("perf")).toEqual({ name: "perf", createdBy: "ada", createdAt: T0 });
+      expect(await s.deleteTopic("perf")).toBe(true);
+      expect(await s.deleteTopic("perf")).toBe(false);
+      expect(await s.getTopic("perf")).toBeUndefined();
+    });
+
     it("numbers goals without gaps or duplicates under concurrent creation, and finds them ignoring case", async () => {
       const s = await store();
       const goals = await Promise.all([1, 2, 3, 4, 5].map((n) => s.createGoal(goalInput(`goal ${n}`))));
