@@ -64,7 +64,8 @@ Out:
 - `LiveView.goals[].done` (TUI and web live progress bars) and the trail/ledger `done` counts stay
   "done only".
 - JSON-style assignments (`"token": "…"`), which are not matched today and still are not.
-- New hub routes. No migration: `SCHEMA_VERSION` is unchanged.
+- New hub routes. No migration: `SCHEMA_VERSION` is unchanged. The one store change is in
+  `putCatalogDefs` (a re-push refreshes `front`, see Agent front matter), with no schema change.
 
 ## Interface contracts
 
@@ -72,13 +73,22 @@ Out:
 
 Terms. **Run** = a run file with `state: "running"` and no `endedAt`. Its **pid** = `RunFile.pid`, the
 pid of the started `claude` process. Its **session id** = `RunFile.sessionId`, passed as
-`--session-id`. Its **worktree** = `<run dir>/worktree`. **The run's session** = the daemon session
-(`Session`, as listed by `GET /local/sessions`) whose `claudeSessionIds` contains the run's session id.
+`--session-id`. Its **worktree** = `<run dir>/worktree`. **The run's sessions** = every daemon session
+(`Session`, as listed by `GET /local/sessions`) that belongs to the run: its `claudeSessionIds` contains
+the run's session id, or the daemon added it to the run by rule 3 (the set the `isRunSession` /
+`runForSid` predicate tests). Usually there is one. "The run's session" below means the one whose
+`claudeSessionIds` contains the run's session id. **Done accepted** = the daemon has accepted a
+`mesh_done` for the run's step from one of the run's sessions (the hub answered it, or it was queued
+offline).
 
 1. **Registration at start.** Right after the runner reports the run started (`pid` known), and
    before `POST /v1/steps/<step>/run {state: "started"}`, the daemon makes the run's session exist.
-   It needs no hook. The session is not `ended`, and has `claudeSessionIds` ∋ run session id,
-   `pid` = run pid, `cwd` = worktree, `step` = run step, and no `pane`/`tmuxSocket`. If a session for
+   It needs no hook. The session has `state: "working"`, `kind: "print"`, `claudeSessionIds` ∋ run
+   session id, `pid` = run pid, `cwd` = worktree, `repo` = the repo of the worktree (the value a
+   `SessionStart` hook from that cwd would set), `step` = run step, and no `pane`/`tmuxSocket`. While
+   it is one of a running run's sessions, the daemon's tick never turns it `stalled` and never ends it
+   as "presumed ended" (a hookless run sends no event that would move it). A hook may still change
+   its state as today. If a session for
    that Claude session id already exists, the daemon reuses it (same `sid`, revived when ended) and
    does not create a second one. The daemon then binds the step at the hub once per `(sid, step)`:
    `POST /v1/steps/<step>/claim {sid}` with `Idempotency-Key: bind:<sid>:<step>`, the call a
@@ -93,19 +103,23 @@ pid of the started `claude` process. Its **session id** = `RunFile.sessionId`, p
 3. **Binding on the first tool call.** `POST /local/mcp/:tool` with `{pid}` (no `agentSessionId`),
    in this order:
    - a live session with that pid exists and holds a step → unchanged (RL-1);
-   - a live session with that pid exists, holds **no** step, and `pid` = the pid of a run → the
+   - a live session with that pid exists, holds **no** step, `pid` = the pid of a run, and the run
+     has **no done accepted** → the
      daemon binds that session to the run's step (as rule 1: local step, adds the run's session id to
      its `claudeSessionIds`, one hub bind claim), then runs the tool;
-   - no live session has that pid, and `pid` = the pid of a run → the daemon registers the run's
+   - no live session has that pid, `pid` = the pid of a run, and the run has **no done accepted** →
+     the daemon registers the run's
      session as in rule 1 (reusing and reviving the session of the run's session id when there is
      one, so the `sid` stays the same), then runs the tool;
    - otherwise → unchanged: `mesh doesn't know this Claude session yet (are the hooks installed? run
      \`mesh doctor\`).`, or for a session with no step the RL-1/MM texts (`This session holds no mesh
-     step…`, `this session holds no step`).
-4. **End.** When the daemon sees a run's process has ended (the reconcile pass that sets `endedAt`),
-   it ends the run's session (`state: "ended"`) unless a `SessionEnd` hook already did. This happens
-   in that same pass, before the end-of-run hub calls. A finished run's session is no longer counted
-   by `liveCount()` for `maxSessions`.
+     step…`, `this session holds no step`). This includes every tool call from a run after its done
+     was accepted: the closed step is never bound again and no further claim for it is sent.
+4. **End.** Wherever the daemon sets a run's `endedAt` (the reconcile pass that sees the process
+   has ended, and the reap at daemon start of a run that ended while the daemon was down), it ends
+   every live session of the run (`state: "ended"`) in that same step, before the end-of-run hub
+   calls. A session a `SessionEnd` hook already ended stays as it is. An ended run session is no
+   longer counted by `liveCount()` for `maxSessions`.
 5. `GET /local/runs`, `RunFile` and the hub API are unchanged.
 
 ### Environment of a headless run (src/claude/headless.ts, src/core/headless.ts)
@@ -140,6 +154,7 @@ CRLF taken as LF, as today) and either:
 | `AgentGroup.invalid` | field | New `boolean`: some version of the group has `invalid`. |
 | `scanAgents` (daemon) | behaviour | Reports an invalid file, with `invalid` set and its hash. It is never skipped. |
 | Hub catalog push | behaviour | A catalog definition stores `agentFront(text)`, so it carries `invalid` too. `GET /v1/agents` and `GET /v1/agents/resolve` return it. |
+| `HubStore.putCatalogDefs` (src/store/hub-store.ts) | store | For a known `(repo, name, hash)` it now also replaces the stored `front` with the pushed one (besides `path`, `commits` and `pushedAt`, as today). A definition stored by v0.1.20 with `front: {}` therefore shows `invalid` after its next catalog push, although its text and hash are unchanged. No schema change. |
 | `mesh agents` (src/cli/roster-commands.ts `rosterText`) | CLI | The group line's flags gain `  invalid`, after `diverged`, `pinned`, `behind` and `modified`. The version line of an invalid version is `  <hash12>  invalid: <invalid>` in place of the description. |
 | Web Roster (web/src/roster.tsx) | UI | An invalid version shows `<span class="roster-invalid">invalid: <invalid></span>` in place of the description. The group header shows a `.roster-flag` with text `invalid`. |
 
@@ -165,7 +180,7 @@ counting rules stay as in RL-1. Only the assignment pass changes. Keys are as be
 |---|---|
 | `=` separator (`key=V`, `key = "V"`, …) | As RL-1: `V` → `[REDACTED]`. |
 | `:` separator, quoted (`key: "V"`, `key:'V'`) | As RL-1: `V` → `[REDACTED]`. |
-| `:` separator, unquoted | `V` exactly a mark → unchanged, not counted (RL-1). `V` contains a mark among other text → whole `V` → `[REDACTED]`, not counted again (RL-1). Otherwise strip trailing characters from `.,;:!?)]}` to get `V'`. `V'` is **token-like** when it matches `^[A-Za-z0-9_+/=.~-]{6,}$` **and** (contains a digit **or** is at least 20 characters long). Only then is `V'` replaced by `[REDACTED]` (the stripped characters are kept) and counted once. A value that is not token-like is left unchanged and not counted. |
+| `:` separator, unquoted | `V` exactly a mark → unchanged, not counted (RL-1). `V` contains a mark among other text → whole `V` → `[REDACTED]`, not counted again (RL-1). Otherwise strip trailing characters from `.,;:!?)]}` to get `V'`. `V'` is **token-like** when it is at least 6 characters long, does **not** contain `://`, **and** (contains a digit **or** is at least 20 characters long). Any other characters are allowed (`@ # $ % ^ & * !` and so on; `V` holds no space or quote already). Only then is `V'` replaced by `[REDACTED]` (the stripped characters are kept) and counted once. A value that is not token-like is left unchanged and not counted. |
 
 Examples (`R` = `[REDACTED]`):
 
@@ -177,6 +192,8 @@ Examples (`R` = `[REDACTED]`):
 | `api_key: abcdef123` | `api_key: R` | 1 |
 | `secret: s3cr3tvalue` | `secret: R` | 1 |
 | `password: hunter2.` | `password: R.` | 1 |
+| `password: P@ssw0rd1` | `password: R` | 1 |
+| `secret: S3cr3t#42` | `secret: R` | 1 |
 | `token: abcdefghijklmnopqrstuv` (22 letters) | `token: R` | 1 |
 | `Token: 'abcdefgh'` | `Token: 'R'` | 1 |
 | `token=abcdef` | `token=R` | 1 |
@@ -215,7 +232,8 @@ changes.
 
 ### `mesh_done` reply (src/daemon/tools.ts, src/daemon/trail.ts)
 
-A **headless call** is a call whose session belongs to a run (rule 3 above), or whose step has
+A **headless call** is a call whose session is one of a running run's sessions (the
+`isRunSession` / `runForSid` predicate, see Terms above), or whose step has
 `policy.mode: "headless"` in the hub's reply (or, when offline, in the cached context). For a
 headless call:
 - online, record written: the line is `mesh wrote the step record <paths>.` or `mesh wrote the step
@@ -235,7 +253,7 @@ written into the worktree. Replies to all other sessions are unchanged.
 |---|---|---|
 | `Preset.params` | field | New, optional `Record<string, string>`: default values of parameters. Names match `^[a-z][a-z0-9_]{0,39}$`. |
 | `PresetStep.budget` | schema | `turns` and `minutes` each accept an integer (as `StepBudget`) **or** a string that is exactly one placeholder, `^\{[a-z][a-z0-9_]*\}$`. `usd` is unchanged. |
-| `parsePreset(name, text)` | function | Reads an optional top-level `params:` mapping. Values may be strings or numbers, and numbers become their decimal string. A key that does not match the name pattern, or a value that is not a string or number, throws `preset <name>: params must map names (a-z, 0-9, _) to values`. |
+| `parsePreset(name, text)` | function | Reads an optional top-level `params:` mapping. Values may be strings or numbers, and numbers become their decimal string. A key that does not match the name pattern, or a value that is not a string or number, throws `params must map names (a-z, 0-9, _) to values` (no `preset <name>: ` prefix, like `parsePreset`'s other errors). The hub adds the prefix once, so the 422 problem reads `preset <name>: params must map names (a-z, 0-9, _) to values`. |
 | `presetText(p)` | function | Emits `params:` after `description` and before `steps`, but only when `p.params` has keys. `parsePreset(p.name, presetText(p))` deep-equals `p` for every built-in. |
 | `instantiate(p, opts)` | function | The variables are `{...p.params, ...opts.params, repo, goal}`, so an explicit param beats a default. Budget placeholders are filled from them. The filled value must be a whole number (`^\d+$`) from 1 to 500 (`turns`) or 1 to 1440 (`minutes`); it becomes a number. Errors (thrown, so the hub reports them as preset problems, RL-3): unknown placeholder → `preset <name>: unknown parameter {<x>} in step <id>`; bad value → `preset <name>: budget.<turns\|minutes> in step <id> must be a whole number from 1 to <500\|1440>, got "<value>"`. |
 | Built-in `audit-relay` | data | `params: {turns: "80", minutes: "60"}`. Step `audit` has `budget: {turns: "{turns}", minutes: "{minutes}"}`. Everything else is unchanged, so `instantiate` with only `agent`, `validator` and `filer` gives the same plan as v0.1.20 (`budget: {turns: 80, minutes: 60}`). |
@@ -258,7 +276,11 @@ number from 1 to 500, got "abc"` (RL-3 problem format).
 ### Compatibility
 
 - No migration. Stored agent reports and catalog definitions without `invalid` stay valid. A machine
-  scan or catalog push sets `invalid` from then on.
+  report rewrites all its rows, so the next scan sets `invalid`. A catalog definition gets `invalid`
+  on its next push, including a re-push of an unchanged text (`putCatalogDefs` refreshes `front`).
+- Upgrade the hub before the CLI: a v0.1.21 CLI may send a preset snapshot with `params:` and string
+  budget placeholders (`mesh pulse add --preset audit-relay`), which a v0.1.20 hub rejects with 422
+  from `parsePreset`.
 - The `audit-relay` text and sha256 change. Pulses snapshotted earlier keep their snapshot (numeric
   budget) and fire as before.
 - Existing tests that assert the old behaviour are updated by the test-writer: `token: abcdef` is now
@@ -272,18 +294,20 @@ Surfaces: unit tests (`src/core`, `src/protocol`, `src/claude`), CLI tests, Worl
 (`test/fixtures/claude/fake-claude`, extendable; never the real binary), and Playwright
 (`test/e2e-web`, `pnpm test:web`). Fixture rules: a daemon reports only remote-backed repos and only
 under `shareSessions` `me`/`all`; web e2e specs share one hub, so the RL-7 web spec uses data no other
-spec asserts on. The `HubStore` contract's Postgres legs run only when `MESH_TEST_PG_URL` is set; there
-is no store change here.
+spec asserts on. The `HubStore` contract's Postgres legs run only when `MESH_TEST_PG_URL` is set
+(AC-18 has a SQLite and a Postgres leg).
 
 | Id | Criterion | Surface | What exact state makes it FAIL? |
 |---|---|---|---|
-| AC-01 | Registration without hooks: a headless step is auto-offered and started (fake waits on a `go` file); **no hook is sent**. Right after start, the person's daemon has exactly one session (ended or not) whose `claudeSessionIds` contains the run's `sessionId`, with `pid` = the fake's pid, `cwd` = `<run dir>/worktree`, `step` = the step, no `pane`/`tmuxSocket`, state not `ended`. After a flush, the hub's step `holderSid` = that session's `sid`. | World + fake claude | No session, two sessions, a wrong pid/cwd/step, a pane set, or another `holderSid`. |
+| AC-01 | Registration without hooks: a headless step in a remote-backed repo is auto-offered and started (fake waits on a `go` file); **no hook is sent**. Right after start, the person's daemon has exactly one session (ended or not) whose `claudeSessionIds` contains the run's `sessionId`, with `state: "working"`, `kind: "print"`, `pid` = the fake's pid, `cwd` = `<run dir>/worktree`, `repo.name` = the step's repo, `step` = the step, no `pane`/`tmuxSocket`. After a flush, the hub's step `holderSid` = that session's `sid`. Then the clock moves `stallAfterMs + 1` ms and a tick runs: the session is still `working`, and after a flush the hub's attention list has no `stalled` item for the step. | World + fake claude | No session, two sessions, a wrong state/kind/pid/cwd/repo/step, a pane set, another `holderSid`, the session `stalled` or `ended` after the tick, or a `stalled` attention item. |
 | AC-02 | Tools work without hooks: in the AC-01 state, `w.tool(p, <fake pid>, "mesh_context")` returns the step's context (contains the step id and its brief, not `holds no` and not `doesn't know this Claude session`); `mesh_artifact` stores an artifact on the step; `mesh_done` (outcome done) → the step is `done`; after the fake exits with a `result` event, the run is `finished`, no transcript artifact is stored, and the round's telemetry is complete (`turnsApprox: false`). | World + fake claude | Any tool refused, the step failed or closed twice, or a transcript stored. |
-| AC-03 | Hooks stay idempotent: after AC-01, `SessionStart` (session id = run `sessionId`, pid = fake pid, cwd = worktree, header `step` = the step), then `UserPromptSubmit` and `Stop`. Still exactly one session with that Claude session id and the same `sid`; hub `holderSid` unchanged; the `Stop` reply is `{}`; the daemon made no second `POST /v1/steps/<step>/claim` for that `(sid, step)` (count the hub requests or the bind log). The same without the step header gives the same result. | World + fake claude | A second session, a changed `sid`/`holderSid`, a non-empty Stop reply, or a second bind claim. |
-| AC-04 | Bind on first tool call: (a) after AC-01, a `SessionEnd` hook for the run's session id ends it; then `w.tool(p, <fake pid>, "mesh_context")` answers with the step's context, and the run's session is live again with the **same** `sid` and `step`. (b) After (a)'s `SessionEnd`, a `SessionStart` with another session id, pid = fake pid, cwd = another folder and no step header creates a live session with no step; then `w.tool(p, <fake pid>, "mesh_context")` answers with the step's context and that session now holds the step. (c) Control: `w.tool` from a pid that is no run's and no session's → `mesh doesn't know this Claude session yet (are the hooks installed? run \`mesh doctor\`).`; a hook-registered session of a non-run pid with no step → `mesh_done` error `this session holds no step`. | World + fake claude | A refusal in (a)/(b), a new `sid` in (a), or a changed text in (c). |
+| AC-03 | Hooks stay idempotent: after AC-01, `SessionStart` (session id = run `sessionId`, pid = fake pid, cwd = worktree, header `step` = the step), then `UserPromptSubmit` and `Stop`. Still exactly one session with that Claude session id and the same `sid`; hub `holderSid` unchanged; the `Stop` reply is `{}`; the World request log (`p.requests`) holds exactly one request with key `bind:<sid>:<step>`. The same without the step header gives the same result. | World + fake claude | A second session, a changed `sid`/`holderSid`, a non-empty Stop reply, or a second bind claim. |
+| AC-04 | Bind on first tool call: (a) after AC-01, a `SessionEnd` hook for the run's session id ends it; then `w.tool(p, <fake pid>, "mesh_context")` answers with the step's context, and the run's session is live again with the **same** `sid` and `step`. (b) In a fresh World, from the AC-01 state: a `SessionEnd` hook for the run's session id (no tool call before it), then a `SessionStart` with another session id, pid = fake pid, cwd = another folder and no step header creates a live session with no step; then `w.tool(p, <fake pid>, "mesh_context")` answers with the step's context and that session now holds the step. (c) Control: `w.tool` from a pid that is no run's and no session's → `mesh doesn't know this Claude session yet (are the hooks installed? run \`mesh doctor\`).`; a hook-registered session of a non-run pid with no step → `mesh_done` error `this session holds no step`. | World + fake claude | A refusal in (a)/(b), a new `sid` in (a), or a changed text in (c). |
 | AC-05 | Session ends with the run: the fake exits (exit 0, no hooks at all); after one reconcile, the run's session is `ended` and the run is closed as RL-1 (`headless run ended without mesh_done (exit no_result)`). With `maxSessions: 1` and a second headless offer queued behind the first run, the second run starts on the reconcile after the first one ends. | World + fake claude | The session stays live, or the queued run never starts. |
+| AC-19 | Session ends when a run is reaped at restart: as AC-05 (`maxSessions: 1`, a second offer queued), but the daemon is stopped, then the fake exits, then the daemon starts again. After start-up and one reconcile, the run's session is `ended`, the run is closed as in AC-05, and the queued run starts. | World + fake claude | The session stays live after the restart, or the queued run never starts. |
+| AC-20 | No rebind after done: in the AC-01 state, `w.tool(p, <fake pid>, "mesh_done")` (outcome done) is accepted and the step is `done`. Then `w.tool(p, <fake pid>, "mesh_context")` answers with the no-step text (starts `This session holds no mesh step`); the run's session holds no step; after a flush, `p.requests` holds no `POST /v1/steps/<step>/claim` sent after the `mesh_done`; a second `w.tool(p, <fake pid>, "mesh_done")` → `this session holds no step`. | World + fake claude | The step bound again, a claim after the done, or another text. |
 | AC-06 | Environment: (unit) `processRunner.start` with `env: {A: "1", TMUX: "x"}`, `unsetEnv: ["TMUX", "B"]` and the waiter's environment holding `B=2` and `C=3` → the child sees `A=1`, `C=3`, no `TMUX`, no `B`. (World) with `TMUX=/tmp/tmux-1/default,1,0`, `TMUX_PANE=%3`, `MESH_AUTOPILOT=chain`, `CLAUDE_PID=4242` and `FAKE_PARENT_VAR=kept` in the daemon process environment, the fake records none of the first four, `FAKE_PARENT_VAR=kept`, and `MESH_STEP`/`MESH_RUN` of the run. `HEADLESS_ENV_UNSET` equals the documented list. | unit (src/claude) + World + fake claude | Any listed variable reaches the fake, `FAKE_PARENT_VAR` is lost, or the constant differs. |
-| AC-07 | Front matter parsing: `parseAgentFile` of a file whose front matter line 2 is `description: Validates: findings` → `invalid` starts with `front matter is not valid YAML: ` and contains `line 2`, no `description`/`tools`/`model`/`rules`, `body` = the text after the block; front matter `- a` → `invalid: "front matter is not a YAML mapping"`; an empty block and a file with no block → no `invalid`; a valid file → as v0.1.20 with no `invalid`. `agentFront` of the invalid file = `{invalid}` only; a 400-character parser message is cut to 300. `AgentReport` accepts `invalid` ≤ 300 and rejects 301. | unit | Any field present or absent the other way, or another text. |
+| AC-07 | Front matter parsing: `parseAgentFile` of a file whose front matter line 2 is `description: Validates: findings` → `invalid` starts with `front matter is not valid YAML: ` and contains `line 2`, no `description`/`tools`/`model`/`rules`, `body` = the text after the block; front matter `- a` → `invalid: "front matter is not a YAML mapping"`; an empty block and a file with no block → no `invalid`; a valid file → as v0.1.20 with no `invalid`. `agentFront` of the invalid file = `{invalid}` only. `AgentReport` accepts `invalid` ≤ 300 and rejects 301. | unit | Any field present or absent the other way, or another text. |
 | AC-08 | Roster: a runner (share `me`) with remote-backed repo `alpha` holding `.claude/agents/bad.md` (invalid) and `good.md`: its report has `bad` with `invalid` and a hash; `GET /v1/agents` has group `bad` with `invalid: true` and its version's `invalid` set; `good` has `invalid: false` and no version `invalid`. A catalog source whose push includes an invalid definition → `GET /v1/agents/resolve?key=<source>/bad` returns `invalid`. `mesh agents` prints the group line with `  invalid` and the version line `  <hash12>  invalid: <invalid>`. | World + CLI | The file is not reported, the flag is missing or set on `good`, or the lines differ. |
 | AC-09 | Web Roster: a group whose version is invalid (seeded through the hub API) shows a `.roster-flag` with text `invalid` and `.roster-invalid` with text `invalid: <invalid>`; a valid group shows neither. | Playwright | Missing or extra flag or text. |
 | AC-10 | Fail fast: a headless step with `agent: bad` (invalid front matter in the repo) is offered and accepted. The fake is never started (no calls file), and the step is `failed` with summary `headless run of <step> did not start: agent bad has invalid front matter: <invalid>`; no `agents.json` in the run dir. The same with a roster key whose pinned catalog text is invalid → summary `headless run of <step> did not start: roster agent <key> has invalid front matter: <invalid>`. Control: `agent: good` starts the fake. | World + fake claude | The fake starts, the run uses default settings, or another summary. |
@@ -291,8 +315,9 @@ is no store change here.
 | AC-12 | `mesh preset ls`: in a git checkout with `.mesh/presets/hotfix.yaml` (`description: Quick fix`), `.mesh/presets/sdd-split.yaml` and an invalid `.mesh/presets/broken.yaml`, run from a subdirectory `sub/` → the built-in lines as before, then, sorted, `broken         invalid: <first line>  [../.mesh/presets/broken.yaml]`, `hotfix         Quick fix  [../.mesh/presets/hotfix.yaml]`, `sdd-split      <its description or ->  [../.mesh/presets/sdd-split.yaml]  (replaces the built-in)`; a nearer `sub/.mesh/presets/hotfix.yaml` replaces the root one in the list; exit 0. Without repo templates the output is exactly v0.1.20's. | CLI | A template missing, unsorted, a wrong path or suffix, the hint line shown with templates, or a non-zero exit. |
 | AC-13 | Progress: `renderGoal` of a `done` goal with steps `done`, `skipped`, `skipped` and one `dropped` → `done · owner @<o> · 3/3 steps done`; a goal with `done`, `ready`, `skipped` → `2/3`; the existing snapshot (no skipped steps) is unchanged. The web goal page header of such a goal shows `3/3 steps done`. | unit (snapshot) + Playwright | Skipped not counted, dropped counted, or another text. |
 | AC-14 | `mesh_done` reply: the session of a running headless run calls `mesh_done` (outcome done) in a remote-backed checkout worktree → the reply contains `mesh wrote the step record` and contains neither `git add` nor `commit`; offline (hub stopped) → the documented offline text without a commit hint. An interactive session's `mesh_done` reply still contains `Commit it with your work: git add`. | World (+ fake claude) | A commit hint in a headless reply, or the hint lost for interactive sessions. |
-| AC-15 | Preset params: `instantiate(audit-relay, {repo, params: {agent, validator, filer}})` → audit `budget: {turns: 80, minutes: 60}` (numbers); with `turns: "40", minutes: "20"` → `{turns: 40, minutes: 20}`; `turns: "abc"`, `"0"`, `"501"`, `minutes: "1441"` → the documented error text; a repo preset with `budget: {turns: "{t}"}` and no `t` → `preset <name>: unknown parameter {t} in step <id>`; `parsePreset` reads `params: {t: 5}` as `{t: "5"}` and rejects `params: {T: 1}` and `params: [1]` with the documented text; `parsePreset(p.name, presetText(p))` deep-equals `p` for every built-in, and `presetText(audit-relay)` contains `params:`. `POST /v1/pulses` of `audit-relay` with `turns=abc` → 422 with the documented problem; with `turns=40,minutes=20`, `pulse fire` → the goal's `audit` step policy `budget` `{turns: 40, minutes: 20}`. | unit + World | Another default, a string budget in the plan, another text, or a broken round trip. |
+| AC-15 | Preset params: `instantiate(audit-relay, {repo, params: {agent, validator, filer}})` → audit `budget: {turns: 80, minutes: 60}` (numbers); with `turns: "40", minutes: "20"` → `{turns: 40, minutes: 20}`; `turns: "abc"`, `"0"`, `"501"`, `minutes: "1441"` → the documented error text; a repo preset with `budget: {turns: "{t}"}` and no `t` → `preset <name>: unknown parameter {t} in step <id>`; `parsePreset` reads `params: {t: 5}` as `{t: "5"}` and rejects `params: {T: 1}` and `params: [1]` with exactly `params must map names (a-z, 0-9, _) to values`; `POST /v1/pulses` with a preset text holding `params: {T: 1}` → 422 whose problem is `preset <name>: params must map names (a-z, 0-9, _) to values` (prefix once); `parsePreset(p.name, presetText(p))` deep-equals `p` for every built-in, and `presetText(audit-relay)` contains `params:`. `POST /v1/pulses` of `audit-relay` with `turns=abc` → 422 with the documented problem; with `turns=40,minutes=20`, `pulse fire` → the goal's `audit` step policy `budget` `{turns: 40, minutes: 20}`. | unit + World | Another default, a string budget in the plan, another text, or a broken round trip. |
 | AC-16 | Docs: concepts, how-to, mesh skill, plan API table and RL-1's `redactSecrets` paragraph cover the Docs table; `MESH_SKILL` equals `skills/mesh/SKILL.md` and its "Headless runs" section says the step record is not committed; no team-, company- or person-specific name is added to code or docs. | review + skill test | A missing mention, a mismatch, or a specific name. |
+| AC-18 | Catalog re-push refreshes front matter. (Store contract, SQLite leg here, Postgres leg in CI) `putCatalogDefs` stores `(repo, name, hash)` with `front: {}` (as v0.1.20 stored an invalid file); `putCatalogDefs` again with the same `(repo, name, hash)`, a new commit and `front: {invalid: "front matter is not valid YAML: x"}` → `listCatalogDefs` returns the definition with that `invalid` and both commits. (World) a catalog source pushes the invalid `bad` text twice; after the second push `GET /v1/agents/resolve?key=<source>/bad` returns `invalid`. | store contract + World | `invalid` missing after the re-push, or a commit lost. |
 | AC-17 | `package.json` version `0.1.21`; `pnpm check` passes (lint, typecheck, boundaries, test, build); `pnpm test:web` passes after `pnpm build`; `schemas/hub-api.openapi.json` matches `pnpm schemas` (the agent report schema has `invalid`); `src/daemon` still imports no `child_process`. | CI | Any check fails or the document differs. |
 
 ## Open questions
@@ -309,9 +334,24 @@ is no store change here.
 - 2026-11-12 **Which variables are stripped.** Only the variables mesh code reads for terminal or
   session binding (`TMUX`, `TMUX_PANE`, `MESH_AUTOPILOT`, `CLAUDE_PID`). Others (`STY`, `ZELLIJ`, …)
   are not read by mesh and are passed through.
-- 2026-11-12 **Redaction trade-off.** An unquoted colon value of letters only and under 20 characters
-  (`password: correcthorse`) is no longer redacted. Quoted values, `=` assignments, values with a
-  digit and long values still are. JSON-style `"token": "…"` stays unmatched, as before.
+- 2026-11-12 **Redaction trade-off** (revised in round 1). An unquoted colon value with no digit and
+  under 20 characters (`password: correcthorse`) is no longer redacted, nor is a value containing
+  `://` (a URL). Values with symbols and a digit are still redacted (`P@ssw0rd1`, `S3cr3t#42`); the
+  round-0 character set, which let them through, is dropped. Quoted values, `=` assignments and long
+  values are still redacted. JSON-style `"token": "…"` stays unmatched, as before.
+- 2026-11-12 **Run session state** (round 1). The registered session starts `working`, `kind: "print"`.
+  The tick neither stalls nor presumes ended a running run's session; the run's end (rule 4) ends it.
+  With hooks, a `Stop` may still set it `idle` as today.
+- 2026-11-12 **Stale catalog front matter** (round 1). Chosen fix: `putCatalogDefs` refreshes `front`
+  on a re-push of a known definition. Computing it from the stored body at read time was not chosen,
+  because `src/store` may import only `src/protocol` (boundaries) and the parser is in `src/core`. A
+  definition pushed under v0.1.20 shows `invalid` only after its next catalog push.
+- 2026-11-12 **No rebind after done** (round 1). Binding on a tool call stops once the run's
+  `mesh_done` is accepted. How the daemon remembers it (for example in the run's meta) is left to the
+  implementation.
+- 2026-11-12 **`invalid` length cut** (round 1). The 300-character cut stays in the contract, but no
+  acceptance criterion drives a 400-character parser message (no natural input produces one). The
+  `AgentFront` schema limit (AC-07) is the check.
 - 2026-11-12 **Progress counts.** Only the "steps done" text of `mesh show` and the web goal header
   changes. `LiveView` `done/total` (live bars) and the trail statistics keep counting `done` only.
 - 2026-11-12 **Invalid roster agents at the hub.** The hub does not refuse a pulse or pin that
