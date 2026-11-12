@@ -112,12 +112,21 @@ const readJsonFile = <T>(path: string, fallback: T): T => {
   }
 };
 
-const firstLine = (t: string) => t.split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
+/**
+ * RL-8: the error of a failed git call: the last non-blank stderr line (git prints progress lines such
+ * as `Preparing worktree …` first), or the exit code when stderr is blank.
+ */
+export function gitError(r: { code: number; stderr: string }): string {
+  const lines = r.stderr.split("\n").map((l) => l.replace(/\r$/, "").trim()).filter((l) => l !== "");
+  return lines.at(-1) ?? `git exited with code ${r.code}`;
+}
 
 export class HeadlessRuns {
   private readonly deps: RunsDeps;
   private runs = new Map<string, RunFile>();
   private busy = false;
+  /** RL-8: runIds whose start is in progress in this process (a run is started at most once). */
+  private starting = new Set<string>();
 
   constructor(deps: RunsDeps) {
     this.deps = deps;
@@ -252,7 +261,8 @@ export class HeadlessRuns {
   /** A session started with a run's sessionId: remember it; returns the run's step. */
   onSessionStart(sid: string, claudeSessionId: string): string | undefined {
     for (const run of this.runs.values()) {
-      if (run.state !== "running" || run.sessionId !== claudeSessionId) continue;
+      // RL-8: a never-started run (no startedAt) never gets a session.
+      if (run.state !== "running" || run.startedAt === undefined || run.sessionId !== claudeSessionId) continue;
       const m = this.meta(run);
       if (!m.sids.includes(sid)) this.saveMeta(run, { ...m, sids: [...m.sids, sid] });
       return run.step;
@@ -300,15 +310,75 @@ export class HeadlessRuns {
     return out;
   }
 
-  /** Running runs whose session has not shown up (or has ended already): they count for maxSessions. */
-  runningWithoutSession(): number {
+  /**
+   * Runs that count for maxSessions without a live session of their own: a run whose start is in
+   * progress (RL-8), and a running run whose session has not shown up (or has ended already). Each
+   * run counts at most once; a run with a live session is counted through that session.
+   */
+  heldWithoutSession(): number {
     let n = 0;
     for (const run of this.runs.values()) {
+      const seen = () => this.deps.sessions().some((s) => s.state !== "ended" && s.claudeSessionIds.includes(run.sessionId));
+      if (this.starting.has(run.runId)) {
+        if (!seen()) n++;
+        continue;
+      }
       if (run.state !== "running" || run.endedAt !== undefined || run.startedAt === undefined) continue;
-      const seen = this.deps.sessions().some((s) => s.state !== "ended" && s.claudeSessionIds.includes(run.sessionId));
-      if (!seen) n++;
+      if (!seen()) n++;
     }
     return n;
+  }
+
+  /** RL-8: is there room for one more start (checked with no `await` before `beginStart`)? */
+  private hasRoom(): boolean {
+    const max = this.deps.maxSessions();
+    return max === undefined || this.deps.liveCount() < max;
+  }
+
+  /**
+   * RL-8: reserve the start of a queued run (synchronous, so no other offer or queue pass can begin it
+   * too). Returns the current run file, or undefined when it is not queued or already being started.
+   */
+  private beginStart(runId: string): RunFile | undefined {
+    const cur = this.runs.get(runId);
+    if (!cur || cur.state !== "queued" || cur.endedAt !== undefined || this.starting.has(runId)) return undefined;
+    this.starting.add(runId);
+    return cur;
+  }
+
+  /** RL-8: start a run reserved by `beginStart`; the reservation ends when the start has ended. */
+  private async start(run: RunFile): Promise<void> {
+    try {
+      await this.startInner(run);
+    } finally {
+      this.starting.delete(run.runId);
+    }
+  }
+
+  /**
+   * RL-8: leftover run sessions: live `print` sessions whose pid is a finished run's pid and whose
+   * Claude session ids hold that run's session id, never a session of a running run. The pid alone
+   * never matches (pids are reused).
+   */
+  leftoverSids(): Set<string> {
+    const protect = new Set<string>();
+    for (const r of this.runs.values()) if (r.state === "running") for (const sid of this.runSids(r)) protect.add(sid);
+    const out = new Set<string>();
+    const sessions = this.deps.sessions();
+    for (const f of this.runs.values()) {
+      if (f.state !== "finished" || f.pid === undefined) continue;
+      for (const s of sessions) {
+        if (s.state === "ended" || s.kind !== "print" || s.pid !== f.pid || !s.claudeSessionIds.includes(f.sessionId) || protect.has(s.sid)) continue;
+        out.add(s.sid);
+      }
+    }
+    return out;
+  }
+
+  /** RL-8: end every leftover run session (at daemon start and on every reconcile pass). */
+  sweepLeftovers(): void {
+    const sids = this.leftoverSids();
+    if (sids.size > 0) this.deps.endRunSessions(sids, "headless run finished");
   }
 
   /**
@@ -464,12 +534,13 @@ export class HeadlessRuns {
     });
     writeFileAtomic(this.file(run, "profile.json"), JSON.stringify(snap.data.settings));
     this.save(run);
-    const max = this.deps.maxSessions();
-    if (max === undefined || this.deps.liveCount() < max) {
-      await this.start(run);
+    // RL-8: the capacity check and the reservation happen with no await between them.
+    const reserved = this.hasRoom() ? this.beginStart(runId) : undefined;
+    if (reserved) {
+      await this.start(reserved);
       return { state: "delivered", method: "headless" };
     }
-    this.deps.log(`run ${runId}: queued (maxSessions ${max})`);
+    this.deps.log(`run ${runId}: queued (maxSessions ${this.deps.maxSessions()})`);
     return { state: "delivered", method: "queued" };
   }
 
@@ -487,12 +558,12 @@ export class HeadlessRuns {
     this.deps.log(`run ${run.runId}: headless run of ${run.step} did not start: ${reason}`);
   }
 
-  private async start(run: RunFile): Promise<void> {
+  private async startInner(run: RunFile): Promise<void> {
     const { runner } = this.deps;
     const meta = this.meta(run);
     const worktree = join(run.dir, "worktree");
     const add = await runner.git(run.checkout, ["worktree", "add", "--detach", worktree, "HEAD"]);
-    if (add.code !== 0) return this.notStarted(run, `could not make a worktree: ${firstLine(add.stderr)}`);
+    if (add.code !== 0) return this.notStarted(run, `could not make a worktree: ${gitError(add)}`);
     const head = await runner.git(worktree, ["rev-parse", "HEAD"]);
     let next: RunFile = { ...run, worktree, ...(head.code === 0 ? { baseCommit: head.stdout.trim() } : {}) };
     this.save(next);
@@ -553,6 +624,12 @@ export class HeadlessRuns {
     // RL-7: terminal- and session-binding variables of the daemon never reach the run.
     const r = await runner.start({ argv, cwd: worktree, env: { MESH_STEP: run.step, MESH_RUN: run.runId }, unsetEnv: HEADLESS_ENV_UNSET, runDir: run.dir });
     if (!r.ok) return this.notStarted(next, r.error);
+    // RL-8: a run that is no longer queued (never expected with the start guard) never goes back to running.
+    if (this.runs.get(run.runId)?.state !== "queued") {
+      this.deps.log(`run ${run.runId}: no longer queued at start; stopping pid ${r.pid}`);
+      void runner.kill(r.pid, r.startId).catch((e) => this.deps.log(`run ${run.runId}: kill failed: ${String(e)}`));
+      return;
+    }
     next = { ...next, state: "running", pid: r.pid, startId: r.startId, startedAt: this.deps.now() };
     this.save(next);
     this.deps.log(`run ${run.runId}: started ${run.step} (pid ${r.pid})`);
@@ -596,6 +673,7 @@ export class HeadlessRuns {
         }
       }
       if (ended) await this.queuePass();
+      this.sweepLeftovers();
     } finally {
       this.busy = false;
     }
@@ -604,7 +682,10 @@ export class HeadlessRuns {
   /** Queued runs, oldest first: release those past their deadline, start while there is room. */
   private async queuePass(): Promise<void> {
     const queued = [...this.runs.values()].filter((r) => r.state === "queued").sort((a, b) => a.acceptedAt - b.acceptedAt);
-    for (const run of queued) {
+    for (const queuedRun of queued) {
+      // RL-8: a run whose start is in progress (or that changed meanwhile) is neither started nor released.
+      const run = this.runs.get(queuedRun.runId);
+      if (!run || run.state !== "queued" || this.starting.has(run.runId)) continue;
       const now = this.deps.now();
       if (now >= run.deadline) {
         const e = this.end(run);
@@ -618,9 +699,8 @@ export class HeadlessRuns {
         this.deps.log(`run ${run.runId}: released (no free session before the deadline)`);
         continue;
       }
-      const max = this.deps.maxSessions();
-      if (max !== undefined && this.deps.liveCount() >= max) continue;
-      await this.start(run);
+      const reserved = this.hasRoom() ? this.beginStart(run.runId) : undefined;
+      if (reserved) await this.start(reserved);
     }
   }
 
@@ -722,6 +802,11 @@ export class HeadlessRuns {
     }
 
     if (e.decided === "closed") {
+      if (!e.transcriptDone && meta.notStarted !== undefined) {
+        // RL-8: a run that did not start has no transcript to store.
+        e = { ...e, transcriptDone: true };
+        this.saveEnd(run, e);
+      }
       if (!e.transcriptDone) {
         const r = redactSecrets(renderTail(this.read(run, "stream.jsonl"), this.read(run, "stderr.log"), exit), this.deps.secrets());
         const up = await this.call<StoredArtifact>(run, "transcript", "POST", this.stepPath(run.step, "/artifacts"), {
@@ -764,9 +849,13 @@ export class HeadlessRuns {
 
     if (run.worktree && existsSync(run.worktree)) {
       const rm = await this.deps.runner.git(run.checkout, ["worktree", "remove", "--force", run.worktree]);
-      if (rm.code !== 0) this.deps.log(`run ${run.runId}: could not remove its worktree: ${firstLine(rm.stderr)}`);
+      if (rm.code !== 0) this.deps.log(`run ${run.runId}: could not remove its worktree: ${gitError(rm)}`);
     }
     const final = this.runs.get(run.runId) ?? run;
+    // RL-8: every live `print` session of the run ends with it (one revived after the end included).
+    const runSids = this.runSids(final);
+    const livePrint = new Set(this.deps.sessions().filter((s) => runSids.has(s.sid) && s.kind === "print" && s.state !== "ended").map((s) => s.sid));
+    if (livePrint.size > 0) this.deps.endRunSessions(livePrint, "headless run finished");
     this.save({ ...final, state: "finished", exit });
     this.deps.log(`run ${run.runId}: finished (${exit})`);
   }
@@ -779,7 +868,7 @@ export class HeadlessRuns {
     const branch = `mesh/${stepSlug(run.step)}`;
     const p = await this.deps.runner.git(run.worktree, ["push", "origin", `HEAD:refs/heads/${branch}`]);
     if (p.code === 0) return branch;
-    const note = await this.call(run, "note", "POST", this.stepPath(run.step, "/note"), { text: `headless run: could not push ${branch}: ${firstLine(p.stderr)}` });
+    const note = await this.call(run, "note", "POST", this.stepPath(run.step, "/note"), { text: `headless run: could not push ${branch}: ${gitError(p)}` });
     if (!note.ok && note.retry) return "retry";
     return undefined;
   }

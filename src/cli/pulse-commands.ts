@@ -133,6 +133,7 @@ export function pulseCommand(c: CliEnv): Command {
             const preset = presetSnapshot(c.cwd, name);
             const p = await hub().post<PulseView>("/v1/pulses", { preset, params, ...fields, ...(a.has("paused") ? { enabled: false } : {}) });
             c.io.out(`Created pulse ${p.id} "${p.title}": ${p.schedule}, next run ${iso(p.nextAt)}.`);
+            for (const w of p.warnings ?? []) c.io.err(`warning: ${w}`);
             return 0;
           }
           case "ls": {
@@ -170,6 +171,7 @@ export function pulseCommand(c: CliEnv): Command {
             }
             const p = await hub().post<PulseView>(`/v1/pulses/${encodeURIComponent(id)}/update`, body);
             c.io.out(`Updated pulse ${p.id}; next run ${iso(p.nextAt)}.`);
+            for (const w of p.warnings ?? []) c.io.err(`warning: ${w}`);
             return 0;
           }
           case "pause": {

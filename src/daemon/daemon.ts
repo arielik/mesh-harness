@@ -501,6 +501,8 @@ export class Daemon {
     this.sessions = this.store.loadSessions();
     // RL-1: adopt live runs, reap ended ones, queue queued ones again (runs outlive the daemon).
     this.runs?.load();
+    // RL-8: run sessions left live by a finished run (also by v0.1.21) end now.
+    this.runs?.sweepLeftovers();
     this.server = createServer((req, res) => void this.handle(req, res));
     await new Promise<void>((resolve, reject) => {
       this.server?.once("error", reject);
@@ -917,7 +919,7 @@ export class Daemon {
     for (const [id, p] of this.pendingLaunches) {
       if (now - p.at >= LAUNCH_PENDING_MS || live.some((x) => x.step === p.step)) this.pendingLaunches.delete(id);
     }
-    return live.length + this.pendingLaunches.size + (this.runs?.runningWithoutSession() ?? 0);
+    return live.length + this.pendingLaunches.size + (this.runs?.heldWithoutSession() ?? 0);
   }
 
   /**

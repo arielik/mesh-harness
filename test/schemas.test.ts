@@ -682,8 +682,8 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
   const STATS = { method: "GET", path: "/v1/agents/:key/stats", rule: "member", scope: "goals:read", tag: "goals" };
 
   it("test_AC16_version", () => {
-    // RL-7 AC-17: the release is v0.1.21.
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.21");
+    // RL-8 AC-12: the release is v0.1.22 (was RL-7 AC-17, v0.1.21).
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.22");
   });
 
   it("test_AC07_route_table", () => {

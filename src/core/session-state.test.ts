@@ -403,3 +403,40 @@ describe("OpenCode sessions", () => {
     expect(sessions[0]?.launching).toBeUndefined();
   });
 });
+
+// RL-8 AC-07: a run's `print` session keeps its kind when the reconciler reports the same process
+// (`claude agents` lists a `-p` process as `interactive`). Written from docs/specs/RL-8.md only.
+describe("RL-8 AC-07 print kind", () => {
+  const S = "c-run";
+  /** A hook-made session for pid 500 and Claude session S, with `kind` set (as the daemon registers a run's session). */
+  const sessionOf = (kind: Session["kind"], extra: Partial<Session> = {}): Session => ({ ...only(run([hook("SessionStart", 1, { pid: 500, claudeSessionId: S })])), kind, ...extra });
+  const entry = (extra: Partial<AgentEntry> = {}): AgentEntry => ({ kind: "interactive", pid: 500, cwd: CWD, sessionId: S, status: "busy", ...extra });
+
+  it("test_AC07_same_pid_keeps_print", () => {
+    const [p] = applyObservation([sessionOf("print")], [entry()], ctx(5)).sessions;
+    // The same entry applied to a non-print twin: what every other field becomes.
+    const [twin] = applyObservation([sessionOf("unknown")], [entry()], ctx(5)).sessions;
+    expect(p?.kind).toBe("print");
+    expect(twin?.kind).toBe("interactive");
+    expect(p?.seenByReconciler).toBe(true);
+    expect(p?.state).toBe(twin?.state);
+    expect(p?.observed).toStrictEqual(twin?.observed);
+    expect({ ...p, kind: "x" }).toStrictEqual({ ...twin, kind: "x" });
+  });
+
+  it("test_AC07_other_pid_takes_entry_kind", () => {
+    const ended = sessionOf("print", { state: "ended", endedAt: 3, endedReason: "run finished" });
+    const out = applyObservation([ended], [entry({ pid: 600 })], ctx(5)).sessions;
+    const at600 = out.filter((s) => s.pid === 600);
+    // Control: the entry was applied (a session for pid 600 exists).
+    expect(at600, JSON.stringify(out)).toHaveLength(1);
+    expect(at600[0]?.kind).toBe("interactive");
+    expect(out.filter((s) => s.pid === 600 && s.kind === "print")).toStrictEqual([]);
+  });
+
+  it("test_AC07_non_print_takes_entry_kind", () => {
+    const [s] = applyObservation([sessionOf("unknown")], [entry()], ctx(5)).sessions;
+    expect(s?.kind).toBe("interactive");
+    expect(s?.seenByReconciler).toBe(true);
+  });
+});

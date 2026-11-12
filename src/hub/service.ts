@@ -3083,7 +3083,8 @@ export class HubService {
 
   /** `POST /v1/pulses`. */
   async createPulse(actor: Actor, body: PulseCreate): Promise<PulseView> {
-    return await this.goalTx(async () => {
+    // RL-8: the reply carries warnings for agents flagged invalid (computed after the write).
+    const { view, pulse } = await this.goalTx(async () => {
       const now = this.now();
       const plan = await this.presetChecks(body.preset, body.params);
       const topics = await this.knownTopics(body.topics ?? []);
@@ -3116,8 +3117,51 @@ export class HubService {
         updatedAt: now,
       });
       await this.emit({ type: "pulse.created", user: actor.userId, payload: { pulse: p.id, title: p.title, preset: p.preset.name, sha256: p.preset.sha256, schedule: scheduleText(p.when) } });
-      return await this.pulseView(p);
+      return { view: await this.pulseView(p), pulse: p };
     });
+    return { ...view, warnings: await this.pulseWarnings(actor, pulse) };
+  }
+
+  /**
+   * RL-8: one warning per step of the pulse's instantiated plan whose agent the roster flags invalid:
+   * a roster key by its pinned catalog definition, a repo agent by the copies the caller can see in
+   * the step's repo. Never fails (a plan that cannot be instantiated gives none).
+   */
+  private async pulseWarnings(actor: Actor, p: Pulse): Promise<string[]> {
+    let plan: PlanInput;
+    try {
+      plan = instantiate(parsePreset(p.preset.name, p.preset.text), { repo: p.params.repo ?? "repo", goal: "this goal", params: p.params });
+    } catch {
+      return [];
+    }
+    const out: string[] = [];
+    const views = new Map<string, AgentsView>();
+    for (const s of plan.steps) {
+      const a = s.agent;
+      if (a === undefined || a === "") continue;
+      if (a.includes("/")) {
+        const pin = p.agents?.[a];
+        if (!pin) continue;
+        const def = (await this.store.listCatalogDefs({ repo: pin.source, name: pin.name })).find((d) => d.hash === pin.hash);
+        if (def?.invalid !== undefined) out.push(`step "${s.id}": roster agent ${def.key} has invalid front matter: ${def.invalid}`);
+        continue;
+      }
+      let view = views.get(a);
+      if (!view) {
+        view = await this.agentsView(actor, a);
+        views.set(a, view);
+      }
+      const want = s.repo || p.params.repo;
+      const group = view.agents.find((g) => g.name === a);
+      for (const v of group?.versions ?? []) {
+        if (v.invalid === undefined) continue;
+        const c = v.copies.find((x) => x.origin === "repo" && x.kind === "claude" && want !== undefined && repoMatches({ id: x.repo.id, name: x.repo.name }, want));
+        if (!c) continue;
+        out.push(`step "${s.id}": agent ${a} in ${c.repo.name} has invalid front matter: ${v.invalid}`);
+        break;
+      }
+    }
+    return out;
   }
 
   /** `GET /v1/pulses`: by number, deleted ones left out; `mine`: only the caller's. */
@@ -3146,7 +3190,7 @@ export class HubService {
 
   /** `POST /v1/pulses/:id/update`: only the given fields; `preset`/`params` re-snapshot and bump `version`. */
   async updatePulse(actor: Actor, id: string, body: PulseUpdate): Promise<PulseView> {
-    return await this.goalTx(async () => {
+    const { view, pulse } = await this.goalTx(async () => {
       const p = await this.pulseOr404(id);
       HubService.ownerOrAdmin(actor, p);
       const now = this.now();
@@ -3174,8 +3218,10 @@ export class HubService {
       next = { ...next, windowMs: t.windowMs, maxGoalAgeMs: t.maxGoalAgeMs, updatedAt: now };
       await this.store.savePulse(next);
       await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: next.version, fields: Object.keys(body).sort() } });
-      return await this.pulseView(next);
+      return { view: await this.pulseView(next), pulse: next };
     });
+    // RL-8: warnings on every update, from the resulting preset, params and pins.
+    return { ...view, warnings: await this.pulseWarnings(actor, pulse) };
   }
 
   async pausePulse(actor: Actor, id: string): Promise<PulseView> {

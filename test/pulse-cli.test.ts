@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BUILTIN_PRESETS, parsePreset, presetText } from "../src/core/index.ts";
 import { git, Relay } from "./helpers/relay-kit.ts";
 import { body, DAY, HOUR, iso, MIN, Pk, RELAY_TEXT, sha, sha12, T0, type Bare, type Json } from "./helpers/pulse-kit.ts";
+import { ALPHA, rep, Rk } from "./helpers/roster-kit.ts";
 import type { Person } from "./helpers/world.ts";
 
 let k: Pk;
@@ -473,5 +474,59 @@ describe("RL-7 AC-12 mesh preset ls", { timeout: 30_000 }, () => {
     const res = await cli(c.ann, ["preset", "ls"], sub);
     expect(res.code, res.err).toBe(0);
     expect(outLines(res.out)).toStrictEqual([...builtinLines(), HINT]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+// RL-8 AC-10: `mesh pulse add` / `mesh pulse update` print the hub's `warnings` on stderr, one
+// `warning: <warning>` line each, after the unchanged success line, and still exit 0
+// (docs/specs/RL-8.md, Pulse warnings).
+describe("RL-8 AC-10 pulse warnings", { timeout: 30_000 }, () => {
+  const BAD = "---\nname: bad\ndescription: Validates: findings\n---\nYou validate.\n";
+  const GOOD = "---\ndescription: Good agent\n---\nYou review.\n";
+  const INV = "front matter is not valid YAML: sample at line 2, column 14";
+  const LINE = `warning: step "audit": agent bad in alpha has invalid front matter: ${INV}`;
+  const ADD = (agent: string) => ["pulse", "add", "--preset", "audit-relay", "--repo", "alpha", "--params", `agent=${agent},validator=good,filer=good`, "--every", "7d"];
+  const lines = (t: string) => t.split("\n").filter((l) => l !== "");
+
+  /** The AC-20 cast plus a machine of ann whose roster report holds alpha with an invalid `bad` and a valid `good`. */
+  async function warnCast(): Promise<Cast> {
+    const c = await cast();
+    const rk = new Rk(k);
+    const m = await k.bare("ann", "ann-box", { repos: [ALPHA] });
+    await rk.report(m, [rep(ALPHA, "bad", BAD, { invalid: INV }), rep(ALPHA, "good", GOOD)]);
+    // The hub holds the invalid copy as reported.
+    const v = await rk.view("ann", "?name=bad");
+    expect(JSON.stringify(v)).toContain(INV);
+    return c;
+  }
+
+  it("test_AC10_add_warns_on_stderr", async () => {
+    const c = await warnCast();
+    const res = await cli(c.ann, ADD("bad"));
+    expect(res.code, res.err).toBe(0);
+    expect(res.out.trim()).toBe(`Created pulse p-1 "audit-relay on alpha": every 7d, next run ${iso(NOW + 7 * DAY)}.`);
+    expect(res.out).not.toContain("warning:");
+    expect(lines(res.err)).toStrictEqual([LINE]);
+  });
+
+  it("test_AC10_update_warns", async () => {
+    const c = await warnCast();
+    const add = await cli(c.ann, ADD("bad"));
+    expect(add.code, add.err).toBe(0);
+    const res = await cli(c.ann, ["pulse", "update", "p-1", "--window", "2h"]);
+    expect(res.code, res.err).toBe(0);
+    expect(res.out.trim().startsWith("Updated pulse p-1"), res.out).toBe(true);
+    expect(res.out).not.toContain("warning:");
+    expect(lines(res.err)).toStrictEqual([LINE]);
+  });
+
+  it("test_AC10_no_invalid_empty_stderr", async () => {
+    const c = await warnCast();
+    const res = await cli(c.ann, ADD("good"));
+    expect(res.code, res.err).toBe(0);
+    expect(res.out.trim()).toBe(`Created pulse p-1 "audit-relay on alpha": every 7d, next run ${iso(NOW + 7 * DAY)}.`);
+    expect(res.err).toBe("");
   });
 });

@@ -4,7 +4,8 @@
 // On start it writes $FAKE_CLAUDE_DIR/calls/<MESH_STEP>-<pid>.json with its argv, cwd, the MESH_*
 // environment, pid and process group, and `probe` (RL-7: for each of A, B, C, TMUX, TMUX_PANE,
 // MESH_AUTOPILOT, CLAUDE_PID, FAKE_PARENT_VAR, MESH_STEP, MESH_RUN its value, or null when the variable
-// is absent), then runs $FAKE_CLAUDE_DIR/scripts/<MESH_STEP>.json: a JSON
+// is absent) and `cwdOk` (RL-8: true when the working directory can be read and exists, recorded before
+// any action), then runs $FAKE_CLAUDE_DIR/scripts/<MESH_STEP>.json: a JSON
 // array of actions run in order (a missing script = exit 0):
 //   {"stdout": ["line", …]}   lines on stdout; "$SESSION" becomes the --session-id argument
 //   {"stderr": ["line", …]}   lines on stderr
@@ -30,10 +31,20 @@ try {
 } catch {
   pgid = undefined;
 }
+let cwd;
+let cwdOk;
+try {
+  cwd = process.cwd();
+  cwdOk = existsSync(cwd);
+} catch {
+  cwd = null;
+  cwdOk = false;
+}
 const call = {
   argv,
   bin: process.argv[1],
-  cwd: process.cwd(),
+  cwd,
+  cwdOk,
   env: { MESH_STEP: process.env.MESH_STEP, MESH_RUN: process.env.MESH_RUN, FAKE_PARENT_VAR: process.env.FAKE_PARENT_VAR },
   probe: Object.fromEntries(
     ["A", "B", "C", "TMUX", "TMUX_PANE", "MESH_AUTOPILOT", "CLAUDE_PID", "FAKE_PARENT_VAR", "MESH_STEP", "MESH_RUN"].map((n) => [n, Object.hasOwn(process.env, n) ? process.env[n] : null]),

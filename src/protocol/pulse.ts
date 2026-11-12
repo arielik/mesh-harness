@@ -193,6 +193,11 @@ export type PulseView = Omit<Pulse, "preset" | "profiles" | "agents"> & {
   schedule: string;
   /** The 10 newest slots. */
   recent: PulseSlot[];
+  /**
+   * RL-8: agents the pulse's steps name that the roster flags invalid, one line per step. Only in the
+   * replies of `POST /v1/pulses` and `POST /v1/pulses/:id/update` (possibly empty); never stored.
+   */
+  warnings?: string[] | undefined;
 };
 
 export interface PulseDetail {

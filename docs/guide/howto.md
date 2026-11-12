@@ -469,6 +469,17 @@ mesh pulse add --preset audit-relay --repo alpha \
                                               # a smaller audit budget (defaults: 80 turns, 60 minutes)
 ```
 
+When an agent the pulse names is flagged invalid in the roster (its front matter is not valid YAML,
+see `mesh agents`), `mesh pulse add` and `mesh pulse update` say so on stderr. The pulse is still
+created (or updated) and the command exits 0, but a slot's run of that step would fail at start, so
+fix the agent file first:
+
+```sh
+mesh pulse add --preset audit-relay --repo alpha --params agent=bad,validator=checker,filer=filer --every 7d
+#   Created pulse p-2 "audit-relay on alpha": every 7d, next run 2026-11-19T10:00:00.000Z.
+#   warning: step "audit": agent bad in alpha has invalid front matter: front matter is not valid YAML: …
+```
+
 Check it, run a slot now, and read what happened:
 
 ```sh

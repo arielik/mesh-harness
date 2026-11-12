@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, vi } from "vitest";
-import type { Runner } from "../../src/claude/index.ts";
+import { processRunner, type HeadlessRunner, type HeadlessSpec, type Runner } from "../../src/claude/index.ts";
 import { dispatch } from "../../src/cli/commands.ts";
 import type { CliEnv } from "../../src/cli/context.ts";
 import { meshCommands } from "../../src/cli/mesh-commands.ts";
@@ -54,6 +54,97 @@ export const git = (cwd: string, args: string[]) => execFileSync("git", ["-C", c
 
 /** A plan step as the tests write it (policy fields loose). */
 export type PlanIn = { id: string; title?: string; kind?: string; deps?: string[]; repo?: string } & Record<string, unknown>;
+
+/** RL-8: what a git call answers (as `HeadlessRunner.git` returns it). */
+export interface GitResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+export interface GitCall {
+  cwd: string;
+  args: string[];
+  at: number;
+}
+/** RL-8: a `HeadlessRunner` around `processRunner` that records git and start calls and can hold or answer some. */
+export interface Holding {
+  runner: HeadlessRunner;
+  gits: GitCall[];
+  starts: HeadlessSpec[];
+  adds(): GitCall[];
+  /** The `worktree add` calls whose args name this worktree folder. */
+  addsFor(worktree: string): GitCall[];
+  pushes(): GitCall[];
+  removes(): GitCall[];
+  release(): void;
+}
+export interface HoldingOptions {
+  /** Answers for `worktree add`, used in order (git is not run for them). */
+  answerAdd?: GitResult[];
+  /** The answer to every `push` (git is not run). */
+  answerPush?: GitResult;
+  /** The answer to every `worktree remove` (git is not run). */
+  answerRemove?: GitResult;
+  /** Hold the first `worktree add` (the only one ever held) until `release()`. Default true. */
+  hold?: boolean;
+}
+
+/**
+ * RL-8: a runner that records every git call and every start, holds only the **first** `worktree
+ * add` (until `release()`; later ones pass through at once, so a second add never hangs a test),
+ * and answers `worktree add` / `push` / `worktree remove` when told to.
+ */
+export function holdingRunner(o: HoldingOptions = {}): Holding {
+  const answers = [...(o.answerAdd ?? [])];
+  const gits: GitCall[] = [];
+  const starts: HeadlessSpec[] = [];
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((res) => {
+    release = res;
+  });
+  let held = false;
+  const isAdd = (a: readonly string[]) => a[0] === "worktree" && a[1] === "add";
+  const isRemove = (a: readonly string[]) => a[0] === "worktree" && a[1] === "remove";
+  const reap = processRunner.reapGroup?.bind(processRunner);
+  const runner: HeadlessRunner = {
+    start: async (spec) => {
+      starts.push(spec);
+      return processRunner.start(spec);
+    },
+    alive: (pid, startId) => processRunner.alive(pid, startId),
+    kill: (pid, startId) => processRunner.kill(pid, startId),
+    ...(reap ? { reapGroup: reap } : {}),
+    git: async (cwd, args) => {
+      gits.push({ cwd, args: [...args], at: Date.now() });
+      if (isAdd(args)) {
+        const a = answers.shift();
+        if (a) return a;
+        if ((o.hold ?? true) && !held) {
+          held = true;
+          await released;
+        }
+      }
+      if (args[0] === "push" && o.answerPush) return o.answerPush;
+      if (isRemove(args) && o.answerRemove) return o.answerRemove;
+      return processRunner.git(cwd, args);
+    },
+  };
+  return {
+    runner,
+    gits,
+    starts,
+    adds: () => gits.filter((g) => isAdd(g.args)),
+    addsFor: (worktree) => gits.filter((g) => isAdd(g.args) && g.args.includes(worktree)),
+    pushes: () => gits.filter((g) => g.args[0] === "push"),
+    removes: () => gits.filter((g) => isRemove(g.args)),
+    release: () => release(),
+  };
+}
+
+/** RL-8: how many lines of this daemon's log match `re`. */
+export const logCount = (p: Person, re: RegExp): number => p.logs.filter((l) => re.test(l)).length;
+/** RL-8: true when the daemon sent no request with key `bind:<sid>:<step>` (any key that ends so). */
+export const noBindClaim = (p: Person, step: string): boolean => !p.requests.some((q) => q.key !== null && q.key.startsWith("bind:") && q.key.endsWith(`:${step}`));
 
 export interface CliRun {
   code: number;

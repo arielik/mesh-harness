@@ -269,7 +269,10 @@ function kindOf(entry: AgentEntry): SessionKind {
 
 function applyEntry(s: Session, e: AgentEntry, now: number): void {
   s.seenByReconciler = true;
-  s.kind = kindOf(e);
+  // A headless run's session (RL-7 `print`) keeps its kind for the same process: `claude agents`
+  // lists a `-p` process as interactive. Another pid (a resumed session) takes the entry's kind.
+  const keepPrint = s.kind === "print" && e.pid !== undefined && e.pid === s.pid;
+  s.kind = keepPrint ? "print" : kindOf(e);
   if (e.pid !== undefined) s.pid = e.pid;
   if (e.name !== undefined) s.name = e.name;
   if (e.id !== undefined) s.bgId = e.id;

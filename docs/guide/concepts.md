@@ -129,6 +129,25 @@ run ends (and no longer counts toward `maxSessions`). The run's environment is t
 hooks never report the daemon's terminal. `mesh_done` replies to a run carry no commit hint: the
 step record is written into the run's worktree, which is discarded.
 
+The run's session keeps kind `print` while it runs and after it ended, also when `claude agents`
+lists the run's `-p` process as `interactive` (v0.1.22). When the run finishes, every live `print`
+session of the run ends with it; a daemon also ends, at start-up and on every reconcile, a live
+`print` session that carries a finished run's pid and Claude session id (such as one left by
+v0.1.21). A person who resumes a finished run (`claude --resume <session id>`) gets a new process,
+and that session is never ended by these rules.
+
+**Starting a run.** A run is started once (v0.1.22): while its worktree is made and `claude` is
+spawned, no queue pass and no other offer starts it again, and a run being started counts toward
+`maxSessions` from the moment its start begins, so two offers handled at once never start more runs
+than the cap allows (the other waits `queued`). A run that **did not start** (worktree failure,
+missing or invalid agent, roster definition not available, missing profile, or a spawn failure)
+stores no transcript and never has a session; its step fails with `headless run of <step> did not
+start: <reason>`. Git failure texts carry git's **last** error line (not a progress line such as
+`Preparing worktree …`), or `git exited with code <n>` when git printed nothing: for example
+`could not make a worktree: fatal: '<path>' already exists`. A daemon stopped in the middle of a
+start may leave a partial worktree; the run stays `queued`, and its next start fails with
+`could not make a worktree: fatal: … already exists`.
+
 **Invalid agents.** When the agent file's front matter is not valid YAML (an unquoted `: ` in
 `description` is the usual cause) or is not a mapping, the run does not start: the `claude` process
 is never spawned and the step fails with the summary `headless run of <step> did not start: agent
@@ -183,7 +202,7 @@ still waiting at its deadline (offer time + `thresholds.offer_expiry`) is releas
 
 **Close-as-fail.** A run that ends (exits, crashes, or is stopped for its budget) without an
 accepted `mesh_done` while its machine and session still hold the step is closed by the daemon:
-it stores a `transcript` artifact (the rendered tail of the run: last assistant texts, errors,
+for a run that started (however short), it stores a `transcript` artifact (the rendered tail of the run: last assistant texts, errors,
 stderr; secrets redacted; never raw JSON) and finishes the step with outcome `fail`, summary
 `headless run ended without mesh_done (exit <exit>)`. A step someone took over meanwhile is left to
 its new holder. Runs outlive the daemon: a restarted daemon adopts runs that are still alive and
@@ -334,6 +353,14 @@ made by a pulse keep the profile snapshot (`profiles`); their headless steps are
 it, and a step whose profile is not in it is not offered. An agent named by a roster key
 (`<source>/<name>`, see *Roster*) is pinned by hash when the pulse is saved; an RL-1 repo agent is not
 pinned: the run reads it from the run's worktree.
+
+**Invalid agents warn.** `mesh pulse add` and `mesh pulse update` (v0.1.22) print one line on stderr
+for each step whose agent the roster flags invalid (front matter that is not valid YAML): `warning:
+step "<id>": agent <name> in <repo> has invalid front matter: <reason>` for a repo agent the caller
+can see in the step's repo, `warning: step "<id>": roster agent <key> has invalid front matter:
+<reason>` for a roster key's pinned definition. The pulse is still created or updated (exit 0); a
+slot's run of that step would fail at start. The hub computes these in the `warnings` field of the
+`POST /v1/pulses` and `POST /v1/pulses/:id/update` replies, on every update.
 
 **Schedule.** `--every <duration>` (`30m`, `4h`, `7d`; 5 minutes to 366 days) counts periods from
 an anchor: `--at <ISO>` when given (an `--at` in the future is the first slot, however far ahead),

@@ -5,7 +5,7 @@
 // id, events by type. Hashes are computed by the test (roster-kit `H`).
 
 import { afterEach, describe, expect, it } from "vitest";
-import { body, REPO, REPO_ID, snap, type Bare } from "./helpers/pulse-kit.ts";
+import { body, builtinRelay, relayBody, REPO, REPO_ID, snap, type Bare } from "./helpers/pulse-kit.ts";
 import {
   AARD,
   ALPHA,
@@ -736,6 +736,208 @@ describe("RL-7 invalid agents (hub)", () => {
     expect(after.status, JSON.stringify(after.json)).toBe(200);
     expect(isInvalidText(after.json.invalid), String(after.json.invalid)).toBe(true);
     expect(after.json.commits).toStrictEqual([C1, C2]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+// RL-8 AC-08 and AC-09: `POST /v1/pulses` and `POST /v1/pulses/:id/update` reply with `warnings` for
+// agents flagged invalid (docs/specs/RL-8.md, Pulse warnings). The `invalid` text of a repo copy is
+// the one the machine reported; the catalog's is read back through resolve.
+const RL8_BAD = "---\nname: bad\ndescription: Validates: findings\n---\nYou validate.\n";
+const RL8_GOOD = "---\ndescription: Good agent\n---\nYou review.\n";
+const RL8_INV = "front matter is not valid YAML: sample at line 2, column 14";
+/** The `audit-relay` steps in plan order (ids as the preset gives them). */
+const RELAY_STEPS = () => builtinRelay().plan.steps.map((s) => s.id as string);
+
+describe("RL-8 AC-08 pulse warnings, repo agent", () => {
+  const relay = (p: { agent: string; validator?: string; filer?: string; repo?: string }) =>
+    relayBody({ params: { repo: p.repo ?? "alpha", agent: p.agent, validator: p.validator ?? "good", filer: p.filer ?? "good" } });
+  const W = (step: string, agent: string, repo = "alpha") => `step "${step}": agent ${agent} in ${repo} has invalid front matter: ${RL8_INV}`;
+  /** ann's machine (share `me`) reports alpha with an invalid `bad` and a valid `good`. */
+  async function setup(): Promise<Bare> {
+    await start();
+    const m = await k.k.bare("ann", "ann-box", { repos: [ALPHA] });
+    await k.report(m, [rep(ALPHA, "bad", RL8_BAD, { invalid: RL8_INV }), rep(ALPHA, "good", RL8_GOOD)]);
+    return m;
+  }
+  async function create(who: string, b: unknown, headers: Record<string, string> = {}): Promise<{ status: number; json: Json }> {
+    const res = await fetch(`${k.w.hub.url}/v1/pulses`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${k.k.tok[who]}`, ...headers },
+      body: JSON.stringify(b),
+    });
+    return { status: res.status, json: await res.json() };
+  }
+
+  it("test_AC08_create_warns", async () => {
+    await setup();
+    const res = await create("ann", relay({ agent: "bad" }));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([W("audit", "bad")]);
+  });
+
+  it("test_AC08_all_good_empty", async () => {
+    await setup();
+    const res = await create("ann", relay({ agent: "good" }));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([]);
+  });
+
+  it("test_AC08_get_has_no_warnings", async () => {
+    await setup();
+    const res = await create("ann", relay({ agent: "bad" }));
+    // Control: the POST reply carries them.
+    expect(res.json.warnings).toStrictEqual([W("audit", "bad")]);
+    const id = res.json.id as string;
+    const list = await k.call("ann", "GET", "/v1/pulses");
+    expect(list.status).toBe(200);
+    const item = (list.json.pulses as Json[]).find((p) => p.id === id);
+    expect(item, JSON.stringify(list.json)).toBeDefined();
+    expect("warnings" in item).toBe(false);
+    const one = await k.call("ann", "GET", `/v1/pulses/${id}`);
+    expect(one.status).toBe(200);
+    expect("warnings" in one.json).toBe(false);
+    expect("warnings" in (one.json.pulse as Json)).toBe(false);
+  });
+
+  it("test_AC08_update_window_warns", async () => {
+    await setup();
+    const id = (await create("ann", relay({ agent: "bad" }))).json.id as string;
+    const upd = await k.k.act("ann", id, "update", { window: "2h" });
+    expect(upd.status, JSON.stringify(upd.json)).toBe(200);
+    expect(upd.json.warnings).toStrictEqual([W("audit", "bad")]);
+  });
+
+  it("test_AC08_update_params_clears", async () => {
+    await setup();
+    const id = (await create("ann", relay({ agent: "bad" }))).json.id as string;
+    const upd = await k.k.act("ann", id, "update", { params: { repo: "alpha", agent: "good", validator: "good", filer: "good" } });
+    expect(upd.status, JSON.stringify(upd.json)).toBe(200);
+    expect(upd.json.warnings).toStrictEqual([]);
+  });
+
+  it("test_AC08_two_steps_in_plan_order", async () => {
+    await setup();
+    const steps = RELAY_STEPS();
+    expect(steps.slice(0, 2)).toStrictEqual(["audit", "validate"]);
+    const res = await create("ann", relay({ agent: "bad", validator: "bad" }));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([W(steps[0] as string, "bad"), W(steps[1] as string, "bad")]);
+  });
+
+  it("test_AC08_invisible_machine", async () => {
+    await setup();
+    const bob = await create("bob", relay({ agent: "bad" }));
+    expect(bob.status, JSON.stringify(bob.json)).toBe(201);
+    expect(bob.json.warnings).toStrictEqual([]);
+    // Control: ann's identical call warns.
+    const ann = await create("ann", relay({ agent: "bad" }));
+    expect(ann.json.warnings).toStrictEqual([W("audit", "bad")]);
+  });
+
+  it("test_AC08_other_repo_no_warning", async () => {
+    await start();
+    const m = await k.k.bare("ann", "ann-box", { repos: [ALPHA, BETA] });
+    await k.report(m, [rep(BETA, "bad", RL8_BAD, { invalid: RL8_INV }), rep(ALPHA, "good", RL8_GOOD), rep(BETA, "good", RL8_GOOD)]);
+    const a = await create("ann", relay({ agent: "bad" }));
+    expect(a.status, JSON.stringify(a.json)).toBe(201);
+    expect(a.json.warnings).toStrictEqual([]);
+    // Control: a step whose repo is beta warns.
+    const b = await create("ann", relay({ agent: "bad", repo: "beta" }));
+    expect(b.status, JSON.stringify(b.json)).toBe(201);
+    expect(b.json.warnings).toStrictEqual([W("audit", "bad", "beta")]);
+  });
+
+  it("test_AC08_unknown_agent_no_warning", async () => {
+    await setup();
+    const res = await create("ann", relay({ agent: "nobody" }));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([]);
+  });
+
+  it("test_AC08_opencode_copy_ignored", async () => {
+    await start();
+    const m = await k.k.bare("ann", "ann-box", { repos: [ALPHA] });
+    await k.report(m, [rep(ALPHA, "bad", RL8_BAD, { kind: "opencode", path: ".opencode/agent/bad.md", invalid: RL8_INV }), rep(ALPHA, "good", RL8_GOOD)]);
+    const res = await create("ann", relay({ agent: "bad" }));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([]);
+  });
+
+  it("test_AC08_replay_keeps_first", async () => {
+    const m = await setup();
+    const b = relay({ agent: "bad" });
+    const first = await create("ann", b, { "idempotency-key": "rl8-k" });
+    expect(first.status, JSON.stringify(first.json)).toBe(201);
+    expect(first.json.warnings).toStrictEqual([W("audit", "bad")]);
+    // The machine now reports `bad` as valid.
+    await k.report(m, [rep(ALPHA, "bad", RL8_BAD), rep(ALPHA, "good", RL8_GOOD)]);
+    const again = await create("ann", b, { "idempotency-key": "rl8-k" });
+    expect(again.json.id).toBe(first.json.id);
+    expect(again.json.warnings).toStrictEqual([W("audit", "bad")]);
+    // Control: the report took effect (a fresh update warns no more).
+    const upd = await k.k.act("ann", first.json.id as string, "update", { window: "2h" });
+    expect(upd.status, JSON.stringify(upd.json)).toBe(200);
+    expect(upd.json.warnings).toStrictEqual([]);
+  });
+});
+
+describe("RL-8 AC-09 pulse warnings, roster key", () => {
+  const roster = (agent: string, o: Record<string, unknown> = {}) => body({ overlap: "allow", params: { repo: REPO, agent, ...o } }, "roster", ROSTER_HL);
+  async function invalidText(): Promise<string> {
+    const res = await k.resolve("ann", "agents/bad");
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    const inv = res.json.invalid as string;
+    expect(inv.startsWith("front matter is not valid YAML: "), inv).toBe(true);
+    return inv;
+  }
+
+  it("test_AC09_invalid_key_warns", async () => {
+    await start();
+    await k.catalog({ bad: RL8_BAD, good: RL8_GOOD });
+    const inv = await invalidText();
+    const res = await k.k.pulse("ann", roster("agents/bad"));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(Object.keys(res.json.agents ?? {})).toStrictEqual(["agents/bad"]);
+    expect(res.json.warnings).toStrictEqual([`step "run": roster agent agents/bad has invalid front matter: ${inv}`]);
+  });
+
+  it("test_AC09_valid_key_none", async () => {
+    await start();
+    await k.catalog({ bad: RL8_BAD, good: RL8_GOOD });
+    const res = await k.k.pulse("ann", roster("agents/good"));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([]);
+  });
+
+  it("test_AC09_update_uses_pin", async () => {
+    await start();
+    const pusher = await k.catalog({ bad: RL8_BAD, good: RL8_GOOD });
+    const inv = await invalidText();
+    const view = await k.k.pulseOk("ann", roster("agents/bad"));
+    // A valid `bad` at a new commit (new hash).
+    k.w.clock += 1000;
+    await k.pushOk(pusher, C2, { bad: RL8_GOOD.replace("Good agent", "Bad, fixed"), good: RL8_GOOD });
+    const upd = await k.k.act("ann", view.id, "update", { window: "2h" });
+    expect(upd.status, JSON.stringify(upd.json)).toBe(200);
+    expect(upd.json.warnings).toStrictEqual([`step "run": roster agent agents/bad has invalid front matter: ${inv}`]);
+    // Control: a params update re-pins to the valid version.
+    const re = await k.k.act("ann", view.id, "update", { params: { repo: REPO, agent: "agents/bad", note: "v2" } });
+    expect(re.status, JSON.stringify(re.json)).toBe(200);
+    expect(re.json.warnings).toStrictEqual([]);
+  });
+
+  it("test_AC09_pre_rl7_def_no_warning", async () => {
+    await start();
+    await k.sourceOk();
+    await k.pusher();
+    // As v0.1.20 stored the invalid file: `front: {}`, no `invalid`.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- store method, read loosely
+    await (k.w.hubStore as any).putCatalogDefs(SRC, C1, [{ path: "agents/bad.md", name: "bad", hash: H(RL8_BAD), text: RL8_BAD, front: {} }], "root", k.w.clock);
+    const res = await k.k.pulse("ann", roster("agents/bad"));
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([]);
   });
 });
 

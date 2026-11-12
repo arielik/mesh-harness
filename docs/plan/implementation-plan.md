@@ -395,8 +395,8 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/steps/:id/dispositions` | Debriefs (v0.1.18): one decision of the person in a held debrief (`mesh_dispose`, `via: debrief-session`, with the person's `answer`); 201 |
 | `POST /v1/steps/:id/dispositions/revert` | Debriefs (v0.1.18): revert a debrief decision while it is the item's latest change (the decider, the goal owner or an admin) |
 | `GET /v1/pulses?mine=1`, `GET /v1/pulses/:id` | Pulses (v0.1.17): pulses by number (no preset text); one pulse with its 50 newest slots and their goals' states (scope `goals:read`) |
-| `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 |
-| `POST /v1/pulses/:id/{update,pause,resume,delete}` | Pulses (v0.1.17): change, pause, resume or remove a pulse (its owner or an admin) |
+| `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
+| `POST /v1/pulses/:id/{update,pause,resume,delete}` | Pulses (v0.1.17): change, pause, resume or remove a pulse (its owner or an admin) (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
 | `POST /v1/pulses/:id/fire` | Pulses (v0.1.17): fire a manual slot now (also while paused) |
 | `POST /v1/goals/from-preset` | Ingest (v0.1.17): a goal with an approved plan from a preset snapshot, no design step (scope `goals:write`) |
 | `GET /v1/goals?pulses=1` | Pulses (v0.1.17): goal lists leave out pulse goals unless `pulses=1` |
