@@ -94,6 +94,10 @@ Sessions already recorded keep their labels when the file or the remembered list
 
 ## Headless steps
 
+The sections from here to *Agent statistics* are the reference. For a task-oriented walkthrough
+(a runner machine, agents, a relay preset, a pulse, reading the results, troubleshooting) see
+[scheduled reviews](scheduled-reviews.md).
+
 **Headless step.** A plan step with `mode: headless` runs unattended on a machine: no session is
 picked or pasted to. The machine's daemon accepts the offer itself and starts `claude -p` in a fresh
 detached git worktree of its own checkout (at the checkout's `HEAD`), with a pinned permission

@@ -11,7 +11,7 @@ One place to see and steer all your Claude Code and OpenCode sessions, across re
 It needs Claude Code on a subscription login, Node and git. It needs no other repository, no API keys and no Agent SDK, and none of its parts depends on a particular identity provider, issue tracker or analysis tool.
 
 - Documentation: [docs/README.md](docs/README.md) · [your first hour (start here)](docs/guide/first-run.md) · [how-to with examples](docs/guide/howto.md)
-- Guide: [overview](docs/guide/overview.md) · [concepts](docs/guide/concepts.md) · [the development cycle](docs/guide/cycle.md) · [install](docs/guide/install.md) · [auth](docs/guide/auth.md) · [operations](docs/guide/operations.md) · [the ledger](docs/guide/ledger.md) · [events](docs/events.md)
+- Guide: [overview](docs/guide/overview.md) · [concepts](docs/guide/concepts.md) · [scheduled reviews](docs/guide/scheduled-reviews.md) · [the development cycle](docs/guide/cycle.md) · [install](docs/guide/install.md) · [auth](docs/guide/auth.md) · [operations](docs/guide/operations.md) · [the ledger](docs/guide/ledger.md) · [events](docs/events.md)
 - How it works, in pictures: [docs/explainer/how-mesh-harness-works.html](docs/explainer/how-mesh-harness-works.html)
 - The SDD kit: [assets/sdd/README.md](assets/sdd/README.md)
 - Design history (optional reading): [docs/analysis/](docs/analysis/README.md) · [implementation plan](docs/plan/implementation-plan.md) · [Claude Code spike results](docs/spikes/README.md)
@@ -82,6 +82,17 @@ docker build -t mesh-hub .                               # the hub image; deploy
 ```
 
 Probes: `GET /healthz` (liveness) and `GET /readyz` (database reachable and migrated). See [operations](docs/guide/operations.md).
+
+## Scheduled agent reviews (0.1.15 and later)
+
+A machine of yours runs agents unattended, on a schedule, and the hub keeps track of what they find:
+
+- **Headless steps**: `claude -p` with one of your repo's agents, a pinned permission profile (`read-only`, `read-only+checks`, `propose-via-branch`) and a budget, in a throwaway worktree, without the repo's project settings or hooks.
+- **Review records and relays**: an auditor records findings; the hub compares them with the last run (new, repeat, regression, resolved); a validator confirms or dismisses, you decide in a **debrief** (`mesh debrief <step>`), a filer files. The built-in `audit-relay` preset, or your own in `.mesh/presets`.
+- **Pulses**: `mesh pulse add --preset audit-relay --repo demo --params agent=auditor,validator=validator,filer=filer --every 7d`; every slot is recorded (fired, skipped, missed, abandoned) with a reason.
+- **Roster, calibration, stats**: `mesh agents` lists every agent of every repo; `mesh agent add` installs shared ones by pinned reference; dismissals count against the agent that raised the finding and open a calibration goal past a threshold.
+
+Walkthrough: [docs/guide/scheduled-reviews.md](docs/guide/scheduled-reviews.md).
 
 ## Development
 

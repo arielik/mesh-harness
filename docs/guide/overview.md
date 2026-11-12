@@ -4,6 +4,7 @@ mesh gives a person and a team **one place to see and steer every Claude Code se
 
 - **For you:** one list of all your sessions, ordered by what needs you. Jump to one, send it a message, or let autopilot nudge a stalled one.
 - **For the team:** a shared backlog of goals. A design session proposes a plan of steps, a person approves it, and people (or their agents) take steps in parallel or continue each other's work.
+- **For recurring agent work:** a schedule on the hub (a *pulse*) runs your agents headless on a machine of yours, for example a weekly audit; later agents (or you, in a *debrief*) confirm, dismiss and file what it found, and the hub tracks each finding from run to run and how often each agent is dismissed. See [scheduled reviews](scheduled-reviews.md).
 - **For analysis:** every step, plan and goal leaves a generated record in the repo (`mesh.ledger.v1`). Workflow programmes are captured per subagent. `mesh ledger export` turns all of it into JSONL for any analysis tool (for example mesh-ai, or `jq`), to answer questions like "does this model need more fix cycles since the last harness change?".
 
 ## The pieces
@@ -28,4 +29,8 @@ mesh gives a person and a team **one place to see and steer every Claude Code se
 - **Team:** `mesh login --hub <url>`. Shared goals, claims across people, the web dashboard. If the hub is unreachable, the steps you hold keep working and everything syncs once when it is back.
 - **Without mesh:** your process runs as before. mesh is never needed to get work done.
 
-Next: [how-to with examples](howto.md) · [concepts](concepts.md) · [install](install.md) · [auth](auth.md) · [operations](operations.md) · [the ledger](ledger.md) · [events](../events.md)
+## Scheduled reviews
+
+From 0.1.15 a machine can run a step on its own (`claude -p` with one of your agents, a pinned permission profile and a budget, in a throwaway worktree). A **pulse** creates a goal from a **relay preset** on a schedule; its stages raise findings in a structured **review record**, validate them, let you decide them in a **debrief**, and file them. The hub compares each run with the last (new, repeat, regression, resolved), keeps dismissals, counts them per agent and opens a **calibration** goal when an agent is dismissed too often. The **roster** lists every agent of every repo and lets repos install shared agents by pinned reference. Walkthrough: [scheduled reviews](scheduled-reviews.md).
+
+Next: [how-to with examples](howto.md) · [scheduled reviews](scheduled-reviews.md) · [concepts](concepts.md) · [install](install.md) · [auth](auth.md) · [operations](operations.md) · [the ledger](ledger.md) · [events](../events.md)

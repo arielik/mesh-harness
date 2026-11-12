@@ -92,6 +92,52 @@ On SQLite: stop the hub, install the new version, start it. Migrations run at st
 
 On Postgres: roll the replicas one at a time. A release only adds to the schema (new tables, nullable columns) and removes things one release later, so old and new replicas run side by side during the rollout: once the first new replica migrates, the old ones stay ready on the newer schema.
 
+A hub never opens a database migrated by a newer one: it stops with `database … has schema version <n>, newer than this mesh (<m>)`. Going back to an older hub means restoring the backup taken before the upgrade.
+
+## Upgrading to 0.1.22
+
+0.1.15 to 0.1.22 add headless steps, review records, pulses, debriefs, the roster and calibration ([scheduled reviews](scheduled-reviews.md)). From 0.1.14 or earlier, in this order:
+
+1. **Back up the hub** (`mesh hub backup …` on SQLite, `pg_dump` on Postgres).
+2. **Upgrade the hub first**, every replica. At start it migrates the schema from 7 (0.1.10 to 0.1.14) to 11, the current `SCHEMA_VERSION`:
+
+   | Schema | Release | Adds |
+   |---|---|---|
+   | 8 | 0.1.15 | hub-stored artifacts, registered permission profiles |
+   | 9 | 0.1.16 | review records, items and their history |
+   | 10 | 0.1.17 | pulses and their slots |
+   | 11 | 0.1.19 | the roster (agent definitions, catalog sources) |
+
+   0.1.18 and 0.1.20 to 0.1.22 add no migration. `GET /readyz` answers `{"ok":true,"schema":11}` once it is done. On Postgres, finish the rollout before you create pulses. Optional new blocks in `mesh-hub.yaml`: `artifacts` (size limits, retention) and `calibration` (`threshold`), see [install](install.md#headless-runs).
+3. **Then the daemons and CLIs**, on every machine: run the installer again (for an existing setup it runs `mesh setup` and restarts a systemd user service), or install and run **`mesh setup`** yourself, then restart the daemon. `mesh setup` refreshes the hooks, the MCP server and the mesh skill, and installs the `mesh-debrief` skill that `mesh debrief` needs. `mesh doctor` checks both skills.
+4. On machines that should run scheduled work, set up the runner fields ([Runner machines](#runner-machines)).
+
+Why the hub first: a newer CLI sends what an older hub refuses. A 0.1.21 or later CLI sends preset snapshots with `params:` and `{turns}`-style budget placeholders (`mesh pulse add --preset audit-relay`), which a 0.1.20 hub answers with 422; hubs before 0.1.18 refuse `mode: debrief`, and older ones drop the new step fields.
+
+**Older daemons against a 0.1.22 hub.** They keep working for interactive sessions and steps. For the new features:
+
+| Daemon | What happens |
+|---|---|
+| 0.1.14 and earlier | It never tells the hub it can run headless steps, so it is never offered one and is never a pulse's candidate (with no other machine the slot is `missed` with `no_machine`). Its sessions have none of the new MCP tools, so they cannot finish a step with `output: review-record` or run a debrief. Its repos' agents are not on the roster. |
+| 0.1.15 | Runs headless steps, but has no `mesh_review`: a review stage cannot finish. |
+| 0.1.15 to 0.1.20 | A run binds to its step only through the user's hooks; without them (or with hooks of another daemon) every mesh call of the run fails and the step ends `headless run ended without mesh_done`. The run inherits the daemon's `TMUX`/`TMUX_PANE`. An agent with invalid front matter runs anyway, with the default model, all tools and no declared rules. |
+| before 0.1.18 | No `mesh_dispose`: debriefs cannot record decisions. |
+| before 0.1.19 | Sends no roster reports and cannot run a step whose `agent` is a roster key. |
+| 0.1.21 | A run can be started twice; the step then fails with `could not make a worktree: Preparing worktree …`. A run that never started leaves a transcript and a session shown `working` long after. A 0.1.22 daemon ends such leftover sessions at start. |
+
+Upgrade every runner to 0.1.22 before you schedule work on it.
+
+## Runner machines
+
+A runner is any machine whose daemon runs headless steps: it needs `workspaceRoots` with checkouts of the repos (each with a git remote), `shareSessions` `me` or `all`, an `accept` policy that takes the pulse owners' offers, and a Claude Code login. Setup step by step: [scheduled reviews](scheduled-reviews.md#set-up-a-runner-machine). To keep one healthy:
+
+- **Keep its checkouts current.** A run works on a worktree of the checkout's `HEAD`, and a repo agent is read from it. mesh never fetches or pulls; do it yourself (a `git pull --ff-only` in each checkout from cron or a timer), and keep local changes out of runner checkouts.
+- **Run the daemon as a service** (`mesh up --install`) so runs and pulses survive logouts and reboots. A restarted daemon adopts runs that are still alive and closes those that ended meanwhile. A machine that sleeps through a pulse's window misses the slot.
+- **Disk.** Every run leaves a folder in `<stateDir>/runs/` (Linux: `~/.local/state/mesh/runs/`) with its stream log; mesh never deletes them. Remove old ones by hand or from a timer. The worktree inside is removed when the run ends.
+- **Capacity.** `maxSessions` caps runs and sessions together; queued runs start oldest first and are released at their deadline (note `capacity: no free session on <host> before the run deadline`).
+- **Permissions.** Runs load your user settings: keep `permissions.allow` in `~/.claude/settings.json` small on a runner, since it adds to every profile. `MESH_CLAUDE_BIN` in the service's environment selects the `claude` executable.
+- **Logs.** The daemon log has one line per run start and finish (`run <id>: started <step> (pid …)`, `finished (<exit>)`, `… did not start: <reason>`).
+
 ## Retention
 
 `events_retention_days` (default 180; 0 keeps events forever). The hub deletes older events every few hours and logs a `hub.events_pruned` event. Exact timings older than that are gone; the summaries in git stay.

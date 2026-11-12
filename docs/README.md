@@ -12,6 +12,7 @@ Everything is in this repository. You need Claude Code on a subscription login, 
 | try it hands-on, from install to a first goal | [Your first hour](guide/first-run.md) |
 | install it and get going in Solo mode | [Install](guide/install.md) |
 | do something specific, with examples | [How-to](guide/howto.md) |
+| run agents on a schedule and review what they find (pulses, relays, debriefs, roster, calibration) | [Scheduled reviews](guide/scheduled-reviews.md) |
 | learn the words (goal, step, round, segment, gate, blind, programme…) | [Concepts](guide/concepts.md) |
 | run a spec-driven development cycle | [The development cycle](guide/cycle.md) and [the SDD kit](../assets/sdd/README.md) |
 | set up sign-in for a team (none, tokens, OIDC) | [Auth](guide/auth.md) |

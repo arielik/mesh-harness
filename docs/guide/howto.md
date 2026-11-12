@@ -217,7 +217,9 @@ target answers 404 until that session holds a step; offer to the machine alone i
 
 ### Run a step headless
 
-A step a machine runs on its own, with no person watching (an audit, a triage). In the plan:
+A step a machine runs on its own, with no person watching (an audit, a triage). For the whole path,
+from setting up a runner machine to a scheduled, validated and filed audit, see
+[scheduled reviews](scheduled-reviews.md). In the plan:
 
 ```yaml
 # plan.yaml — mesh goal plan G9 --file plan.yaml
@@ -337,7 +339,8 @@ and resolved ones that come back are `regression`.
 ### Debrief an agent's findings
 
 Add a debrief stage after the audit: you (the goal owner, by default) decide each finding in a
-session that goes through them with you one at a time.
+session that goes through them with you one at a time. A relay preset with validation, a debrief
+and filing is in [scheduled reviews](scheduled-reviews.md#your-own-relay-in-meshpresets).
 
 ```yaml
 # plan.yaml — mesh goal plan G13 --file plan.yaml
@@ -364,12 +367,15 @@ steps:
     repo: alpha
     kind: review
     title: File the accepted findings
-    brief: Propose an entry for each accepted finding.
+    brief: Propose an entry for each accepted finding, then record each one accepted with its link.
     deps: [debrief]
     mode: headless
     agent: filer
+    profile: propose-via-branch
     output: review-record
     consumes: [accepted]
+    may_set: [accepted]       # needed to record the link of each filed item
+    inputs: [dispositions]
     when: { open: true }
 ```
 
@@ -447,7 +453,8 @@ do not change what the step runs.
 
 ### Run an agent audit on a schedule
 
-A pulse runs a preset on a schedule: the hub creates a goal with an approved plan at each slot and
+A walkthrough with a working set of agents, a repo relay preset and troubleshooting is in
+[scheduled reviews](scheduled-reviews.md). A pulse runs a preset on a schedule: the hub creates a goal with an approved plan at each slot and
 offers its first step to a machine that takes it now. The machine that should run it needs:
 
 - the repo, and headless runs set up (see *Run a step headless*);
@@ -490,7 +497,7 @@ mesh pulse fire p-1
 mesh pulse show p-1
 #   p-1 "audit-relay on alpha"  @alice  active
 #   schedule: every 7d, next 2026-11-19T10:00:00.000Z
-#   preset: audit-relay 999b7a4eb79b, params agent=auditor,filer=filer,repo=alpha,validator=checker
+#   preset: audit-relay 999b7a4eb79b, params agent=auditor,validator=checker,filer=filer,repo=alpha
 #   target: labels runner
 #   slots:
 #     manual:01JCX…              fired  G12  tried m-7f3a
@@ -801,3 +808,4 @@ For OIDC (Kanidm, Keycloak, GitLab, Google…), the roles (approver, admin), ret
 | A step shows "parked" | Read the reason (`mesh show`, or the step in the web), fix the cause, then `mesh step resume`. |
 | "hub login expired" | `mesh login` again. Nothing was lost; work was kept locally. |
 | After upgrading Claude Code | `pnpm test:claude` checks everything mesh relies on. |
+| A headless run, pulse or debrief does not do what you expect | See [scheduled reviews: troubleshooting](scheduled-reviews.md#troubleshooting). |

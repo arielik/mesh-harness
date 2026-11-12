@@ -129,7 +129,10 @@ sync.
   elsewhere.
 - **Runs directory**: `<stateDir>/runs/` (Linux: `~/.local/state/mesh/runs/`), one folder per run
   with its run file and logs. mesh never deletes them; remove old ones by hand.
-- A run counts toward `maxSessions`; at the cap it is queued.
+- A run counts toward `maxSessions` whatever `assignments` says (`deliver` and `launch` both run
+  headless offers, `off` declines them); at the cap it is queued. Your own open sessions on the
+  machine count too.
+- Setting up a machine for scheduled reviews, step by step: [scheduled reviews](scheduled-reviews.md#set-up-a-runner-machine).
 
 On the hub, `artifacts` in `mesh-hub.yaml` sets the limits of hub-stored artifacts:
 
