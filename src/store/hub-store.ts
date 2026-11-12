@@ -49,6 +49,8 @@ export const HUB_MIGRATIONS: readonly string[] = [
   `ALTER TABLE token ADD COLUMN scopes TEXT;`,
   // v0.1.8: topics, the labels people define for goals (a goal's own topics live in its value).
   `CREATE TABLE topic (name TEXT PRIMARY KEY, value TEXT NOT NULL, created_at INTEGER NOT NULL);`,
+  // v0.1.9: 0 once the machine's sync stops listing the session (kept to route messages, not shown).
+  `ALTER TABLE hsession ADD COLUMN listed INTEGER NOT NULL DEFAULT 1;`,
 ];
 
 /**
@@ -97,6 +99,7 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
   `ALTER TABLE machine ADD COLUMN install_id TEXT;`,
   `ALTER TABLE token ADD COLUMN scopes TEXT;`,
   `CREATE TABLE topic (name TEXT PRIMARY KEY, value TEXT NOT NULL, created_at BIGINT NOT NULL);`,
+  `ALTER TABLE hsession ADD COLUMN listed INTEGER NOT NULL DEFAULT 1;`,
 ];
 
 export type TokenKind = "device" | "web" | "service";
@@ -429,7 +432,7 @@ export class HubStore {
 
   async upsertSession(s: Session, userId: string, machineId: string, now: number): Promise<void> {
     await this.db.run(
-      "INSERT INTO hsession (sid, user_id, machine_id, value, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(sid) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, machine_id = excluded.machine_id",
+      "INSERT INTO hsession (sid, user_id, machine_id, value, updated_at, listed) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(sid) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, machine_id = excluded.machine_id, listed = 1",
       s.sid,
       userId,
       machineId,
@@ -443,8 +446,16 @@ export class HubStore {
     return r ? { session: Session.parse(JSON.parse(r.value)), userId: r.user_id, machineId: r.machine_id, updatedAt: r.updated_at } : undefined;
   }
 
+  /** Hide a machine's sessions its latest sync didn't list; their rows stay for `getSession`. */
+  async unlistSessions(machineId: string, listed: readonly string[]): Promise<void> {
+    const keep = new Set(listed);
+    const rows = await this.db.all<{ sid: string }>("SELECT sid FROM hsession WHERE machine_id = ? AND listed = 1", machineId);
+    for (const r of rows) if (!keep.has(r.sid)) await this.db.run("UPDATE hsession SET listed = 0 WHERE sid = ?", r.sid);
+  }
+
+  /** Sessions as their machines last listed them (hidden ones excluded). */
   async listSessions(): Promise<HubSession[]> {
-    return (await this.db.all<{ value: string; user_id: string; machine_id: string; updated_at: number }>("SELECT * FROM hsession ORDER BY updated_at DESC")).flatMap((r) => {
+    return (await this.db.all<{ value: string; user_id: string; machine_id: string; updated_at: number }>("SELECT * FROM hsession WHERE listed = 1 ORDER BY updated_at DESC")).flatMap((r) => {
       const p = Session.safeParse(JSON.parse(r.value));
       return p.success ? [{ session: p.data, userId: r.user_id, machineId: r.machine_id, updatedAt: r.updated_at }] : [];
     });

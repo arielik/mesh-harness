@@ -81,7 +81,7 @@ mesh setup --share-sessions all     # and restart the daemon
 mesh setup --share-sessions steps   # back to the default
 ```
 
-With `all`, a session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, the hub keeps the records it already has for those sessions but gets no further updates for them.
+With `all`, a session without a step is reported as metadata only: its state and what it is waiting for, repo name, session name, agent, autopilot level, turn counts and timestamps. Its folder, tmux pane, process, transcript and message text stay local. If you switch back to `steps`, those sessions leave the Live page and `GET /v1/live` at the daemon's next sync. The same happens when a session finishes or releases its step. The hub keeps its last record of the session, without showing it, so it can still deliver messages to it (hub v0.1.9 and later; older hubs keep showing the last record).
 
 ## Hooks
 

@@ -1088,6 +1088,10 @@ export class HubService {
         if (existing && existing.userId !== actor.userId) continue; // never overwrite another user's session
         await this.store.upsertSession(s, actor.userId, machine, now);
       }
+      // A sync lists all the sessions the machine shares, so one it no longer lists (it dropped its
+      // step, or the machine went back to sharing step holders only) leaves the live view. The row
+      // stays: messages to a former holder and the time rules still read it.
+      await this.store.unlistSessions(machine, req.sessions.map((s) => s.sid));
       await this.store.touchMachine(machine, now, req.counts);
       return { accepted };
     });

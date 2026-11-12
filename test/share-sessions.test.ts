@@ -43,4 +43,34 @@ describe("sharing sessions without a step", () => {
     expect(r.status).toBe(200);
     expect(sessionsOf(await r.json(), "alice").map((s: Json) => s.sid)).toEqual([w.session(alice, 101).sid]);
   });
+
+  it("drops shared rows once the machine stops sharing them", async () => {
+    w.hook(alice, "SessionStart", 101);
+    await w.turn(alice, 101);
+    await w.flush();
+    expect(sessionsOf((await w.api(alice, "GET", "/v1/live")).json, "alice")).toHaveLength(1);
+
+    (alice.daemon.config as { shareSessions: string }).shareSessions = "steps";
+    await w.flush();
+    expect(sessionsOf((await w.api(alice, "GET", "/v1/live")).json, "alice")).toEqual([]);
+  });
+
+  it("hides unlisted sessions from the live view but keeps their rows for routing", async () => {
+    const g = await w.api(alice, "POST", "/v1/goals", { title: "x" });
+    w.hook(alice, "SessionStart", 101);
+    w.hook(alice, "SessionStart", 102);
+    await w.tool(alice, 102, "mesh_claim", { step: `${g.json.id}.design` });
+    await w.flush();
+    expect(sessionsOf((await w.api(alice, "GET", "/v1/live")).json, "alice")).toHaveLength(2);
+
+    // A sync that lists only the step holder: the other session leaves the view.
+    const holder = w.session(alice, 102);
+    expect((await w.api(alice, "POST", "/v1/sync", { sessions: [holder] })).status).toBe(200);
+    expect(sessionsOf((await w.api(alice, "GET", "/v1/live")).json, "alice").map((s: Json) => s.sid)).toEqual([holder.sid]);
+    expect(await w.hub.svc.store.getSession(w.session(alice, 101).sid)).toBeDefined();
+
+    // Listed again: back in the view.
+    await w.flush();
+    expect(sessionsOf((await w.api(alice, "GET", "/v1/live")).json, "alice")).toHaveLength(2);
+  });
 });

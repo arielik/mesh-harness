@@ -243,6 +243,12 @@ function contract(d: Driver) {
       await s.upsertSession({ ...session("s1"), turns: 3 }, "ada", "m2", T0 + 1);
       expect(await s.getSession("s1")).toMatchObject({ userId: "ada", machineId: "m2", updatedAt: T0 + 1, session: { turns: 3 } });
       expect((await s.listSessions()).map((x) => x.session.sid)).toEqual(["s1"]);
+      await s.upsertSession(session("s2"), "ada", "m2", T0 + 2);
+      await s.unlistSessions("m2", ["s2"]);
+      expect((await s.listSessions()).map((x) => x.session.sid)).toEqual(["s2"]);
+      expect(await s.getSession("s1")).toBeDefined();
+      await s.upsertSession(session("s1"), "ada", "m2", T0 + 3);
+      expect((await s.listSessions()).map((x) => x.session.sid)).toEqual(["s1", "s2"]);
     });
 
     it("defines, lists and deletes topics; a name is defined once", async () => {
