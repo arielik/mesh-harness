@@ -25,7 +25,7 @@ import {
 import { findSession, needsLabel, sessionLabel } from "../core/index.ts";
 import { installPlugin, opencodeSupported, opencodeVersion, pluginStatus, uninstallPlugin, type PluginOptions } from "../opencode/index.ts";
 import { bindReturnKey, hasSession, newSession, newWindow, paneSocket, serverFromEnv, type TmuxServer } from "../mux/index.ts";
-import { HOOK_KINDS, HOOKS_VERSION, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, parseAccept, parseLabels, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type MessageResult, type Session, type Step } from "../protocol/index.ts";
+import { HOOK_KINDS, HOOKS_VERSION, MESH_DEBRIEF_SKILL, MESH_SKILL, MIN_OPENCODE_VERSION, OPENCODE_PLUGIN_VERSION, parseAccept, parseLabels, ShareLevel, type DaemonConfig, type NotifyMode, type GoalDetail, type MessageResult, type Session, type Step } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, newConfig, parseArgs, saveConfig, type CliEnv } from "./context.ts";
@@ -34,6 +34,7 @@ export type { CliEnv } from "./context.ts";
 import { HubClient, loadCredentials } from "./hub-client.ts";
 import { hubCommands } from "./hub-commands.ts";
 import { offerCommands } from "./offer-commands.ts";
+import { debriefCommand } from "./review-commands.ts";
 import { pulseCommand } from "./pulse-commands.ts";
 import { assetsCommand } from "./assets.ts";
 import { ledgerCommand } from "./ledger.ts";
@@ -136,12 +137,14 @@ export function setupCommand(c: CliEnv): Command {
         const r = uninstallSettingsFile(c.paths.claudeSettings);
         const md = uninstallClaudeMd(c.paths.claudeMd);
         const skill = uninstallSkill(c.paths.claudeSkill);
+        const debriefSkill = uninstallSkill(c.paths.claudeDebriefSkill);
         const mcp = await uninstallMcp(runner);
         c.io.out(
           [
             r.changed ? `Removed mesh hooks from ${c.paths.claudeSettings}.` : "No mesh hooks were installed.",
             md.changed ? `Removed the mesh block from ${c.paths.claudeMd}.` : "",
             skill.changed ? `Removed the mesh skill ${c.paths.claudeSkill}.` : "",
+            debriefSkill.changed ? `Removed the mesh-debrief skill ${c.paths.claudeDebriefSkill}.` : "",
             mcp ? "Removed the mesh MCP server." : "",
             ...lines,
           ]
@@ -219,6 +222,7 @@ export function setupCommand(c: CliEnv): Command {
       // The skill replaces the CLAUDE.md block older versions wrote: remove that block if present.
       const legacy = uninstallClaudeMd(c.paths.claudeMd);
       const skill = a.has("no-mcp") ? undefined : installSkill(c.paths.claudeSkill);
+      const debriefSkill = a.has("no-mcp") ? undefined : installSkill(c.paths.claudeDebriefSkill, MESH_DEBRIEF_SKILL);
       c.io.out(
         [
           `Config: ${c.paths.daemonConfig} (daemon port ${config.port})`,
@@ -231,6 +235,11 @@ export function setupCommand(c: CliEnv): Command {
             ? `Left ${c.paths.claudeSkill} alone: mesh did not write it. Move it away and run mesh setup again to get the mesh skill.`
             : skill
               ? `${skill.changed ? "Installed" : "Kept"} the mesh skill ${c.paths.claudeSkill}.`
+              : "",
+          debriefSkill?.foreign
+            ? `Left ${c.paths.claudeDebriefSkill} alone: mesh did not write it.`
+            : debriefSkill
+              ? `${debriefSkill.changed ? "Installed" : "Kept"} the mesh-debrief skill ${c.paths.claudeDebriefSkill}.`
               : "",
           legacy.changed ? `Removed the old mesh block from ${c.paths.claudeMd} (the skill replaces it).` : "",
           r.changed ? "Sessions that are already open keep their old hooks until you restart them." : "",
@@ -251,9 +260,9 @@ export function setupCommand(c: CliEnv): Command {
 export function skillCommand(c: CliEnv): Command {
   return {
     name: "skill",
-    summary: "print the mesh skill for Claude Code (mesh setup installs it)",
-    async run() {
-      c.io.out(MESH_SKILL.trimEnd());
+    summary: "print the mesh skill for Claude Code (mesh setup installs it); --debrief prints the mesh-debrief skill",
+    async run(args) {
+      c.io.out((args.includes("--debrief") ? MESH_DEBRIEF_SKILL : MESH_SKILL).trimEnd());
       return 0;
     },
   };
@@ -308,6 +317,9 @@ export function doctorCommand(c: CliEnv): Command {
           if (sk === "current") ok(`mesh skill ${c.paths.claudeSkill}`);
           else if (sk === "foreign") warn(`${c.paths.claudeSkill} was not written by mesh; agents get mesh's own instructions only from the MCP server`);
           else warn(`mesh skill ${sk === "missing" ? "not installed" : "out of date"}; run: mesh setup`);
+          const dsk = skillStatus(c.paths.claudeDebriefSkill, MESH_DEBRIEF_SKILL);
+          if (dsk === "current") ok(`mesh-debrief skill ${c.paths.claudeDebriefSkill}`);
+          else warn(`mesh-debrief skill ${dsk === "missing" ? "not installed" : "out of date"}; run: mesh setup`);
           if (claudeMdInstalled(c.paths.claudeMd)) warn(`old mesh block in ${c.paths.claudeMd} (the skill replaces it); run: mesh setup`);
         }
         // OpenCode: checked when mesh's plugin is there, or OpenCode is installed.
@@ -726,5 +738,6 @@ export function meshCommands(c: CliEnv): Command[] {
     ...hubCommands(c),
     pulseCommand(c),
     ...offerCommands(c, (args) => runCommand(c).run(args)),
+    debriefCommand(c, (args) => runCommand(c).run(args)),
   ];
 }

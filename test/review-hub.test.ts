@@ -179,8 +179,8 @@ describe("AC-09 review route", () => {
     expect(es).toHaveLength(1);
     const e = es[0];
     expect(e).toMatchObject({ user: "ann", goal: G, step: `${G}.audit` });
-    expect(Object.keys(e.payload).sort()).toStrictEqual(["artifact", "assessment", "coverage", "dispositions", "fold", "ignored", "items", "lineage", "round", "undeclaredRules"]);
-    expect(e.payload).toStrictEqual({ round: 1, lineage: L, coverage: "complete", assessment: "issues", items: 2, artifact: res.review.artifact, fold: { new: 2, repeat: 0, regression: 0, resolved: 0, carried: 0 }, dispositions: 0, ignored: 0, undeclaredRules: 0 });
+    expect(Object.keys(e.payload).sort()).toStrictEqual(["already", "artifact", "assessment", "coverage", "dispositions", "fold", "ignored", "items", "lineage", "round", "undeclaredRules"]);
+    expect(e.payload).toStrictEqual({ round: 1, lineage: L, coverage: "complete", assessment: "issues", items: 2, artifact: res.review.artifact, fold: { new: 2, repeat: 0, regression: 0, resolved: 0, carried: 0 }, dispositions: 0, ignored: 0, undeclaredRules: 0, already: 0 });
   });
 
   it("test_AC09_event_consuming_no_fold", async () => {

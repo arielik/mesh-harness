@@ -768,9 +768,15 @@ export class HubStore {
     return r ? Step.parse(JSON.parse(r.value)) : undefined;
   }
 
-  async listSteps(filter: { goal?: string | undefined; state?: string | undefined; holderUser?: string | undefined } = {}): Promise<Step[]> {
+  async listSteps(
+    filter: { goal?: string | undefined; state?: string | undefined; holderUser?: string | undefined; /** RL-4 */ updatedSince?: number | undefined } = {},
+  ): Promise<Step[]> {
     const where: string[] = [];
-    const args: string[] = [];
+    const args: SqlValue[] = [];
+    if (filter.updatedSince !== undefined) {
+      where.push("updated_at >= ?");
+      args.push(filter.updatedSince);
+    }
     if (filter.goal) {
       where.push(this.db.dialect.eqNoCase("goal"));
       args.push(filter.goal);
@@ -958,7 +964,17 @@ export class HubStore {
   }
 
   /** The disposition entries of the item history, in insertion order. */
-  async listDispositions(f: { step?: string | undefined; lineage?: string | undefined; fp?: string | undefined; goal?: string | undefined }): Promise<DispositionRow[]> {
+  async listDispositions(f: {
+    step?: string | undefined;
+    lineage?: string | undefined;
+    fp?: string | undefined;
+    goal?: string | undefined;
+    /** RL-4: only entries of these steps (`[]` → none). */
+    steps?: readonly string[] | undefined;
+    /** RL-4: only entries with `at ≥ since`. */
+    since?: number | undefined;
+  }): Promise<DispositionRow[]> {
+    if (f.steps && !f.steps.length) return [];
     const where: string[] = [];
     const args: SqlValue[] = [];
     for (const k of ["step", "lineage", "fp"] as const) {
@@ -968,11 +984,16 @@ export class HubStore {
         args.push(v);
       }
     }
+    if (f.steps) {
+      where.push(`step IN (${f.steps.map(() => "?").join(", ")})`);
+      args.push(...f.steps);
+    }
     const sql = `SELECT lineage, fp, value FROM item_history ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY seq`;
     const out: DispositionRow[] = [];
     for (const r of await this.db.all<{ lineage: string; fp: string; value: string }>(sql, ...args)) {
       const e = ItemHistoryEntry.parse(JSON.parse(r.value));
       if (e.kind !== "disposition" || (f.goal !== undefined && e.goal !== f.goal)) continue;
+      if (f.since !== undefined && e.at < f.since) continue;
       out.push(
         DispositionRow.parse({
           lineage: r.lineage,
@@ -985,6 +1006,7 @@ export class HubStore {
           reason: e.reason,
           decider: e.decider,
           via: e.via,
+          ...(e.answer !== undefined ? { answer: e.answer } : {}),
           ...(e.link !== undefined ? { link: e.link } : {}),
           ...(e.until !== undefined ? { until: e.until } : {}),
           at: e.at,

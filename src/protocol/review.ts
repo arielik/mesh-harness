@@ -119,6 +119,10 @@ export const StoredReview = z.object({
 });
 export type StoredReview = z.infer<typeof StoredReview>;
 
+/** RL-4: how a disposition was recorded: in a stage's review record, or one at a time in a debrief. */
+export const DispositionVia = z.enum(["stage", "debrief-session"]);
+export type DispositionVia = z.infer<typeof DispositionVia>;
+
 const HistoryBase = z.object({
   at: z.number(),
   goal: z.string(),
@@ -133,11 +137,21 @@ const DispositionEntry = z.object({
   disposition: Disposition,
   reason: z.string(),
   decider: Decider,
-  via: z.literal("stage"),
+  via: DispositionVia,
+  /** RL-4: the person's own words (debrief dispositions recorded with mesh_dispose). */
+  answer: z.string().optional(),
   link: z.string().optional(),
   until: z.string().optional(),
 });
-export const ItemHistoryEntry = HistoryBase.and(z.discriminatedUnion("kind", [FoldEntry, DispositionEntry]));
+/** RL-4: a debrief disposition undone from the UI (`from` = the reverted state, `to` = the restored one). */
+const RevertEntry = z.object({
+  kind: z.literal("revert"),
+  disposition: Disposition,
+  decider: z.object({ kind: z.literal("person"), user: z.string() }),
+  via: z.literal("ui"),
+  reason: z.string().optional(),
+});
+export const ItemHistoryEntry = HistoryBase.and(z.discriminatedUnion("kind", [FoldEntry, DispositionEntry, RevertEntry]));
 export type ItemHistoryEntry = z.infer<typeof ItemHistoryEntry>;
 
 export const DispositionRow = z.object({
@@ -150,7 +164,8 @@ export const DispositionRow = z.object({
   from: ItemState,
   reason: z.string(),
   decider: Decider,
-  via: z.literal("stage"),
+  via: DispositionVia,
+  answer: z.string().optional(),
   link: z.string().optional(),
   until: z.string().optional(),
   at: z.number(),

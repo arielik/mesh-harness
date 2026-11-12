@@ -2565,7 +2565,8 @@
                           "type": "string",
                           "enum": [
                             "interactive",
-                            "headless"
+                            "headless",
+                            "debrief"
                           ]
                         },
                         "agent": {
@@ -2670,6 +2671,18 @@
                               "accepted"
                             ]
                           }
+                        },
+                        "assignee": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "@owner"
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^[^@\\s]\\S{0,99}$"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -5479,6 +5492,304 @@
           },
           "403": {
             "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/read": {
+      "post": {
+        "operationId": "postVStepsIdRead",
+        "summary": "Mark the pre-read of a debrief step as read (its assignee only).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/debrief": {
+      "get": {
+        "operationId": "getVStepsIdDebrief",
+        "summary": "A debrief step's pre-read: the run's report, the items to decide (with evidence locations and near-matches) and the decisions made.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/debriefs": {
+      "get": {
+        "operationId": "getVDebriefs",
+        "summary": "The caller's debriefs and their revertable debrief decisions of the last 7 days.",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/dispositions": {
+      "post": {
+        "operationId": "postVStepsIdDispositions",
+        "summary": "Record one decision of the person in a held debrief step (mesh_dispose).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "fingerprint": {
+                    "type": "string",
+                    "pattern": "^[a-z2-7]{16}$"
+                  },
+                  "disposition": {
+                    "type": "string",
+                    "enum": [
+                      "confirmed",
+                      "dismissed",
+                      "deferred",
+                      "accepted"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "answer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "until": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                  },
+                  "link": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "sid": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "fingerprint",
+                  "disposition",
+                  "reason",
+                  "answer"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/dispositions/revert": {
+      "post": {
+        "operationId": "postVStepsIdDispositionsRevert",
+        "summary": "Revert a debrief decision while it is the item's latest change (the decider, the goal owner or an admin).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "fingerprint": {
+                    "type": "string",
+                    "pattern": "^[a-z2-7]{16}$"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "fingerprint"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
           }
         }
       }

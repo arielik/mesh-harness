@@ -268,6 +268,8 @@ export const Round = z.object({
   telemetry: RunTelemetry.optional(),
   /** RL-2: the fold of the round's review record (raising steps only). Separate from `findings`. */
   fold: Fold.optional(),
+  /** RL-4: the pre-read of a debrief step in this round (copied from `Step.read` at done). */
+  read: z.object({ user: z.string(), at: z.number() }).optional(),
 });
 export type Round = z.infer<typeof Round>;
 
@@ -302,6 +304,8 @@ export const Step = z.object({
   parkedAt: z.number().optional(),
   /** MM-3: the step's last offer (kept after it ends; a new offer replaces it). */
   offer: StepOffer.optional(),
+  /** RL-4: the last pre-read of a debrief step (`POST /v1/steps/:id/read`). */
+  read: z.object({ user: z.string(), at: z.number(), round: z.number().int().min(1) }).optional(),
   updatedAt: z.number(),
 });
 export type Step = z.infer<typeof Step>;
@@ -343,8 +347,11 @@ export const StepPolicy = z.object({
   reworks: z.string().max(100).optional(),
   /** For gate steps: the gate's name (R1, R2, R3). */
   gate: z.string().max(20).optional(),
-  /** RL-1: `headless` = a machine runs the step unattended (`claude -p`). */
-  mode: z.enum(["interactive", "headless"]).optional(),
+  /**
+   * RL-1: `headless` = a machine runs the step unattended (`claude -p`). RL-4: `debrief` = only its
+   * assignee runs it, in an interactive session that records the person's decisions one at a time.
+   */
+  mode: z.enum(["interactive", "headless", "debrief"]).optional(),
   /** RL-1: an agent name in the step repo's `.claude/agents/`. */
   agent: z
     .string()
@@ -367,6 +374,8 @@ export const StepPolicy = z.object({
   consumes: z.array(ItemState.exclude(["resolved"])).min(1).max(5).optional(),
   /** RL-2: the dispositions this step may record. */
   may_set: z.array(Disposition).min(1).max(4).optional(),
+  /** RL-4: who runs a debrief step: `@owner` (the goal's owner at the time of each check) or a user id. */
+  assignee: z.union([z.literal("@owner"), z.string().regex(/^[^@\s]\S{0,99}$/, "assignee is a user id or @owner")]).optional(),
 });
 export type StepPolicy = z.infer<typeof StepPolicy>;
 export const POLICY_KEYS = Object.keys(StepPolicy.shape) as (keyof StepPolicy)[];

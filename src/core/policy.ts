@@ -10,17 +10,37 @@ const full = (goal: string, id: string) => (id.includes(".") ? id : `${goal}.${i
 
 /** The policy fields of a plan step, without the undefined ones. */
 export function policyOf(p: PlanStep): StepPolicy | undefined {
-  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate", "mode", "agent", "profile", "budget", "inputs", "output", "when", "consumes", "may_set"] as const;
+  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate", "mode", "agent", "profile", "budget", "inputs", "output", "when", "consumes", "may_set", "assignee"] as const;
   const out: Record<string, unknown> = {};
   for (const k of keys) if (p[k] !== undefined) out[k] = p[k];
+  // RL-4: the debrief defaults.
+  if (out.mode === "debrief") {
+    out.consumes ??= [...DEBRIEF_CONSUMES];
+    out.assignee ??= "@owner";
+  }
   return Object.keys(out).length ? (out as StepPolicy) : undefined;
+}
+
+/** RL-4: the item states a debrief step acts on when its plan names none. */
+export const DEBRIEF_CONSUMES = ["open", "confirmed"] as const;
+
+/** RL-4: is this the policy of a debrief step? */
+export function isDebrief(p: StepPolicy | undefined): boolean {
+  return p?.mode === "debrief";
+}
+
+/** RL-4: who runs a debrief step: `@owner` (or no assignee) is the goal's owner at the time of the check. */
+export function debriefAssignee(policy: StepPolicy | undefined, ownerId: string): string {
+  return !policy?.assignee || policy.assignee === "@owner" ? ownerId : policy.assignee;
 }
 
 /** RL-1: words of `inputs` that are never step ids (the keyword wins over a step of that id). */
 export const INPUT_KEYWORDS: ReadonlySet<string> = new Set(["previous", "dispositions", "artifacts"]);
 
 /** Plan checks for the optional rules; phrased so an agent can fix them. */
-export function validatePolicies(steps: readonly PlanStep[], acs: readonly PlanAc[] | undefined): string[] {
+export function validatePolicies(planSteps: readonly PlanStep[], acs: readonly PlanAc[] | undefined): string[] {
+  // RL-4: a debrief without consumes is checked as the default it gets (never a raising step).
+  const steps = planSteps.map((s) => (s.mode === "debrief" && !s.consumes ? { ...s, consumes: [...DEBRIEF_CONSUMES] } : s));
   const errors: string[] = [];
   const ids = new Set(steps.map((s) => s.id));
   const byId = new Map(steps.map((s) => [s.id, s]));
@@ -31,6 +51,10 @@ export function validatePolicies(steps: readonly PlanStep[], acs: readonly PlanA
     seenAc.add(a.id);
   }
   for (const s of steps) {
+    if (s.kind === "gate" && s.mode === "debrief") {
+      errors.push(`step "${s.id}": a gate step can't be a debrief`);
+      continue;
+    }
     const refs: [string, string[]][] = [
       ["blind", s.blind ?? []],
       ["reads", s.reads ?? []],
@@ -52,6 +76,10 @@ export function validatePolicies(steps: readonly PlanStep[], acs: readonly PlanA
       if (!ids.has(x)) errors.push(`step "${s.id}": inputs names "${x}", which is not a step of this plan`);
       else if (s.blind?.includes(x) || byId.get(x)?.blind?.includes(s.id)) errors.push(`step "${s.id}": inputs names "${x}", which it is blind to`);
     }
+    // RL-4: debriefs.
+    if (s.assignee !== undefined && s.mode !== "debrief") errors.push(`step "${s.id}": assignee needs mode: debrief`);
+    if (s.mode === "debrief" && !s.output) errors.push(`step "${s.id}": a debrief step needs output: review-record`);
+    if (s.mode === "debrief" && !s.may_set) errors.push(`step "${s.id}": a debrief step needs may_set (the decisions the person may record)`);
     // RL-2: review records and conditional stages.
     if (s.kind === "gate" && (s.output !== undefined || s.consumes !== undefined || s.may_set !== undefined || s.when !== undefined)) {
       errors.push(`step "${s.id}": a gate step can't have output, consumes, may_set or when`);

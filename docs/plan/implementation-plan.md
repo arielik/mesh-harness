@@ -389,6 +389,11 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/steps/:id/review` | Review records (v0.1.16): the review record of the held step's current round; the hub fingerprints and folds its items (raising) or applies its dispositions (consuming) |
 | `GET /v1/steps/:id/reviews` | Review records (v0.1.16): a step's review records, by round |
 | `GET /v1/items?lineage=` | Review records (v0.1.16): the items of a lineage with their history, most severe first |
+| `POST /v1/steps/:id/read` | Debriefs (v0.1.18): the assignee marks a debrief's pre-read as read (`Step.read`; the round keeps it at done) |
+| `GET /v1/steps/:id/debrief` | Debriefs (v0.1.18): a debrief's pre-read: assignee, run, report, the items to decide (evidence locations, near-matches) and the decisions made (scope `goals:read`) |
+| `GET /v1/debriefs` | Debriefs (v0.1.18): the caller's debriefs (ready, claimed, paused) and their revertable debrief decisions of the last 7 days |
+| `POST /v1/steps/:id/dispositions` | Debriefs (v0.1.18): one decision of the person in a held debrief (`mesh_dispose`, `via: debrief-session`, with the person's `answer`); 201 |
+| `POST /v1/steps/:id/dispositions/revert` | Debriefs (v0.1.18): revert a debrief decision while it is the item's latest change (the decider, the goal owner or an admin) |
 | `GET /v1/pulses?mine=1`, `GET /v1/pulses/:id` | Pulses (v0.1.17): pulses by number (no preset text); one pulse with its 50 newest slots and their goals' states (scope `goals:read`) |
 | `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 |
 | `POST /v1/pulses/:id/{update,pause,resume,delete}` | Pulses (v0.1.17): change, pause, resume or remove a pulse (its owner or an admin) |

@@ -1,7 +1,7 @@
 // Pure rendering of the session list (plan §9). No I/O, so it can be snapshot-tested.
 
 import { age, messageStage, needsLabel, offerLine, renderFleet, SESSION_STAGES, sessionLabel, sessionStage, type SessionStage } from "../../core/index.ts";
-import type { FleetView, Message, OfferView, Session } from "../../protocol/index.ts";
+import type { DebriefSummary, DecidedView, FleetView, Message, OfferView, Session } from "../../protocol/index.ts";
 
 /** Session groups come from the stage table in core (one source for every panel). */
 export type Group = SessionStage;
@@ -165,19 +165,38 @@ export function renderMachines(fleet: FleetView, v: { width: number; height: num
   return [...body, ...footer].slice(-Math.max(0, v.height));
 }
 
-export const OFFERS_FOOTER = "⏎ accept · d decline · o back to sessions · details: mesh offers";
+export const OFFERS_FOOTER = "⏎ accept · d decline · u revert · o back to sessions · details: mesh offers";
 
 /**
- * The Assigned to you panel of the TUI (`o`, MM-3): steps offered to this machine. Exactly `height`
- * lines; the footer is the last line and a status, when given, the one above it.
+ * The Assigned to you panel of the TUI (`o`, MM-3): steps offered to this machine; RL-4: then the
+ * caller's debriefs and the decisions made in debriefs (selected as `decided:<step>:<fp>`). Exactly
+ * `height` lines; the footer is the last line and a status, when given, the one above it.
  */
 export function renderOffers(
   offers: readonly OfferView[],
-  v: { width: number; height: number; header: string; now: number; selected?: string | undefined; status?: string | undefined },
+  v: {
+    width: number;
+    height: number;
+    header: string;
+    now: number;
+    selected?: string | undefined;
+    status?: string | undefined;
+    debriefs?: readonly DebriefSummary[] | undefined;
+    decided?: readonly DecidedView[] | undefined;
+  },
 ): string[] {
+  const sel = (id: string) => (id === v.selected ? "› " : "  ");
   const lines = [v.header, "", "ASSIGNED TO YOU"];
   if (offers.length === 0) lines.push("  No offers for this machine.");
-  for (const o of offers) lines.push(`${o.step === v.selected ? "› " : "  "}${offerLine(o, v.now)}`);
+  for (const o of offers) lines.push(`${sel(o.step)}${offerLine(o, v.now)}`);
+  if (v.debriefs?.length) {
+    lines.push("DEBRIEFS");
+    for (const d of v.debriefs) lines.push(`${sel(d.step)}mesh debrief ${d.step}  ${d.state}  ${d.items} item(s)  "${d.title}"`);
+  }
+  if (v.decided?.length) {
+    lines.push("DECIDED IN DEBRIEF");
+    for (const e of v.decided) lines.push(`${sel(`decided:${e.step}:${e.fp}`)}${e.fp}  ${e.disposition} (was ${e.from})  ${e.step}  "${e.title}"`);
+  }
   const footer = [...(v.status ? [v.status] : []), OFFERS_FOOTER].map((l) => clip(l, v.width));
   const room = Math.max(0, v.height - footer.length);
   const body = lines.slice(0, room).map((l) => clip(l, v.width));

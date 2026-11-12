@@ -1,6 +1,21 @@
 import type { Goal } from "../../src/protocol/goal.ts";
 import type { PulseView } from "../../src/protocol/pulse.ts";
-import type { AssignResult, FleetView, GoalAssignResult, GoalDetail, LiveView, OfferView, ProviderInfo, StepView, SuggestView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import type {
+  AssignResult,
+  DebriefList,
+  DebriefView,
+  FleetView,
+  GoalAssignResult,
+  GoalDetail,
+  LiveView,
+  OfferView,
+  ProviderInfo,
+  RevertResult,
+  StepView,
+  SuggestView,
+  TimelineEntry,
+  TopicView,
+} from "../../src/protocol/hub.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -57,6 +72,11 @@ export const api = {
   suggestGoal: (id: string, o: { team?: boolean; any?: boolean }) => call<SuggestView>("GET", `${g(id)}/suggest${suggestQuery(o)}`),
   assignStep: (id: string, to: string) => call<AssignResult>("POST", `/v1/steps/${encodeURIComponent(id)}/assign`, { to }),
   assignGoal: (id: string, to: string) => call<GoalAssignResult>("POST", `${g(id)}/assign`, { to }),
+  /** RL-4: the caller's debriefs and debrief decisions; a debrief's pre-read; mark it read; revert a decision. */
+  debriefs: () => call<DebriefList>("GET", "/v1/debriefs"),
+  debrief: (step: string) => call<DebriefView>("GET", `/v1/steps/${encodeURIComponent(step)}/debrief`),
+  read: (step: string) => call<{ read: { user: string; at: number; round: number } }>("POST", `/v1/steps/${encodeURIComponent(step)}/read`, {}),
+  revert: (step: string, fingerprint: string) => call<RevertResult>("POST", `/v1/steps/${encodeURIComponent(step)}/dispositions/revert`, { fingerprint }),
   /** RL-3: the user's pulses (read-only on the web). */
   pulses: async () => (await call<{ pulses: PulseView[] }>("GET", "/v1/pulses?mine=1")).pulses,
   newGoal: (title: string, primaryRepo?: string, topics: string[] = []) => call<Goal>("POST", "/v1/goals", { title, ...(primaryRepo ? { primaryRepo } : {}), ...(topics.length ? { topics } : {}) }),

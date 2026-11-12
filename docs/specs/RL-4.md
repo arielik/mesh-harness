@@ -373,3 +373,9 @@ true}`, `consumes: [accepted]`).
   can accept such an offer.
 - 2026-11-12 **TUI when `debriefs()` fails** (review r1 F10). The `o` panel falls back to offers only,
   silently; the badge counts offers only. Errors of revert still show as status text.
+- 2026-11-12 **`mesh doctor` with a foreign mesh-debrief SKILL.md** (implementation). Not specified;
+  taken: the warning `! mesh-debrief skill out of date; run: mesh setup` (as for an outdated copy;
+  `mesh setup` still leaves the file alone).
+- 2026-11-12 **Step panel decided entries** (implementation). The spec fixes the Mine text, not the
+  step panel's; taken: `<fp> <disposition> (was <from>) · @<decider>` with `Revert` on revertable
+  entries only.

@@ -490,9 +490,7 @@ describe("RL-3 AC-27 checks, schema, boundaries", () => {
     { method: "POST", path: "/v1/goals/from-preset", scope: "goals:write" },
   ];
 
-  it("test_AC27_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.17");
-  });
+  // The RL-3 version pin (test_AC27_version, 0.1.17) is superseded by RL-4 AC-24 (test_AC24_version below).
 
   it("test_AC27_openapi_routes", () => {
     for (const want of ROUTES) {
@@ -545,5 +543,76 @@ describe("RL-3 AC-26 docs and skill", () => {
     for (const t of ["/v1/pulses", "/v1/goals/from-preset", "pulses=1", "v0.1.17"]) expect(s56, t).toContain(t);
     const events = read("docs/events.md");
     for (const t of ["pulse.created", "pulse.updated", "pulse.paused", "pulse.resumed", "pulse.deleted", "pulse.fired", "pulse.skipped", "pulse.missed", "pulse.abandoned", "goal.dropped"]) expect(events, t).toContain(t);
+  });
+});
+
+// RL-4 AC-16 (generated skill file), AC-23 (docs and skill), AC-24 (version, OpenAPI, routes,
+// boundaries). Written from the spec's contracts only (docs/specs/RL-4.md).
+describe("RL-4 AC-24 checks, schema, boundaries", () => {
+  const ROUTES = [
+    { method: "POST", path: "/v1/steps/:id/read", scope: undefined },
+    { method: "GET", path: "/v1/steps/:id/debrief", scope: "goals:read" },
+    { method: "GET", path: "/v1/debriefs", scope: undefined },
+    { method: "POST", path: "/v1/steps/:id/dispositions", scope: undefined },
+    { method: "POST", path: "/v1/steps/:id/dispositions/revert", scope: undefined },
+  ];
+
+  it("test_AC24_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.18");
+  });
+
+  it("test_AC24_openapi_routes", () => {
+    for (const want of ROUTES) {
+      const row = HUB_API.find((x) => x.method === want.method && x.path === want.path) as { rule: string; scope?: string; tag: string } | undefined;
+      expect(row, `${want.method} ${want.path}`).toBeDefined();
+      expect(row?.rule, want.path).toBe("member");
+      expect(row?.scope, want.path).toBe(want.scope);
+      expect(row?.tag, want.path).toBe("steps");
+    }
+    expect((HUB_API.find((x) => x.method === "POST" && x.path === "/v1/steps/:id/dispositions") as { status?: number } | undefined)?.status).toBe(201);
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, unknown>> };
+    for (const want of ROUTES) {
+      const p = want.path.replace(/:(\w+)/g, "{$1}");
+      expect(doc.paths[p]?.[want.method.toLowerCase()], `${want.method} ${p} in the OpenAPI document`).toBeDefined();
+    }
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+  });
+
+  it("test_AC24_boundaries", async () => {
+    const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
+    expect(typeof core.debriefAssignee).toBe("function");
+    // It lives in src/core/policy.ts (no hub or store imports there: that is `pnpm boundaries`).
+    const policy = (await import("../src/core/policy.ts" as string)) as Record<string, unknown>;
+    expect(typeof policy.debriefAssignee).toBe("function");
+  });
+});
+
+describe("RL-4 AC-16 generated skill file", () => {
+  it("test_AC16_generated_file", async () => {
+    const protocol = (await import("../src/protocol/index.ts")) as Record<string, unknown>;
+    expect(typeof protocol.MESH_DEBRIEF_SKILL).toBe("string");
+    expect(read("skills/mesh-debrief/SKILL.md")).toBe(protocol.MESH_DEBRIEF_SKILL);
+  });
+});
+
+describe("RL-4 AC-23 docs and skill", () => {
+  it("test_AC23_skill", () => {
+    expect(MESH_SKILL).toContain("mesh debrief");
+    expect(MESH_SKILL).toContain("mesh-debrief");
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+  });
+
+  it("test_AC23_docs", () => {
+    const concepts = read("docs/guide/concepts.md");
+    expect(concepts).toMatch(/^#+ .*Debriefs/m);
+    for (const t of ["mode: debrief", "assignee", "@owner", "mesh debrief", "mesh-debrief", "mesh_dispose", "debrief-session", "revert", "already"]) expect(concepts, t).toContain(t);
+    const howto = read("docs/guide/howto.md");
+    expect(howto).toContain("Debrief an agent's findings");
+    for (const t of ["mesh debrief", "revert"]) expect(howto.toLowerCase(), t).toContain(t);
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    for (const t of ["/v1/steps/:id/read", "/v1/steps/:id/debrief", "/v1/debriefs", "/v1/steps/:id/dispositions", "/v1/steps/:id/dispositions/revert", "v0.1.18"]) expect(s56, t).toContain(t);
+    const events = read("docs/events.md");
+    for (const t of ["item.reverted", "step.read", "debrief-session", "already"]) expect(events, t).toContain(t);
   });
 });

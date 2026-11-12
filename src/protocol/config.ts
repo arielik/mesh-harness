@@ -112,6 +112,8 @@ export interface MeshPaths {
   claudeMd: string;
   /** ~/.claude/skills/mesh/SKILL.md, written by `mesh setup`. */
   claudeSkill: string;
+  /** RL-4: ~/.claude/skills/mesh-debrief/SKILL.md, written by `mesh setup`. */
+  claudeDebriefSkill: string;
   /** OpenCode's global config folder, the mesh plugin in it and mesh's skill for OpenCode. */
   opencodeConfigDir: string;
   opencodePlugin: string;
@@ -140,6 +142,7 @@ export function resolvePaths(env: Record<string, string | undefined>, home: stri
     credentials: join(configDir, "credentials.json"),
     claudeMd: join(claudeConfigDir, "CLAUDE.md"),
     claudeSkill: join(claudeConfigDir, "skills", "mesh", "SKILL.md"),
+    claudeDebriefSkill: join(claudeConfigDir, "skills", "mesh-debrief", "SKILL.md"),
     opencodeConfigDir,
     opencodePlugin: join(opencodeConfigDir, "plugins", "mesh-harness.js"),
     opencodeSkill: join(opencodeConfigDir, "skills", "mesh", "SKILL.md"),

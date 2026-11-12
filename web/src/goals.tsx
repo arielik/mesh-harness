@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { levels } from "../../src/core/dag.ts";
 import { partition, STEP_STAGES, stepStage } from "../../src/core/stages.ts";
 import type { Goal, Plan, Step } from "../../src/protocol/goal.ts";
-import type { GoalDetail, OfferLine, StepView, SuggestView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
+import type { DebriefView, GoalDetail, OfferLine, StepView, SuggestView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
 import { assignText, offerText } from "../../src/core/offers.ts";
 import { api } from "./api.ts";
 
@@ -314,6 +314,84 @@ function AssignPicker({ kind, target, onAssigned, onCancel }: { kind: "step" | "
   );
 }
 
+/** RL-4: a debrief step's pre-read (report, items), the read button and the decisions made (Revert). */
+function DebriefSection({ step, onChange }: { step: Step; onChange: () => void }) {
+  const [view, setView] = useState<DebriefView>();
+  const [error, setError] = useState<string>();
+  const reload = useCallback(() => {
+    api.debrief(step.id).then(
+      (v) => {
+        setView(v);
+        setError(undefined);
+      },
+      (e: Error) => setError(e.message),
+    );
+  }, [step.id]);
+  useEffect(() => {
+    setView(undefined);
+    reload();
+  }, [reload, step.state, step.updatedAt]);
+  const act = (p: Promise<unknown>) =>
+    p.then(
+      () => {
+        reload();
+        onChange();
+      },
+      (e: Error) => setError(e.message),
+    );
+  const open = step.state === "ready" || step.state === "claimed" || step.state === "paused";
+  const current = (step.rounds?.length ?? 0) + 1;
+  return (
+    <section className="debrief" aria-label="debrief">
+      {error && <p className="error">{error}</p>}
+      {view && (
+        <>
+          <p>Assignee: @{view.assignee}</p>
+          {view.report?.content ? <pre className="report">{view.report.content}</pre> : <p className="muted">No report.</p>}
+          <ul className="items">
+            {view.items.map((i) => (
+              <li key={i.fp} data-fp={i.fp}>
+                {`${i.severity} ${i.title} · ${i.state}`}
+                {i.nearMatches.map((m) => ` · possible repeat of ${m.fp}`).join("")}
+              </li>
+            ))}
+          </ul>
+          {open &&
+            (view.read && view.read.round === current ? (
+              <p>Read by @{view.read.user}</p>
+            ) : (
+              <p>
+                <button className="small" aria-label="Mark pre-read as read" onClick={() => void act(api.read(step.id))}>
+                  Mark as read
+                </button>
+              </p>
+            ))}
+          {view.decided.length > 0 && (
+            <>
+              <h4>Decided in debrief</h4>
+              <ul>
+                {view.decided.map((d) => (
+                  <li className="decided" data-fp={d.fp} key={`${d.fp}:${d.at}`}>
+                    {`${d.fp} ${d.disposition} (was ${d.from}) · @${d.decider.kind === "person" ? d.decider.user : d.decider.key}`}
+                    {d.revertable && (
+                      <>
+                        {" "}
+                        <button className="small" aria-label={`Revert ${d.fp}`} onClick={() => void act(api.revert(step.id, d.fp))}>
+                          Revert
+                        </button>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function StepPanel({ id, now, offer, onChange }: { id: string; now: number; offer?: OfferLine | undefined; onChange: () => void }) {
   const [view, setView] = useState<StepView>();
   const [error, setError] = useState<string>();
@@ -352,7 +430,8 @@ function StepPanel({ id, now, offer, onChange }: { id: string; now: number; offe
       {step.holderUser && <p>Holder: @{step.holderUser}</p>}
       {offer && <p className="offer">{offerText(offer)}</p>}
       {assigned && <p className="assigned">{assigned}</p>}
-      {step.state === "ready" && step.kind !== "gate" && offer?.state !== "offered" && !picking && (
+      {step.policy?.mode === "debrief" && <DebriefSection step={step} onChange={onChange} />}
+      {step.state === "ready" && step.kind !== "gate" && step.policy?.mode !== "debrief" && offer?.state !== "offered" && !picking && (
         <p>
           <button className="small" aria-label="Assign step" onClick={() => setPicking(true)}>
             Assign
@@ -628,7 +707,7 @@ export function GoalPage({ id }: { id: string }) {
   const g = detail.goal;
   const now = Date.now();
   const visible = detail.steps.filter((s) => s.state !== "dropped");
-  const offerable = detail.steps.filter((s) => s.state === "ready" && s.kind !== "gate" && detail.offers?.[s.id]?.state !== "offered");
+  const offerable = detail.steps.filter((s) => s.state === "ready" && s.kind !== "gate" && s.policy?.mode !== "debrief" && detail.offers?.[s.id]?.state !== "offered");
   const canAssign = g.state !== "done" && g.state !== "dropped" && offerable.length > 0;
   const decide = (kind: "approve" | "revise", comment: string) => {
     const p = kind === "approve" ? api.approve(g.id, comment.trim() || undefined) : api.revise(g.id, comment.trim());

@@ -271,7 +271,8 @@ describe("AC-17 labels in the TUI", () => {
 // MM-3 AC-31: the "offered to you" badge, the session footer with `o offers`, and the offers panel.
 describe("AC-31 offers in the TUI", () => {
   const SESSIONS_FOOTER = "⏎ jump · s say · a autopilot · L labels · n next step · o offers · g goals · m machines · r refresh · ↑↓ move · q quit";
-  const OFFERS_FOOTER = "⏎ accept · d decline · o back to sessions · details: mesh offers";
+  // RL-4 (Compatibility): the footer gains `u revert`.
+  const OFFERS_FOOTER = "⏎ accept · d decline · u revert · o back to sessions · details: mesh offers";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new exports, read loosely
   const R = renderModule as any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new exports, read loosely
@@ -336,5 +337,78 @@ describe("AC-31 offers in the TUI", () => {
     const lines: string[] = R.renderOffers([offer("G1.a"), offer("G1.b")], { width: 20, height: 10, header: "a very long header that is clipped", now: NOW, status: "a long status line too" });
     expect(lines).toHaveLength(10);
     for (const l of lines) expect([...l].length, l).toBeLessThanOrEqual(20);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// RL-4 AC-17 (unit): debriefs and decided entries in the `o` panel (docs/specs/RL-4.md, renderOffers).
+
+describe("RL-4 AC-17 debriefs in the o panel", () => {
+  const FOOTER = "⏎ accept · d decline · u revert · o back to sessions · details: mesh offers";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new options, read loosely
+  const R = renderModule as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- read loosely
+  const Core = coreModule as any;
+  const FP = "abcdefghijklmn27";
+  const offer = (step: string) => ({ step, goal: "G1", title: `title ${step}`, repo: "svc", kind: "implement", machine: "m-0000000b", to: "m2", by: "alice", at: NOW - 60_000, expiresAt: NOW + 29 * 60_000, auto: false });
+  const debrief = (step: string, state: string, items: number, title: string) => ({ step, goal: "G2", title, repo: "svc", state, items, read: false });
+  const decided = { lineage: "L", fp: FP, goal: "G2", step: "G2.d1", round: 1, disposition: "accepted", from: "open", reason: "r", answer: "a", decider: { kind: "person", user: "alice" }, via: "debrief-session", at: NOW - 1000, title: "T3", revertable: true };
+  const debriefs = [debrief("G2.d1", "ready", 3, "T1"), debrief("G2.d2", "claimed", 1, "T2")];
+  const draw = (over: Record<string, unknown> = {}, offers = [offer("G1.a"), offer("G1.b")]): string[] =>
+    R.renderOffers(offers, { width: 200, height: 20, header: "H", now: NOW, debriefs, decided: [decided], ...over }).map((l: string) => l.trimEnd());
+
+  it("test_AC17_sections", () => {
+    const t = draw({ selected: `decided:G2.d1:${FP}` });
+    expect(t).toHaveLength(20);
+    expect(t.at(-1)).toBe(FOOTER);
+    const i = t.indexOf("DEBRIEFS");
+    expect(i, t.join("\n")).toBeGreaterThan(t.indexOf(`  ${Core.offerLine(offer("G1.b"), NOW)}`));
+    expect(t.slice(i, i + 5)).toStrictEqual([
+      "DEBRIEFS",
+      '  mesh debrief G2.d1  ready  3 item(s)  "T1"',
+      '  mesh debrief G2.d2  claimed  1 item(s)  "T2"',
+      "DECIDED IN DEBRIEF",
+      `› ${FP}  accepted (was open)  G2.d1  "T3"`,
+    ]);
+    // The offers keep their lines, unmarked.
+    expect(t).toContain(`  ${Core.offerLine(offer("G1.a"), NOW)}`);
+  });
+
+  it("test_AC17_marker", () => {
+    const d2 = draw({ selected: "G2.d2" });
+    expect(d2).toContain('› mesh debrief G2.d2  claimed  1 item(s)  "T2"');
+    expect(d2).toContain('  mesh debrief G2.d1  ready  3 item(s)  "T1"');
+    expect(d2).toContain(`  ${FP}  accepted (was open)  G2.d1  "T3"`);
+    expect(d2.filter((l) => l.startsWith("› "))).toHaveLength(1);
+    const o = draw({ selected: "G1.a" });
+    expect(o).toContain(`› ${Core.offerLine(offer("G1.a"), NOW)}`);
+    expect(o.filter((l) => l.startsWith("› "))).toHaveLength(1);
+  });
+
+  it("test_AC17_absent_sections", () => {
+    const t = draw({ debriefs: [], decided: [] });
+    expect(t).not.toContain("DEBRIEFS");
+    expect(t).not.toContain("DECIDED IN DEBRIEF");
+    expect(t.at(-1)).toBe(FOOTER);
+    const none: string[] = R.renderOffers([offer("G1.a")], { width: 200, height: 12, header: "H", now: NOW }).map((l: string) => l.trimEnd());
+    expect(none).not.toContain("DEBRIEFS");
+    expect(none).toHaveLength(12);
+    // Only debriefs: the decided section is absent, and the other way round.
+    expect(draw({ decided: [] })).not.toContain("DECIDED IN DEBRIEF");
+    expect(draw({ decided: [] })).toContain("DEBRIEFS");
+    expect(draw({ debriefs: [] })).not.toContain("DEBRIEFS");
+    expect(draw({ debriefs: [] })).toContain("DECIDED IN DEBRIEF");
+  });
+
+  it("test_AC17_no_offers", () => {
+    const t = draw({}, []);
+    expect(t).toContain("  No offers for this machine.");
+    expect(t).toContain("DEBRIEFS");
+    expect(t).toContain("DECIDED IN DEBRIEF");
+    expect(t.indexOf("DEBRIEFS")).toBeGreaterThan(t.indexOf("  No offers for this machine."));
+  });
+
+  it("test_AC17_footer_export", () => {
+    expect(R.OFFERS_FOOTER).toBe(FOOTER);
   });
 });

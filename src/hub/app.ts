@@ -24,8 +24,11 @@ import {
   CliExchange,
   Decide,
   DevicePoll,
+  DisposeRequest,
   DoneRequest,
   IDEMPOTENCY_HEADER,
+  ReadRequest,
+  RevertRequest,
   LoginDirect,
   MachineLabels,
   MachineName,
@@ -314,6 +317,15 @@ export function buildRoutes(svc: HubService): Route[] {
       },
       "goals:read",
     ),
+    // RL-4: debriefs.
+    r("POST", "/v1/steps/:id/read", "member", async (c, a) => {
+      await body(c, ReadRequest);
+      return c.json(await svc.readStep(a, param(c, "id")));
+    }),
+    r("GET", "/v1/steps/:id/debrief", "member", async (c) => c.json(await svc.debriefView(param(c, "id"))), "goals:read"),
+    r("GET", "/v1/debriefs", "member", async (c, a) => c.json(await svc.debriefs(a))),
+    r("POST", "/v1/steps/:id/dispositions", "member", async (c, a) => c.json(await svc.disposeStep(a, param(c, "id"), await body(c, DisposeRequest)), 201)),
+    r("POST", "/v1/steps/:id/dispositions/revert", "member", async (c, a) => c.json(await svc.revertDisposition(a, param(c, "id"), await body(c, RevertRequest)))),
 
     // ---------- questions, messages ----------
     r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),

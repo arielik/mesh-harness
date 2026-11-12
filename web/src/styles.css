@@ -535,9 +535,21 @@ a {
   padding: 0;
   margin: 0;
 }
-.mine .offers li.offer {
+.mine .offers li.offer,
+.mine .offers li.debrief,
+.mine .offers li.decided {
   padding: 0.3rem 0;
   border-bottom: 1px solid var(--line);
+}
+
+/* RL-4: a debrief step's pre-read in the step panel. */
+.panel section.debrief pre.report {
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.panel section.debrief ul.items {
+  padding-left: 1.2rem;
 }
 .panel p.offer {
   color: var(--muted);

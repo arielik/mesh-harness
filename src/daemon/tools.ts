@@ -30,6 +30,8 @@ import {
   type ArtifactKind,
   type ArtifactMediaType,
   type AssignResult,
+  type DisposeRequest,
+  type DisposeResult,
   type DoneResult,
   type FleetView,
   type GoalAssignResult,
@@ -99,6 +101,7 @@ export function brief(ctx: StepContext): string {
   if (p?.blind?.length) lines.push(`Blind: you must not read the work of ${p.blind.join(", ")} (branches, plans, summaries); work from the spec and the contract.`);
   if (p?.forbid?.length) lines.push(`Do not read: ${p.forbid.join(", ")}.`);
   lines.push("", "Brief:", ctx.step.brief);
+  if (p?.mode === "debrief") lines.push("", "This step is a debrief with your person: follow the mesh-debrief skill (mesh_dispose for each decision, then mesh_review, then mesh_done).");
   if (ctx.acs?.length) {
     lines.push("", "Acceptance criteria:");
     for (const a of ctx.acs) lines.push(`- ${a.id}: ${a.text}${a.surface ? ` (surface: ${a.surface})` : ""}${a.fails_when ? ` — fails when: ${a.fails_when}` : ""}`);
@@ -361,8 +364,30 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
       const f = r.review.fold;
       if (f) text += ` Fold: ${f.new} new, ${f.repeat} repeat, ${f.regression} regression, ${f.resolved} resolved, ${f.carried} carried.`;
       if (r.ignored.length) text += ` Ignored ${r.ignored.length} disposition(s): a person decided those items in this goal.`;
+      if (r.already?.length) text += ` ${r.already.length} disposition(s) were already recorded in this debrief.`;
       if (undeclared > 0) text += ` ${undeclared} rule(s) are not declared by the agent and were recorded as other:<slug>.`;
       return ok(`${text} Finish with mesh_done.`);
+    }
+    case "mesh_dispose": {
+      if (!s.step) return fail("this session holds no step");
+      // Never queued: a disposition is a decision the person watches, so the hub is checked at once.
+      if (host.link.offline) await host.link.flush({ probeNow: true });
+      const a = args as unknown as Omit<DisposeRequest, "sid">;
+      const secrets = host.secrets?.() ?? [];
+      const body = { ...a, reason: redactSecrets(a.reason, secrets).text, answer: redactSecrets(a.answer, secrets).text, sid: s.sid };
+      let r: DisposeResult;
+      try {
+        r = await host.link.rpc<DisposeResult>("POST", `/v1/steps/${encodeURIComponent(s.step)}/dispositions`, body, key);
+      } catch (e) {
+        if (isOffline(e)) return fail(`the hub is offline; the disposition was not recorded. ${OFFLINE_TAIL}`);
+        throw e;
+      }
+      const d = r.disposition;
+      const tail =
+        r.left > 0
+          ? ` ${r.left} item(s) left to decide.`
+          : " No item left to decide: store the summary with mesh_artifact (kind transcript), submit the review record with mesh_review (its dispositions: your latest decision per item, or none), then call mesh_done.";
+      return ok(`Recorded ${d.fp}: ${d.disposition} (was ${d.from}).${tail}`);
     }
     case "mesh_ask": {
       const r = await orQueue(host, "/v1/questions", { text: args.question, sid: s.sid, ...(s.step ? { step: s.step } : {}) }, key, "mesh_ask", s.cwd);

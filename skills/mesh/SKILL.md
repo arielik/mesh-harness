@@ -57,6 +57,14 @@ reason, belong only in the record of a consuming step (a step with `consumes`; i
 `dispositions` lists the items it may act on), never in the record that raises the items. The
 record never fails the step: finish with `mesh_done`.
 
+## Debriefs
+
+A step with `mode: debrief` is run only by its assignee (the goal owner by default), never
+offered and never picked from the ready list. Your person starts it with `mesh debrief <step>`;
+the session then follows the `mesh-debrief` skill: it goes through the items with the person one
+at a time and records each decision with `mesh_dispose`, then submits the review record with
+`mesh_review` and finishes with `mesh_done`.
+
 ## Headless runs
 
 A step can run headless: a machine starts `claude -p` for it, with no person watching. Your
@@ -126,6 +134,7 @@ your person.
 | `mesh goal approve <goal>` | approve a proposed plan |
 | `mesh next` | steps that are ready |
 | `mesh run <repo> --step <step>` | start a session that holds a step |
+| `mesh debrief <step>` | take a debrief assigned to you and go through its items in a session (the `mesh-debrief` skill) |
 | `mesh say <session> "<text>"` | send a message to a session |
 | `mesh say <machine>/<session> "<text>"` | send a message to a session on another machine |
 | `mesh machines` | every machine logged in as you and what each session on it does |

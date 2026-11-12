@@ -1276,6 +1276,62 @@ function contract(d: Driver) {
       expect(ids(made).sort()).toStrictEqual(["p-1", "p-2"]);
     });
   });
+
+  // RL-4 AC-25: the store filters `GET /v1/debriefs` uses (docs/specs/RL-4.md, Store). No migration.
+  describe("RL-4 store filters", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new filter fields, read loosely
+    const X = (s: HubStore): any => s;
+    const entry = (stepId: string, at: number, over: Record<string, unknown> = {}) => ({
+      at,
+      goal: stepId.split(".")[0] as string,
+      step: stepId,
+      round: 1,
+      from: "open",
+      to: "accepted",
+      kind: "disposition",
+      disposition: "accepted",
+      reason: "r",
+      decider: { kind: "person", user: "ada" },
+      via: "debrief-session",
+      answer: "yes",
+      ...over,
+    });
+
+    it("test_AC25_schema_version_unchanged", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(10);
+    });
+
+    it("test_AC25_listSteps_updatedSince", async () => {
+      const s = await store();
+      await s.saveSteps([step("G1.a", { updatedAt: T0 + 10 }), step("G1.b", { updatedAt: T0 + 20 }), step("G1.c", { updatedAt: T0 + 30 })]);
+      const got = async (f: Record<string, unknown>) => ((await X(s).listSteps(f)) as Step[]).map((x) => x.id).sort();
+      expect(await got({ updatedSince: T0 + 20 })).toStrictEqual(["G1.b", "G1.c"]);
+      expect(await got({ updatedSince: T0 + 31 })).toStrictEqual([]);
+      expect(await got({ updatedSince: T0 + 20, state: "ready" })).toStrictEqual(["G1.b", "G1.c"]);
+      // Control: without the filter all three.
+      expect(await got({})).toStrictEqual(["G1.a", "G1.b", "G1.c"]);
+    });
+
+    it("test_AC25_listDispositions_steps_since", async () => {
+      const s = await store();
+      await X(s).addItemHistory("L", "x", entry("G1.s1", T0 + 10));
+      await X(s).addItemHistory("L", "x", entry("G1.s2", T0 + 20));
+      await X(s).addItemHistory("L", "y", entry("G1.s3", T0 + 30));
+      await X(s).addItemHistory("L", "y", { at: T0 + 40, goal: "G1", step: "G1.s3", round: 1, from: null, to: "open", kind: "fold", mark: "new" });
+      await X(s).addItemHistory("M", "x", entry("G1.s3", T0 + 35));
+      const got = async (f: Record<string, unknown>) => ((await X(s).listDispositions(f)) as { fp: string; step: string; at: number; lineage: string }[]).map((x) => `${x.lineage}:${x.fp}@${x.step}`).sort();
+      expect(await got({ steps: ["G1.s1", "G1.s3"] })).toStrictEqual(["L:x@G1.s1", "L:y@G1.s3", "M:x@G1.s3"]);
+      expect(await X(s).listDispositions({ steps: [] })).toStrictEqual([]);
+      expect(await got({ since: T0 + 20 })).toStrictEqual(["L:x@G1.s2", "L:y@G1.s3", "M:x@G1.s3"]);
+      expect(await got({ steps: ["G1.s2", "G1.s3"], since: T0 + 25, fp: "y" })).toStrictEqual(["L:y@G1.s3"]);
+      expect(await got({ steps: ["G1.s2", "G1.s3"], since: T0 + 25, lineage: "M" })).toStrictEqual(["M:x@G1.s3"]);
+      // Rows keep the RL-4 fields.
+      const [row] = (await X(s).listDispositions({ steps: ["G1.s1"] })) as Record<string, unknown>[];
+      expect(row).toMatchObject({ via: "debrief-session", answer: "yes", decider: { kind: "person", user: "ada" }, at: T0 + 10 });
+      // Control: the existing filters alone are unchanged.
+      expect(await got({ lineage: "L" })).toStrictEqual(["L:x@G1.s1", "L:x@G1.s2", "L:y@G1.s3"]);
+    });
+  });
 }
 
 describe("store contract: sqlite", () => contract(sqlite));

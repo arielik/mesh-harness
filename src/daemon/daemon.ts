@@ -57,6 +57,8 @@ import {
   type InboxMessage,
   type LabelsResult,
   type OfferView,
+  type DebriefList,
+  type RevertResult,
   type Step,
   type StepView,
   type ToolName,
@@ -860,6 +862,27 @@ export class Daemon {
     }
   }
 
+  /** RL-4 `GET /local/debriefs`: the hub's `GET /v1/debriefs` for this login. */
+  async debriefsLocal(): Promise<DebriefList> {
+    if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+    try {
+      return await this.link.rpc<DebriefList>("GET", "/v1/debriefs");
+    } catch (e) {
+      throw e instanceof HubRpcError ? new HttpError(e.status, e.message) : e;
+    }
+  }
+
+  /** RL-4 `POST /local/revert`: revert a debrief decision at the hub. */
+  async revertLocal(b: { step?: unknown; fingerprint?: unknown }): Promise<RevertResult> {
+    if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+    if (typeof b.step !== "string" || !b.step || typeof b.fingerprint !== "string" || !b.fingerprint) throw new HttpError(400, "expected {step, fingerprint}");
+    try {
+      return await this.link.rpc<RevertResult>("POST", `/v1/steps/${encodeURIComponent(b.step)}/dispositions/revert`, { fingerprint: b.fingerprint }, randomUUID());
+    } catch (e) {
+      throw e instanceof HubRpcError ? new HttpError(e.status, e.message) : e;
+    }
+  }
+
   /** `POST /local/decline`: decline an offer at the hub. */
   async declineLocal(b: { step?: unknown; note?: unknown }): Promise<{ step: Step }> {
     if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
@@ -1434,6 +1457,8 @@ export class Daemon {
       if (req.method === "POST" && path === "/local/accept") return send(res, 200, await this.acceptLocal((await readJson(req)) as Record<string, unknown>));
       if (req.method === "GET" && path === "/local/offers") return send(res, 200, await this.offersLocal());
       if (req.method === "POST" && path === "/local/decline") return send(res, 200, await this.declineLocal((await readJson(req)) as Record<string, unknown>));
+      if (req.method === "GET" && path === "/local/debriefs") return send(res, 200, await this.debriefsLocal());
+      if (req.method === "POST" && path === "/local/revert") return send(res, 200, await this.revertLocal((await readJson(req)) as Record<string, unknown>));
       if (req.method === "POST" && path === "/local/session-accept") return send(res, 200, this.sessionAccept((await readJson(req)) as Record<string, unknown>));
       if (req.method === "POST" && path === "/local/reconcile") {
         await this.reconcile();

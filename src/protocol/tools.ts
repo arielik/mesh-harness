@@ -1,8 +1,9 @@
-// The fourteen mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
+// The fifteen mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
 // stdio shim (`mesh mcp`) and the daemon that executes them.
 
 import { z } from "zod";
 import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanAc, PlanStep, Verdict } from "./goal.ts";
+import { DisposeRequest } from "./hub.ts";
 import { ReviewRecord } from "./review.ts";
 
 export const TOOLS = {
@@ -94,6 +95,11 @@ export const TOOLS = {
   mesh_accept: {
     description: "Accept a step offered to this machine: this session takes it.",
     input: { step: z.string().describe("full step id, e.g. G17.dplane") },
+  },
+  mesh_dispose: {
+    description:
+      "For a debrief step only: record one decision of your person on one item at once. answer is the person's own words, verbatim; reason is the decision's reason. deferred needs until (YYYY-MM-DD). Call it once per decision, never deciding for the person; the debrief still ends with mesh_review and mesh_done.",
+    input: DisposeRequest.omit({ sid: true }).shape,
   },
 } as const;
 

@@ -1,4 +1,4 @@
-import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest, type OfferView, type Step } from "../protocol/index.ts";
+import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest, type OfferView, type Step, type DebriefList, type RevertResult } from "../protocol/index.ts";
 
 export class DaemonUnreachable extends Error {
   constructor(port: number) {
@@ -87,6 +87,16 @@ export class DaemonClient {
   /** MM-3: open offers to this machine. */
   async offers(): Promise<OfferView[]> {
     return ((await this.call("GET", "/local/offers")) as { offers: OfferView[] }).offers;
+  }
+
+  /** RL-4: the caller's debriefs and their revertable debrief decisions (the hub's `GET /v1/debriefs`). */
+  async debriefs(): Promise<DebriefList> {
+    return (await this.call("GET", "/local/debriefs")) as DebriefList;
+  }
+
+  /** RL-4: revert a debrief decision. */
+  async revert(step: string, fingerprint: string): Promise<RevertResult> {
+    return (await this.call("POST", "/local/revert", { step, fingerprint })) as RevertResult;
   }
 
   /** MM-3: decline an offer. */

@@ -347,7 +347,53 @@ themselves.
 `read-only`) raises findings; `validate` (`{validator}`) runs only when items are open and confirms
 or dismisses them; `file` (`{filer}`, profile `propose-via-branch`) runs only when items are
 confirmed, proposes an entry for each on the run's branch and records it `accepted` with its link.
-It needs params `agent`, `validator` and `filer`. A person's debrief stage comes later.
+It needs params `agent`, `validator` and `filer`. It stays agent-only; a repo that wants its owner to
+decide the findings adds a debrief stage in its own `.mesh/presets` (see *Debriefs*).
+
+## Debriefs
+
+**Debrief step.** A step with `mode: debrief` is a person's review of the items an earlier stage
+raised, run in an interactive Claude session that goes through the items one at a time. Its
+`assignee` is `@owner` (the goal's owner, read at each check, so a change of owner moves the
+debrief) or a user id. Defaults: `consumes: [open, confirmed]` and `assignee: "@owner"`. It needs
+`output: review-record` and `may_set` (the decisions the person may record); it can't be a gate, and
+`profile`, `budget` and `agent` stay headless-only.
+
+**Never offered.** A debrief is never offered: `mesh assign` (step and goal), a goal's stick and
+pulses leave it out, and ready lists (`mesh next`, `mesh_next`, the TUI `n` key, autopilot) do not
+show it. Only its assignee can claim, accept or take it over (403 for anyone else, admins and the
+goal owner included). The assignee finds it under **Assigned to you** (web Mine page, TUI `o`).
+
+**Pre-read.** The web step panel of a debrief shows the run's report and the items (severity,
+title, state, and `possible repeat of <fp>` for a near-match: another item of the lineage with the
+same rule and path, or the same rule and symbol in another file). **Mark as read** records the read
+(`POST /v1/steps/:id/read`, assignee only); the round keeps it (`read`) when the step is done.
+
+**Running it.** `mesh debrief <step>` checks that you are the assignee and the step is ready (or
+yours already), warns when you have not marked the pre-read or the `mesh-debrief` skill is missing,
+then runs `mesh run <repo> --step <step>` with a prompt that names the skill. The `mesh-debrief`
+skill (installed by `mesh setup`) has the session call `mesh_context` (its `debrief items` input
+lists the items most severe first, with evidence locations and near-matches; the report is another
+input, both fenced as untrusted data), show each item with its evidence read from the repo, ask the
+person, and record the decision with `mesh_dispose`: the disposition, the reason and `answer`, the
+person's own words (the daemon redacts secrets in both). Each decision is applied at once, stored
+with `via: debrief-session` (record dispositions of stages have `via: stage`) and decider the
+person, and added to the step as a note (`debrief: accepted <fp> "<title>": <reason>`). A person may
+change a decision in the same round with another `mesh_dispose`.
+
+**The debrief's own record.** The session ends with `mesh_review` (`items: []`, the latest decision
+per item, or none) and `mesh_done`. Only the holder may submit it. A disposition in it for an item
+decided with `mesh_dispose` is never applied twice: the same decision is listed in `already` (also
+when the person reverted it meanwhile, so the revert stays); another one is a problem. Other
+dispositions are applied as usual (with `via: debrief-session`).
+
+**Revert.** Each debrief decision can be reverted with one key while it is the item's latest change
+(`u` in the TUI `o` panel, Revert on the Mine page or the step panel; `POST
+/v1/steps/:id/dispositions/revert`), by the deciding person, the goal owner or an admin. The item
+goes back to the state it had before; the history keeps a `revert` entry (`via: ui`) and the step a
+note. A revert does not re-run later stages. Person precedence applies to debrief decisions as to
+any person's: a later agent disposition of the item in the same goal is ignored. Events never
+carry answers, reasons or titles; notes and the item history do (team-visible).
 
 ## Offers and accept policy
 

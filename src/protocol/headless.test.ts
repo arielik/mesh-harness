@@ -31,7 +31,8 @@ describe("AC-01 StepPolicy", () => {
   });
 
   it.each([
-    ["mode debrief", { mode: "debrief" }],
+    // RL-4 AC-01 made "debrief" a valid mode; an unknown mode is still refused.
+    ["mode batch", { mode: "batch" }],
     ["profile with space and caps", { mode: "headless", profile: "Read Only" }],
     ["budget turns 0", { mode: "headless", budget: { turns: 0 } }],
     ["budget minutes 1441", { mode: "headless", budget: { minutes: 1441 } }],
@@ -43,6 +44,12 @@ describe("AC-01 StepPolicy", () => {
   ])("test_AC01_rejects %s", (_name, extra) => {
     expect(PlanStep.safeParse({ ...base, ...extra }).success).toBe(false);
     expect(StepPolicy.safeParse(extra).success).toBe(false);
+  });
+
+  it("test_AC01_accepts_mode_debrief", () => {
+    // RL-4 AC-01: the debrief mode parses in both a plan step and a policy.
+    expect(PlanStep.safeParse({ ...base, mode: "debrief" }).success).toBe(true);
+    expect(StepPolicy.safeParse({ mode: "debrief" }).success).toBe(true);
   });
 
   it("test_AC01_boundaries", () => {

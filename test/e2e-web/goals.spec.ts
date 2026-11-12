@@ -1,5 +1,6 @@
 // Goals board and Goal page (task 3.5): design → approve from the web, the DAG, step details, revise.
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { A, A2, B, claimAs, dispose, makeDebrief, stepOf } from "./debrief-e2e.ts";
 
 async function bobApi(request: APIRequestContext) {
   const r = await request.post("/auth/team/login", { data: { token: "bob-e2e-token", hostname: "e2e" } });
@@ -446,4 +447,71 @@ test("AC-28 skipped step", async ({ page, request }) => {
   const panel = page.getByLabel("step details");
   await expect(panel).toContainText(new RegExp(`implement · ${repo}[^\\n]*· skipped`));
   expect(errors).toStrictEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// RL-4 AC-20: the step panel of a debrief step (docs/specs/RL-4.md, Web step panel). Debriefs are
+// made through the API (assigned to dave); steps by `data-step`, items by `data-fp`, never counted.
+
+test.describe("RL-4 AC-20 debrief step panel", () => {
+  test("test_AC20_panel", async ({ page, request }) => {
+    test.setTimeout(45_000);
+    const d = await makeDebrief(request, { report: "REPORT-AC20 findings" });
+    await signInAs(page, "dave-e2e-token");
+    await page.goto(`/#/goal/${d.G}`);
+    const panel = page.getByLabel("step details");
+    // Control: the ready interactive step has the Assign button.
+    await page.locator(`[data-step="${d.G}.side"]`).click();
+    await expect(panel.getByRole("button", { name: "Assign step" })).toBeVisible();
+    await page.locator(`[data-step="${d.D}"]`).click();
+    const sec = panel.locator('section.debrief[aria-label="debrief"]');
+    await expect(sec).toHaveCount(1);
+    await expect(sec).toContainText("Assignee: @dave");
+    await expect(sec.locator("pre.report")).toContainText("REPORT-AC20 findings");
+    const a = sec.locator(`ul.items li[data-fp="${A}"]`);
+    await expect(a).toContainText("S1 Alpha leak · open");
+    await expect(a).toContainText(`possible repeat of ${A2}`);
+    await expect(sec.locator(`ul.items li[data-fp="${B}"]`)).toContainText("S2 Beta bug · open");
+    await expect(panel.getByRole("button", { name: "Assign step" })).toHaveCount(0);
+    // Mark as read: posts the read, then shows who read it.
+    const read = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/v1/steps/${d.D}/read`));
+    await sec.getByRole("button", { name: "Mark pre-read as read" }).click();
+    expect((await read).status()).toBe(200);
+    await expect(sec).toContainText("Read by @dave");
+    await expect(sec.getByRole("button", { name: "Mark pre-read as read" })).toHaveCount(0);
+    expect((await stepOf(request, d.dave, d.D)).read).toMatchObject({ user: "dave", round: 1 });
+    // A decision shows under Decided in debrief with Revert.
+    await claimAs(request, d.dave, d.D);
+    await dispose(request, d.dave, d.D, A, "accepted");
+    await page.reload();
+    await page.locator(`[data-step="${d.D}"]`).click();
+    await expect(sec.getByRole("heading", { name: "Decided in debrief" })).toBeVisible();
+    const decided = sec.locator(`li.decided[data-fp="${A}"]`);
+    await expect(decided).toHaveCount(1);
+    await expect(decided.getByRole("button", { name: `Revert ${A}` })).toBeVisible();
+  });
+
+  test("test_AC20_blocked_and_done", async ({ page, request }) => {
+    test.setTimeout(45_000);
+    const blocked = await makeDebrief(request, { audit: false });
+    const done = await makeDebrief(request);
+    await claimAs(request, done.dave, done.D);
+    const rv = await request.post(`/v1/steps/${done.D}/review`, { headers: done.dave.auth, data: { coverage: "complete", assessment: "clean", items: [], summary: "s" } });
+    expect(rv.status(), await rv.text()).toBe(201);
+    const fin = await request.post(`/v1/steps/${done.D}/done`, { headers: done.dave.auth, data: { summary: "ok" } });
+    expect(fin.ok(), await fin.text()).toBeTruthy();
+    await signInAs(page, "dave-e2e-token");
+    for (const d of [blocked, done]) {
+      await page.goto(`/#/goal/${d.G}`);
+      await page.locator(`[data-step="${d.D}"]`).click();
+      const sec = page.getByLabel("step details").locator('section.debrief[aria-label="debrief"]');
+      await expect(sec, d.D).toContainText("Assignee: @dave");
+      await expect(sec.getByRole("button", { name: "Mark pre-read as read" }), d.D).toHaveCount(0);
+      await expect(sec, d.D).not.toContainText("Read by");
+    }
+    // The blocked debrief has no report yet.
+    await page.goto(`/#/goal/${blocked.G}`);
+    await page.locator(`[data-step="${blocked.D}"]`).click();
+    await expect(page.getByLabel("step details").locator('section.debrief[aria-label="debrief"]')).toContainText("No report.");
+  });
 });

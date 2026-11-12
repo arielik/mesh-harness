@@ -1,12 +1,21 @@
 // Hub HTTP API request schemas and response shapes (plan §5.3–§5.6).
 
 import { z } from "zod";
-import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, TrailFile } from "./goal.ts";
+import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile } from "./goal.ts";
 import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
 import { PresetSnapshot, PulseParams } from "./pulse.ts";
-import { ReviewItem, ReviewRecord, type FoldMark, type ItemState, type StoredReview } from "./review.ts";
+import {
+  Disposition,
+  ReviewItem,
+  ReviewRecord,
+  type DispositionRow,
+  type FoldMark,
+  type ItemState,
+  type ItemView,
+  type StoredReview,
+} from "./review.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
 export const SESSION_COOKIE = "mesh_session";
@@ -222,6 +231,92 @@ export interface ReviewResult {
   applied: number;
   /** Dispositions not applied (a person decided those items in this goal). */
   ignored: { fingerprint: string; reason: string }[];
+  /** RL-4: fps whose disposition this debrief already recorded with mesh_dispose (`[]` outside debriefs). */
+  already: string[];
+}
+
+const Fingerprint = z.string().regex(/^[a-z2-7]{16}$/, "a fingerprint is 16 characters of a-z and 2-7");
+
+/** RL-4: body of `POST /v1/steps/:id/dispositions` (one decision of the person in a debrief). */
+export const DisposeRequest = z
+  .object({
+    fingerprint: Fingerprint,
+    disposition: Disposition,
+    reason: z.string().min(1).max(2000),
+    answer: z.string().min(1).max(4000),
+    until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "until is a date YYYY-MM-DD").optional(),
+    link: z.string().min(1).max(500).optional(),
+    sid: z.string().optional(),
+  })
+  .strict();
+export type DisposeRequest = z.infer<typeof DisposeRequest>;
+
+/** RL-4: reply of `POST /v1/steps/:id/dispositions`. */
+export interface DisposeResult {
+  disposition: DispositionRow;
+  item: ItemView;
+  /** Debrief items after this one. */
+  left: number;
+  note: Note;
+}
+
+/** RL-4: body of `POST /v1/steps/:id/dispositions/revert`. */
+export const RevertRequest = z.object({ fingerprint: Fingerprint, reason: z.string().min(1).max(2000).optional() }).strict();
+export type RevertRequest = z.infer<typeof RevertRequest>;
+
+/** RL-4: reply of `POST /v1/steps/:id/dispositions/revert`. */
+export interface RevertResult {
+  item: ItemView;
+  reverted: DispositionRow;
+  note: Note;
+}
+
+/** RL-4: a debrief disposition as the lists show it. */
+export type DecidedView = DispositionRow & { title: string; revertable: boolean };
+
+/** RL-4: an item of a debrief: evidence locations (never the agent's note) and possible repeats. */
+export type DebriefItem = ItemView & {
+  evidence: { path: string; lines?: [number, number] }[];
+  nearMatches: { fp: string; state: ItemState; title: string; symbol?: string }[];
+};
+
+/** RL-4: body of `POST /v1/steps/:id/read`. */
+export const ReadRequest = z.object({}).strict();
+
+/** RL-4: reply of `GET /v1/steps/:id/debrief`. */
+export interface DebriefView {
+  step: string;
+  goal: string;
+  title: string;
+  repo: string;
+  state: StepState;
+  /** Resolved (`@owner` → the goal's owner). */
+  assignee: string;
+  run?: string;
+  lineage?: string;
+  report?: { artifact: StoredArtifact; content: string | null };
+  items: DebriefItem[];
+  decided: DecidedView[];
+  read?: { user: string; at: number; round: number };
+}
+
+/** RL-4: one debrief in `GET /v1/debriefs`. */
+export interface DebriefSummary {
+  step: string;
+  goal: string;
+  title: string;
+  repo: string;
+  state: StepState;
+  /** Debrief items. */
+  items: number;
+  /** Read in the current round. */
+  read: boolean;
+}
+
+/** RL-4: reply of `GET /v1/debriefs`. */
+export interface DebriefList {
+  debriefs: DebriefSummary[];
+  decided: DecidedView[];
 }
 
 /** RL-1: body of `POST /v1/steps/:id/run`. */

@@ -144,7 +144,8 @@ describe("AC-25 compat (unit)", () => {
   it("test_AC25_tools", () => {
     const names = Object.keys(P.TOOLS as Record<string, unknown>);
     expect(names).toContain("mesh_review");
-    expect(names).not.toContain("mesh_dispose");
+    // RL-4 (Compatibility): TOOLS gains mesh_dispose.
+    expect(names).toContain("mesh_dispose");
     // Control: the RL-1 tools are still there.
     expect(names).toContain("mesh_artifact");
     expect(names).toContain("mesh_done");
@@ -155,5 +156,104 @@ describe("AC-25 compat (unit)", () => {
 
   it("test_AC25_tool_rules", () => {
     expect(P.MESH_TOOL_RULES).toStrictEqual(["mcp__mesh__mesh_context", "mcp__mesh__mesh_artifact", "mcp__mesh__mesh_review", "mcp__mesh__mesh_done"]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// RL-4 AC-01 (unit): the debrief schemas (docs/specs/RL-4.md, Types). New exports read loosely.
+
+describe("RL-4 AC-01 schemas", () => {
+  const FP = "abcdefghijklmn27";
+
+  it("test_AC01_step_policy_mode_and_assignee", () => {
+    for (const good of [{ mode: "debrief" }, { mode: "debrief", assignee: "@owner" }, { mode: "debrief", assignee: "bob" }, { mode: "debrief", assignee: "x".repeat(100) }]) ok(StepPolicy.safeParse(good));
+    for (const bad of ["@bob", "", "a b", "x".repeat(101), " bob"]) expect(StepPolicy.safeParse({ mode: "debrief", assignee: bad }).success, JSON.stringify(bad)).toBe(false);
+    const at = StepPolicy.safeParse({ mode: "debrief", assignee: "@bob" });
+    expect(JSON.stringify(at.error?.issues)).toContain("assignee is a user id or @owner");
+    // PlanStep gains the fields through StepPolicy.shape.
+    const ps = PlanStep.safeParse({ ...base, mode: "debrief", assignee: "@owner" });
+    ok(ps);
+    expect((ps.data as Record<string, unknown>).assignee).toBe("@owner");
+    expect(PlanStep.safeParse({ ...base, mode: "debrief", assignee: "@bob" }).success).toBe(false);
+    // Control: the old modes still parse, an unknown one does not.
+    ok(StepPolicy.safeParse({ mode: "headless" }));
+    ok(StepPolicy.safeParse({ mode: "interactive" }));
+    expect(StepPolicy.safeParse({ mode: "person" }).success).toBe(false);
+  });
+
+  it("test_AC01_dispose_request_strict", () => {
+    const valid = { fingerprint: FP, disposition: "accepted", reason: "r", answer: "yes, file it" };
+    ok(P.DisposeRequest.safeParse(valid));
+    ok(P.DisposeRequest.safeParse({ ...valid, disposition: "deferred", until: "2026-12-01", link: "https://tracker.invalid/1", sid: "s1" }));
+    ok(P.DisposeRequest.safeParse({ ...valid, reason: "r".repeat(2000), answer: "a".repeat(4000) }));
+    const { answer: _a, ...noAnswer } = valid;
+    for (const [name, bad] of [
+      ["missing answer", noAnswer],
+      ["empty reason", { ...valid, reason: "" }],
+      ["empty answer", { ...valid, answer: "" }],
+      ["uppercase fp", { ...valid, fingerprint: "ABCDEFGHIJKLMNOP" }],
+      ["15-char fp", { ...valid, fingerprint: FP.slice(1) }],
+      ["unknown key", { ...valid, x: 1 }],
+      ["bad until", { ...valid, until: "2026-1-1" }],
+      ["long reason", { ...valid, reason: "r".repeat(2001) }],
+      ["long answer", { ...valid, answer: "a".repeat(4001) }],
+      ["not a disposition", { ...valid, disposition: "open" }],
+    ] as const)
+      expect(P.DisposeRequest.safeParse(bad).success, name).toBe(false);
+  });
+
+  it("test_AC01_revert_and_read_request", () => {
+    ok(P.RevertRequest.safeParse({ fingerprint: FP }));
+    ok(P.RevertRequest.safeParse({ fingerprint: FP, reason: "wrong call" }));
+    expect(P.RevertRequest.safeParse({ fingerprint: FP, x: 1 }).success).toBe(false);
+    expect(P.RevertRequest.safeParse({ fingerprint: FP, reason: "" }).success).toBe(false);
+    expect(P.RevertRequest.safeParse({ fingerprint: "nope" }).success).toBe(false);
+    ok(P.ReadRequest.safeParse({}));
+    expect(P.ReadRequest.safeParse({ x: 1 }).success).toBe(false);
+  });
+
+  it("test_AC01_disposition_via", () => {
+    expect(P.DispositionVia.options).toStrictEqual(["stage", "debrief-session"]);
+  });
+
+  it("test_AC01_rl2_rows_parse_unchanged", () => {
+    const row = { lineage: "L", fp: FP, goal: "G1", step: "G1.v", round: 1, disposition: "dismissed", from: "open", reason: "not a bug", decider: { kind: "agent", key: "svc/validator", hash: "h1" }, via: "stage", at: 5 };
+    const r = P.DispositionRow.safeParse(row);
+    ok(r);
+    expect(r.data).toStrictEqual(row);
+    const base1 = { at: 5, goal: "G1", step: "G1.audit", round: 1 };
+    const fold = { ...base1, from: null, to: "open", kind: "fold", mark: "new" };
+    const carry = { ...base1, from: "dismissed", to: "dismissed", kind: "fold", mark: "repeat", carried: true };
+    const dispEntry = { ...base1, step: "G1.v", from: "open", to: "dismissed", kind: "disposition", disposition: "dismissed", reason: "r", decider: { kind: "agent", key: "k" }, via: "stage" };
+    for (const e of [fold, carry, dispEntry]) {
+      const x = P.ItemHistoryEntry.safeParse(e);
+      ok(x);
+      expect(x.data).toStrictEqual(e);
+    }
+    // RL-4 entries.
+    const session = { ...dispEntry, to: "accepted", disposition: "accepted", decider: { kind: "person", user: "alice" }, via: "debrief-session", answer: "file it" };
+    ok(P.ItemHistoryEntry.safeParse(session));
+    ok(P.DispositionRow.safeParse({ ...row, via: "debrief-session", answer: "file it", decider: { kind: "person", user: "alice" } }));
+    const revert = { ...base1, step: "G1.debrief", from: "accepted", to: "open", kind: "revert", disposition: "accepted", decider: { kind: "person", user: "alice" }, via: "ui" };
+    const rv = P.ItemHistoryEntry.safeParse(revert);
+    ok(rv);
+    expect(rv.data).toStrictEqual(revert);
+    ok(P.ItemHistoryEntry.safeParse({ ...revert, reason: "oops" }));
+    // Malformed ones.
+    expect(P.ItemHistoryEntry.safeParse({ ...dispEntry, via: "ui" }).success).toBe(false);
+    expect(P.ItemHistoryEntry.safeParse({ ...revert, decider: { kind: "agent", key: "k" } }).success).toBe(false);
+    expect(P.ItemHistoryEntry.safeParse({ ...revert, via: "stage" }).success).toBe(false);
+    expect(P.DispositionRow.safeParse({ ...row, via: "ui" }).success).toBe(false);
+  });
+
+  it("test_AC01_step_and_round_read", () => {
+    const step = { id: "G1.d", goal: "G1", planVersion: 1, kind: "review", repo: "r", title: "D", brief: "b", deps: [], state: "ready", fixCycles: 0, updatedAt: 0 };
+    const s = P.Step.safeParse({ ...step, read: { user: "alice", at: 1, round: 1 } });
+    ok(s);
+    expect(s.data.read).toStrictEqual({ user: "alice", at: 1, round: 1 });
+    expect(P.Step.safeParse({ ...step, read: { user: "alice", at: 1, round: 0 } }).success).toBe(false);
+    ok(P.Round.safeParse({ n: 1, user: "alice", finishedAt: 2, outcome: "done", read: { user: "alice", at: 1 } }));
+    // Control: a step without read still parses.
+    ok(P.Step.safeParse(step));
   });
 });

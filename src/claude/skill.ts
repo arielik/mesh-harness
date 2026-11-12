@@ -1,7 +1,7 @@
 // `mesh setup` installs the mesh skill into Claude Code's user skills folder
 // (~/.claude/skills/mesh/SKILL.md). It replaces the block older versions added to ~/.claude/CLAUDE.md:
 // a skill is loaded only when a session needs it, and `mesh skill` prints the copy that matches
-// the installed mesh.
+// the installed mesh. RL-4: the same functions install the `mesh-debrief` skill (given its text).
 
 import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -9,22 +9,22 @@ import { MESH_SKILL, SKILL_MARKER, writeFileAtomic } from "../protocol/index.ts"
 
 export type SkillStatus = "missing" | "current" | "outdated" | "foreign";
 
-export function skillStatus(path: string): SkillStatus {
+export function skillStatus(path: string, text: string = MESH_SKILL): SkillStatus {
   if (!existsSync(path)) return "missing";
-  const text = readFileSync(path, "utf8");
-  if (!text.includes(SKILL_MARKER)) return "foreign";
-  return text === MESH_SKILL ? "current" : "outdated";
+  const have = readFileSync(path, "utf8");
+  if (!have.includes(SKILL_MARKER)) return "foreign";
+  return have === text ? "current" : "outdated";
 }
 
 /**
  * Write the skill. A SKILL.md at that path that mesh did not write is left alone (the result says
  * so); mesh's own copy is refreshed when it is out of date.
  */
-export function installSkill(path: string): { changed: boolean; foreign: boolean } {
-  const st = skillStatus(path);
+export function installSkill(path: string, text: string = MESH_SKILL): { changed: boolean; foreign: boolean } {
+  const st = skillStatus(path, text);
   if (st === "foreign") return { changed: false, foreign: true };
   if (st === "current") return { changed: false, foreign: false };
-  writeFileAtomic(path, MESH_SKILL);
+  writeFileAtomic(path, text);
   return { changed: true, foreign: false };
 }
 

@@ -26,6 +26,9 @@ import {
   blindSeparated,
   canApprove,
   claim,
+  debriefAssignee,
+  DEBRIEF_CONSUMES,
+  isDebrief,
   judgeDone,
   reopenText,
   validatePolicies,
@@ -122,6 +125,18 @@ import type {
   ArtifactKind,
   ArtifactMediaType,
   Decider,
+  DebriefItem,
+  DebriefList,
+  DebriefSummary,
+  DebriefView,
+  DecidedView,
+  DisposeRequest,
+  DisposeResult,
+  DispositionRow,
+  DispositionVia,
+  Note,
+  RevertRequest,
+  RevertResult,
   Fold,
   ItemRow,
   ItemState,
@@ -197,6 +212,7 @@ const LOGIN_TTL = 10 * 60_000;
 /** How long a CLI's one-time login code lives: long enough to copy it from a browser into a terminal. */
 const CLI_CODE_TTL = 5 * 60_000;
 const ONLINE_MS = 2 * 60_000;
+const DAY_MS = 86_400_000;
 
 /** RL-2: the order of a lineage's items on every backend: most severe first, then first seen, then fp. */
 function byItemOrder(a: ItemRow, b: ItemRow): number {
@@ -450,6 +466,8 @@ export class HubService {
     if (!goal || !stick) return;
     const s = await this.store.getStep(stepId);
     if (!s || s.state !== "ready" || s.kind === "gate" || s.offer?.state === "offered") return;
+    // RL-4: a debrief is never offered; only its assignee runs it.
+    if (isDebrief(s.policy)) return;
     const machine = await this.store.getMachine(stick.to.machine);
     if (!machine) return;
     let session: HubSession | undefined;
@@ -473,6 +491,7 @@ export class HubService {
 
   /** The claim itself (gate, parked and blind checks, the conditional save, `step.claimed`). */
   private async claimInTx(actor: Actor, step: Step, sid: string | undefined, holderMachine: string | undefined): Promise<Step> {
+    await this.refuseNonAssignee(actor, step);
     if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it (mesh step approve ${step.id}, or the web dashboard)`);
     if (step.state === "parked") throw new HubError(409, `${step.id} is parked (${step.parkedReason ?? "by a rule"}); a person resumes it (mesh step resume ${step.id})`);
     const blind = blindConflict(step, await this.store.listSteps({ goal: step.goal }), { userId: actor.userId, sid }, this.config.blindGuard);
@@ -512,6 +531,7 @@ export class HubService {
       const step = await this.stepOr404(id);
       if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it`);
       if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}, not ready`);
+      if (isDebrief(step.policy)) throw new HubError(409, `${step.id} is a debrief step: only ${await this.assigneeOf(step)} runs it (mesh debrief ${step.id})`);
       if (step.offer?.state === "offered") throw new HubError(409, `${step.id} is already offered to ${await this.targetText(step.offer.to)}; withdraw it first (mesh withdraw ${step.id})`);
       const target = await this.resolveTarget(actor, req.to);
       const goal = await this.goalOr404(step.goal);
@@ -557,10 +577,10 @@ export class HubService {
     });
   }
 
-  /** The steps a goal assign offers: ready, not a gate, no open offer; by id. */
+  /** The steps a goal assign offers: ready, not a gate, not a debrief (RL-4), no open offer; by id. */
   private async offerableSteps(goalId: string): Promise<Step[]> {
     return (await this.store.listSteps({ goal: goalId }))
-      .filter((s) => s.state === "ready" && s.kind !== "gate" && s.offer?.state !== "offered")
+      .filter((s) => s.state === "ready" && s.kind !== "gate" && !isDebrief(s.policy) && s.offer?.state !== "offered")
       .sort((a, b) => cmp(a.id, b.id));
   }
 
@@ -789,10 +809,10 @@ export class HubService {
    */
   private async stepInputs(step: Step, goal: Goal): Promise<StepInput[]> {
     const p = step.policy;
-    if (!p?.inputs?.length) return [];
+    if (!p?.inputs?.length && !isDebrief(p)) return [];
     const steps = await this.store.listSteps({ goal: step.goal });
     const hidden = new Set(blindPartners(step, steps).map((o) => o.id));
-    const reads = p.reads ? new Set(p.reads.map((r) => `${step.goal}.${r}`)) : undefined;
+    const reads = p?.reads ? new Set(p.reads.map((r) => `${step.goal}.${r}`)) : undefined;
     const out: StepInput[] = [];
     const seen = new Set<string>();
     let served = 0;
@@ -824,7 +844,13 @@ export class HubService {
       }
       return true;
     };
-    for (const x of p.inputs) {
+    // RL-4: a debrief starts with its items and the run's report.
+    if (isDebrief(p)) {
+      const d = await this.debriefData(step, goal, steps);
+      if (d.run && d.items.length) push({ from: d.run.id, artifact: "debrief", kind: "review", title: `debrief items (${d.items.length})` }, JSON.stringify({ lineage: d.lineage, items: d.items }));
+      if (d.run && d.report?.content) push({ from: d.run.id, artifact: d.report.artifact.id, kind: "report", title: d.report.artifact.title ?? "report" }, d.report.content);
+    }
+    for (const x of p?.inputs ?? []) {
       if (served >= MAX_ALL) break;
       if (x === "artifacts") {
         if (!(await fromSteps(step.deps))) break;
@@ -942,7 +968,9 @@ export class HubService {
       const p = step.policy;
       if (!p?.output) throw new HubError(409, `${step.id} has no output: review-record`);
       if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; only a held step takes a review record`);
-      if (step.holderUser !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      // RL-4: a debrief's record is the person's: no admin exception.
+      const debrief = isDebrief(p);
+      if (step.holderUser !== actor.userId && (debrief || !actor.roles.includes("admin"))) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
       if (b.sid) this.refuseForeign(await this.callerMachine(actor, b.sid), b.sid);
       const n = (step.rounds?.length ?? 0) + 1;
       if (await this.store.getReview(step.id, n)) throw new HubError(409, `${step.id} round ${n} already has a review record`);
@@ -963,6 +991,7 @@ export class HubService {
       // Problems: the two record-level ones, then the first failing check of each disposition.
       const problems: string[] = [];
       const ignored: { fingerprint: string; reason: string }[] = [];
+      const already: string[] = [];
       const toApply: RecordDisposition[] = [];
       if (raising && fields.dispositions.length) problems.push(`dispositions need consumes; ${step.id} raises items`);
       if (!raising && fields.items.length) problems.push(`${step.id} consumes items; its record may not raise new ones`);
@@ -978,8 +1007,13 @@ export class HubService {
           else if (given.has(fp)) problem = "listed twice";
           else if (!runFps.has(fp)) problem = `no item ${fp} in the record of ${run?.id ?? step.id}`;
           else {
-            const last = decider.kind === "agent" ? (await this.store.listDispositions({ lineage, fp, goal: step.goal })).at(-1) : undefined;
-            if (last?.decider.kind === "person") ignored.push({ fingerprint: fp, reason: `decided by ${last.decider.user} in this goal` });
+            // RL-4: an fp this debrief decided with mesh_dispose is never applied again by its record.
+            const session = debrief ? await this.sessionDecision(lineage, fp, step.id, n) : undefined;
+            const last = !session && decider.kind === "agent" ? (await this.store.listDispositions({ lineage, fp, goal: step.goal })).at(-1) : undefined;
+            if (session) {
+              if (session.disposition === d.disposition) already.push(fp);
+              else problem = `${fp} was decided in this debrief as ${session.disposition}; list that decision or leave it out`;
+            } else if (last?.decider.kind === "person") ignored.push({ fingerprint: fp, reason: `decided by ${last.decider.user} in this goal` });
             else {
               const row = await this.store.getItem(lineage, fp);
               if (!row || !consumes.includes(row.state)) problem = `item ${fp} is ${row?.state ?? "unknown"}; ${step.id} acts on ${consumes.join(", ")}`;
@@ -1044,30 +1078,13 @@ export class HubService {
 
       // Dispositions of a consuming record (only when the whole record has no problem).
       const applied: { fp: string; disposition: string; from: ItemState }[] = [];
+      const via: DispositionVia = debrief ? "debrief-session" : "stage";
       for (const d of toApply) {
         const row = await this.store.getItem(lineage, d.fingerprint);
         if (!row) continue;
-        const next: ItemRow = { ...row, state: d.disposition };
-        if (d.disposition === "dismissed") {
-          if (row.eh) next.dismissedEh = row.eh;
-          else delete next.dismissedEh;
-        }
-        if (d.disposition === "deferred" && d.until) next.until = d.until;
-        if (d.disposition === "accepted" && d.link) next.link = d.link;
-        await this.store.saveItem(next);
-        await this.store.addItemHistory(lineage, d.fingerprint, {
-          ...seenAt,
-          from: row.state,
-          to: d.disposition,
-          kind: "disposition",
-          disposition: d.disposition,
-          reason: d.reason,
-          decider,
-          via: "stage",
-          ...(d.link ? { link: d.link } : {}),
-          ...(d.until ? { until: d.until } : {}),
-        });
+        await this.applyDisposition(lineage, row, d, decider, via, seenAt);
         applied.push({ fp: d.fingerprint, disposition: d.disposition, from: row.state });
+        if (debrief) await this.debriefNote(actor, step, sid, `debrief: ${d.disposition} ${d.fingerprint} "${row.title}": ${d.reason}`, now);
       }
 
       const record: StoredRecord = { ...fields, items };
@@ -1121,6 +1138,7 @@ export class HubService {
           ...(fold ? { fold } : {}),
           dispositions: applied.length,
           ignored: ignored.length,
+          already: already.length,
           undeclaredRules,
         },
       });
@@ -1131,7 +1149,7 @@ export class HubService {
           user: actor.userId,
           goal: goal.id,
           step: step.id,
-          payload: { lineage, fp: a.fp, disposition: a.disposition, from: a.from, decider: decider.kind, via: "stage", round: n },
+          payload: { lineage, fp: a.fp, disposition: a.disposition, from: a.from, decider: decider.kind, via, round: n },
         });
       }
       return {
@@ -1143,8 +1161,61 @@ export class HubService {
         resolved,
         applied: applied.length,
         ignored,
+        already,
       };
     });
+  }
+
+  /**
+   * Apply one disposition to an item row (state, `dismissedEh`, `until`, `link`) and add its history
+   * entry. Returns the stored disposition as a row.
+   */
+  private async applyDisposition(
+    lineage: string,
+    row: ItemRow,
+    d: Pick<RecordDisposition, "fingerprint" | "disposition" | "reason" | "until" | "link">,
+    decider: Decider,
+    via: DispositionVia,
+    seenAt: { goal: string; step: string; round: number; at: number },
+    answer?: string,
+  ): Promise<DispositionRow> {
+    const next: ItemRow = { ...row, state: d.disposition };
+    if (d.disposition === "dismissed") {
+      if (row.eh) next.dismissedEh = row.eh;
+      else delete next.dismissedEh;
+    }
+    if (d.disposition === "deferred" && d.until) next.until = d.until;
+    if (d.disposition === "accepted" && d.link) next.link = d.link;
+    await this.store.saveItem(next);
+    await this.store.addItemHistory(lineage, d.fingerprint, {
+      ...seenAt,
+      from: row.state,
+      to: d.disposition,
+      kind: "disposition",
+      disposition: d.disposition,
+      reason: d.reason,
+      decider,
+      via,
+      ...(answer !== undefined ? { answer } : {}),
+      ...(d.link ? { link: d.link } : {}),
+      ...(d.until ? { until: d.until } : {}),
+    });
+    return {
+      lineage,
+      fp: d.fingerprint,
+      goal: seenAt.goal,
+      step: seenAt.step,
+      round: seenAt.round,
+      disposition: d.disposition,
+      from: row.state,
+      reason: d.reason,
+      decider,
+      via,
+      ...(answer !== undefined ? { answer } : {}),
+      ...(d.link ? { link: d.link } : {}),
+      ...(d.until ? { until: d.until } : {}),
+      at: seenAt.at,
+    };
   }
 
   /** `GET /v1/steps/:id/reviews`: a step's review records by round. */
@@ -1161,6 +1232,286 @@ export class HubService {
       const rows = await this.store.listItems(lineage);
       const items = (await this.withHistory(lineage, rows)).sort(byItemOrder);
       return { lineage, items };
+    });
+  }
+
+  // ---------- debriefs (RL-4) ----------
+
+  /** The assignee of a debrief step, resolved now (`@owner` → the goal's owner at this moment). */
+  private async assigneeOf(step: Step, goal?: Goal): Promise<string> {
+    return debriefAssignee(step.policy, (goal ?? (await this.goalOr404(step.goal))).ownerId);
+  }
+
+  /** Only a debrief's assignee may hold it (no admin or owner exception). */
+  private async refuseNonAssignee(actor: Actor, step: Step, goal?: Goal): Promise<void> {
+    if (!isDebrief(step.policy)) return;
+    const assignee = await this.assigneeOf(step, goal);
+    if (actor.userId !== assignee) throw new HubError(403, `${step.id} is a debrief for ${assignee}; only they can take it`);
+  }
+
+  private async debriefOr409(id: string): Promise<Step> {
+    const step = await this.stepOr404(id);
+    if (!isDebrief(step.policy)) throw new HubError(409, `${step.id} is not a debrief step`);
+    return step;
+  }
+
+  /**
+   * What a debrief step works from: its run, the run's record's lineage, the debrief items (items it
+   * may act on now, most severe first, with evidence locations and near-matches) and the run's report.
+   */
+  private async debriefData(
+    step: Step,
+    goal: Goal,
+    steps: readonly Step[],
+  ): Promise<{ run?: Step; lineage?: string; items: DebriefItem[]; report?: { artifact: StoredArtifact; content: string | null } }> {
+    const { run, record } = await this.runRecordOf(step, steps);
+    if (!run) return { items: [] };
+    const lineage = record?.lineage ?? lineageOf(goal, run);
+    const report = await this.runReportOf(run);
+    const out = { run, lineage, ...(report ? { report } : {}) };
+    if (!record) return { ...out, items: [] };
+    const consumes: readonly ItemState[] = step.policy?.consumes ?? DEBRIEF_CONSUMES;
+    const rows = (await this.recordItems(record)).filter((r) => consumes.includes(r.state)).sort(byItemOrder);
+    if (!rows.length) return { ...out, items: [] };
+    const all = await this.store.listItems(lineage);
+    const items: DebriefItem[] = [];
+    for (const v of await this.withHistory(lineage, rows)) {
+      const first = record.record.items.find((i) => i.fp === v.fp);
+      items.push({
+        ...v,
+        evidence: (first?.evidence ?? []).map((e) => ({ path: e.path, ...(e.lines ? { lines: e.lines } : {}) })),
+        nearMatches: all
+          .filter((o) => o.fp !== v.fp && o.rule === v.rule && ((v.path !== undefined && o.path === v.path) || (v.symbol !== undefined && o.symbol === v.symbol && o.path !== v.path)))
+          .sort((a, b) => cmp(a.fp, b.fp))
+          .map((o) => ({ fp: o.fp, state: o.state, title: o.title, ...(o.symbol !== undefined ? { symbol: o.symbol } : {}) })),
+      });
+    }
+    return { ...out, items };
+  }
+
+  /** The run step's `report` artifact uploaded last in its highest round that has one. */
+  private async runReportOf(run: Step): Promise<{ artifact: StoredArtifact; content: string | null } | undefined> {
+    const reports = (await this.store.listArtifacts({ step: run.id })).filter((a) => a.kind === "report");
+    if (!reports.length) return undefined;
+    const top = Math.max(...reports.map((a) => a.round));
+    const a = reports.filter((x) => x.round === top).at(-1) as StoredArtifact;
+    const got = await this.store.getArtifact(a.id);
+    return { artifact: got?.artifact ?? a, content: got?.content ? got.content.toString("utf8") : null };
+  }
+
+  /** The latest debrief disposition of `fp` by this step in round `n` (whatever happened since). */
+  private async sessionDecision(lineage: string, fp: string, stepId: string, n: number): Promise<DispositionRow | undefined> {
+    return (await this.store.listDispositions({ lineage, fp, step: stepId })).filter((d) => d.via === "debrief-session" && d.round === n).at(-1);
+  }
+
+  /**
+   * A debrief disposition is revertable while it is the latest history entry of its item. Only the
+   * last disposition row of an item is ever a candidate, so two equal rows are never both revertable.
+   */
+  private async isRevertable(d: DispositionRow, laterRows: readonly DispositionRow[] = []): Promise<boolean> {
+    if (d.via !== "debrief-session") return false;
+    if (laterRows.some((o) => o.lineage === d.lineage && o.fp === d.fp)) return false;
+    const last = (await this.store.itemHistory(d.lineage, d.fp)).at(-1);
+    return (
+      last?.kind === "disposition" &&
+      last.via === "debrief-session" &&
+      last.step === d.step &&
+      last.round === d.round &&
+      last.at === d.at &&
+      last.disposition === d.disposition &&
+      last.from === d.from
+    );
+  }
+
+  /** Debrief dispositions as the lists show them (each with its item's title and whether it is revertable). */
+  private async decidedViews(rows: readonly DispositionRow[]): Promise<DecidedView[]> {
+    const out: DecidedView[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const d = rows[i] as DispositionRow;
+      out.push({ ...d, title: (await this.store.getItem(d.lineage, d.fp))?.title ?? "", revertable: await this.isRevertable(d, rows.slice(i + 1)) });
+    }
+    return out;
+  }
+
+  /** A note on the step (as `POST /v1/steps/:id/note`), with its `step.noted` event. */
+  private async debriefNote(actor: Actor, step: Step, sid: string | undefined, text: string, at: number): Promise<Note> {
+    const note = await this.store.addNote({ step: step.id, user: actor.userId, ...(sid ? { sid } : {}), text, at });
+    await this.emit({ at, type: "step.noted", user: actor.userId, sid, goal: step.goal, step: step.id });
+    return note;
+  }
+
+  /** `POST /v1/steps/:id/read`: the assignee marks the pre-read as read. */
+  async readStep(actor: Actor, id: string): Promise<{ read: { user: string; at: number; round: number } }> {
+    return await this.goalTx(async () => {
+      const step = await this.debriefOr409(id);
+      await this.refuseNonAssignee(actor, step);
+      if (step.state !== "ready" && step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}`);
+      const now = this.now();
+      const read = { user: actor.userId, at: now, round: (step.rounds?.length ?? 0) + 1 };
+      await this.saveStepFrom({ ...step, read, updatedAt: now }, step);
+      await this.emit({ at: now, type: "step.read", user: actor.userId, goal: step.goal, step: step.id, payload: { round: read.round } });
+      return { read };
+    });
+  }
+
+  /** `GET /v1/steps/:id/debrief`: the pre-read and the decisions of a debrief step. */
+  async debriefView(id: string): Promise<DebriefView> {
+    return this.store.tx(async () => {
+      const step = await this.debriefOr409(id);
+      const goal = await this.goalOr404(step.goal);
+      const steps = await this.store.listSteps({ goal: goal.id });
+      const d = await this.debriefData(step, goal, steps);
+      const decided = await this.decidedViews((await this.store.listDispositions({ step: step.id })).filter((x) => x.via === "debrief-session"));
+      return {
+        step: step.id,
+        goal: goal.id,
+        title: step.title,
+        repo: step.repo,
+        state: step.state,
+        assignee: await this.assigneeOf(step, goal),
+        ...(d.run ? { run: d.run.id, lineage: d.lineage } : {}),
+        ...(d.report ? { report: d.report } : {}),
+        items: d.items,
+        decided,
+        ...(step.read ? { read: step.read } : {}),
+      };
+    });
+  }
+
+  /** `GET /v1/debriefs`: the caller's open debriefs and their revertable decisions of the last 7 days. */
+  async debriefs(actor: Actor): Promise<DebriefList> {
+    return this.store.tx(async () => {
+      const goals = new Map<string, Goal | undefined>();
+      const goalOf = async (id: string): Promise<Goal | undefined> => {
+        if (!goals.has(id)) goals.set(id, await this.store.getGoal(id));
+        return goals.get(id);
+      };
+      const mine: Step[] = [];
+      for (const state of ["ready", "claimed", "paused"] as const) {
+        for (const s of await this.store.listSteps({ state })) {
+          if (!isDebrief(s.policy)) continue;
+          const g = await goalOf(s.goal);
+          if (g && debriefAssignee(s.policy, g.ownerId) === actor.userId) mine.push(s);
+        }
+      }
+      mine.sort((a, b) => cmp(a.id, b.id));
+      const debriefs: DebriefSummary[] = [];
+      for (const s of mine) {
+        const g = (await goalOf(s.goal)) as Goal;
+        const d = await this.debriefData(s, g, await this.store.listSteps({ goal: g.id }));
+        debriefs.push({ step: s.id, goal: s.goal, title: s.title, repo: s.repo, state: s.state, items: d.items.length, read: s.read?.round === (s.rounds?.length ?? 0) + 1 });
+      }
+      const since = this.now() - 7 * DAY_MS;
+      const ids = (await this.store.listSteps({ updatedSince: since })).filter((s) => isDebrief(s.policy)).map((s) => s.id);
+      const rows = (await this.store.listDispositions({ steps: ids, since })).filter((d) => d.via === "debrief-session");
+      const decided: DecidedView[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const d = rows[i] as DispositionRow;
+        if (d.decider.kind !== "person" || d.decider.user !== actor.userId) continue;
+        if (!(await this.isRevertable(d, rows.slice(i + 1)))) continue;
+        decided.push({ ...d, title: (await this.store.getItem(d.lineage, d.fp))?.title ?? "", revertable: true });
+      }
+      decided.reverse();
+      decided.sort((a, b) => b.at - a.at);
+      return { debriefs, decided };
+    });
+  }
+
+  /** `POST /v1/steps/:id/dispositions`: one decision of the person in a held debrief. */
+  async disposeStep(actor: Actor, id: string, b: DisposeRequest): Promise<DisposeResult> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      const p = step.policy;
+      if (!isDebrief(p)) throw new HubError(409, `${step.id} is not a debrief step; a stage records its dispositions in its review record (mesh_review)`);
+      if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; only a held debrief takes dispositions`);
+      if (step.holderUser !== actor.userId) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      if (b.sid) this.refuseForeign(await this.callerMachine(actor, b.sid), b.sid);
+      const n = (step.rounds?.length ?? 0) + 1;
+      if (await this.store.getReview(step.id, n)) throw new HubError(409, `${step.id} round ${n} already has a review record`);
+      const goal = await this.goalOr404(step.goal);
+      const steps = await this.store.listSteps({ goal: goal.id });
+      const { run, record } = await this.runRecordOf(step, steps);
+      const lineage = record?.lineage ?? lineageOf(goal, run ?? step);
+      const consumes: readonly ItemState[] = p?.consumes ?? DEBRIEF_CONSUMES;
+      const fp = b.fingerprint;
+      const runFps = new Set(record ? uniqueFps(record.record.items) : []);
+      let problem: string | undefined;
+      let row: ItemRow | undefined;
+      if (!p?.may_set?.includes(b.disposition)) problem = `${step.id} may not set ${b.disposition} (may_set: ${p?.may_set?.join(", ") ?? "none"})`;
+      else if (b.disposition === "deferred" && !b.until) problem = "deferred needs until (YYYY-MM-DD)";
+      else if (!runFps.has(fp)) problem = `no item ${fp} in the record of ${run?.id ?? step.id}`;
+      else {
+        row = await this.store.getItem(lineage, fp);
+        // A change of mind: the item's latest disposition is this step's in this round.
+        const latest = (await this.store.listDispositions({ lineage, fp })).at(-1);
+        const own = latest !== undefined && latest.step === step.id && latest.round === n && latest.via === "debrief-session";
+        if (!row || (!consumes.includes(row.state) && !own)) problem = `item ${fp} is ${row?.state ?? "unknown"}; ${step.id} acts on ${consumes.join(", ")}`;
+      }
+      if (problem || !row) throw new HubError(422, problem ?? `no item ${fp}`);
+      const now = this.now();
+      const seenAt = { goal: goal.id, step: step.id, round: n, at: now };
+      const disposition = await this.applyDisposition(lineage, row, b, { kind: "person", user: actor.userId }, "debrief-session", seenAt, b.answer);
+      const note = await this.debriefNote(actor, step, b.sid, `debrief: ${b.disposition} ${fp} "${row.title}": ${b.reason}`, now);
+      await this.emit({
+        at: now,
+        type: "item.disposed",
+        user: actor.userId,
+        goal: goal.id,
+        step: step.id,
+        payload: { lineage, fp, disposition: b.disposition, from: row.state, decider: "person", via: "debrief-session", round: n },
+      });
+      await this.saveStepFrom({ ...step, updatedAt: now }, step);
+      const after = await this.debriefData(step, goal, steps);
+      const saved = (await this.store.getItem(lineage, fp)) as ItemRow;
+      const [item] = await this.withHistory(lineage, [saved]);
+      return { disposition, item: item as ItemView, left: after.items.length, note };
+    });
+  }
+
+  /** `POST /v1/steps/:id/dispositions/revert`: undo a debrief decision while it is the item's latest change. */
+  async revertDisposition(actor: Actor, id: string, b: RevertRequest): Promise<RevertResult> {
+    return await this.goalTx(async () => {
+      const step = await this.debriefOr409(id);
+      const fp = b.fingerprint;
+      const d = (await this.store.listDispositions({ step: step.id, fp })).filter((x) => x.via === "debrief-session").at(-1);
+      if (!d) throw new HubError(404, `${step.id} has no debrief disposition of ${fp}`);
+      const goal = await this.goalOr404(step.goal);
+      const decider = d.decider.kind === "person" ? d.decider.user : "";
+      if (actor.userId !== decider && actor.userId !== goal.ownerId && !actor.roles.includes("admin")) throw new HubError(403, `only ${decider}, the goal owner or an admin can revert this`);
+      if (!(await this.isRevertable(d))) throw new HubError(409, `${fp} changed after the debrief decided it; nothing to revert`);
+      const row = await this.store.getItem(d.lineage, fp);
+      if (!row) throw new HubError(409, `${fp} changed after the debrief decided it; nothing to revert`);
+      const now = this.now();
+      const to = d.from;
+      const next: ItemRow = { ...row, state: to };
+      if (to === "dismissed" && row.eh) next.dismissedEh = row.eh;
+      else delete next.dismissedEh;
+      if (to !== "deferred") delete next.until;
+      await this.store.saveItem(next);
+      await this.store.addItemHistory(d.lineage, fp, {
+        at: now,
+        goal: step.goal,
+        step: step.id,
+        round: d.round,
+        from: d.disposition,
+        to,
+        kind: "revert",
+        disposition: d.disposition,
+        decider: { kind: "person", user: actor.userId },
+        via: "ui",
+        ...(b.reason ? { reason: b.reason } : {}),
+      });
+      const note = await this.debriefNote(actor, step, undefined, `debrief: reverted ${fp} to ${to} (was ${d.disposition})`, now);
+      await this.emit({
+        at: now,
+        type: "item.reverted",
+        user: actor.userId,
+        goal: step.goal,
+        step: step.id,
+        payload: { lineage: d.lineage, fp, from: d.disposition, to, round: d.round, via: "ui" },
+      });
+      const [item] = await this.withHistory(d.lineage, [next]);
+      return { item: item as ItemView, reverted: d, note };
     });
   }
 
@@ -1886,6 +2237,8 @@ export class HubService {
    */
   async listSteps(filter: { goal?: string | undefined; ready?: boolean; repo?: string | undefined; mine?: string | undefined }, viewer?: { userId: string; machineId?: string | undefined }): Promise<Step[]> {
     let steps = await this.store.listSteps({ goal: filter.goal, state: filter.ready ? "ready" : undefined, holderUser: filter.mine });
+    // RL-4: a debrief is never picked from a ready list (mesh next, mesh_next, the TUI n key, autopilot).
+    if (filter.ready) steps = steps.filter((s) => !isDebrief(s.policy));
     if (filter.repo) {
       const want = filter.repo;
       steps = steps.filter((s) => !s.repo || s.repo === want || repoMatches({ id: want, name: want.slice(want.lastIndexOf("/") + 1) }, s.repo) || repoMatches({ id: s.repo, name: s.repo.slice(s.repo.lastIndexOf("/") + 1) }, want));
@@ -2061,6 +2414,8 @@ export class HubService {
       const artifactIds = (await this.store.listArtifacts({ step: step.id, round: round.n })).map((a) => a.id);
       if (artifactIds.length) round.artifactIds = artifactIds;
       if (rec?.fold) round.fold = rec.fold;
+      // RL-4: the pre-read of a debrief in this round.
+      if (step.read && step.read.round === n) round.read = { user: step.read.user, at: step.read.at };
       // A recorded round is done: judgeDone's caps, parking and failure routing do not apply.
       const decision = rec ? ({ action: "done" } as const) : judgeDone(step, round, explicit, plan?.acs);
 
@@ -2233,6 +2588,7 @@ export class HubService {
     return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
+      await this.refuseNonAssignee(actor, step, goal);
       const holder = await this.sessionOf(step.holderSid);
       const stalledSince = holder?.state === "stalled" ? (holder.lastStopAt ?? holder.lastEventAt) : undefined;
       const previous = step.holderUser;
@@ -3008,6 +3364,8 @@ export class HubService {
    * timeout), withdraw a timed-out one, then offer the run step to the first candidate not tried.
    */
   private async attempt(slot: PulseSlot, p: Pulse, goal: Goal, rs: Step, now: number): Promise<PulseSlot> {
+    // RL-4: a debrief is never offered (defensive: a pulse's run step is a headless one).
+    if (isDebrief(rs.policy)) return slot;
     let s = slot;
     let step = rs;
     const expiry = this.config.thresholds.offerExpiryMs;
@@ -3452,6 +3810,11 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `${String(payload.disposition)} item ${String(payload.fp)} of ${s}`;
     case "step.skipped":
       return `skipped ${s} (nothing to consume)`;
+    // RL-4: ids only.
+    case "item.reverted":
+      return `reverted item ${String(payload.fp)} of ${s}`;
+    case "step.read":
+      return `read the pre-read of ${s}`;
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }

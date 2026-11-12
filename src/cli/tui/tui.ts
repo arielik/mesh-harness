@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { attachCommand } from "../../claude/index.ts";
 import { jumpToPane, serverFromEnv } from "../../mux/index.ts";
-import { parseLabels, type FleetView, type OfferView, type Session, type SessionsResponse } from "../../protocol/index.ts";
+import { parseLabels, type DebriefSummary, type DecidedView, type FleetView, type OfferView, type Session, type SessionsResponse } from "../../protocol/index.ts";
 import type { DaemonClient, DaemonStatus } from "../client.ts";
 import { labelsLine, MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, renderOffers, whoOf, type GoalRow } from "./render.ts";
 
@@ -71,8 +71,13 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   let fleetTimer: NodeJS.Timeout | undefined;
   /** MM-3: steps offered to this machine (refreshed every 5 s; the header badge), and the `o` panel. */
   let offers: OfferView[] = [];
+  /** RL-4: the caller's debriefs and debrief decisions (empty when the hub cannot be asked). */
+  let debriefs: DebriefSummary[] = [];
+  let decided: DecidedView[] = [];
   let offersOpen = false;
+  /** An offer's step id, a debrief's step id, or `decided:<step>:<fp>`. */
   let selectedOffer: string | undefined;
+  const panelIds = (): string[] => [...offers.map((o) => o.step), ...debriefs.map((d) => d.step), ...decided.map((e) => `decided:${e.step}:${e.fp}`)];
   let stopped = false;
   let hubTag = "";
   let ticks = 0;
@@ -80,8 +85,9 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   const draw = () => {
     if (paused || stopped) return;
     if (offersOpen) {
-      if (!offers.some((o) => o.step === selectedOffer)) selectedOffer = offers[0]?.step;
-      const lines = renderOffers(offers, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, now: Date.now(), selected: selectedOffer, status });
+      const ids = panelIds();
+      if (selectedOffer === undefined || !ids.includes(selectedOffer)) selectedOffer = ids[0];
+      const lines = renderOffers(offers, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, now: Date.now(), selected: selectedOffer, status, debriefs, decided });
       out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
       return;
     }
@@ -109,7 +115,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
       status,
       input: prompt ? { label: prompt.label, value: prompt.value } : undefined,
       color: true,
-      offers: offers.length,
+      offers: offers.length + debriefs.length,
     });
     out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
   };
@@ -163,12 +169,22 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
     } catch {
       offers = [];
     }
+    // RL-4: without debriefs (no credentials, hub offline, any error) the panel shows offers only.
+    try {
+      const d = await client.debriefs();
+      debriefs = d.debriefs;
+      decided = d.decided;
+    } catch {
+      debriefs = [];
+      decided = [];
+    }
     draw();
   };
   const moveOffer = (delta: number) => {
-    if (offers.length === 0) return;
-    const i = Math.max(0, offers.findIndex((o) => o.step === selectedOffer));
-    selectedOffer = offers[Math.min(offers.length - 1, Math.max(0, i + delta))]?.step;
+    const ids = panelIds();
+    if (ids.length === 0) return;
+    const i = Math.max(0, ids.indexOf(selectedOffer ?? ""));
+    selectedOffer = ids[Math.min(ids.length - 1, Math.max(0, i + delta))];
     draw();
   };
   const closeMachines = () => {
@@ -254,6 +270,28 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         if (key === "\x1b[B" || key === "j") return moveOffer(1);
         const step = selectedOffer;
         if (!step) return;
+        // RL-4: a decided entry: u reverts it.
+        if (step.startsWith("decided:")) {
+          if (key !== "u") return;
+          const rest = step.slice("decided:".length);
+          const cut = rest.lastIndexOf(":");
+          const [dStep, fp] = [rest.slice(0, cut), rest.slice(cut + 1)];
+          try {
+            const r = await client.revert(dStep, fp);
+            status = `Reverted ${fp} to ${r.item.state}.`;
+          } catch (e) {
+            status = e instanceof Error ? e.message : String(e);
+          }
+          return await loadOffers();
+        }
+        // RL-4: a debrief: ⏎ says how to start it; nothing else applies.
+        if (!offers.some((o) => o.step === step)) {
+          if (key === "\r") {
+            status = `Start it with: mesh debrief ${step}`;
+            draw();
+          }
+          return;
+        }
         if (key === "\r") {
           status = `accepting ${step}…`;
           draw();

@@ -3,7 +3,7 @@
 // metadata-only sync sends no hint.
 
 import { useCallback, useEffect, useState } from "react";
-import type { FleetMachine, FleetView, OfferView } from "../../src/protocol/hub.ts";
+import type { DebriefList, DebriefSummary, DecidedView, FleetMachine, FleetView, OfferView } from "../../src/protocol/hub.ts";
 import type { PulseView } from "../../src/protocol/pulse.ts";
 import { api } from "./api.ts";
 import { ago } from "./goals.tsx";
@@ -60,26 +60,65 @@ function Machine({ m, now }: { m: FleetMachine; now: number }) {
   );
 }
 
-/** MM-3: steps offered to the user's machines. The web declines; accepting needs a session (`mesh accept`). */
-function Offers({ offers, onDecline }: { offers: OfferView[]; onDecline: (step: string) => void }) {
+/**
+ * MM-3: steps offered to the user's machines. The web declines; accepting needs a session (`mesh accept`).
+ * RL-4: then the user's debriefs (started with `mesh debrief`) and the decisions made in them (Revert).
+ */
+function Offers({
+  offers,
+  debriefs,
+  decided,
+  onDecline,
+  onRevert,
+}: {
+  offers: OfferView[];
+  debriefs: DebriefSummary[];
+  decided: DecidedView[];
+  onDecline: (step: string) => void;
+  onRevert: (step: string, fp: string) => void;
+}) {
   return (
     <section className="offers">
       <h2>Assigned to you</h2>
-      {offers.length === 0 ? (
+      {offers.length === 0 && debriefs.length === 0 && decided.length === 0 ? (
         <p className="muted">Nothing is assigned to you.</p>
       ) : (
-        <ul>
-          {offers.map((o) => (
-            <li className="offer" key={o.step}>
-              <strong>{o.step}</strong> "{o.title}" · from @{o.by} · to {o.to}
-              {o.note ? <span className="muted"> · {o.note}</span> : null}{" "}
-              <button type="button" onClick={() => onDecline(o.step)}>
-                Decline
-              </button>{" "}
-              <code>mesh accept {o.step}</code>
-            </li>
-          ))}
-        </ul>
+        <>
+          {offers.length + debriefs.length > 0 && (
+            <ul>
+              {offers.map((o) => (
+                <li className="offer" key={o.step}>
+                  <strong>{o.step}</strong> "{o.title}" · from @{o.by} · to {o.to}
+                  {o.note ? <span className="muted"> · {o.note}</span> : null}{" "}
+                  <button type="button" onClick={() => onDecline(o.step)}>
+                    Decline
+                  </button>{" "}
+                  <code>mesh accept {o.step}</code>
+                </li>
+              ))}
+              {debriefs.map((d) => (
+                <li className="debrief" data-step={d.step} key={d.step}>
+                  {`${d.step} "${d.title}" · debrief · ${d.items} item(s) to decide`} <a href={`#/goal/${encodeURIComponent(d.goal)}`}>open</a> <code>mesh debrief {d.step}</code>
+                </li>
+              ))}
+            </ul>
+          )}
+          {decided.length > 0 && (
+            <>
+              <h3>Decided in debrief</h3>
+              <ul>
+                {decided.map((e) => (
+                  <li className="decided" data-fp={e.fp} key={`${e.step}:${e.fp}:${e.at}`}>
+                    {`${e.fp} ${e.disposition} (was ${e.from}) · ${e.step} · "${e.title}"`}{" "}
+                    <button type="button" aria-label={`Revert ${e.fp}`} onClick={() => onRevert(e.step, e.fp)}>
+                      Revert
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
       )}
     </section>
   );
@@ -124,14 +163,21 @@ export function MinePage({ hint }: { hint: number }) {
   const [view, setView] = useState<FleetView>();
   const [offers, setOffers] = useState<OfferView[]>([]);
   const [pulses, setPulses] = useState<PulseView[]>([]);
+  const [debriefs, setDebriefs] = useState<DebriefList>({ debriefs: [], decided: [] });
   const [error, setError] = useState<string>();
 
   const load = useCallback(async () => {
     try {
-      const [fleet, open, mine] = await Promise.all([api.fleet(), api.offers().catch(() => [] as OfferView[]), api.pulses().catch(() => [] as PulseView[])]);
+      const [fleet, open, mine, deb] = await Promise.all([
+        api.fleet(),
+        api.offers().catch(() => [] as OfferView[]),
+        api.pulses().catch(() => [] as PulseView[]),
+        api.debriefs().catch((): DebriefList => ({ debriefs: [], decided: [] })),
+      ]);
       setView(fleet);
       setOffers(open);
       setPulses(mine);
+      setDebriefs(deb);
       setError(undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -141,6 +187,16 @@ export function MinePage({ hint }: { hint: number }) {
   const decline = useCallback(
     (step: string) => {
       api.decline(step).then(
+        () => void load(),
+        (e: Error) => setError(e.message),
+      );
+    },
+    [load],
+  );
+
+  const revert = useCallback(
+    (step: string, fp: string) => {
+      api.revert(step, fp).then(
         () => void load(),
         (e: Error) => setError(e.message),
       );
@@ -159,7 +215,7 @@ export function MinePage({ hint }: { hint: number }) {
 
   return (
     <div className="mine">
-      <Offers offers={offers} onDecline={decline} />
+      <Offers offers={offers} debriefs={debriefs.debriefs} decided={debriefs.decided} onDecline={decline} onRevert={revert} />
       <Pulses pulses={pulses} />
       <h2>My machines</h2>
       {error && <p className="error">{error}</p>}

@@ -9,4 +9,6 @@ auth:
         - { name: alice, token_sha256: f0e1ac38548059f8fe1f7181fcfdc05a2f1d5c9f1f3734d16b0a34d6faefea7a }
         - { name: bob, token_sha256: f71efdafcab3a461efb733eb629c983c9bb38adce749cd076c36462a68e38dce }
         - { name: carol, token_sha256: c9891b73f5d2b4c6b99bd76ea8578e4756dce88417d6f08d2c2ef9e18e7cebb6 }
+        # dave: the RL-4 debrief assignee; only the RL-4 specs log in as dave, so carol keeps no machines.
+        - { name: dave, token_sha256: 66e12a32c35f532d01db549d3ed1ee4eaf5560c9de6d5e15ac8dcad5930a5718 }
   bootstrap_admins: [team:alice]

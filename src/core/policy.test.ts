@@ -332,3 +332,75 @@ describe("review policy", () => {
     for (const [k, v] of Object.entries(fields)) expect(pol?.[k], k).toStrictEqual(v);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// RL-4 AC-02 (unit): debrief policies — validation messages, defaults and the assignee.
+// Written from the spec's contracts only (docs/specs/RL-4.md). `debriefAssignee` is read loosely.
+
+describe("RL-4 AC-02 debrief policies", () => {
+  const ps = (id: string, over: Record<string, unknown> = {}): PlanStep =>
+    ({ id, repo: "r", kind: "implement", title: id, brief: "b", deps: [], ...over }) as unknown as PlanStep;
+  const audit = () => ps("audit", { mode: "headless", agent: "auditor", output: "review-record" });
+  const debrief = (over: Record<string, unknown> = {}) => ps("debrief", { kind: "review", deps: ["audit"], mode: "debrief", output: "review-record", may_set: ["accepted", "dismissed", "deferred"], ...over });
+  const file = (over: Record<string, unknown> = {}) => ps("file", { deps: ["debrief"], output: "review-record", when: { open: true }, consumes: ["accepted"], ...over });
+  const relay = () => [audit(), debrief(), file()];
+  const NO_RAISER = 'step "debrief": consumes needs an earlier step with output: review-record that raises items (through deps)';
+
+  it("test_AC02_fixture_valid", () => {
+    expect(validatePolicies(relay(), undefined)).toStrictEqual([]);
+  });
+
+  it("test_AC02_exact_new_messages", () => {
+    expect(validatePolicies([audit(), ps("g", { kind: "gate", gate: "R1", deps: ["audit"], mode: "debrief" })], undefined)).toStrictEqual(['step "g": a gate step can\'t be a debrief']);
+    expect(validatePolicies([audit(), debrief(), file({ assignee: "bob" })], undefined)).toStrictEqual(['step "file": assignee needs mode: debrief']);
+    const { output: _o, ...noOutput } = debrief() as unknown as Record<string, unknown>;
+    expect(validatePolicies([audit(), noOutput as unknown as PlanStep, file()], undefined)).toStrictEqual(['step "debrief": a debrief step needs output: review-record']);
+    const { may_set: _m, ...noMaySet } = debrief() as unknown as Record<string, unknown>;
+    expect(validatePolicies([audit(), noMaySet as unknown as PlanStep, file()], undefined)).toStrictEqual(['step "debrief": a debrief step needs may_set (the decisions the person may record)']);
+    // Control: the assignee on a debrief is fine.
+    expect(validatePolicies([audit(), debrief({ assignee: "bob" }), file()], undefined)).toStrictEqual([]);
+    expect(validatePolicies([audit(), debrief({ assignee: "@owner" }), file()], undefined)).toStrictEqual([]);
+  });
+
+  it.each([
+    ["agent", "auditor"],
+    ["profile", "read-only"],
+    ["budget", { turns: 3 }],
+  ] as const)("test_AC02_headless_fields_on_debrief %s", (key, value) => {
+    expect(validatePolicies([audit(), debrief({ [key]: value }), file()], undefined)).toStrictEqual(['step "debrief": profile, budget and agent need mode: headless']);
+  });
+
+  it("test_AC02_no_raising_upstream", () => {
+    expect(validatePolicies([debrief({ deps: [] })], undefined)).toStrictEqual([NO_RAISER]);
+    // Control: with the raising audit upstream there is no error.
+    expect(validatePolicies([audit(), debrief()], undefined)).toStrictEqual([]);
+  });
+
+  it("test_AC02_policyOf_defaults", () => {
+    const pol = policyOf(debrief()) as Record<string, unknown> | undefined;
+    expect(pol?.mode).toBe("debrief");
+    expect(pol?.consumes).toStrictEqual(["open", "confirmed"]);
+    expect(pol?.assignee).toBe("@owner");
+    expect(pol?.may_set).toStrictEqual(["accepted", "dismissed", "deferred"]);
+    const kept = policyOf(debrief({ consumes: ["open"], assignee: "carol" })) as Record<string, unknown> | undefined;
+    expect(kept?.consumes).toStrictEqual(["open"]);
+    expect(kept?.assignee).toBe("carol");
+    // An interactive step gets neither default.
+    const plain = (policyOf(ps("x", { role: "dev" })) ?? {}) as Record<string, unknown>;
+    expect(plain).not.toHaveProperty("assignee");
+    expect(plain).not.toHaveProperty("consumes");
+    const cons = (policyOf(ps("y", { deps: ["audit"], consumes: ["open"] })) ?? {}) as Record<string, unknown>;
+    expect(cons).not.toHaveProperty("assignee");
+    expect(cons.consumes).toStrictEqual(["open"]);
+  });
+
+  it("test_AC02_debriefAssignee", async () => {
+    const core = (await import("./index.ts")) as Record<string, unknown>;
+    const debriefAssignee = core.debriefAssignee as (p: StepPolicy | undefined, owner: string) => string;
+    expect(typeof debriefAssignee).toBe("function");
+    expect(debriefAssignee(undefined, "alice")).toBe("alice");
+    expect(debriefAssignee({ mode: "debrief" } as unknown as StepPolicy, "alice")).toBe("alice");
+    expect(debriefAssignee({ mode: "debrief", assignee: "@owner" } as unknown as StepPolicy, "alice")).toBe("alice");
+    expect(debriefAssignee({ mode: "debrief", assignee: "bob" } as unknown as StepPolicy, "alice")).toBe("bob");
+  });
+});

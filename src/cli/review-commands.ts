@@ -1,7 +1,8 @@
-// RL-2: `mesh items` (the items of a review lineage, with their states).
+// RL-2: `mesh items` (the items of a review lineage, with their states). RL-4: `mesh debrief`.
 
+import { skillStatus } from "../claude/index.ts";
 import { runOf } from "../core/index.ts";
-import type { ItemView, Step, StepView, StoredReview } from "../protocol/index.ts";
+import { MESH_DEBRIEF_SKILL, type DebriefView, type ItemView, type Step, type StepView, type StoredReview } from "../protocol/index.ts";
 import type { Command } from "./commands.ts";
 import { parseArgs, type CliEnv } from "./context.ts";
 import { HubCallError, HubClient } from "./hub-client.ts";
@@ -29,6 +30,66 @@ async function lineageOfStep(hub: HubClient, id: string): Promise<string | undef
   const { steps } = await hub.get<{ steps: Step[] }>(`/v1/steps?goal=${encodeURIComponent(step.goal)}`);
   const run = runOf(step, steps, (s) => s.policy);
   return run ? (await latest(run.id))?.lineage : undefined;
+}
+
+/** RL-4: the prompt a debrief session starts with. */
+export function debriefPrompt(step: string): string {
+  return `You hold the mesh debrief step ${step}. Use the mesh-debrief skill: call mesh_context, then go through the items with me one at a time, highest severity first. Record each decision with mesh_dispose, then submit the debrief's review record with mesh_review and finish with mesh_done.`;
+}
+
+/**
+ * RL-4: `mesh debrief <step>`: checks that the caller is the debrief's assignee and that it can
+ * start, then runs `mesh run <repo> --step <step> --prompt <prompt>` (which claims it and opens
+ * the interactive session in tmux).
+ */
+export function debriefCommand(c: CliEnv, run: (args: string[]) => Promise<number>): Command {
+  return {
+    name: "debrief",
+    summary: "take a debrief assigned to you and go through its items in a session: mesh debrief <step> [--session NAME] [--no-tui]",
+    async run(args) {
+      const a = parseArgs(args, ["session", "socket-name"]);
+      const step = a.positional[0];
+      if (!step) {
+        c.io.err("usage: mesh debrief <step>");
+        return 2;
+      }
+      let view: DebriefView;
+      let me: string;
+      let current: number;
+      try {
+        const hub = HubClient.from(c.paths);
+        view = await hub.get<DebriefView>(`/v1/steps/${encodeURIComponent(step)}/debrief`);
+        me = (await hub.get<{ user: { id: string } }>("/v1/me")).user.id;
+        if (view.assignee !== me) {
+          c.io.err(`${view.step} is a debrief for ${view.assignee}; only they can run it`);
+          return 1;
+        }
+        if (view.state !== "ready" && view.state !== "claimed" && view.state !== "paused") {
+          c.io.err(`${view.step} is ${view.state}; a debrief starts when it is ready`);
+          return 1;
+        }
+        current = ((await hub.get<StepView>(`/v1/steps/${encodeURIComponent(view.step)}`)).context.step.rounds?.length ?? 0) + 1;
+      } catch (e) {
+        if (!(e instanceof HubCallError)) throw e;
+        c.io.err(e.message);
+        return 1;
+      }
+      if (!view.read || view.read.round !== current) c.io.err(`warning: you have not marked the pre-read of ${view.step} as read (web step panel); starting anyway`);
+      if (skillStatus(c.paths.claudeDebriefSkill, MESH_DEBRIEF_SKILL) !== "current") c.io.err("warning: the mesh-debrief skill is not installed or out of date; run: mesh setup");
+      const session = a.str("session");
+      const socket = a.str("socket-name");
+      return await run([
+        view.repo.slice(view.repo.lastIndexOf("/") + 1),
+        "--step",
+        view.step,
+        "--prompt",
+        debriefPrompt(view.step),
+        ...(session ? ["--session", session] : []),
+        ...(socket ? ["--socket-name", socket] : []),
+        ...(a.has("no-tui") ? ["--no-tui"] : []),
+      ]);
+    },
+  };
 }
 
 export function itemsCommand(c: CliEnv): Command {

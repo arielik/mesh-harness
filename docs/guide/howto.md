@@ -334,6 +334,63 @@ In the next goal of the same lineage, findings that come back are `repeat` (dism
 dismissed while their evidence is unchanged), findings the audit no longer reports are `resolved`,
 and resolved ones that come back are `regression`.
 
+### Debrief an agent's findings
+
+Add a debrief stage after the audit: you (the goal owner, by default) decide each finding in a
+session that goes through them with you one at a time.
+
+```yaml
+# plan.yaml — mesh goal plan G13 --file plan.yaml
+steps:
+  - id: audit
+    repo: alpha
+    kind: review
+    title: Audit the error handling
+    brief: Review the error paths; record each finding with mesh_review.
+    mode: headless
+    agent: auditor
+    output: review-record
+  - id: debrief
+    repo: alpha
+    kind: review
+    title: Decide the audit's findings
+    brief: Go through the open findings with the goal owner.
+    deps: [audit]
+    mode: debrief             # only the assignee runs it; never offered
+    output: review-record
+    may_set: [accepted, dismissed, deferred]
+    # consumes: [open, confirmed] and assignee: "@owner" are the defaults
+  - id: file
+    repo: alpha
+    kind: review
+    title: File the accepted findings
+    brief: Propose an entry for each accepted finding.
+    deps: [debrief]
+    mode: headless
+    agent: filer
+    output: review-record
+    consumes: [accepted]
+    when: { open: true }
+```
+
+When the audit is done, the debrief shows under **Assigned to you** on the web Mine page and in the
+TUI's `o` panel (`mesh debrief G13.debrief  ready  3 item(s)`). Open its step panel on the goal page
+to read the report and the items first, and press **Mark as read**. Then start the session:
+
+```sh
+mesh setup                    # installs the mesh-debrief skill (once)
+mesh debrief G13.debrief
+#   Claimed G13.debrief …
+#   Started in tmux session "mesh": alpha
+```
+
+The session shows each finding with its evidence from the repo and asks you; each answer is
+recorded at once (`mesh_dispose`) with your words, and a note on the step. At the end it submits the
+debrief's record and calls `mesh_done`; `file` then runs if you accepted something.
+
+Changed your mind? Revert a decision while it is the item's latest change: `u` on the entry under
+DECIDED IN DEBRIEF in the TUI `o` panel, or **Revert** on the Mine page or the step panel.
+
 ### Run an agent audit on a schedule
 
 A pulse runs a preset on a schedule: the hub creates a goal with an approved plan at each slot and

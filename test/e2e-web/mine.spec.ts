@@ -2,6 +2,7 @@
 // user's `me` session stays off Live. Runs under `pnpm test:web` (not part of `pnpm check`).
 import { createHash } from "node:crypto";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { A, claimAs, dispose, itemState, makeDebrief } from "./debrief-e2e.ts";
 
 async function cliLogin(request: APIRequestContext, token: string, hostname: string, install: string): Promise<{ token: string; machine: string }> {
   const r = await request.post("/auth/team/login", { data: { token, hostname, install } });
@@ -350,5 +351,41 @@ test.describe("AC-23 pulses on the Mine page", () => {
     const el = page.locator(`div.pulse[data-pulse="${mine}"]`);
     await expect(el).toHaveCount(1);
     await expect(el.locator("button")).toHaveCount(0);
+  });
+});
+
+// RL-4 AC-19: the caller's debriefs and "Decided in debrief" under Assigned to you (docs/specs/RL-4.md,
+// Web Mine). The debrief is made through the API, assigned to dave; steps by `data-step`, items by
+// `data-fp`, never counted.
+test.describe("RL-4 AC-19 debriefs on Mine", () => {
+  test("test_AC19_assigned_debrief", async ({ page, request }) => {
+    test.setTimeout(45_000);
+    const d = await makeDebrief(request);
+    await signIn(page, "dave-e2e-token");
+    await openMine(page);
+    const section = page.locator("section.offers");
+    const row = section.locator(`li.debrief[data-step="${d.D}"]`);
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText(`${d.D} "Debrief the audit" · debrief · 3 item(s) to decide`);
+    await expect(row.getByRole("link", { name: "open" })).toHaveAttribute("href", `#/goal/${d.G}`);
+    await expect(row.locator("code")).toHaveText(`mesh debrief ${d.D}`);
+    await expect(section).not.toContainText("Nothing is assigned to you.");
+    // A decision through the API shows under Decided in debrief, with Revert.
+    await claimAs(request, d.dave, d.D);
+    await dispose(request, d.dave, d.D, A, "accepted");
+    await page.reload();
+    await openMine(page);
+    await expect(section.getByRole("heading", { name: "Decided in debrief" })).toBeVisible();
+    const decided = section.locator(`li.decided[data-fp="${A}"]`, { hasText: d.D });
+    await expect(decided).toHaveCount(1);
+    await expect(decided).toContainText(`${A} accepted (was open) · ${d.D} · "Alpha leak"`);
+    const reverted = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith(`/v1/steps/${d.D}/dispositions/revert`));
+    await decided.getByRole("button", { name: `Revert ${A}` }).click();
+    expect((await reverted).status()).toBe(200);
+    expect(await itemState(request, d.dave, d.D, A)).toBe("open");
+    await expect(decided).toHaveCount(0, { timeout: 5_000 });
+    // The debrief itself stays (claimed) and the empty text stays away.
+    await expect(row).toHaveCount(1);
+    await expect(section).not.toContainText("Nothing is assigned to you.");
   });
 });
