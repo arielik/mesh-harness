@@ -40,7 +40,7 @@ export type SyncRequest = z.infer<typeof SyncRequest>;
 
 /**
  * Reply to `POST /v1/sync`. `share`: the level the hub has stored for the token's machine (absent
- * when none was ever reported); a hub older than v0.1.9 answers `{ accepted }` only.
+ * when none was ever reported); a hub older than v0.1.10 answers `{ accepted }` only.
  */
 export interface SyncResponse {
   accepted: number;

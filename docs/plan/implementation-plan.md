@@ -368,18 +368,18 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET/POST /v1/goals`, `GET /v1/goals/:id`, `POST /v1/goals/:id/{plan,approve,revise,replan}` | Goals |
 | `GET/POST /v1/topics`, `POST /v1/topics/:name/delete`, `POST /v1/goals/:id/topics`, `GET /v1/goals?topic=a,b` | Topics: labels for goals (v0.1.8). Every goal is in `all`; a filter with several topics means all of them |
 | `GET /v1/steps?ready=1&repo=`, `GET /v1/steps/:id/context`, `POST /v1/steps/:id/{claim,release,note,done,take}` | Steps |
-| `POST /v1/messages` | Messages (`toSid`, `toStep`, or `to`: `<machine>/<session>`, resolved like an assign target, v0.1.12) |
-| `GET /v1/fleet`, `POST /v1/machines/:id/name` | My mesh (v0.1.9): the caller's machines and their sessions; name a machine |
-| `POST /v1/machines/:id/labels` | Machine labels (v0.1.10): replace, or add/remove, the labels of one of the caller's machines |
-| `POST /v1/steps/:id/assign` | Assign (v0.1.11): offer a ready step to a machine or `<machine>/<session>`; the target's accept policy decides `auto` |
-| `POST /v1/steps/:id/accept` | Assign (v0.1.11): accept an offer from the target machine (claims the step for a session) |
-| `POST /v1/steps/:id/decline` | Assign (v0.1.11): decline an offer (the target machine's owner or a policy match) |
-| `POST /v1/steps/:id/withdraw` | Assign (v0.1.11): withdraw an open offer (the offerer or an admin) |
-| `POST /v1/goals/:id/assign` | Assign (v0.1.11): offer every ready step of a goal; `stick` offers its later ready steps too |
-| `POST /v1/goals/:id/withdraw` | Assign (v0.1.11): end a goal's stick and withdraw the caller's open offers on it |
-| `GET /v1/offers` | Assign (v0.1.11): open offers to the caller's machines |
-| `GET /v1/steps/:id/suggest` | Suggest (v0.1.12): machines to offer a ready step to, best first, each with a reason; `team=1`, `any=1` (read-only) |
-| `GET /v1/goals/:id/suggest` | Suggest (v0.1.12): machines to offer a goal's offerable steps to, best first; `team=1`, `any=1` (read-only) |
+| `POST /v1/messages` | Messages (`toSid`, `toStep`, or `to`: `<machine>/<session>`, resolved like an assign target, v0.1.13) |
+| `GET /v1/fleet`, `POST /v1/machines/:id/name` | My mesh (v0.1.10): the caller's machines and their sessions; name a machine |
+| `POST /v1/machines/:id/labels` | Machine labels (v0.1.11): replace, or add/remove, the labels of one of the caller's machines |
+| `POST /v1/steps/:id/assign` | Assign (v0.1.12): offer a ready step to a machine or `<machine>/<session>`; the target's accept policy decides `auto` |
+| `POST /v1/steps/:id/accept` | Assign (v0.1.12): accept an offer from the target machine (claims the step for a session) |
+| `POST /v1/steps/:id/decline` | Assign (v0.1.12): decline an offer (the target machine's owner or a policy match) |
+| `POST /v1/steps/:id/withdraw` | Assign (v0.1.12): withdraw an open offer (the offerer or an admin) |
+| `POST /v1/goals/:id/assign` | Assign (v0.1.12): offer every ready step of a goal; `stick` offers its later ready steps too |
+| `POST /v1/goals/:id/withdraw` | Assign (v0.1.12): end a goal's stick and withdraw the caller's open offers on it |
+| `GET /v1/offers` | Assign (v0.1.12): open offers to the caller's machines |
+| `GET /v1/steps/:id/suggest` | Suggest (v0.1.13): machines to offer a ready step to, best first, each with a reason; `team=1`, `any=1` (read-only) |
+| `GET /v1/goals/:id/suggest` | Suggest (v0.1.13): machines to offer a goal's offerable steps to, best first; `team=1`, `any=1` (read-only) |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

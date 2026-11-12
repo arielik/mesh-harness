@@ -243,7 +243,9 @@ describe("AC-11 GET /v1/fleet content and order", () => {
 
   it("test_AC11_own_nostep_whatever_level", async () => {
     const { laptop } = await setup();
-    await sync(laptop.token, { machine: { share: "steps" } });
+    // The stored level does not filter the owner's own listed rows. (A sync lists every session the
+    // machine shares, so b1 is listed again here; one it leaves out is hidden, see share-sessions.)
+    await sync(laptop.token, { machine: { share: "steps" }, sessions: [sess("b1", { lastEventAt: w.clock })] });
     const m = machineIn(await fleet(laptop.token), laptop.machine as string);
     expect(m.share).toBe("steps");
     expect(sidsOf(m)).toContain("b1");
@@ -780,8 +782,9 @@ describe("AC-29 messages to sessions the caller cannot see", () => {
     await w.flush();
     await w.flush();
     const sBob = w.session(bob, 501).sid;
-    // A step holder of bob's, reported by the same machine.
-    await sync(bob.login.token, { machine: { share: "me" }, sessions: [sess("s-step", { step: "G1.a", state: "working" })] });
+    // A step holder of bob's, reported by the same machine (with the daemon's own session: a sync
+    // lists every session the machine shares, and one it leaves out is hidden).
+    await sync(bob.login.token, { machine: { share: "me" }, sessions: [w.session(bob, 501), sess("s-step", { step: "G1.a", state: "working" })] });
     // The hub has bob's no-step session (positive control).
     expect(sidsOf(machineIn(await fleet(bob.login.token), w.machineOf(bob)))).toContain(sBob);
     return { alice, bob, sBob };

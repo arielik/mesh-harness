@@ -71,7 +71,7 @@ async function suggestAssign(c: CliEnv, target: string, o: { team: boolean; any:
     const view = await HubClient.from(c.paths).get<SuggestView | null>(path);
     // An older hub answers an unknown GET with its catch-all 200 (HTML or text).
     if (!view || typeof view !== "object" || !Array.isArray(view.suggestions)) {
-      c.io.err("the hub does not offer suggestions (it needs v0.1.12 or later)");
+      c.io.err("the hub does not offer suggestions (it needs v0.1.13 or later)");
       return 1;
     }
     if (o.json) {

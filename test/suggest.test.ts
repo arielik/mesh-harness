@@ -16,7 +16,7 @@ import { resolvePaths, type DaemonConfig, type Session } from "../src/protocol/i
 import { World, type Json, type Person } from "./helpers/world.ts";
 
 // Copied from the spec, not imported, so a changed text turns the tests red.
-const OLD_HUB = "the hub does not offer suggestions (it needs v0.1.12 or later)";
+const OLD_HUB = "the hub does not offer suggestions (it needs v0.1.13 or later)";
 const SENT = (to: string) => `Sent to ${to}; mesh delivers it as soon as the session can take it.`;
 const SAY_USAGE = "usage: mesh say <session> <text>\n       mesh say <machine>/<session> <text>";
 const NOT_STARTING = (step: string, n: number, max: number) => `not starting a session for offered step ${step}: ${n} live sessions, maxSessions ${max}`;

@@ -243,6 +243,12 @@ function contract(d: Driver) {
       await s.upsertSession({ ...session("s1"), turns: 3 }, "ada", "m2", T0 + 1);
       expect(await s.getSession("s1")).toMatchObject({ userId: "ada", machineId: "m2", updatedAt: T0 + 1, session: { turns: 3 } });
       expect((await s.listSessions()).map((x) => x.session.sid)).toEqual(["s1"]);
+      await s.upsertSession(session("s2"), "ada", "m2", T0 + 2);
+      await s.unlistSessions("m2", ["s2"]);
+      expect((await s.listSessions()).map((x) => x.session.sid)).toEqual(["s2"]);
+      expect(await s.getSession("s1")).toBeDefined();
+      await s.upsertSession(session("s1"), "ada", "m2", T0 + 3);
+      expect((await s.listSessions()).map((x) => x.session.sid)).toEqual(["s1", "s2"]);
     });
 
     it("defines, lists and deletes topics; a name is defined once", async () => {
@@ -425,13 +431,13 @@ function contract(d: Driver) {
     }
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
-    it("test_AC05_schema_version_6", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(6);
+    it("test_AC05_schema_version_7", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(7);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(6);
+      expect(HUB_MIGRATIONS.length).toBe(7);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -566,10 +572,10 @@ function contract(d: Driver) {
     }
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
-    it("test_AC08_schema_version_6", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(6);
-      expect(HUB_MIGRATIONS.length).toBe(6);
-      expect(HUB_MIGRATIONS_PG.length).toBe(6);
+    it("test_AC08_schema_version_7", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(7);
+      expect(HUB_MIGRATIONS.length).toBe(7);
+      expect(HUB_MIGRATIONS_PG.length).toBe(7);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -658,10 +664,10 @@ function contract(d: Driver) {
     }
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
-    it("test_AC06_schema_version_6", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(6);
-      expect(HUB_MIGRATIONS.length).toBe(6);
-      expect(HUB_MIGRATIONS_PG.length).toBe(6);
+    it("test_AC06_schema_version_7", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(7);
+      expect(HUB_MIGRATIONS.length).toBe(7);
+      expect(HUB_MIGRATIONS_PG.length).toBe(7);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */

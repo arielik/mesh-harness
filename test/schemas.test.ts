@@ -257,7 +257,7 @@ describe("AC-33 OpenAPI, route table, docs and skill (offers)", () => {
 
 describe("AC-34 version and placement", () => {
   it("test_AC34_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.12");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.13");
   });
 
   it("test_AC34_placement", async () => {
@@ -343,6 +343,6 @@ describe("AC-18 docs and skill (suggest)", () => {
     for (const t of ["maxSessions", "--max-sessions"]) expect(install, t).toContain(t);
     const plan = read("docs/plan/implementation-plan.md");
     const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
-    for (const t of ["/v1/steps/:id/suggest", "/v1/goals/:id/suggest", "v0.1.12"]) expect(s56, t).toContain(t);
+    for (const t of ["/v1/steps/:id/suggest", "/v1/goals/:id/suggest", "v0.1.13"]) expect(s56, t).toContain(t);
   });
 });

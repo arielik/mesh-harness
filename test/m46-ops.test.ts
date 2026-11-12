@@ -68,9 +68,9 @@ describe("probes", () => {
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
   });
 
-  it("test_AC05_readyz_schema_6 (MM-1)", async () => {
+  it("test_AC05_readyz_schema_7 (MM-1)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 6 } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 7 } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
