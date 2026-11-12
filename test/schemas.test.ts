@@ -257,7 +257,7 @@ describe("AC-33 OpenAPI, route table, docs and skill (offers)", () => {
 
 describe("AC-34 version and placement", () => {
   it("test_AC34_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.13");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.14");
   });
 
   it("test_AC34_placement", async () => {
