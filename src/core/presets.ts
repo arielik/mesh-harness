@@ -3,13 +3,21 @@
 // one directly. Validation against a template is advisory only (warnings, never errors).
 
 import { parse, stringify } from "yaml";
-import { PlanInput, type PlanAc, type PlanStep } from "../protocol/index.ts";
+import { z } from "zod";
+import { PlanInput, PlanStep, type PlanAc } from "../protocol/index.ts";
 
-/** A template: a plan whose `repo` may be "{repo}" and whose briefs may use {goal}. */
+/**
+ * RL-1: a step of a template. As a plan step, but `agent` and `profile` may hold placeholders
+ * ("{agent}", "{profile}") that `instantiate` fills from `params`.
+ */
+export const PresetStep = PlanStep.extend({ agent: z.string().min(1).max(100).optional(), profile: z.string().min(1).max(100).optional() });
+export type PresetStep = z.infer<typeof PresetStep>;
+
+/** A template: a plan whose `repo` may be "{repo}" and whose strings may use {goal} and {<param>}. */
 export interface Preset {
   name: string;
   description: string;
-  plan: { steps: PlanStep[] };
+  plan: { steps: PresetStep[] };
 }
 
 const s = (x: Partial<PlanStep> & Pick<PlanStep, "id" | "kind" | "title" | "brief">): PlanStep => ({ repo: "{repo}", deps: [], ...x }) as PlanStep;
@@ -56,7 +64,7 @@ export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE];
 /** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, steps}. */
 export function parsePreset(name: string, text: string): Preset {
   const doc = parse(text) as { description?: string; steps?: unknown };
-  const plan = PlanInput.parse({ steps: (doc.steps as unknown[] | undefined)?.map((x) => ({ repo: "{repo}", ...(x as object) })) ?? [] });
+  const plan = z.object({ steps: z.array(PresetStep) }).parse({ steps: (doc.steps as unknown[] | undefined)?.map((x) => ({ repo: "{repo}", ...(x as object) })) ?? [] });
   return { name, description: doc.description ?? "", plan: { steps: plan.steps } };
 }
 
@@ -64,19 +72,39 @@ export function presetText(p: Preset): string {
   return stringify({ preset: p.name, description: p.description, steps: p.plan.steps }, { lineWidth: 0 });
 }
 
-/** The template filled in: repos, the goal's name in briefs, and the criteria. */
-export function instantiate(p: Preset, opts: { repo: string; goal?: string | undefined; acs?: PlanAc[] | undefined }): PlanInput {
-  const fill = (t: string) => t.replaceAll("{repo}", opts.repo).replaceAll("{goal}", opts.goal ?? "this goal");
+const PLACEHOLDER = /\{([a-z][a-z0-9_]*)\}/g;
+
+/**
+ * The template filled in: `{repo}`, `{goal}` and `{<param>}` in every string value of each step
+ * (never in keys), and the criteria. An unknown placeholder stays text, except in `agent` and
+ * `profile`, where it throws.
+ */
+export function instantiate(
+  p: Preset,
+  opts: { repo: string; goal?: string | undefined; acs?: PlanAc[] | undefined; params?: Record<string, string> | undefined },
+): PlanInput {
+  const vars: Record<string, string> = { ...opts.params, repo: opts.repo, goal: opts.goal ?? "this goal" };
+  const text = (t: string) => t.replace(PLACEHOLDER, (m, name: string) => (Object.hasOwn(vars, name) ? (vars[name] as string) : m));
+  const fill = (v: unknown): unknown => {
+    if (typeof v === "string") return text(v);
+    if (Array.isArray(v)) return v.map(fill);
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
+    return v;
+  };
   const hasAcs = (opts.acs?.length ?? 0) > 0;
-  return PlanInput.parse({
-    steps: p.plan.steps.map((x) => {
-      const step = { ...x, repo: fill(x.repo), brief: fill(x.brief), title: fill(x.title) };
-      // Reconcile needs criteria; without them the template still works, minus that check.
-      if (!hasAcs) delete step.must_cover;
-      return step;
-    }),
-    ...(hasAcs ? { acs: opts.acs } : {}),
+  const steps = p.plan.steps.map((x) => {
+    const step = fill(x) as PresetStep;
+    // Reconcile needs criteria; without them the template still works, minus that check.
+    if (!hasAcs) delete step.must_cover;
+    return step;
   });
+  for (const step of steps) {
+    for (const v of [step.agent, step.profile]) {
+      const left = v === undefined ? null : /\{([a-z][a-z0-9_]*)\}/.exec(v);
+      if (left) throw new Error(`preset ${p.name}: unknown parameter {${left[1]}} in step ${step.id}`);
+    }
+  }
+  return PlanInput.parse({ steps, ...(hasAcs ? { acs: opts.acs } : {}) });
 }
 
 /** Where a plan departs from its template (advisory: shown to the design session and the approver). */

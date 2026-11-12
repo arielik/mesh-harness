@@ -14,3 +14,7 @@ export * from "./visibility.ts";
 export * from "./fleet.ts";
 export * from "./offers.ts";
 export * from "./suggest.ts";
+export * from "./profiles.ts";
+export * from "./redact.ts";
+export * from "./telemetry.ts";
+export * from "./headless.ts";

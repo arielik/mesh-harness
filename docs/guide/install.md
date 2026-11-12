@@ -118,6 +118,31 @@ mesh setup --max-sessions 4          # or: --max-sessions off (no limit); restar
 
 A `daemon.json` without these fields works as before (the defaults). The hub sees `accept` (synced with the machine facts), not `assignments` or `maxSessions`.
 
+## Headless runs
+
+A daemon (mesh 0.1.15 or later) with at least one `workspaceRoots` entry runs headless steps
+offered to it (see [Headless steps](concepts.md#headless-steps)); it tells the hub so on every
+sync.
+
+- **`MESH_CLAUDE_BIN`**: the Claude Code executable headless runs start (default `claude` on the
+  daemon's `PATH`). Set it in the daemon's environment (the service unit) when `claude` lives
+  elsewhere.
+- **Runs directory**: `<stateDir>/runs/` (Linux: `~/.local/state/mesh/runs/`), one folder per run
+  with its run file and logs. mesh never deletes them; remove old ones by hand.
+- A run counts toward `maxSessions`; at the cap it is queued.
+
+On the hub, `artifacts` in `mesh-hub.yaml` sets the limits of hub-stored artifacts:
+
+```yaml
+artifacts:
+  max_bytes: 1048576     # per artifact (default 1 MiB)
+  per_round: 10          # per step round (default 10)
+  retention_days: 365    # content of done/dropped goals' artifacts is pruned after this; 0 keeps it
+```
+
+The daemon accepts local request bodies up to 4 MiB, so a `max_bytes` above about 4 MiB is limited
+by the daemon, not the hub.
+
 ## Hooks
 
 | Hook | Kind | Why |

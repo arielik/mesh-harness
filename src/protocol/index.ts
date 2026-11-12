@@ -14,3 +14,4 @@ export * from "./json-schema.ts";
 export * from "./hub-api.ts";
 export * from "./system-ca.ts";
 export * from "./opencode.ts";
+export * from "./headless.ts";

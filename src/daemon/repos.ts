@@ -58,10 +58,18 @@ export function repoInventory(repos: Iterable<Repo | undefined>): Repo[] {
  * not descended into, and missing or unreadable roots are ignored.
  */
 export function scanRepos(roots: readonly string[]): Repo[] {
-  const found: (Repo | undefined)[] = [];
+  return repoInventory(findCheckouts(roots).map((c) => c.repo));
+}
+
+/**
+ * RL-1: the git checkouts under the roots, in scan order (roots in config order, names sorted,
+ * depth 0 to 2), each with its folder and repo (when it has one).
+ */
+export function findCheckouts(roots: readonly string[]): { dir: string; repo: Repo | undefined }[] {
+  const found: { dir: string; repo: Repo | undefined }[] = [];
   const visit = (dir: string, depth: number): void => {
     if (exists(join(dir, ".git"))) {
-      found.push(repoForCwd(dir));
+      found.push({ dir, repo: repoForCwd(dir) });
       return;
     }
     if (depth >= SCAN_DEPTH) return;
@@ -78,5 +86,5 @@ export function scanRepos(roots: readonly string[]): Repo[] {
     }
   };
   for (const root of roots) visit(expandHome(root), 0);
-  return repoInventory(found);
+  return found;
 }

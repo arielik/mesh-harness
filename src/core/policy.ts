@@ -9,16 +9,20 @@ const full = (goal: string, id: string) => (id.includes(".") ? id : `${goal}.${i
 
 /** The policy fields of a plan step, without the undefined ones. */
 export function policyOf(p: PlanStep): StepPolicy | undefined {
-  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate"] as const;
+  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate", "mode", "agent", "profile", "budget", "inputs"] as const;
   const out: Record<string, unknown> = {};
   for (const k of keys) if (p[k] !== undefined) out[k] = p[k];
   return Object.keys(out).length ? (out as StepPolicy) : undefined;
 }
 
+/** RL-1: words of `inputs` that are never step ids (the keyword wins over a step of that id). */
+export const INPUT_KEYWORDS: ReadonlySet<string> = new Set(["previous", "dispositions", "artifacts"]);
+
 /** Plan checks for the optional rules; phrased so an agent can fix them. */
 export function validatePolicies(steps: readonly PlanStep[], acs: readonly PlanAc[] | undefined): string[] {
   const errors: string[] = [];
   const ids = new Set(steps.map((s) => s.id));
+  const byId = new Map(steps.map((s) => [s.id, s]));
   const acIds = new Set((acs ?? []).map((a) => a.id));
   const seenAc = new Set<string>();
   for (const a of acs ?? []) {
@@ -39,6 +43,14 @@ export function validatePolicies(steps: readonly PlanStep[], acs: readonly PlanA
     if (s.must_cover && !acs?.length) errors.push(`step "${s.id}": must_cover needs the plan's acs`);
     if (Array.isArray(s.must_cover)) for (const a of s.must_cover) if (!acIds.has(a)) errors.push(`step "${s.id}": must_cover names ${a}, which is not in the plan's acs`);
     if (s.kind === "gate" && (s.blind || s.route || s.target)) errors.push(`step "${s.id}": a gate step is decided by a person; blind, route and target don't apply`);
+    // RL-1: headless steps.
+    if (s.kind === "gate" && s.mode === "headless") errors.push(`step "${s.id}": a gate step can't be headless`);
+    if (s.mode !== "headless" && (s.profile !== undefined || s.budget !== undefined || s.agent !== undefined)) errors.push(`step "${s.id}": profile, budget and agent need mode: headless`);
+    for (const x of s.inputs ?? []) {
+      if (INPUT_KEYWORDS.has(x)) continue;
+      if (!ids.has(x)) errors.push(`step "${s.id}": inputs names "${x}", which is not a step of this plan`);
+      else if (s.blind?.includes(x) || byId.get(x)?.blind?.includes(s.id)) errors.push(`step "${s.id}": inputs names "${x}", which it is blind to`);
+    }
   }
   return errors;
 }

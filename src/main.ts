@@ -3,7 +3,7 @@ import pkg from "../package.json" with { type: "json" };
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { resolve } from "node:path";
-import { listAgents, wakeBackground } from "./claude/index.ts";
+import { listAgents, processRunner, wakeBackground } from "./claude/index.ts";
 import { dispatch, webRootFor, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
 import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } from "./hub/index.ts";
 import { runShim } from "./mcp/index.ts";
@@ -84,6 +84,11 @@ const up: Command = {
         },
         // MM-3: an auto offer with no idle session under `assignments: launch` starts one.
         launchStep: (repo, step) => spawnDetached(self[0] as string, [self[1] as string, "run", repo, "--step", step, "--no-tui"]),
+        // RL-1: headless steps run as `claude -p` under <stateDir>/runs.
+        headless: processRunner,
+        runsDir: `${p.stateDir}/runs`,
+        claudeBin: process.env.MESH_CLAUDE_BIN || "claude",
+        meshCommand: [self[0] as string, resolve(self[1] as string)],
         // MESH_BACKFILL=off: don't import past workflow runs (test daemons; privacy-minded setups).
         ...(process.env.MESH_BACKFILL === "off" ? { scanRuns: () => [] } : {}),
       }),

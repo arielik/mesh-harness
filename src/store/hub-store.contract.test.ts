@@ -431,13 +431,13 @@ function contract(d: Driver) {
     }
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
-    it("test_AC05_schema_version_7", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(7);
+    it("test_AC05_schema_version_8", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(8);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(7);
+      expect(HUB_MIGRATIONS.length).toBe(8);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -572,10 +572,10 @@ function contract(d: Driver) {
     }
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
-    it("test_AC08_schema_version_7", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(7);
-      expect(HUB_MIGRATIONS.length).toBe(7);
-      expect(HUB_MIGRATIONS_PG.length).toBe(7);
+    it("test_AC08_schema_version_8", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(8);
+      expect(HUB_MIGRATIONS.length).toBe(8);
+      expect(HUB_MIGRATIONS_PG.length).toBe(8);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -664,10 +664,10 @@ function contract(d: Driver) {
     }
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
-    it("test_AC06_schema_version_7", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(7);
-      expect(HUB_MIGRATIONS.length).toBe(7);
-      expect(HUB_MIGRATIONS_PG.length).toBe(7);
+    it("test_AC06_schema_version_8", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(8);
+      expect(HUB_MIGRATIONS.length).toBe(8);
+      expect(HUB_MIGRATIONS_PG.length).toBe(8);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */
@@ -740,6 +740,152 @@ function contract(d: Driver) {
       const inbox = await s.inbox("m1");
       expect(inbox.map((x) => x.text)).toEqual(["MESH: offer", "to a session"]);
       expect(inbox.find((x) => x.id === m.id)).toMatchObject({ toSid: "", kind: "offer", data: { step: "G1.a" } });
+    });
+  });
+
+  // RL-1 AC-08: migration 8 (artifact and profile tables), artifacts, profiles, machine `headless`.
+  describe("migration 8", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+    const X = (s: HubStore): any => s;
+    const A = { id: "example.org/team/a", name: "a" };
+    type Facts = Parameters<HubStore["touchMachine"]>[3];
+    const facts = (f: Record<string, unknown>) => f as Facts;
+    const art = (id: string, over: Record<string, unknown> = {}) => ({
+      id,
+      goal: "G1",
+      step: "G1.a",
+      round: 1,
+      kind: "report",
+      mediaType: "text/markdown",
+      bytes: 5,
+      sha256: "0".repeat(64),
+      redactions: 0,
+      createdAt: T0,
+      by: "ada",
+      ...over,
+    });
+
+    it("test_AC08_version", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(8);
+      expect(HUB_MIGRATIONS.length).toBe(8);
+      expect(HUB_MIGRATIONS_PG.length).toBe(8);
+    });
+
+    it("test_AC08_v7_migrates", async () => {
+      const target = await d.fresh();
+      const s1 = await HubStore.open(target);
+      await s1.upsertIdentity({ provider: "oidc", subject: "1", name: "Ada", groups: [] }, T0);
+      await s1.createGoal(goalInput("kept"));
+      await s1.saveSteps([step("G1.a"), step("G1.b", { state: "done", holderUser: "ada", rounds: [{ n: 1, user: "ada", finishedAt: T0 + 5, outcome: "done", summary: "ok" }] })]);
+      await s1.upsertMachine({ id: "m1", userId: "ada", hostname: "one" }, T0);
+      await s1.touchMachine("m1", T0 + 1, { idle: 1 }, facts({ share: "me", repos: [A], accept: ["self"] }));
+      await s1.setMachineLabels("m1", ["gpu"]);
+      const pre = { goal: await s1.getGoal("G1"), a: await s1.getStep("G1.a"), b: await s1.getStep("G1.b"), m: await s1.getMachine("m1") };
+      await s1.close();
+      // Make it a v7 database: without the migration-8 tables and at version 7.
+      const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
+      await raw.run("DROP TABLE IF EXISTS artifact");
+      await raw.run("DROP TABLE IF EXISTS profile");
+      await raw.run("UPDATE schema_version SET version = 7");
+      await raw.close();
+      const s = track(await HubStore.open(target));
+      expect(await s.getGoal("G1")).toMatchObject({ id: "G1", title: "kept", ownerId: "ada" });
+      expect(await s.getStep("G1.a")).toMatchObject({ id: "G1.a", state: "ready" });
+      expect((await s.getStep("G1.b"))?.rounds).toStrictEqual([{ n: 1, user: "ada", finishedAt: T0 + 5, outcome: "done", summary: "ok" }]);
+      expect(await s.getMachine("m1")).toMatchObject({ share: "me", repos: [A], labels: ["gpu"], accept: ["self"] });
+      expect(await s.getGoal("G1")).toStrictEqual(pre.goal);
+      expect(await s.getStep("G1.a")).toStrictEqual(pre.a);
+      expect(await s.getStep("G1.b")).toStrictEqual(pre.b);
+      expect(await s.getMachine("m1")).toStrictEqual(pre.m);
+      expect(await X(s).listArtifacts({})).toStrictEqual([]);
+      expect(await X(s).listProfiles()).toStrictEqual([]);
+      const v = await s.db.get("SELECT version FROM schema_version");
+      expect(Number((v as { version: number }).version)).toBe(8);
+    });
+
+    it("test_AC08_artifact_roundtrip", async () => {
+      const s = await store();
+      const a = art("a-01J0000000000000000000000A", { title: "T" });
+      const text = Buffer.from("héllo ✓ \u0000 end", "utf8");
+      await X(s).addArtifact(a, text);
+      const got = await X(s).getArtifact(a.id);
+      expect(got.artifact).toStrictEqual(a);
+      expect(Buffer.isBuffer(got.content) || got.content instanceof Uint8Array).toBe(true);
+      expect(Buffer.from(got.content).equals(text)).toBe(true);
+      const big = Buffer.alloc(1_048_576);
+      for (let i = 0; i < big.length; i++) big[i] = (i * 7919) % 256;
+      const b = art("a-01J0000000000000000000000B", { bytes: big.length });
+      await X(s).addArtifact(b, big);
+      expect(Buffer.from((await X(s).getArtifact(b.id)).content).equals(big)).toBe(true);
+      expect(await X(s).getArtifact("a-nope")).toBeUndefined();
+    });
+
+    it("test_AC08_list_filter_order", async () => {
+      const s = await store();
+      const rows = [
+        art("a-5", { createdAt: T0 + 5 }),
+        art("a-B", { createdAt: T0 + 1, round: 2 }),
+        art("a-A", { createdAt: T0 + 1, round: 2 }),
+        art("a-0", { createdAt: T0 }),
+        art("a-g2", { goal: "G2", step: "G2.x", createdAt: T0 }),
+        art("a-other", { step: "G1.b", createdAt: T0 + 2 }),
+      ];
+      for (const r of rows) await X(s).addArtifact(r, Buffer.from("x"));
+      const ids = async (f: Record<string, unknown>) => ((await X(s).listArtifacts(f)) as { id: string }[]).map((x) => x.id);
+      expect(await ids({ goal: "G1" })).toStrictEqual(["a-0", "a-A", "a-B", "a-other", "a-5"]);
+      expect(await ids({ step: "G1.a" })).toStrictEqual(["a-0", "a-A", "a-B", "a-5"]);
+      expect(await ids({ step: "G1.a", round: 2 })).toStrictEqual(["a-A", "a-B"]);
+      expect(await ids({ goal: "G2" })).toStrictEqual(["a-g2"]);
+      expect(await ids({})).toStrictEqual(["a-0", "a-g2", "a-A", "a-B", "a-other", "a-5"]);
+    });
+
+    it("test_AC08_prune", async () => {
+      const s = await store();
+      await X(s).addArtifact(art("a-1", { sha256: "1".repeat(64), createdAt: 100 }), Buffer.from("old"));
+      await X(s).addArtifact(art("a-3", { createdAt: 300 }), Buffer.from("new"));
+      await X(s).addArtifact(art("a-g2", { goal: "G2", step: "G2.x", createdAt: 100 }), Buffer.from("other"));
+      expect(await X(s).pruneArtifacts(["G1"], 200, 999)).toBe(1);
+      const old = await X(s).getArtifact("a-1");
+      expect(old.content).toBeUndefined();
+      expect(old.artifact.prunedAt).toBe(999);
+      expect(old.artifact.sha256).toBe("1".repeat(64));
+      // Positive control: the kept rows still have their content.
+      expect(Buffer.from((await X(s).getArtifact("a-3")).content).toString()).toBe("new");
+      expect(Buffer.from((await X(s).getArtifact("a-g2")).content).toString()).toBe("other");
+      expect((await X(s).getArtifact("a-3")).artifact).not.toHaveProperty("prunedAt");
+      expect(await X(s).pruneArtifacts(["G1"], 200, 1000)).toBe(0);
+      expect((await X(s).getArtifact("a-1")).artifact.prunedAt).toBe(999);
+      expect(await X(s).pruneArtifacts([], 10_000, 1000)).toBe(0);
+    });
+
+    it("test_AC08_profiles", async () => {
+      const s = await store();
+      const settings = { permissions: { allow: ["Read"], deny: ["Edit"] } };
+      const p1 = { name: "p1", text: "extends: read-only\n", createdBy: "ada", updatedAt: T0, base: "read-only", sha256: "a".repeat(64), settings, description: "one" };
+      const p2 = { ...p1, name: "p2", description: "two" };
+      await X(s).saveProfile(p1);
+      await X(s).saveProfile(p2);
+      expect(await X(s).getProfile("p1")).toMatchObject(p1);
+      expect(((await X(s).listProfiles()) as { name: string }[]).map((p) => p.name).sort()).toStrictEqual(["p1", "p2"]);
+      await X(s).saveProfile({ ...p1, text: "extends: propose-via-branch\n", updatedAt: T0 + 9, base: "propose-via-branch", sha256: "b".repeat(64) });
+      expect(await X(s).getProfile("p1")).toMatchObject({ name: "p1", text: "extends: propose-via-branch\n", updatedAt: T0 + 9, base: "propose-via-branch", sha256: "b".repeat(64), createdBy: "ada" });
+      expect((await X(s).listProfiles()) as unknown[]).toHaveLength(2);
+      expect(await X(s).getProfile("nope")).toBeUndefined();
+    });
+
+    it("test_AC08_machine_headless", async () => {
+      const s = await store();
+      await s.upsertIdentity({ provider: "oidc", subject: "1", name: "Ada", groups: [] }, T0);
+      await s.upsertMachine({ id: "m1", userId: "ada", hostname: "one" }, T0);
+      await s.touchMachine("m1", T0 + 1, { idle: 1 }, facts({ share: "me", repos: [A], accept: ["self"], headless: true }));
+      await s.setMachineLabels("m1", ["gpu"]);
+      expect(await s.getMachine("m1")).toMatchObject({ headless: true, accept: ["self"], repos: [A], labels: ["gpu"] });
+      await s.touchMachine("m1", T0 + 2, { idle: 1 }, facts({ share: "me", repos: [A], accept: ["self"] }));
+      expect(await s.getMachine("m1")).toMatchObject({ headless: true, accept: ["self"], repos: [A], labels: ["gpu"], lastSeen: T0 + 2 });
+      await s.touchMachine("m1", T0 + 3, { idle: 1 });
+      expect(await s.getMachine("m1")).toMatchObject({ headless: true, accept: ["self"], repos: [A], labels: ["gpu"] });
+      await s.touchMachine("m1", T0 + 4, { idle: 1 }, facts({ headless: false }));
+      expect(await s.getMachine("m1")).toMatchObject({ headless: false, accept: ["self"], repos: [A], labels: ["gpu"] });
     });
   });
 }

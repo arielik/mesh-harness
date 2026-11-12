@@ -2,7 +2,7 @@
 // state change and its event; once it commits, the bus hints SSE subscribers. Store calls are async
 // (M4.6): within a transaction they are awaited in order, so events keep their order.
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AuthError, loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
 import {
   acceptMatches,
@@ -12,6 +12,15 @@ import {
   sessionName,
   agentContext,
   blindConflict,
+  blindPartners,
+  builtinProfile,
+  BUILTIN_PROFILES,
+  compileProfile,
+  effectiveBudget,
+  INPUT_KEYWORDS,
+  parseProfile,
+  profileSha256,
+  profileSnapshot,
   parsePreset,
   presetWarnings,
   blindSeparated,
@@ -83,9 +92,16 @@ import type {
   TrailFile,
   UserView,
   ServiceScope,
+  ProfileSnapshot,
+  ProfileView,
+  RunTelemetry,
+  StepInput,
+  StoredArtifact,
+  ArtifactKind,
+  ArtifactMediaType,
 } from "../protocol/index.ts";
-import { ALL_TOPIC, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
-import { HubStore, type HubSession, type MachineRow, type NewEvent, type UserRow } from "../store/index.ts";
+import { ALL_TOPIC, HEADLESS_DEFAULTS, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
+import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
@@ -323,11 +339,22 @@ export class HubService {
     step: Step,
     target: { machine: MachineRow; session?: HubSession | undefined },
     by: { userId: string; sid?: string | undefined; machine?: MachineRow | undefined },
-    opts: { note?: string | undefined; stick: boolean; goal: Goal },
+    opts: { note?: string | undefined; stick: boolean; goal: Goal; snapshot?: ProfileSnapshot | undefined },
   ): Promise<Step> {
     const now = this.now();
     const auto = this.autoFor(target, by);
     const sid = target.session?.session.sid;
+    // RL-1: a headless offer carries the profile snapshot, budget, deadline and agent.
+    const snap = step.policy?.mode === "headless" ? opts.snapshot : undefined;
+    const headless: Record<string, unknown> = snap
+      ? {
+          mode: "headless",
+          profile: snap,
+          budget: effectiveBudget(step.policy),
+          deadline: now + this.config.thresholds.offerExpiryMs,
+          ...(step.policy?.agent ? { agent: step.policy.agent } : {}),
+        }
+      : {};
     const offer: StepOffer = {
       to: { machine: target.machine.id, ...(sid ? { sid } : {}) },
       by: by.userId,
@@ -338,6 +365,7 @@ export class HubService {
       auto,
       ...(opts.stick ? { stick: true } : {}),
       ...(opts.note ? { note: opts.note } : {}),
+      ...(snap ? { profile: { name: snap.name, sha256: snap.sha256 } } : {}),
     };
     const next: Step = { ...step, offer, updatedAt: now };
     await this.saveStepFrom(next, step);
@@ -346,7 +374,7 @@ export class HubService {
       by.userId,
       "offer",
       `MESH: @${by.userId} offers step ${step.id} "${step.title}" (repo ${step.repo}) to this machine${opts.note ? `: ${opts.note}` : ""}`,
-      { step: step.id, goal: step.goal, repo: step.repo, topics: opts.goal.topics ?? [], auto, by: by.userId, ...(sid ? { sid } : {}), ...(opts.note ? { note: opts.note } : {}) },
+      { step: step.id, goal: step.goal, repo: step.repo, topics: opts.goal.topics ?? [], auto, by: by.userId, ...(sid ? { sid } : {}), ...(opts.note ? { note: opts.note } : {}), ...headless },
     );
     await this.emit({
       type: "step.offered",
@@ -379,8 +407,10 @@ export class HubService {
       session = await this.store.getSession(stick.to.sid);
       if (!session || session.session.state === "ended" || session.machineId !== machine.id) return;
     }
+    const guard = await this.headlessGuard(s, machine);
+    if (!guard.ok) return;
     const byMachine = stick.byMachine ? await this.store.getMachine(stick.byMachine) : undefined;
-    await this.offerStep(s, { machine, session }, { userId: stick.by, sid: stick.bySid, machine: byMachine }, { stick: true, goal });
+    await this.offerStep(s, { machine, session }, { userId: stick.by, sid: stick.bySid, machine: byMachine }, { stick: true, goal, snapshot: guard.snapshot });
   }
 
   /** End offers of steps that left `ready` in this transaction (`endOffersLeavingReady`). */
@@ -434,10 +464,12 @@ export class HubService {
       if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}, not ready`);
       if (step.offer?.state === "offered") throw new HubError(409, `${step.id} is already offered to ${await this.targetText(step.offer.to)}; withdraw it first (mesh withdraw ${step.id})`);
       const target = await this.resolveTarget(actor, req.to);
+      const guard = await this.headlessGuard(step, target.machine);
+      if (!guard.ok) throw new HubError(409, guard.error);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
       const goal = await this.goalOr404(step.goal);
-      const next = await this.offerStep(step, target, { userId: actor.userId, sid: req.sid, machine: caller.machine }, { note: req.note, stick: false, goal });
+      const next = await this.offerStep(step, target, { userId: actor.userId, sid: req.sid, machine: caller.machine }, { note: req.note, stick: false, goal, snapshot: guard.snapshot });
       if (req.stick) await this.setStick(goal, next.offer as StepOffer);
       return { step: next, auto: (next.offer as StepOffer).auto };
     });
@@ -457,11 +489,16 @@ export class HubService {
       const target = await this.resolveTarget(actor, req.to);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
-      const ready = await this.offerableSteps(goal.id);
+      // RL-1: headless steps the target cannot run are skipped (not offered, not counted).
+      const ready: { step: Step; snapshot?: ProfileSnapshot | undefined }[] = [];
+      for (const s of await this.offerableSteps(goal.id)) {
+        const guard = await this.headlessGuard(s, target.machine);
+        if (guard.ok) ready.push({ step: s, snapshot: guard.snapshot });
+      }
       if (ready.length === 0 && !req.stick) throw new HubError(409, `${goal.id} has no ready step to offer`);
       const by = { userId: actor.userId, sid: req.sid, machine: caller.machine };
       const offered: Step[] = [];
-      for (const s of ready) offered.push(await this.offerStep(s, target, by, { note: req.note, stick: false, goal }));
+      for (const r of ready) offered.push(await this.offerStep(r.step, target, by, { note: req.note, stick: false, goal, snapshot: r.snapshot }));
       const sid = target.session?.session.sid;
       const saved = req.stick
         ? await this.setStick(goal, { to: { machine: target.machine.id, ...(sid ? { sid } : {}) }, by: actor.userId, bySid: req.sid, byMachine: caller.machine?.id })
@@ -475,6 +512,254 @@ export class HubService {
     return (await this.store.listSteps({ goal: goalId }))
       .filter((s) => s.state === "ready" && s.kind !== "gate" && s.offer?.state !== "offered")
       .sort((a, b) => cmp(a.id, b.id));
+  }
+
+  // ---------- headless steps, profiles, artifacts, runs (RL-1) ----------
+
+  /** A built-in or registered profile as a snapshot, or undefined. */
+  private async resolveProfile(name: string): Promise<ProfileSnapshot | undefined> {
+    const b = builtinProfile(name);
+    if (b) return profileSnapshot(b.name, b.base, b.settings);
+    const p = await this.store.getProfile(name);
+    return p ? { name: p.name, base: p.base, sha256: p.sha256, settings: p.settings } : undefined;
+  }
+
+  /**
+   * May this machine be offered this step? Interactive steps always; a headless step only on a
+   * machine that reports it can run one, with a profile that still resolves.
+   */
+  private async headlessGuard(step: Step, machine: MachineRow): Promise<{ ok: true; snapshot?: ProfileSnapshot | undefined } | { ok: false; error: string }> {
+    if (step.policy?.mode !== "headless") return { ok: true };
+    if (machine.headless !== true) return { ok: false, error: `${machineName(machine)} cannot run headless steps (it needs mesh 0.1.15 with workspaceRoots set)` };
+    const name = step.policy.profile ?? HEADLESS_DEFAULTS.profile;
+    const snapshot = await this.resolveProfile(name);
+    if (!snapshot) return { ok: false, error: `${step.id}: unknown profile ${name}` };
+    return { ok: true, snapshot };
+  }
+
+  private profileView(p: StoredProfile): ProfileView {
+    return { name: p.name, base: p.base, sha256: p.sha256, settings: p.settings, builtIn: false, description: p.description ?? "", text: p.text, createdBy: p.createdBy, updatedAt: p.updatedAt };
+  }
+
+  /** `GET /v1/profiles`: the built-ins first, then registered ones by name. */
+  async listProfiles(): Promise<ProfileView[]> {
+    const builtIns: ProfileView[] = BUILTIN_PROFILES.map((b) => ({ ...profileSnapshot(b.name, b.base, b.settings), builtIn: true, description: b.description }));
+    return [...builtIns, ...(await this.store.listProfiles()).map((p) => this.profileView(p))];
+  }
+
+  async getProfileView(name: string): Promise<ProfileView> {
+    const b = builtinProfile(name);
+    if (b) return { ...profileSnapshot(b.name, b.base, b.settings), builtIn: true, description: b.description };
+    const p = await this.store.getProfile(name);
+    if (!p) throw new HubError(404, `no profile ${name}`);
+    return this.profileView(p);
+  }
+
+  /** `POST /v1/profiles`: register or replace (its creator or an admin). */
+  async saveProfile(actor: Actor, body: { name: string; text: string }): Promise<{ view: ProfileView; created: boolean }> {
+    return await this.store.tx(async () => {
+      if (builtinProfile(body.name)) throw new HubError(409, `${body.name} is a built-in profile`);
+      const parsed = parseProfile(body.text);
+      if ("error" in parsed) throw new HubError(400, parsed.error);
+      // Read-check-write under the store's write lock (Postgres: taken before the read), so two
+      // first-time saves of one name by different users cannot both see "no owner" and race.
+      await this.store.serialize();
+      const existing = await this.store.getProfile(body.name);
+      if (existing && existing.createdBy !== actor.userId && !actor.roles.includes("admin")) {
+        throw new HubError(403, `profile ${body.name} belongs to @${existing.createdBy}; an admin may replace it`);
+      }
+      const { base, settings } = compileProfile(parsed.file);
+      const p: StoredProfile = {
+        name: body.name,
+        text: body.text,
+        createdBy: existing?.createdBy ?? actor.userId,
+        updatedAt: this.now(),
+        base,
+        sha256: profileSha256(base, settings),
+        settings,
+        description: parsed.file.description ?? "",
+      };
+      await this.store.saveProfile(p);
+      await this.emit({ type: "profile.saved", user: actor.userId, payload: { name: p.name, sha256: p.sha256 } });
+      return { view: this.profileView(p), created: !existing };
+    });
+  }
+
+  private lastArtifactMs = 0;
+  private lastArtifactRand: Buffer | undefined;
+
+  /** "a-" + a ULID (Crockford base32: 10 characters of time, 16 of randomness), monotonic within a millisecond. */
+  private newArtifactId(now: number): string {
+    const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let rand: Buffer;
+    if (now === this.lastArtifactMs && this.lastArtifactRand) {
+      rand = Buffer.from(this.lastArtifactRand);
+      for (let i = rand.length - 1; i >= 0; i--) {
+        rand[i] = ((rand[i] as number) + 1) & 0xff;
+        if (rand[i] !== 0) break;
+      }
+    } else rand = randomBytes(10);
+    this.lastArtifactMs = now;
+    this.lastArtifactRand = rand;
+    let time = "";
+    let t = Math.max(0, Math.floor(now));
+    for (let i = 0; i < 10; i++) {
+      time = (ALPHABET[t % 32] as string) + time;
+      t = Math.floor(t / 32);
+    }
+    let bits = 0n;
+    for (const b of rand) bits = (bits << 8n) | BigInt(b);
+    let r = "";
+    for (let i = 0; i < 16; i++) {
+      r = (ALPHABET[Number(bits & 31n)] as string) + r;
+      bits >>= 5n;
+    }
+    return `a-${time}${r}`;
+  }
+
+  /** `POST /v1/steps/:id/artifacts`: store an artifact for the held step's current round. */
+  async uploadArtifact(
+    actor: Actor,
+    id: string,
+    b: { kind: ArtifactKind; title?: string | undefined; mediaType: ArtifactMediaType; content: string; redactions: number; sid?: string | undefined },
+  ): Promise<StoredArtifact> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; only a held step takes artifacts`);
+      if (step.holderUser !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      // The event names the uploading session: never another user's (or, with a machine token, another machine's).
+      if (b.sid) this.refuseForeign(await this.callerMachine(actor, b.sid), b.sid);
+      const bytes = Buffer.byteLength(b.content, "utf8");
+      const { maxBytes, perRound } = this.config.artifacts;
+      if (bytes > maxBytes) throw new HubError(413, `artifact is ${bytes} bytes; the limit is ${maxBytes}`);
+      const round = (step.rounds?.length ?? 0) + 1;
+      if ((await this.store.listArtifacts({ step: step.id, round })).length >= perRound) throw new HubError(409, `${step.id} round ${round} already has ${perRound} artifacts`);
+      const now = this.now();
+      const content = Buffer.from(b.content, "utf8");
+      const a: StoredArtifact = {
+        id: this.newArtifactId(now),
+        goal: step.goal,
+        step: step.id,
+        round,
+        kind: b.kind,
+        mediaType: b.mediaType,
+        bytes,
+        sha256: createHash("sha256").update(content).digest("hex"),
+        redactions: b.redactions,
+        ...(b.title ? { title: b.title } : {}),
+        createdAt: now,
+        by: actor.userId,
+      };
+      await this.store.addArtifact(a, content);
+      await this.emit({
+        type: "step.artifact",
+        user: actor.userId,
+        sid: b.sid,
+        goal: step.goal,
+        step: step.id,
+        payload: { id: a.id, kind: a.kind, round: a.round, bytes: a.bytes, sha256: a.sha256, redactions: a.redactions },
+      });
+      return a;
+    });
+  }
+
+  /** `GET /v1/artifacts/:id`: content is null once pruned. */
+  async getArtifact(id: string): Promise<{ artifact: StoredArtifact; content: string | null }> {
+    const r = await this.store.getArtifact(id);
+    if (!r) throw new HubError(404, `no artifact ${id}`);
+    return { artifact: r.artifact, content: r.content ? r.content.toString("utf8") : null };
+  }
+
+  /** `GET /v1/goals/:id/artifacts`. */
+  async goalArtifacts(goalId: string): Promise<StoredArtifact[]> {
+    return this.store.tx(async () => {
+      const goal = await this.goalOr404(goalId);
+      return await this.store.listArtifacts({ goal: goal.id });
+    });
+  }
+
+  /** `POST /v1/steps/:id/run`: a headless run started or finished (with its telemetry). */
+  async runReport(
+    actor: Actor,
+    id: string,
+    b: { state: "started" | "finished"; runId: string; round?: number | undefined; telemetry?: RunTelemetry | undefined; branch?: string | undefined },
+  ): Promise<Step> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      const admin = actor.roles.includes("admin");
+      if (b.state === "started") {
+        if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; only a held step starts a run`);
+        if (step.holderUser !== actor.userId && !admin) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+        const p = step.offer?.profile;
+        await this.emit({
+          type: "run.started",
+          user: actor.userId,
+          goal: step.goal,
+          step: step.id,
+          payload: { runId: b.runId, ...(actor.machineId ? { machine: actor.machineId } : {}), ...(p ? { profile: p.name, profileHash: p.sha256 } : {}) },
+        });
+        return step;
+      }
+      let out = step;
+      if (b.round !== undefined) {
+        const r = step.rounds?.find((x) => x.n === b.round);
+        if (!r) throw new HubError(404, `${step.id} has no round ${b.round}`);
+        if (r.user !== actor.userId && !admin) throw new HubError(403, `round ${b.round} of ${step.id} is by ${r.user}`);
+        if (b.telemetry || b.branch) {
+          const now = this.now();
+          const round: Round = { ...r, ...(b.telemetry ? { telemetry: b.telemetry } : {}), ...(b.branch ? { branch: b.branch } : {}) };
+          out = { ...step, rounds: (step.rounds ?? []).map((x) => (x.n === b.round ? round : x)), ...(b.branch ? { branch: b.branch } : {}), updatedAt: now };
+          await this.saveStepFrom(out, step);
+        }
+      }
+      await this.emit({
+        type: "run.finished",
+        user: actor.userId,
+        goal: step.goal,
+        step: step.id,
+        payload: { runId: b.runId, ...(b.round !== undefined ? { round: b.round } : {}), ...(b.branch ? { branch: b.branch } : {}), ...(b.telemetry ?? {}) },
+      });
+      return out;
+    });
+  }
+
+  /**
+   * What a step's `inputs` serve (inside a transaction): artifacts of the last round of the named
+   * steps (`artifacts`: of each dependency), never of a blind partner or an unread dependency.
+   */
+  private async stepInputs(step: Step): Promise<StepInput[]> {
+    const p = step.policy;
+    if (!p?.inputs?.length) return [];
+    const steps = await this.store.listSteps({ goal: step.goal });
+    const hidden = new Set(blindPartners(step, steps).map((o) => o.id));
+    const reads = p.reads ? new Set(p.reads.map((r) => `${step.goal}.${r}`)) : undefined;
+    const sources: string[] = [];
+    for (const x of p.inputs) {
+      if (x === "artifacts") sources.push(...step.deps);
+      else if (!INPUT_KEYWORDS.has(x)) sources.push(`${step.goal}.${x}`);
+    }
+    const out: StepInput[] = [];
+    let served = 0;
+    const MAX_ONE = 50_000;
+    const MAX_ALL = 200_000;
+    for (const id of [...new Set(sources)]) {
+      const s = steps.find((x) => x.id === id) ?? (await this.store.getStep(id));
+      if (!s || hidden.has(s.id)) continue;
+      if (reads && step.deps.includes(s.id) && !reads.has(s.id)) continue;
+      const n = s.rounds?.at(-1)?.n;
+      if (n === undefined) continue;
+      for (const a of await this.store.listArtifacts({ step: s.id, round: n })) {
+        if (a.prunedAt !== undefined) continue;
+        if (served >= MAX_ALL) return out;
+        const got = await this.store.getArtifact(a.id);
+        if (!got?.content) continue;
+        const text = got.content.toString("utf8");
+        const content = text.slice(0, MAX_ONE);
+        served += content.length;
+        out.push({ from: s.id, artifact: a.id, kind: a.kind, ...(a.title ? { title: a.title } : {}), content, truncated: text.length > MAX_ONE });
+      }
+    }
+    return out;
   }
 
   // ---------- suggest (MM-4) ----------
@@ -1053,6 +1338,7 @@ export class HubService {
       const goal = await this.goalOr404(goalId);
       if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
       const errors = [...validatePlan(input.steps), ...validatePolicies(input.steps, input.acs)];
+      for (const s of input.steps) if (s.profile !== undefined && !(await this.resolveProfile(s.profile))) errors.push(`step "${s.id}": unknown profile "${s.profile}"`);
       if (errors.length) throw new HubError(422, `the plan has ${errors.length} problem(s): ${errors.join("; ")}`, errors);
       const plans = await this.store.listPlans(goal.id);
       const now = this.now();
@@ -1206,6 +1492,8 @@ export class HubService {
         openQuestions: (await this.store.openQuestions()).filter((q) => q.step === step.id),
         ...(acs ? { acs } : {}),
       };
+      const inputs = await this.stepInputs(step);
+      if (inputs.length) ctx.inputs = inputs;
       return forAgent ? agentContext(ctx, await this.store.listSteps({ goal: goal.id })) : ctx;
     });
   }
@@ -1332,6 +1620,9 @@ export class HubService {
         ...(Object.keys(acs).length ? { acs } : {}),
         ...(addressed.length ? { acsAddressed: addressed } : {}),
       };
+      // RL-1: the round's hub-stored artifacts, in upload order.
+      const artifactIds = (await this.store.listArtifacts({ step: step.id, round: round.n })).map((a) => a.id);
+      if (artifactIds.length) round.artifactIds = artifactIds;
       const decision = judgeDone(step, round, explicit, plan?.acs);
 
       if (decision.action === "reject") {
@@ -1606,7 +1897,12 @@ export class HubService {
       // stays: messages to a former holder and the time rules still read it.
       await this.store.unlistSessions(machine, req.sessions.map((s) => s.sid));
       const facts = req.machine
-        ? { share: req.machine.share, ...(req.machine.repos ? { repos: req.machine.repos } : {}), ...(req.machine.accept ? { accept: req.machine.accept } : {}) }
+        ? {
+            share: req.machine.share,
+            ...(req.machine.repos ? { repos: req.machine.repos } : {}),
+            ...(req.machine.accept ? { accept: req.machine.accept } : {}),
+            ...(req.machine.headless !== undefined ? { headless: req.machine.headless } : {}),
+          }
         : undefined;
       await this.store.touchMachine(machine, now, req.counts, facts);
       // MM-1: the stored share level tells the daemon this hub applies the visibility rule.
@@ -1840,9 +2136,23 @@ export class HubService {
   }
 
   private lastPrune = 0;
+  /** RL-1: when artifact content was last pruned (undefined: not since start). */
+  private lastArtifactPrune: number | undefined;
+
+  /** RL-1: drop the content of artifacts of done/dropped goals older than `retentionDays`. */
+  private async pruneArtifactContent(now: number): Promise<number> {
+    const days = this.config.artifacts.retentionDays;
+    if (days <= 0) return 0;
+    const goals = (await this.store.listGoals()).filter((g) => g.state === "done" || g.state === "dropped").map((g) => g.id);
+    return await this.store.pruneArtifacts(goals, now - days * 86_400_000, now);
+  }
 
   async tick(): Promise<void> {
     const now = this.now();
+    if (this.lastArtifactPrune === undefined || now - this.lastArtifactPrune >= 6 * 3_600_000) {
+      this.lastArtifactPrune = now;
+      await this.pruneArtifactContent(now);
+    }
     if (now - this.lastPrune > 6 * 3_600_000) {
       this.lastPrune = now;
       const n = await this.pruneEvents();
@@ -1852,7 +2162,9 @@ export class HubService {
       for (const s of await this.store.listSteps({ state: "claimed" })) {
         const hs = s.holderSid ? await this.store.getSession(s.holderSid) : undefined;
         const machine = s.holderMachine ? await this.store.getMachine(s.holderMachine) : undefined;
-        const ended = hs?.session.state === "ended" && hs.session.endedReason !== "clear" && now - (hs.session.endedAt ?? 0) > this.config.thresholds.pauseGraceMs;
+        // RL-1: a headless step's run session ends when the run does; the daemon closes the step.
+        const ended =
+          s.policy?.mode !== "headless" && hs?.session.state === "ended" && hs.session.endedReason !== "clear" && now - (hs.session.endedAt ?? 0) > this.config.thresholds.pauseGraceMs;
         const offline = machine !== undefined && now - machine.lastSeen > this.config.thresholds.machineOfflineMs;
         // Conditional: if another replica's tick (a leadership handover) or a request changed the
         // step since it was read, this tick leaves it alone. So running tick twice pauses once.
@@ -1984,6 +2296,14 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `autopilot nudged the session on ${s}`;
     case "session.escalated":
       return `${s} stalled after nudges`;
+    case "run.started":
+      return `started a headless run of ${s}${payload.profile ? ` (profile ${String(payload.profile)})` : ""}`;
+    case "run.finished":
+      return `headless run of ${s} ended (${String(payload.exit ?? "reported")})`;
+    case "step.artifact":
+      return `stored a ${String(payload.kind)} for ${s} (round ${String(payload.round)})`;
+    case "profile.saved":
+      return `saved profile ${String(payload.name)}`;
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }

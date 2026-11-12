@@ -1,8 +1,8 @@
 // Hub persistence (plan §3.2, §8). Rows keep a few indexed columns plus the JSON value.
 
 import { randomUUID } from "node:crypto";
-import { Goal, Plan, Question, ServiceScope, Session, Step, Topic, type Note, type Repo, type ShareLevel } from "../protocol/index.ts";
-import { openDb, SOLE_LEADER, type Channel, type Db, type Leader } from "./db.ts";
+import { Goal, Plan, Question, ServiceScope, Session, Step, StoredArtifact, Topic, type Note, type ProfileBase, type ProfileSettings, type Repo, type ShareLevel } from "../protocol/index.ts";
+import { openDb, SOLE_LEADER, type Channel, type Db, type Leader, type SqlValue } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
 
@@ -57,6 +57,13 @@ export const HUB_MIGRATIONS: readonly string[] = [
    ALTER TABLE machine ADD COLUMN nickname TEXT;
    ALTER TABLE machine ADD COLUMN extra TEXT;
    CREATE UNIQUE INDEX machine_nickname ON machine (user_id, nickname);`,
+  // v0.1.15 (RL-1): hub-stored artifacts of step rounds (content NULL once pruned) and registered
+  // permission profiles.
+  `CREATE TABLE artifact (id TEXT PRIMARY KEY, goal TEXT NOT NULL, step TEXT NOT NULL, round INTEGER NOT NULL,
+     value TEXT NOT NULL, content BLOB, created_at INTEGER NOT NULL);
+   CREATE INDEX artifact_goal ON artifact (goal);
+   CREATE INDEX artifact_step_round ON artifact (step, round);
+   CREATE TABLE profile (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);`,
 ];
 
 /**
@@ -110,7 +117,25 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    ALTER TABLE machine ADD COLUMN nickname TEXT;
    ALTER TABLE machine ADD COLUMN extra TEXT;
    CREATE UNIQUE INDEX machine_nickname ON machine (user_id, nickname);`,
+  `CREATE TABLE artifact (id TEXT PRIMARY KEY, goal TEXT NOT NULL, step TEXT NOT NULL, round INTEGER NOT NULL,
+     value TEXT NOT NULL, content BYTEA, created_at BIGINT NOT NULL);
+   CREATE INDEX artifact_goal ON artifact (goal);
+   CREATE INDEX artifact_step_round ON artifact (step, round);
+   CREATE TABLE profile (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at BIGINT NOT NULL);`,
 ];
+
+/** RL-1: a registered permission profile as the hub stores it. */
+export interface StoredProfile {
+  name: string;
+  /** The YAML text it was registered with. */
+  text: string;
+  createdBy: string;
+  updatedAt: number;
+  base: ProfileBase;
+  sha256: string;
+  settings: ProfileSettings;
+  description: string;
+}
 
 export type TokenKind = "device" | "web" | "service";
 
@@ -156,13 +181,16 @@ export interface MachineRow {
   labels?: string[];
   /** MM-3: the accept policy its daemon last reported; absent when never reported. */
   accept?: string[];
+  /** RL-1: its daemon can run headless steps; absent when never reported. */
+  headless?: boolean;
 }
 
-/** Facts a sync reports about its machine (MM-1; `accept`: MM-3). */
+/** Facts a sync reports about its machine (MM-1; `accept`: MM-3; `headless`: RL-1). */
 export interface MachineFacts {
   share?: ShareLevel | undefined;
   repos?: Repo[] | undefined;
   accept?: string[] | undefined;
+  headless?: boolean | undefined;
 }
 
 export interface HubSession {
@@ -262,7 +290,7 @@ type MachineDbRow = {
   extra?: string | null;
 };
 /** The JSON column `machine.extra`: per-machine facts beyond the indexed columns. */
-type MachineExtra = { repos?: Repo[]; reposAt?: number; labels?: string[]; accept?: string[] };
+type MachineExtra = { repos?: Repo[]; reposAt?: number; labels?: string[]; accept?: string[]; headless?: boolean };
 const machineExtra = (raw: string | null | undefined): MachineExtra => (raw ? (JSON.parse(raw) as MachineExtra) : {});
 const machineFrom = (r: MachineDbRow): MachineRow => {
   const x = machineExtra(r.extra);
@@ -279,6 +307,7 @@ const machineFrom = (r: MachineDbRow): MachineRow => {
     ...(typeof x.reposAt === "number" ? { reposAt: x.reposAt } : {}),
     ...(Array.isArray(x.labels) && x.labels.length ? { labels: x.labels } : {}),
     ...(Array.isArray(x.accept) ? { accept: x.accept } : {}),
+    ...(typeof x.headless === "boolean" ? { headless: x.headless } : {}),
   };
 };
 
@@ -488,7 +517,7 @@ export class HubStore {
    * so two syncs of one machine never lose each other's keys. A sync never changes the labels (MM-2).
    */
   async touchMachine(id: string, now: number, counts: Record<string, number>, facts?: MachineFacts): Promise<void> {
-    if (facts?.share === undefined && facts?.repos === undefined && facts?.accept === undefined) {
+    if (facts?.share === undefined && facts?.repos === undefined && facts?.accept === undefined && facts?.headless === undefined) {
       await this.db.run("UPDATE machine SET last_seen = ?, counts = ? WHERE id = ?", now, json(counts), id);
       return;
     }
@@ -498,7 +527,8 @@ export class HubStore {
       let x = machineExtra(r.extra);
       if (facts.repos !== undefined) x = { ...x, repos: facts.repos, reposAt: now };
       if (facts.accept !== undefined) x = { ...x, accept: [...facts.accept] };
-      const extra = facts.repos !== undefined || facts.accept !== undefined ? json(x) : r.extra;
+      if (facts.headless !== undefined) x = { ...x, headless: facts.headless };
+      const extra = facts.repos !== undefined || facts.accept !== undefined || facts.headless !== undefined ? json(x) : r.extra;
       await this.db.run("UPDATE machine SET last_seen = ?, counts = ?, share = COALESCE(?, share), extra = ? WHERE id = ?", now, json(counts), facts.share ?? null, extra, id);
     });
   }
@@ -711,6 +741,90 @@ export class HubStore {
     }
     const sql = `SELECT value FROM step ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${this.db.dialect.stepOrder}`;
     return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => Step.parse(JSON.parse(r.value)));
+  }
+
+  // ---------- artifacts and profiles (RL-1) ----------
+
+  async addArtifact(a: StoredArtifact, content: Buffer): Promise<void> {
+    const v = StoredArtifact.parse(a);
+    await this.db.run(
+      "INSERT INTO artifact (id, goal, step, round, value, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      v.id,
+      v.goal,
+      v.step,
+      v.round,
+      json(v),
+      Buffer.from(content),
+      v.createdAt,
+    );
+  }
+
+  /** One artifact; `content` is absent once pruned. */
+  async getArtifact(id: string): Promise<{ artifact: StoredArtifact; content?: Buffer } | undefined> {
+    const r = await this.db.get<{ value: string; content: Uint8Array | null }>("SELECT value, content FROM artifact WHERE id = ?", id);
+    if (!r) return undefined;
+    const artifact = StoredArtifact.parse(JSON.parse(r.value));
+    return r.content === null || r.content === undefined ? { artifact } : { artifact, content: Buffer.from(r.content) };
+  }
+
+  /** Artifacts (metadata only), ordered by `createdAt`, then `id`. */
+  async listArtifacts(f: { goal?: string | undefined; step?: string | undefined; round?: number | undefined }): Promise<StoredArtifact[]> {
+    const where: string[] = [];
+    const args: SqlValue[] = [];
+    if (f.goal !== undefined) {
+      where.push("goal = ?");
+      args.push(f.goal);
+    }
+    if (f.step !== undefined) {
+      where.push("step = ?");
+      args.push(f.step);
+    }
+    if (f.round !== undefined) {
+      where.push("round = ?");
+      args.push(f.round);
+    }
+    const sql = `SELECT value FROM artifact ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, id`;
+    return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => StoredArtifact.parse(JSON.parse(r.value)));
+  }
+
+  /**
+   * Drop the content of artifacts of these goals created before `before` (metadata and sha256 are
+   * kept; `prunedAt = now`). Returns how many were pruned.
+   */
+  async pruneArtifacts(goals: readonly string[], before: number, now: number): Promise<number> {
+    if (!goals.length) return 0;
+    return this.tx(async () => {
+      const rows = await this.db.all<{ id: string; value: string }>(
+        `SELECT id, value FROM artifact WHERE goal IN (${goals.map(() => "?").join(", ")}) AND created_at < ? AND content IS NOT NULL`,
+        ...goals,
+        before,
+      );
+      for (const r of rows) {
+        const v = { ...(JSON.parse(r.value) as StoredArtifact), prunedAt: now };
+        await this.db.run("UPDATE artifact SET content = NULL, value = ? WHERE id = ?", json(v), r.id);
+      }
+      return rows.length;
+    });
+  }
+
+  /** Register or replace a profile. */
+  async saveProfile(p: StoredProfile): Promise<void> {
+    await this.db.run(
+      "INSERT INTO profile (name, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      p.name,
+      json(p),
+      p.updatedAt,
+    );
+  }
+
+  async getProfile(name: string): Promise<StoredProfile | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM profile WHERE name = ?", name);
+    return r ? (JSON.parse(r.value) as StoredProfile) : undefined;
+  }
+
+  /** Registered profiles by name. */
+  async listProfiles(): Promise<StoredProfile[]> {
+    return (await this.db.all<{ value: string }>("SELECT value FROM profile ORDER BY name")).map((r) => JSON.parse(r.value) as StoredProfile);
   }
 
   // ---------- notes and questions ----------

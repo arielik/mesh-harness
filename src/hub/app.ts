@@ -11,6 +11,9 @@ import { AuthError } from "../auth/index.ts";
 import { allowed, type RouteRule } from "../core/index.ts";
 import {
   AckRequest,
+  ArtifactUpload,
+  ProfileSave,
+  RunReport,
   Approve,
   AnswerRequest,
   AskRequest,
@@ -238,6 +241,15 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/goals/:id/assign", "member", async (c, a) => c.json(await svc.assignGoal(a, param(c, "id"), await body(c, AssignRequest)))),
     r("GET", "/v1/goals/:id/suggest", "member", async (c, a) => c.json(await svc.suggestGoal(a, param(c, "id"), suggestFlags(c)))),
     r("POST", "/v1/goals/:id/withdraw", "member", async (c, a) => c.json(await svc.withdrawGoal(a, param(c, "id")))),
+    // RL-1: artifacts and permission profiles.
+    r("GET", "/v1/goals/:id/artifacts", "member", async (c) => c.json({ artifacts: await svc.goalArtifacts(param(c, "id")) }), "goals:read"),
+    r("GET", "/v1/artifacts/:id", "member", async (c) => c.json(await svc.getArtifact(param(c, "id"))), "goals:read"),
+    r("GET", "/v1/profiles", "member", async (c) => c.json({ profiles: await svc.listProfiles() }), "goals:read"),
+    r("GET", "/v1/profiles/:name", "member", async (c) => c.json(await svc.getProfileView(param(c, "name"))), "goals:read"),
+    r("POST", "/v1/profiles", "member", async (c, a) => {
+      const { view, created } = await svc.saveProfile(a, await body(c, ProfileSave));
+      return c.json(view, created ? 201 : 200);
+    }),
 
     // ---------- steps ----------
     r("GET", "/v1/steps", "member", async (c, a) =>
@@ -270,6 +282,8 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/steps/:id/decline", "member", async (c, a) => c.json(await svc.declineStep(a, param(c, "id"), (await body(c, DeclineRequest)).note))),
     r("POST", "/v1/steps/:id/withdraw", "member", async (c, a) => c.json(await svc.withdrawStep(a, param(c, "id")))),
     r("GET", "/v1/offers", "member", async (c, a) => c.json({ offers: await svc.offers(a) })),
+    r("POST", "/v1/steps/:id/artifacts", "member", async (c, a) => c.json(await svc.uploadArtifact(a, param(c, "id"), await body(c, ArtifactUpload)), 201)),
+    r("POST", "/v1/steps/:id/run", "member", async (c, a) => c.json(await svc.runReport(a, param(c, "id"), await body(c, RunReport)))),
 
     // ---------- questions, messages ----------
     r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),

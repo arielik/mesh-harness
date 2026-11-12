@@ -7,11 +7,14 @@ import { DaemonConfig, resolvePaths, writeFileAtomic, type MeshPaths } from "../
 export interface Io {
   out(text: string): void;
   err(text: string): void;
+  /** RL-1: write text exactly (no newline added), e.g. `mesh artifact show`. */
+  write?(text: string): void;
 }
 
 export const stdio: Io = {
   out: (t) => process.stdout.write(t.endsWith("\n") ? t : `${t}\n`),
   err: (t) => process.stderr.write(t.endsWith("\n") ? t : `${t}\n`),
+  write: (t) => process.stdout.write(t),
 };
 
 export function paths(env: Record<string, string | undefined> = process.env): MeshPaths {

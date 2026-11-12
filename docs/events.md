@@ -40,6 +40,10 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.declined` | the offer was declined | `machine`, `note` |
 | `step.offer_expired` | the offer was not accepted within `thresholds.offer_expiry` | `machine` |
 | `step.offer_withdrawn` | the offerer or an admin withdrew it, the offerer claimed the step, or the step left `ready` | `machine`, `reason` (`claimed by the offerer`, `step <state>`) |
+| `step.artifact` | an artifact was stored for a held step (`mesh_artifact`, a run's transcript); `user`, `sid` | `id`, `kind`, `round`, `bytes`, `sha256`, `redactions` (never the content) |
+| `run.started` | a machine started a headless run of the step | `runId`, `machine`, `profile`, `profileHash` (the profile the offer carried) |
+| `run.finished` | a headless run ended (after its close-as-fail, if any) | `runId`, `round` (absent when the run has no round of its own), `branch`, and the telemetry fields (`turns`, `turnsApprox`, tokens, `costUsdEstimate`, `durationMs`, `exit`, `permissionDenials`, …) |
+| `profile.saved` | a permission profile was registered or replaced | `name`, `sha256` |
 | `hub.events_pruned` | retention ran | `count`, `days` |
 
 A plan replaced before anyone decided is stored as `superseded`, not `revised`. It emits no `plan.revised`, so design rounds count only human requests for changes.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Message, PlanAc, Round, Session, Step, StepContext, StepPolicy } from "../protocol/index.ts";
+import type { Message, PlanAc, PlanStep, Round, Session, Step, StepContext, StepPolicy } from "../protocol/index.ts";
 import { materialize, reopen } from "./dag.ts";
 import { agentContext, blindConflict, blindSeparated, judgeDone, reopenText, staleRounds, validatePolicies } from "./policy.ts";
 import { BUILTIN_PRESETS, instantiate, parsePreset, presetText, presetWarnings } from "./presets.ts";
@@ -197,5 +197,61 @@ describe("stage table (owner decision 10)", () => {
     expect(stepStage(step("a", undefined, { state: "parked" }))).toBe("needs a person");
     expect(stepStage(step("a", undefined, { state: "ready", kind: "gate" }))).toBe("needs a person");
     expect(stepStage(step("a", undefined, { state: "ready" }))).toBe("ready");
+  });
+});
+
+// RL-1 AC-02: validatePolicies on the headless fields (docs/specs/RL-1.md). Steps are passed as raw
+// objects so the validator sees the fields whatever the schema does with them.
+describe("headless policy", () => {
+  const ps = (id: string, over: Record<string, unknown> = {}): PlanStep =>
+    ({ id, repo: "r", kind: "implement", title: id, brief: "b", deps: [], ...over }) as unknown as PlanStep;
+  const NEED = 'step "s": profile, budget and agent need mode: headless';
+
+  it("test_AC02_gate_not_headless", () => {
+    const errs = validatePolicies([ps("g", { kind: "gate", mode: "headless" })], undefined);
+    expect(errs).toContain('step "g": a gate step can\'t be headless');
+    expect(errs.filter((e) => e.includes("headless"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["profile", "read-only"],
+    ["budget", { turns: 3 }],
+    ["agent", "auditor"],
+  ] as const)("test_AC02_needs_headless %s", (key, value) => {
+    expect(validatePolicies([ps("s", { [key]: value })], undefined)).toStrictEqual([NEED]);
+    expect(validatePolicies([ps("s", { [key]: value, mode: "interactive" })], undefined)).toStrictEqual([NEED]);
+    // All three at once: still one error.
+    expect(validatePolicies([ps("s", { profile: "read-only", budget: { turns: 3 }, agent: "auditor" })], undefined)).toStrictEqual([NEED]);
+    // Positive control: with mode headless, no error.
+    expect(validatePolicies([ps("s", { [key]: value, mode: "headless" })], undefined)).toStrictEqual([]);
+  });
+
+  it("test_AC02_inputs_unknown", () => {
+    expect(validatePolicies([ps("s", { mode: "headless", inputs: ["nope"] })], undefined)).toStrictEqual(['step "s": inputs names "nope", which is not a step of this plan']);
+  });
+
+  it("test_AC02_inputs_blind_both_sides", () => {
+    const BLIND = 'step "s": inputs names "develop", which it is blind to';
+    const a = validatePolicies([ps("develop"), ps("s", { mode: "headless", blind: ["develop"], inputs: ["develop"] })], undefined);
+    expect(a).toContain(BLIND);
+    const b = validatePolicies([ps("develop", { blind: ["s"] }), ps("s", { mode: "headless", inputs: ["develop"] })], undefined);
+    expect(b).toContain(BLIND);
+  });
+
+  it("test_AC02_keywords", () => {
+    const kw = { mode: "headless", inputs: ["previous", "dispositions", "artifacts"] };
+    expect(validatePolicies([ps("s", kw)], undefined)).toStrictEqual([]);
+    // A step named `artifacts` that s is blind to: the keyword still wins, so no "blind to" error.
+    expect(validatePolicies([ps("artifacts"), ps("s", { ...kw, blind: ["artifacts"] })], undefined)).toStrictEqual([]);
+    // Positive control: the same plan naming a real step it is blind to is refused.
+    expect(validatePolicies([ps("develop"), ps("s", { mode: "headless", blind: ["develop"], inputs: ["develop"] })], undefined)).toContain('step "s": inputs names "develop", which it is blind to');
+  });
+
+  it("test_AC02_valid_control", () => {
+    const steps = [
+      ps("develop"),
+      ps("s", { mode: "headless", agent: "auditor", profile: "read-only", budget: { turns: 5, minutes: 10, usd: 1 }, inputs: ["develop", "artifacts"], deps: ["develop"] }),
+    ];
+    expect(validatePolicies(steps, undefined)).toStrictEqual([]);
   });
 });

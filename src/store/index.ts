@@ -13,6 +13,7 @@ export {
   type MachineRow,
   type MessageRow,
   type NewEvent,
+  type StoredProfile,
   type TokenKind,
   type TokenRow,
   type UserRow,

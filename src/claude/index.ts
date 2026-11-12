@@ -22,3 +22,4 @@ export { claudeMdInstalled, installClaudeMd, installMcp, MCP_NAME, mcpInstalled,
 export { computeHarness } from "./harness.ts";
 export { agentPaths, readAgentFiles, scanWorkflowRuns } from "./workflow.ts";
 export { claudeStatePath, folderTrusted } from "./trust.ts";
+export { processRunner, processStartId, type HeadlessRunner, type HeadlessSpec } from "./headless.ts";

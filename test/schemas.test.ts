@@ -256,9 +256,7 @@ describe("AC-33 OpenAPI, route table, docs and skill (offers)", () => {
 });
 
 describe("AC-34 version and placement", () => {
-  it("test_AC34_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.14");
-  });
+  // The package version is pinned by RL-1 AC-34 below (the only test that asserts it, per the RL-1 spec).
 
   it("test_AC34_placement", async () => {
     const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
@@ -344,5 +342,77 @@ describe("AC-18 docs and skill (suggest)", () => {
     const plan = read("docs/plan/implementation-plan.md");
     const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
     for (const t of ["/v1/steps/:id/suggest", "/v1/goals/:id/suggest", "v0.1.13"]) expect(s56, t).toContain(t);
+  });
+});
+
+// RL-1 AC-34 (version, OpenAPI, routes, boundaries) and AC-35 (docs and skill).
+describe("RL-1 AC-34 checks, schema, boundaries", () => {
+  const ROUTES = [
+    { method: "GET", path: "/v1/profiles", scope: "goals:read", tag: "goals" },
+    { method: "GET", path: "/v1/profiles/:name", scope: "goals:read", tag: "goals" },
+    { method: "POST", path: "/v1/profiles", scope: undefined, tag: "goals" },
+    { method: "POST", path: "/v1/steps/:id/artifacts", scope: undefined, tag: "steps" },
+    { method: "GET", path: "/v1/artifacts/:id", scope: "goals:read", tag: "goals" },
+    { method: "GET", path: "/v1/goals/:id/artifacts", scope: "goals:read", tag: "goals" },
+    { method: "POST", path: "/v1/steps/:id/run", scope: undefined, tag: "steps" },
+  ];
+
+  it("test_AC34_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.15");
+  });
+
+  it("test_AC34_seven_routes", () => {
+    for (const want of ROUTES) {
+      const row = HUB_API.find((x) => x.method === want.method && x.path === want.path);
+      expect(row, `${want.method} ${want.path}`).toBeDefined();
+      expect(row?.rule, want.path).toBe("member");
+      expect(row?.scope, want.path).toBe(want.scope);
+      expect(row?.tag, want.path).toBe(want.tag);
+    }
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, unknown>> };
+    for (const want of ROUTES) {
+      const p = want.path.replace(/:(\w+)/g, "{$1}");
+      expect(doc.paths[p]?.[want.method.toLowerCase()], `${want.method} ${p} in the OpenAPI document`).toBeDefined();
+    }
+  });
+
+  it("test_AC34_boundaries", async () => {
+    // Process spawning stays out of src/daemon: that is the depcruise rule processes-only-in-adapters,
+    // run by `pnpm boundaries` (part of `pnpm check`). This test checks where the new exports live.
+    const claude = (await import("../src/claude/index.ts")) as Record<string, unknown>;
+    expect(typeof claude.processRunner, "processRunner in src/claude").toBe("object");
+    const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
+    for (const name of ["redactSecrets", "telemetryFromStream", "renderTail", "compileProfile", "parseProfile", "profileSha256"]) expect(typeof core[name], name).toBe("function");
+    expect(Array.isArray(core.BUILTIN_PROFILES)).toBe(true);
+  });
+});
+
+describe("RL-1 AC-35 docs and skill", () => {
+  it("test_AC35_concepts", () => {
+    const concepts = read("docs/guide/concepts.md");
+    for (const t of ["Headless steps", "Artifacts", "Telemetry"]) expect(concepts, t).toMatch(new RegExp(`^#+ .*${t}`, "m"));
+    for (const t of ["read-only", "cannot stop reads", "maxSessions", "mesh/<slug>", "turnsApprox", "mode: headless", "propose-via-branch"]) expect(concepts, t).toContain(t);
+  });
+
+  it("test_AC35_howto_install", () => {
+    const howto = read("docs/guide/howto.md");
+    expect(howto).toMatch(/^#+ .*Run a step headless/m);
+    for (const t of ["mesh profile add", "mesh artifact", "claude --resume", "--params"]) expect(howto, t).toContain(t);
+    const install = read("docs/guide/install.md");
+    for (const t of ["MESH_CLAUDE_BIN", "max_bytes", "per_round", "retention_days"]) expect(install, t).toContain(t);
+  });
+
+  it("test_AC35_plan_events", () => {
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    for (const t of ["/v1/profiles", "/v1/profiles/:name", "/v1/steps/:id/artifacts", "/v1/artifacts/:id", "/v1/goals/:id/artifacts", "/v1/steps/:id/run", "v0.1.15"]) expect(s56, t).toContain(t);
+    const events = read("docs/events.md");
+    for (const t of ["run.started", "run.finished", "step.artifact", "profile.saved"]) expect(events, t).toContain(t);
+  });
+
+  it("test_AC35_skill", () => {
+    expect(MESH_SKILL).toContain("mesh_artifact");
+    expect(MESH_SKILL).toContain("headless");
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
   });
 });

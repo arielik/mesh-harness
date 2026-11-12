@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256 } from "../../src/auth/index.ts";
+import * as claudeModule from "../../src/claude/index.ts";
 import { Daemon, defaultDeps } from "../../src/daemon/index.ts";
 import { repoForCwd } from "../../src/daemon/git.ts";
 import { buildHubConfig, startHub, type HubConfig, type RunningHub } from "../../src/hub/index.ts";
@@ -50,7 +51,32 @@ export interface Person {
   hold?: { path: RegExp; until: Promise<void> } | undefined;
   /** MM-4: every line this daemon passed to `deps.log`, oldest first (printed too under WORLD_LOG). */
   logs: string[];
+  /** RL-1: the next request whose path matches is answered with `status` and `{error: "simulated"}`, never sent. */
+  failOnce(path: RegExp, status: number): void;
+  /** RL-1: the headless deps this machine's daemon was made with (kept across `restart`). */
+  headless?: HeadlessOptions | undefined;
+  /** RL-1: `deps.runsDir` when headless (default `<dir>/runs`). */
+  runsDir?: string | undefined;
 }
+
+/** RL-1: daemon deps for headless runs. The real `claude` is never used: `claudeBin` defaults to the fake. */
+export interface HeadlessOptions {
+  runsDir?: string;
+  claudeBin?: string;
+  /** Default: `processRunner` from src/claude. */
+  runner?: unknown;
+  /** Leave `deps.runsDir` unset (the daemon then cannot run headless steps). */
+  noRunsDir?: boolean;
+  /** Leave `deps.headless` unset. */
+  noRunner?: boolean;
+  /** Keep `workspaceRoots` as configured instead of `[<dir>]`. */
+  keepRoots?: boolean;
+  /** Default: the person's checkout for the repo `repo` (by name or id), else none. */
+  findCheckout?: (repo: string) => string | undefined;
+}
+
+/** RL-1: the fake `claude` executable (test/fixtures/claude/fake-claude/claude). */
+export const FAKE_CLAUDE = join(import.meta.dirname, "..", "fixtures", "claude", "fake-claude", "claude");
 
 export interface PersonOptions {
   solo?: Credentials;
@@ -64,6 +90,8 @@ export interface PersonOptions {
   repoId?: string;
   /** Log in (for the token) but write no credentials file: this installation is not logged in. */
   noCredentials?: boolean;
+  /** RL-1: give the daemon headless deps (runner, runsDir, the fake claude, meshCommand, findCheckout). */
+  headless?: HeadlessOptions;
 }
 
 export class World {
@@ -77,9 +105,11 @@ export class World {
   machines: Person[] = [];
   private dirs: string[] = [];
   private drops = new Map<Person, RegExp[]>();
+  private fails = new Map<Person, { path: RegExp; status: number }[]>();
   private installs = 0;
 
-  async start(users: string[], opts: { admins?: string[] } = {}): Promise<void> {
+  /** `hubYaml`: RL-1, extra top-level hub YAML keys (e.g. `artifacts`), parsed by the real config parser. */
+  async start(users: string[], opts: { admins?: string[]; hubYaml?: Record<string, unknown> } = {}): Promise<void> {
     const config = buildHubConfig(
       {
         listen: "127.0.0.1:0",
@@ -88,6 +118,7 @@ export class World {
           providers: [{ id: "team", kind: "token", users: users.map((n) => ({ name: n, token_sha256: sha256(`${n}-token-secret`) })) }],
           ...(opts.admins ? { bootstrap_admins: opts.admins.map((n) => `team:${n}`) } : {}),
         },
+        ...(opts.hubYaml ?? {}),
       },
       { baseDir: "/", env: {} },
     );
@@ -162,9 +193,16 @@ export class World {
       launches: [],
       logs: [],
       dropReplyOnce: (path) => void drops.push(path),
+      failOnce: (path, status) => void fails.push({ path, status }),
     };
     const drops: RegExp[] = [];
+    const fails: { path: RegExp; status: number }[] = [];
     this.drops.set(p, drops);
+    this.fails.set(p, fails);
+    if (opts.headless) {
+      p.headless = opts.headless;
+      if (!opts.headless.keepRoots) p.config.workspaceRoots = [dir];
+    }
     p.daemon = this.makeDaemon(p, opts);
     await p.daemon.start(0);
     writeFileSync(p.configPath, JSON.stringify({ ...config, port: p.daemon.port }));
@@ -187,7 +225,9 @@ export class World {
     await p.daemon.stop();
     p.config = { ...p.config, ...change } as DaemonConfig;
     if ("maxSessions" in change && change.maxSessions === undefined) delete (p.config as Record<string, unknown>).maxSessions;
-    p.daemon = this.makeDaemon(p, opts);
+    // RL-1: the headless deps are kept unless `opts.headless` replaces them.
+    if (opts.headless) p.headless = opts.headless;
+    p.daemon = this.makeDaemon(p, { ...opts, ...(p.headless ? { headless: p.headless } : {}) });
     await p.daemon.start(0);
     writeFileSync(p.configPath, JSON.stringify({ ...p.config, port: p.daemon.port }));
   }
@@ -195,6 +235,18 @@ export class World {
   private makeDaemon(p: Person, opts: PersonOptions): Daemon {
     const repoId = opts.repoId ?? `gitlab.lab/vpc/${p.repo}`;
     const drops = this.drops.get(p) ?? [];
+    const fails = this.fails.get(p) ?? [];
+    // RL-1: DaemonDeps.headless, runsDir, claudeBin, meshCommand, findCheckout (new; passed loosely).
+    const h = opts.headless;
+    const headlessDeps: Record<string, unknown> = {};
+    if (h) {
+      p.runsDir = h.noRunsDir ? undefined : (h.runsDir ?? join(p.dir, "runs"));
+      if (!h.noRunner) headlessDeps.headless = h.runner ?? (claudeModule as unknown as { processRunner: unknown }).processRunner;
+      if (p.runsDir) headlessDeps.runsDir = p.runsDir;
+      headlessDeps.claudeBin = h.claudeBin ?? FAKE_CLAUDE;
+      headlessDeps.meshCommand = [process.execPath, join(import.meta.dirname, "..", "..", "dist", "main.mjs")];
+      headlessDeps.findCheckout = h.findCheckout ?? ((repo: string) => (repo === p.repo || repo === repoId || repo.endsWith(`/${p.repo}`) ? p.repoDir : undefined));
+    }
     // MM-3: DaemonDeps.launchStep, a fake that records the call.
     const launch = {
       launchStep: async (repo: string, step: string) => {
@@ -240,6 +292,11 @@ export class World {
             p.acks.push({ id: Number(ack[1]), state: b.state, ...(b.method !== undefined ? { method: b.method } : {}) });
           }
           if (p.hold && p.hold.path.test(path)) await p.hold.until;
+          const f = fails.findIndex((x) => x.path.test(path));
+          if (f >= 0) {
+            const status = fails.splice(f, 1)[0]?.status ?? 500;
+            return new Response(JSON.stringify({ error: "simulated" }), { status, headers: { "content-type": "application/json" } });
+          }
           const res = await fetch(url, init);
           const i = drops.findIndex((re) => re.test(path));
           if (i >= 0) {
@@ -249,6 +306,7 @@ export class World {
           return res;
         }) as typeof fetch,
         ...launch,
+        ...(headlessDeps as Partial<Parameters<typeof defaultDeps>[0]>),
       }),
       intervals: { reconcileMs: 0, transcriptMs: 0, tickMs: 0, deliveryMs: 0 },
     });
@@ -260,7 +318,8 @@ export class World {
       p.store.close();
     }
     await this.hub.stop();
-    for (const d of this.dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    // Retries: a process outside the test (a run's waiter) may still be finishing a write there.
+    for (const d of this.dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 
   /** `headers`: extra hook headers, e.g. `{ step }` as a real hook sends `X-Mesh-Step: $MESH_STEP`. */

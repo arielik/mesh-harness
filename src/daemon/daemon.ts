@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { claudeVersion, computeHarness, readAgentFiles, scanWorkflowRuns } from "../claude/index.ts";
+import { claudeVersion, computeHarness, readAgentFiles, scanWorkflowRuns, type HeadlessRunner } from "../claude/index.ts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   applyHook,
@@ -23,6 +23,7 @@ import {
   findSession,
   needsLabel,
   pickSession,
+  repoMatches,
   sessionLabel,
   sessionName,
   type FactEvent,
@@ -76,7 +77,8 @@ import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
 import { commonDir, findGitDir, findRepoRoot, headCommit, repoForCwd } from "./git.ts";
 import { checkoutKey, initialLabels } from "./labels.ts";
 import { HubLink, HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
-import { REPO_SCAN_MS, repoInventory, scanRepos } from "./repos.ts";
+import { findCheckouts, REPO_SCAN_MS, repoInventory, scanRepos } from "./repos.ts";
+import { HeadlessRuns } from "./runs.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
 import { writePending, writeTrail } from "./trail.ts";
 import type { PendingCall } from "../store/index.ts";
@@ -113,6 +115,16 @@ export interface DaemonDeps {
    * `mesh run <repo> --step <step> --no-tui`, detached. Without it a launch counts as failed.
    */
   launchStep?(repo: string, step: string): Promise<{ ok: boolean; error?: string }>;
+  /** RL-1: the process runner of headless runs. Without it (or `runsDir`) headless offers are declined. */
+  headless?: HeadlessRunner;
+  /** RL-1: where run directories live (`<stateDir>/runs`). */
+  runsDir?: string;
+  /** RL-1: the executable of headless runs (`MESH_CLAUDE_BIN`, else `claude`). */
+  claudeBin?: string;
+  /** RL-1: the absolute command that starts this mesh, for the run's `mcp.json`. */
+  meshCommand?: string[];
+  /** RL-1: the checkout of a repo on this machine (default: the first under workspaceRoots). */
+  findCheckout?(repo: string): string | undefined;
 }
 
 /** `kill -0`: EPERM means the process exists but belongs to someone else. */
@@ -190,7 +202,8 @@ export const DEFAULT_INTERVALS: Intervals = { reconcileMs: 5_000, transcriptMs: 
 
 /** Ended sessions stay visible this long. */
 const SHOW_ENDED_MS = 10 * 60_000;
-const MAX_BODY = 1 << 20;
+/** Local request bodies (RL-1: 4 MiB, so a 1 MiB mesh_artifact passes the shim). */
+const MAX_BODY = 4 << 20;
 /** MM-4: how long a launch for an offer counts toward maxSessions before its session shows up. */
 const LAUNCH_PENDING_MS = 120_000;
 
@@ -243,7 +256,34 @@ export class Daemon {
   private offerPicks = new Map<number, string>();
   private localPicks = new Set<string>();
   private reservedForOffer(sid: string): boolean {
-    return this.localPicks.has(sid) || [...this.offerPicks.values()].includes(sid);
+    return this.localPicks.has(sid) || [...this.offerPicks.values()].includes(sid) || this.quiet(sid);
+  }
+  /** RL-1: headless runs (only with a runner and a runs directory). */
+  readonly runs: HeadlessRuns | undefined;
+  /** RL-1: a headless run's session: no messages reach it (no Stop reply, paste, nudge or escalation). */
+  private quiet(sid: string): boolean {
+    return this.runs?.isRunSession(sid) ?? false;
+  }
+  /**
+   * RL-1: messages for a session that is quiet, or that belonged to a run that finished less than an
+   * hour ago and has not come back, stay pending: neither delivered nor expired. The session has come
+   * back when a hook of it arrived after the run ended (`claude --resume <sessionId>`); a session that
+   * is ended or gone, or still listed but silent since the run's process ended, has not.
+   */
+  private held(sid: string, now: number): boolean {
+    if (this.quiet(sid)) return true;
+    const end = this.runs?.finishedRunEnd(sid);
+    if (end === undefined || now - end > MESSAGE_TTL_MS) return false;
+    const s = this.sessions.find((x) => x.sid === sid);
+    return !s || s.state === "ended" || s.lastEventAt <= end;
+  }
+  /**
+   * RL-1: a pending message's age for the one-hour TTL. A message for a session that belonged to a
+   * finished run is aged from the later of its creation and the run's end, so the hour it may have
+   * waited while the run was running does not count.
+   */
+  private messageAge(m: Message, now: number): number {
+    return now - Math.max(m.createdAt, this.runs?.finishedRunEnd(m.sid) ?? 0);
   }
 
   constructor(opts: {
@@ -270,6 +310,7 @@ export class Daemon {
         sessions: () => this.sessions.filter((s) => !isHidden(s)),
         share: () => this.config.shareSessions,
         accept: () => this.config.accept,
+        headless: () => this.runs?.canRun() ?? false,
         machineRepos: () => this.machineRepos(),
         onMessage: (m) => this.receive(m),
         onPulled: (ids) => this.forgetOffers(ids),
@@ -283,6 +324,30 @@ export class Daemon {
         onRejected: (call, e) => this.rejected(call, e),
       });
     }
+    const runner = this.deps.headless;
+    const runsDir = this.deps.runsDir;
+    this.runs =
+      runner && runsDir
+        ? new HeadlessRuns({
+            runner,
+            runsDir,
+            claudeBin: this.deps.claudeBin ?? "claude",
+            meshCommand: this.deps.meshCommand ?? ["mesh"],
+            workspaceRoots: () => this.config.workspaceRoots,
+            findCheckout: (repo) =>
+              this.deps.findCheckout ? this.deps.findCheckout(repo) : findCheckouts(this.config.workspaceRoots).find((c) => c.repo !== undefined && repoMatches(c.repo, repo))?.dir,
+            link: () => this.link,
+            machineId: () => this.link?.credentials()?.machine,
+            secrets: () => [this.config.key, this.link?.credentials()?.token].filter((x): x is string => typeof x === "string" && x.length > 0),
+            liveCount: () => this.liveCount(),
+            maxSessions: () => this.config.maxSessions,
+            pendingCallPaths: () => this.store.pendingCalls().map((c) => c.path),
+            sessions: () => this.sessions,
+            repoForCwd: (cwd) => this.deps.repoForCwd(cwd),
+            now: () => this.deps.now(),
+            log: (l) => this.deps.log(l),
+          })
+        : undefined;
   }
 
   /**
@@ -321,6 +386,8 @@ export class Daemon {
 
   async start(port = this.config.port): Promise<void> {
     this.sessions = this.store.loadSessions();
+    // RL-1: adopt live runs, reap ended ones, queue queued ones again (runs outlive the daemon).
+    this.runs?.load();
     this.server = createServer((req, res) => void this.handle(req, res));
     await new Promise<void>((resolve, reject) => {
       this.server?.once("error", reject);
@@ -651,6 +718,26 @@ export class Daemon {
         }
         return await this.ackOffer(m, "delivered", "declined");
       }
+      // RL-1: a headless offer is never bound to a session; it runs as `claude -p` (or is queued).
+      if (d.mode === "headless") {
+        if (d.auto !== true) return await listed();
+        if (!this.runs) {
+          try {
+            await link.rpc("POST", `/v1/steps/${encodeURIComponent(step)}/decline`, { note: "this machine cannot run headless steps" }, key);
+          } catch (e) {
+            if (refused(e)) return await this.ackOffer(m, "failed", (e as Error).message);
+            this.offersAwaitingRetry.add(m.id);
+            return;
+          }
+          return await this.ackOffer(m, "delivered", "declined");
+        }
+        const r = await this.runs.handleOffer(m, title);
+        if (r === "retry") {
+          this.offersAwaitingRetry.add(m.id);
+          return;
+        }
+        return await this.ackOffer(m, r.state, r.method);
+      }
       if (d.auto === true) {
         // A retry keeps the session it picked before (the hub may already hold the step for it);
         // sessions reserved for other offers are left out: offers of one pull run concurrently.
@@ -717,7 +804,7 @@ export class Daemon {
     for (const [id, p] of this.pendingLaunches) {
       if (now - p.at >= LAUNCH_PENDING_MS || live.some((x) => x.step === p.step)) this.pendingLaunches.delete(id);
     }
-    return live.length + this.pendingLaunches.size;
+    return live.length + this.pendingLaunches.size + (this.runs?.runningWithoutSession() ?? 0);
   }
 
   /** A session took an offered step: bind it and queue the brief (delivered when the session is idle). */
@@ -735,6 +822,8 @@ export class Daemon {
     try {
       const view = await link.rpc<StepView>("GET", `/v1/steps/${encodeURIComponent(b.step)}`);
       const st = view.context.step;
+      // RL-1: a headless step is never bound to a session (Open question: manual accept).
+      if (st.policy?.mode === "headless") throw new HttpError(409, `${st.id} is a headless step; this machine runs it only from an auto-accepted offer`);
       let s: Session | undefined;
       if (typeof b.target === "string" && b.target) {
         s = findSession(this.sessions, b.target);
@@ -819,6 +908,8 @@ export class Daemon {
       update: (sid, patch) => this.update(sid, patch),
       queue: (sid, text) => void this.store.queueMessage(sid, text, this.deps.now()),
       autopilotOf: (s) => this.autopilotOf(s),
+      secrets: () => [this.config.key, this.link?.credentials()?.token].filter((x): x is string => typeof x === "string" && x.length > 0),
+      artifactStored: (sid, id, redactions) => this.runs?.artifactStored(sid, id, redactions),
     };
   }
 
@@ -983,6 +1074,8 @@ export class Daemon {
     }
     const sid = this.applyEvent(ev);
 
+    // RL-1: a headless run's session gets no messages; they stay in the inbox.
+    if (kind === "Stop" && this.quiet(sid)) return {};
     if (kind === "Stop") {
       if (ev.stopHookActive !== true) {
         const [next] = this.store.pendingMessages(sid);
@@ -1004,6 +1097,11 @@ export class Daemon {
     this.commit(result);
     const sid = result.changed[0] as string;
     this.store.appendHookEvent(sid, ev);
+    // RL-1: the session of a headless run holds the run's step at once, whatever the hub bind answers.
+    if (ev.kind === "SessionStart" && this.runs) {
+      const runStep = this.runs.onSessionStart(sid, ev.claudeSessionId);
+      if (runStep && this.sessions.find((x) => x.sid === sid)?.step !== runStep) this.update(sid, { step: runStep, nudges: 0, escalated: false });
+    }
     // The step to bind: the hook's MESH_STEP, else the step of the `mesh run` placeholder this
     // session just took over (MM-3: `mesh accept --launch` and the launcher open such windows).
     const hint = ev.stepHint ?? (placeholders.has(sid) ? this.sessions.find((x) => x.sid === sid)?.step : undefined);
@@ -1087,9 +1185,17 @@ export class Daemon {
     this.reconciling = true;
     try {
       const entries = await this.deps.listAgents();
+      if (entries !== null) {
+        this.commit(applyObservation(this.sessions, entries, this.ctx()));
+        await this.checkLaunches();
+      }
+      // RL-1: queue, budgets and ends of headless runs. An ended run waiting for the hub gets a
+      // flush first, so a mesh_done queued while offline is replayed before its end is handled.
+      // A run's hub call waiting for a retry while the link is offline checks the hub at once.
+      const probeNow = this.runs?.retryDue() === true;
+      if (probeNow || this.runs?.waitingOnHub()) await this.link?.flush({ probeNow });
+      await this.runs?.reconcile();
       if (entries === null) return;
-      this.commit(applyObservation(this.sessions, entries, this.ctx()));
-      await this.checkLaunches();
       await this.deliverPending();
       await this.link?.flush();
     } finally {
@@ -1144,6 +1250,7 @@ export class Daemon {
   /** Nudge stalled sessions, escalate after two nudges (plan §3.6). */
   autopilot(): void {
     for (const s of this.sessions) {
+      if (this.quiet(s.sid)) continue;
       const action = decide(s, this.autopilotOf(s));
       if (!action) continue;
       if (action.kind === "nudge") {
@@ -1177,10 +1284,11 @@ export class Daemon {
     for (const m of pending) if (!firstPerSession.has(m.sid)) firstPerSession.set(m.sid, m);
 
     for (const m of pending) {
-      if (now - m.createdAt > MESSAGE_TTL_MS) this.settle(m, "failed", "not delivered within an hour");
+      // RL-1: a headless run's messages stay in the inbox (no expiry while it runs; aged from the run's end once it finished).
+      if (this.messageAge(m, now) > MESSAGE_TTL_MS && !this.held(m.sid, now)) this.settle(m, "failed", "not delivered within an hour");
     }
     for (const [sid, m] of firstPerSession) {
-      if (now - m.createdAt > MESSAGE_TTL_MS || this.delivering.has(sid)) continue;
+      if (this.messageAge(m, now) > MESSAGE_TTL_MS || this.delivering.has(sid) || this.held(sid, now)) continue;
       const s = this.sessions.find((x) => x.sid === sid);
       const plan = planDelivery(s, now, this.rules);
       if (plan.method === "fail") {
@@ -1281,6 +1389,7 @@ export class Daemon {
         return send(res, 200, { ok: true, port: this.port, sessions: this.sessions.filter((s) => s.state !== "ended").length });
       }
       if (req.method === "GET" && path === "/local/sessions") return send(res, 200, this.snapshot());
+      if (req.method === "GET" && path === "/local/runs") return send(res, 200, { runs: this.runs?.list() ?? [] });
       if (req.method === "POST" && path === "/local/launch") {
         const body = LaunchRequest.safeParse(await readJson(req));
         if (!body.success) throw new HttpError(400, "expected {pane, cwd}");

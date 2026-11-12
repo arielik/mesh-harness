@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, TrailFile } from "./goal.ts";
-import { AcState, Failure, Findings, PlanInput, Verdict } from "./goal.ts";
+import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
 
@@ -34,7 +34,15 @@ export const SyncRequest = z.object({
    * Absent (an older daemon): the hub keeps what it has. `repos` absent: inventory unchanged.
    * `accept` (MM-3): the machine's accept policy; absent: the hub keeps the stored one.
    */
-  machine: z.object({ share: ShareLevel, accept: AcceptPolicy.optional(), repos: z.array(Repo).max(500).optional() }).optional(),
+  machine: z
+    .object({
+      share: ShareLevel,
+      accept: AcceptPolicy.optional(),
+      repos: z.array(Repo).max(500).optional(),
+      /** RL-1: the daemon can run headless steps. Absent: the hub keeps the stored value. */
+      headless: z.boolean().optional(),
+    })
+    .optional(),
 });
 export type SyncRequest = z.infer<typeof SyncRequest>;
 
@@ -167,6 +175,25 @@ export const DoneRequest = z.object({
   acs: z.record(z.string(), AcState).optional(),
   acs_addressed: z.array(z.string().max(40)).max(100).optional(),
 });
+/** RL-1: body of `POST /v1/profiles`. */
+export const ProfileSave = z.object({ name: ProfileName, text: z.string().min(1).max(20000) });
+/** RL-1: body of `POST /v1/steps/:id/artifacts`. */
+export const ArtifactUpload = z.object({
+  kind: ArtifactKind,
+  title: z.string().max(200).optional(),
+  mediaType: ArtifactMediaType.default("text/markdown"),
+  content: z.string().min(1),
+  redactions: z.number().int().min(0).default(0),
+  sid: z.string().optional(),
+});
+/** RL-1: body of `POST /v1/steps/:id/run`. */
+export const RunReport = z.object({
+  state: z.enum(["started", "finished"]),
+  runId: z.string().min(1).max(100),
+  round: z.number().int().positive().optional(),
+  telemetry: RunTelemetry.optional(),
+  branch: z.string().max(200).optional(),
+});
 export const GateDecision = z.object({ comment: z.string().max(4000).optional(), rule: z.string().max(60).optional(), inputs: z.record(z.string(), z.unknown()).optional(), reopen: z.array(z.string()).max(50).optional() });
 export const ResumeRequest = z.object({ comment: z.string().max(4000).optional() });
 export const AskRequest = z.object({ text: z.string().min(1).max(4000), sid: z.string().optional(), step: z.string().optional() });
@@ -223,6 +250,19 @@ export interface StepContext {
   openQuestions: Question[];
   /** The plan's acceptance criteria this step covers (all of them when it names none). */
   acs?: PlanAc[] | undefined;
+  /** RL-1: artifacts the step's policy `inputs` names (untrusted content). */
+  inputs?: StepInput[] | undefined;
+}
+
+/** RL-1: one artifact served to a step as input. */
+export interface StepInput {
+  /** The step id it came from. */
+  from: string;
+  artifact: string;
+  kind: ArtifactKind;
+  title?: string | undefined;
+  content: string;
+  truncated: boolean;
 }
 
 export interface DoneResult {

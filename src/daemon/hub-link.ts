@@ -34,6 +34,8 @@ export interface HubLinkDeps {
   machineRepos?: () => Repo[];
   /** MM-3: the machine's accept policy, sent on every sync (default `["self"]`). */
   accept?: () => string[];
+  /** RL-1: the daemon can run headless steps (sent as `machine.headless: true` only when true). */
+  headless?: () => boolean;
   /**
    * A message from the hub inbox. `unknown`: acked as failed; `handling`: the daemon handles it
    * itself and acks it when done (MM-3 machine-wide offers).
@@ -123,6 +125,7 @@ export class HubLink {
   mode: LinkMode = "none";
   offlineSince: number | undefined;
   private nextProbeAt = 0;
+  private probeNowWanted = false;
   // MM-1, per credentials (hub URL + machine id): whether the hub confirmed the share level, the
   // inventory it last accepted, and whether the "does not support me" line was logged.
   private factsKey: string | undefined;
@@ -252,6 +255,8 @@ export class HubLink {
     try {
       const res = await this.fetch(`${c.hub}/health`, { signal: AbortSignal.timeout(Math.min(3_000, this.deps.timeoutMs ?? 3_000)) });
       if (!res.ok) throw new Error(`health ${res.status}`);
+      // The hub answers: the calls that follow (sync, replay) may go out now.
+      this.nextProbeAt = this.deps.now();
       return true;
     } catch (e) {
       this.markOffline(c, e);
@@ -259,10 +264,15 @@ export class HubLink {
     }
   }
 
-  /** Send spooled observations, session snapshots and calls queued while offline. Safe to call often. */
-  flush(): Promise<void> {
+  /**
+   * Send spooled observations, session snapshots and calls queued while offline. Safe to call often.
+   * `probeNow`: while offline, check the hub at once instead of waiting for the probe backoff (a
+   * headless run's hub call waits for a retry, RL-1).
+   */
+  flush(opts: { probeNow?: boolean } = {}): Promise<void> {
     // A flush already running is followed by one more, so `await flush()` means "everything
     // spooled until now was sent, if the hub could be reached".
+    if (opts.probeNow) this.probeNowWanted = true;
     if (this.current) {
       this.again ??= this.current.then(() => {
         this.again = undefined;
@@ -272,7 +282,9 @@ export class HubLink {
     }
     const c = this.credentials();
     if (!c || this.status === "auth-failed") return Promise.resolve();
-    this.current = this.doFlush(c).finally(() => {
+    const probeNow = this.probeNowWanted;
+    this.probeNowWanted = false;
+    this.current = this.doFlush(c, probeNow).finally(() => {
       this.current = undefined;
     });
     return this.current;
@@ -288,9 +300,9 @@ export class HubLink {
     this.warnedUnconfirmed = false;
   }
 
-  private async doFlush(c: Credentials): Promise<void> {
+  private async doFlush(c: Credentials, probeNow = false): Promise<void> {
     try {
-      if (!(await this.probe(c))) return;
+      if (!(await this.probe(c, probeNow))) return;
       this.factsFor(c);
       const all = this.deps.sessions();
       const counts: Record<string, number> = {};
@@ -303,7 +315,7 @@ export class HubLink {
         // `me` counts as `steps` until this hub has confirmed it applies the visibility rule.
         const effective: ShareLevel = share === "me" && !this.confirmed ? "steps" : share;
         const sendRepos = this.sentRepos !== reposJson;
-        const body = { events: batch.map((b) => b.value), sessions: syncedSessions(all, effective), counts, machine: { share, accept: this.deps.accept?.() ?? ["self"], ...(sendRepos ? { repos } : {}) } };
+        const body = { events: batch.map((b) => b.value), sessions: syncedSessions(all, effective), counts, machine: { share, accept: this.deps.accept?.() ?? ["self"], ...(this.deps.headless?.() ? { headless: true } : {}), ...(sendRepos ? { repos } : {}) } };
         const reply = await this.rpc<SyncResponse | undefined>("POST", "/v1/sync", body, undefined, { probe: true });
         if (sendRepos) this.sentRepos = reposJson;
         this.confirmed = reply?.share !== undefined;

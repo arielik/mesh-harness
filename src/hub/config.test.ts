@@ -18,3 +18,18 @@ describe("AC-14 offer expiry threshold", () => {
     expect(thresholds(both).offerExpiryMs).toBe(45 * 60_000);
   });
 });
+
+// RL-1 AC-09 (config): hub YAML `artifacts` gives `HubConfig.artifacts`.
+describe("artifacts", () => {
+  const raw = { auth: { providers: [{ kind: "none" }] } };
+  const artifacts = (c: ReturnType<typeof buildHubConfig>) => (c as unknown as { artifacts?: unknown }).artifacts;
+
+  it("test_AC09_config_parse", () => {
+    const set = buildHubConfig({ ...raw, artifacts: { max_bytes: 100, per_round: 2, retention_days: 0 } }, { baseDir: "/srv", env: {} });
+    expect(artifacts(set)).toStrictEqual({ maxBytes: 100, perRound: 2, retentionDays: 0 });
+    const unset = buildHubConfig(raw, { baseDir: "/srv", env: {} });
+    expect(artifacts(unset)).toStrictEqual({ maxBytes: 1_048_576, perRound: 10, retentionDays: 365 });
+    const partial = buildHubConfig({ ...raw, artifacts: { retention_days: 30 } }, { baseDir: "/srv", env: {} });
+    expect(artifacts(partial)).toStrictEqual({ maxBytes: 1_048_576, perRound: 10, retentionDays: 30 });
+  });
+});

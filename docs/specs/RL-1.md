@@ -151,14 +151,19 @@ daemon pushes, and an unrestricted shell would run unattended under another memb
 ```ts
 export function redactSecrets(text: string, literals?: readonly string[]): { text: string; count: number }
 ```
-Replaces, in this order, each match and counts one per replacement: PEM blocks from
+Replaces, in this order, each match: PEM blocks from
 `-----BEGIN <…>PRIVATE KEY-----` to the matching `-----END <…>PRIVATE KEY-----` → `[REDACTED private key]`;
-tokens matching `gh[pousr]_[A-Za-z0-9]{36,}`, `github_pat_[A-Za-z0-9_]{22,}`, `glpat-[A-Za-z0-9_-]{20,}`,
+then every non-empty string in `literals` (at least 8 characters long) → `[REDACTED]`; then tokens
+matching `gh[pousr]_[A-Za-z0-9]{36,}`, `github_pat_[A-Za-z0-9_]{22,}`, `glpat-[A-Za-z0-9_-]{20,}`,
 `xox[abprs]-[A-Za-z0-9-]{10,}`, `AKIA[0-9A-Z]{16}`, `sk-ant-[A-Za-z0-9_-]{20,}`, `sk-[A-Za-z0-9]{32,}`,
-`AIza[0-9A-Za-z_-]{35}` → `[REDACTED]`; assignments matching
+`AIza[0-9A-Za-z_-]{35}` → `[REDACTED]`; then assignments matching
 `/\b(password|passwd|secret|token|api[_-]?key)(\s*[=:]\s*)(["']?)([^\s"']{6,})\3/gi` → the value only
-becomes `[REDACTED]` (key, separator and quotes kept); then every non-empty string in `literals` (at
-least 8 characters long) → `[REDACTED]`. Text without matches is returned unchanged with `count: 0`.
+becomes `[REDACTED]` (key, separator and quotes kept). `count` counts each secret once: one per PEM
+block, literal occurrence and token replaced, and one per assignment whose value held no redaction
+mark. An assignment whose value is exactly a mark (`/^\[REDACTED[^\]]*\]$/`, or `[REDACTED` cut at the
+space of `[REDACTED private key]`) is left as it is and not counted; one whose value contains a mark
+among other text is redacted whole (no tail is kept) and not counted again. So `token=ghp_…` and
+`secret=<literal>` each give `count: 1`. Text without matches is returned unchanged with `count: 0`.
 
 ```ts
 export function telemetryFromStream(stream: string, run: { durationMs: number; exitCode: number | undefined; killedForBudget: boolean }):
@@ -508,3 +513,41 @@ runs the real `claude` binary. No test asserts `package.json`'s version except A
 - 2026-11-12 **`mesh_review` in profiles.** Every profile allows `mcp__mesh__mesh_review` although the
   tool arrives in S2 (an allow rule for an absent tool is harmless), so profile hashes do not change
   when S2 ships.
+- 2026-11-12 **The run's session vs `holderSid` (implementation).** The daemon's session id is its
+  own (not Claude Code's session id): `--session-id <sessionId>` names the Claude session, and the
+  daemon session registered with that Claude session id gets its own sid, which becomes the hub's
+  `holderSid` when the run binds. Read "`holderSid` is the run's `sessionId`" and "the round whose
+  `sid` is the run's `sessionId`" as: the sid of a daemon session registered with the run's
+  `sessionId` (or that id itself). The daemon remembers those sids in a run-directory sidecar
+  (`meta.json`, beside the plan's `end.json` and `artifacts.jsonl`), together with the offer's
+  message id, title and agent name, so a restart before the start loses nothing.
+- 2026-11-12 **Closing `mesh_done` refused (implementation).** When the daemon's own close-as-fail
+  `done` gets a final 4xx, the run closed nothing: it reports `run.finished` without `round` and
+  never pushes (end step 3 needs a closed step or a round of the run's session).
+- 2026-11-12 **`mesh_accept` (MCP) of a headless step (implementation).** Refused like `mesh accept`
+  (one extra `GET /v1/steps/:id` first; when that read fails the accept goes ahead as before).
+- 2026-11-12 **Messages after a run finished (review S1).** Only a *running* run's session is quiet (no
+  Stop reply, paste, nudge, escalation, offer pick). Once the run is `finished`, the messages held for
+  its session stay pending for one more hour after the run ended while that session has not come back
+  (ended, gone, or still listed but with no hook since the run ended), then the usual rules settle
+  them (TTL, "session ended"). A session resumed with `claude --resume <sessionId>` (a hook after the
+  run ended) is an ordinary session again and gets them. The one-hour TTL of such a message counts
+  from the later of its creation and the run's end (diff round 2 B1), so the time it waited while the
+  run ran never fails it.
+- 2026-11-12 **Artifacts and holder changes (review S5).** An artifact belongs to round `rounds + 1`,
+  whoever holds the step; a release or takeover adds no round. So a headless run's `mesh_artifact`
+  uploads before a takeover are listed in the next holder's round `artifactIds`. Kept for S1 (the
+  uploads are the step's, not a person's); a later slice may record the uploading session on the
+  artifact and filter by holder.
+- 2026-11-12 **Leftover processes of a run (review S6).** When the daemon sees a run's process end, it
+  stops what is left of the run's process group (SIGTERM, SIGKILL 5 s later), signalling only members
+  whose environment carries the run's `MESH_RUN`. Linux only (it reads `/proc`); on other systems such
+  processes keep running. A run reaped after a daemon restart is never signalled, as before.
+- 2026-11-12 **Redaction order and count (diff round 2 B2).** The `redactSecrets` contract changed from
+  "PEM, tokens, assignments, literals, one count per replacement" to "PEM, literals, tokens,
+  assignments, each secret counted once". Under the old contract a token or literal inside an
+  assignment (`token=ghp_…`, `secret=<literal>`) was replaced twice and counted 2, so the
+  `redactions` count of an artifact overstated the secrets found. Literals run before tokens so a
+  literal that also looks like a token is counted as the literal; the assignment pass then sees the
+  mark and does not count the value again. A value that holds a mark plus other text
+  (`password=<literal>tail`) is redacted whole, so no tail of a secret leaks (diff round 2 S9).

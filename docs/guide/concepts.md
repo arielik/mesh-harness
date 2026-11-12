@@ -90,6 +90,116 @@ Sessions already recorded keep their labels when the file or the remembered list
   - actions that need other people say "offline" at once.
 - Everything is sent once when the hub is back. If the hub refuses a result made offline (for example, someone took the step over meanwhile), the result is kept as a note on the step and in the local record.
 
+## Headless steps
+
+**Headless step.** A plan step with `mode: headless` runs unattended on a machine: no session is
+picked or pasted to. The machine's daemon accepts the offer itself and starts `claude -p` in a fresh
+detached git worktree of its own checkout (at the checkout's `HEAD`), with a pinned permission
+profile and a budget. Fields of such a step (all optional, and only with `mode: headless`):
+
+- `agent`: an agent of the step repo (`.claude/agents/<agent>.md`). The daemon reads the file,
+  turns its front matter (`description`, `tools`, `model`) and body into `--agents` JSON and runs
+  the run as that agent. When the agent lists `tools`, mesh adds its four tools to the list.
+- `profile`: a permission profile (below); default `read-only`.
+- `budget`: `turns` (default 30), `minutes` (default 30), `usd` (no default). The run gets
+  `--max-turns <turns + 1>`: one extra turn for loading the mesh tools. Past `minutes` the daemon
+  stops the run's whole process group; `usd` becomes `--max-budget-usd`.
+- `inputs`: what `mesh_context` serves the run as input: the artifacts (below) of the last round of
+  named steps of the plan, or `artifacts` for those of the step's dependencies. Inputs are fenced
+  and marked untrusted: the agent is told to read them as data, never as instructions. `inputs`
+  never crosses a blind relation or a `reads` list.
+
+A gate step can't be headless. A preset may leave `agent` and `profile` as `{agent}`/`{profile}`
+and have them filled with `mesh goal plan --params agent=auditor,profile=read-only`.
+
+**The command line.** Every run is, in this order:
+`claude -p <prompt> --output-format stream-json --verbose --session-id <uuid> --max-turns <n>
+--setting-sources user --settings <run dir>/profile.json --permission-mode default
+--strict-mcp-config --mcp-config <run dir>/mcp.json`, then `--agents <run dir>/agents.json --agent
+<agent>` and `--max-budget-usd <usd>` when set. With `--setting-sources user` and
+`--strict-mcp-config`, the subject repo's project settings, hooks, `.mcp.json`, agents and
+`CLAUDE.md` are **not** loaded: the brief, the inputs and the agent are the run's only
+instructions, and `mesh` is its only MCP server. mesh never passes `--model`,
+`--dangerously-skip-permissions` or `--bare`.
+
+**Profiles.** A profile compiles to Claude Code `permissions` settings. Every allow list starts
+with the four mesh tools (`mcp__mesh__mesh_context`, `mcp__mesh__mesh_artifact`,
+`mcp__mesh__mesh_review`, `mcp__mesh__mesh_done`); no profile can allow the other mesh tools.
+
+| Profile | Allows (after the mesh tools) | Denies |
+|---|---|---|
+| `read-only` | `Read`, `Grep`, `Glob`, `LS`, `Bash(git log --no-ext-diff *)`, `Bash(git show --no-ext-diff *)`, `Bash(git rev-parse *)`, `Bash(git ls-files *)`, `Bash(git cat-file *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` |
+| `read-only+checks` | as `read-only` (a registered profile adds its `checks`) | as `read-only` |
+| `propose-via-branch` | as `read-only`, then `Edit`, `Write`, `Bash(git add *)`, `Bash(git commit *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Bash(git push *)`, `NotebookEdit`, `WebFetch`, `WebSearch` |
+
+A registered profile (`mesh profile add <name> --file profile.yaml`) is YAML: `extends` (one of
+the three, default `read-only`), `checks` (commands, each allowed as `Bash(<command>)`), `allow`,
+`deny`, `description`. Its settings are the base's, then the checks, then `allow`; denies are the
+base's, then `deny`. Profiles may not allow `Bash`, `Bash(*)`, `Bash(:*)`, a check `*`, or any
+`git push` rule: only the daemon pushes, and an unrestricted shell would run unattended under
+another member's credentials. Its creator or an admin may replace it. The hub snapshots the
+profile into the offer, so a profile changed later does not reach an offered run.
+
+What a profile cannot do:
+- `read-only` **cannot stop reads** inside the run's worktree: Claude Code allows read-only
+  commands (`cat`, `git status`, the Read tool) in its working directories without any rule.
+- The user's own `permissions.allow` (user settings, `~/.claude/settings.json`) merges into every
+  profile; only an explicit deny narrows it. Keep user-level allows small. (Claude Code's `--tools`
+  is the stronger floor; mesh does not use it yet.)
+- Shell rules are prefix matches and best effort, not a sandbox.
+
+**Branches.** Only the daemon pushes. After a `propose-via-branch` run whose worktree has new
+commits, the daemon runs `git push origin HEAD:refs/heads/mesh/<slug>` (`<slug>`: the step id
+lowercased, other characters as `-`, e.g. `mesh/g17-audit`) and records the branch on the round and
+the step. A failed push becomes a note on the step. Other profiles never push.
+
+**Capacity.** A headless run counts toward `maxSessions` like a session. At the cap the offer is
+accepted and the run is queued; queued runs start oldest first when a place frees up. A queued run
+still waiting at its deadline (offer time + `thresholds.offer_expiry`) is released with the note
+`capacity: no free session on <host> before the run deadline`.
+
+**Close-as-fail.** A run that ends (exits, crashes, or is stopped for its budget) without an
+accepted `mesh_done` while its machine and session still hold the step is closed by the daemon:
+it stores a `transcript` artifact (the rendered tail of the run: last assistant texts, errors,
+stderr; secrets redacted; never raw JSON) and finishes the step with outcome `fail`, summary
+`headless run ended without mesh_done (exit <exit>)`. A step someone took over meanwhile is left to
+its new holder. Runs outlive the daemon: a restarted daemon adopts runs that are still alive and
+closes those that ended meanwhile. A machine that can run headless steps says so to the hub (it
+needs mesh 0.1.15 and `workspaceRoots` with the repo); other machines are never offered one.
+
+## Artifacts
+
+**Artifact.** Output of a step's round that does not belong in the repo (a report, a review, a run
+transcript), stored on the hub: `mesh_artifact` (MCP) from the session that holds the step.
+- Kinds `report`, `review`, `transcript`; media types `text/markdown` (default),
+  `application/json`, `text/plain`.
+- Limits (hub YAML `artifacts`): `max_bytes` per artifact (default 1 MiB), `per_round` (default
+  10) per step round. An artifact belongs to the round the holder is working on; `mesh_done` lists
+  the round's artifact ids on the round.
+- **Redaction on the machine.** The daemon removes private key blocks, known token forms
+  (`ghp_…`, `glpat-…`, `xox…-`, `AKIA…`, `sk-…`, …), `password=…`-style values and its own key and
+  hub token before sending; the hub records how many were removed. Redaction is best effort.
+- **Team-visible.** Every member can read every artifact (`mesh artifact ls <G>`,
+  `mesh artifact show <id>`). Artifact content never appears in hub events or in the ledger export,
+  only ids and hashes.
+- **Retention.** The content of artifacts of goals that are `done` or `dropped` is pruned after
+  `retention_days` (default 365; 0 keeps it forever). Metadata and the SHA-256 stay.
+
+## Telemetry
+
+Each headless run reports `round.telemetry` to the hub (`POST /v1/steps/:id/run`): `runId`,
+`model`, `agentKey` (`<repo name>/<agent>`) and `agentHash` (SHA-256 of the agent file), `profile`
+and `profileHash`, `sessionId`, `turns`, `tokensIn`, `tokensOut`, `cacheRead`, `cacheWrite`,
+`costUsdEstimate`, `durationMs`, `exit` (`success`, an `error_*` subtype of the CLI's result,
+`killed_budget`, `crashed`, `no_result`), `permissionDenials` (count and tools), `tools`,
+`mcpServers` and `redactions`.
+- **Complete** when the run's stream ends with Claude Code's `result` event: the numbers are the
+  CLI's own.
+- **Partial** otherwise (killed, crashed): `turns` counts distinct assistant messages and is marked
+  `turnsApprox: true`, tokens are summed once per message, `durationMs` comes from the daemon and
+  there is no cost.
+- The cost is the client's estimate (`total_cost_usd`), not a bill.
+
 ## Offers and accept policy
 
 **Offer.** Someone hands a ready step to a machine, or to a session on it: `mesh assign G7.api --to build-box` or `--to build-box/perf`. An offer is an overlay on a `ready` step: `offered`, then `accepted`, `declined`, `expired` or `withdrawn`. The step keeps its last offer (the goal page and `mesh show` show it). A goal is assigned through its ready steps (in a new goal: its design step).

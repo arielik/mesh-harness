@@ -91,6 +91,14 @@ export const HubConfigFile = z.object({
       offer_expiry: duration.default(30 * 60_000),
     })
     .default({ takeover_after: 4 * 3_600_000, pause_grace: 2 * 60_000, machine_offline: 15 * 60_000, offer_expiry: 30 * 60_000 }),
+  /** RL-1: hub-stored artifacts: size per upload, uploads per round, days content is kept (0: forever). */
+  artifacts: z
+    .object({
+      max_bytes: z.number().int().min(1).default(1_048_576),
+      per_round: z.number().int().min(1).default(10),
+      retention_days: z.number().int().min(0).default(365),
+    })
+    .default({ max_bytes: 1_048_576, per_round: 10, retention_days: 365 }),
 });
 
 export interface HubConfig {
@@ -105,6 +113,8 @@ export interface HubConfig {
   thresholds: { takeoverAfterMs: number; pauseGraceMs: number; machineOfflineMs: number; offerExpiryMs: number };
   eventsRetentionDays: number;
   blindGuard: "person" | "session";
+  /** RL-1: artifact limits and retention. */
+  artifacts: { maxBytes: number; perRound: number; retentionDays: number };
 }
 
 export function isLoopback(host: string): boolean {
@@ -172,6 +182,7 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     },
     eventsRetentionDays: file.events_retention_days,
     blindGuard: file.blind_guard,
+    artifacts: { maxBytes: file.artifacts.max_bytes, perRound: file.artifacts.per_round, retentionDays: file.artifacts.retention_days },
   };
 }
 

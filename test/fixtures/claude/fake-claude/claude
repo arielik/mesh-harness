@@ -1,0 +1,75 @@
+#!/usr/bin/env node
+// A fake `claude` for headless-run tests (RL-1). Never the real binary.
+//
+// On start it writes $FAKE_CLAUDE_DIR/calls/<MESH_STEP>-<pid>.json with its argv, cwd, the MESH_*
+// environment, pid and process group, then runs $FAKE_CLAUDE_DIR/scripts/<MESH_STEP>.json: a JSON
+// array of actions run in order (a missing script = exit 0):
+//   {"stdout": ["line", …]}   lines on stdout; "$SESSION" becomes the --session-id argument
+//   {"stderr": ["line", …]}   lines on stderr
+//   {"spawnChild": true}      starts `sleep 300` in this process group; pid in calls/<MESH_STEP>-child.pid
+//   {"ignoreTerm": true}      ignore SIGTERM from now on
+//   {"commit": true}          `git commit --allow-empty -m fake` in cwd; records `head` in the calls file
+//   {"waitFor": "<name>"}     poll every 20 ms until $FAKE_CLAUDE_DIR/go/<name> exists
+//   {"sleepMs": n}
+//   {"exit": n}
+"use strict";
+const { execFileSync, spawn } = require("node:child_process");
+const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, writeSync } = require("node:fs");
+const { join } = require("node:path");
+
+const dir = process.env.FAKE_CLAUDE_DIR;
+const step = process.env.MESH_STEP || "nostep";
+const argv = process.argv.slice(2);
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+let pgid;
+try {
+  pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
+} catch {
+  pgid = undefined;
+}
+const call = {
+  argv,
+  bin: process.argv[1],
+  cwd: process.cwd(),
+  env: { MESH_STEP: process.env.MESH_STEP, MESH_RUN: process.env.MESH_RUN, FAKE_PARENT_VAR: process.env.FAKE_PARENT_VAR },
+  pid: process.pid,
+  pgid,
+};
+const callFile = dir ? join(dir, "calls", `${step}-${process.pid}.json`) : undefined;
+// Atomic (temp file + rename): a test reading the calls directory never sees a half-written file.
+const put = (file, text) => {
+  writeFileSync(`${file}.${process.pid}.tmp`, text);
+  renameSync(`${file}.${process.pid}.tmp`, file);
+};
+const save = () => {
+  if (!callFile) return;
+  mkdirSync(join(dir, "calls"), { recursive: true });
+  put(callFile, JSON.stringify(call));
+};
+save();
+
+let script = [];
+if (dir && existsSync(join(dir, "scripts", `${step}.json`))) script = JSON.parse(readFileSync(join(dir, "scripts", `${step}.json`), "utf8"));
+const i = argv.indexOf("--session-id");
+const session = i >= 0 ? argv[i + 1] : "";
+
+for (const a of script) {
+  if (a.stdout) for (const l of a.stdout) writeSync(1, `${l.split("$SESSION").join(session)}\n`);
+  if (a.stderr) for (const l of a.stderr) writeSync(2, `${l}\n`);
+  if (a.spawnChild) {
+    const c = spawn("sleep", ["300"], { stdio: "ignore" });
+    c.unref();
+    put(join(dir, "calls", `${step}-child.pid`), String(c.pid));
+  }
+  if (a.ignoreTerm) process.on("SIGTERM", () => undefined);
+  if (a.commit) {
+    execFileSync("git", ["-c", "user.email=fake@example.invalid", "-c", "user.name=fake", "commit", "-q", "--allow-empty", "-m", "fake"], { stdio: "ignore" });
+    call.head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    save();
+  }
+  if (a.waitFor) while (!existsSync(join(dir, "go", a.waitFor))) sleep(20);
+  if (a.sleepMs) sleep(a.sleepMs);
+  if (a.exit !== undefined) process.exit(a.exit);
+}
+process.exit(0);

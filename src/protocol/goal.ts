@@ -77,6 +77,117 @@ export const Goal = z.object({
 });
 export type Goal = z.infer<typeof Goal>;
 
+/** RL-1: the name of a permission profile (built in or registered on the hub). */
+export const ProfileName = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9+._-]{0,39}$/, "a profile name is 1-40 characters: lowercase letters, digits, '+', '.', '_' or '-', starting with a letter or digit");
+export type ProfileName = z.infer<typeof ProfileName>;
+
+/** RL-1: what a headless run may spend. */
+export const StepBudget = z
+  .object({
+    turns: z.number().int().min(1).max(500).optional(),
+    minutes: z.number().int().min(1).max(1440).optional(),
+    usd: z.number().gt(0).max(1000).optional(),
+  })
+  .strict();
+export type StepBudget = z.infer<typeof StepBudget>;
+
+/** RL-1: what a headless step without `profile`/`budget.turns`/`budget.minutes` runs with. */
+export const HEADLESS_DEFAULTS = { profile: "read-only", turns: 30, minutes: 30 } as const;
+
+/** RL-1: hub-stored output of a step's round (not part of the repo). */
+export const ArtifactKind = z.enum(["report", "review", "transcript"]);
+export type ArtifactKind = z.infer<typeof ArtifactKind>;
+export const ArtifactMediaType = z.enum(["text/markdown", "application/json", "text/plain"]);
+export type ArtifactMediaType = z.infer<typeof ArtifactMediaType>;
+
+export const StoredArtifact = z.object({
+  /** "a-" + a 26-character ULID. */
+  id: z.string(),
+  goal: z.string(),
+  step: z.string(),
+  round: z.number().int().min(1),
+  kind: ArtifactKind,
+  mediaType: ArtifactMediaType,
+  bytes: z.number().int(),
+  /** 64 hex of the stored UTF-8 content. */
+  sha256: z.string(),
+  redactions: z.number().int().min(0),
+  title: z.string().max(200).optional(),
+  createdAt: z.number(),
+  /** The uploading user's id. */
+  by: z.string(),
+  prunedAt: z.number().optional(),
+});
+export type StoredArtifact = z.infer<typeof StoredArtifact>;
+
+/** RL-1: how a headless run ended (`error_*` = any error subtype of the CLI's result). */
+export const RunExit = z.string().regex(/^(success|error_[a-z_]+|killed_budget|crashed|no_result)$/);
+export type RunExit = z.infer<typeof RunExit>;
+
+/** RL-1: what a headless run did, from its stream (complete) or the daemon (partial). */
+export const RunTelemetry = z.object({
+  runId: z.string(),
+  model: z.string().optional(),
+  agentKey: z.string().optional(),
+  agentHash: z.string().optional(),
+  profile: ProfileName,
+  profileHash: z.string(),
+  sessionId: z.string().optional(),
+  turns: z.number().int().min(0),
+  turnsApprox: z.boolean(),
+  tokensIn: z.number().int(),
+  tokensOut: z.number().int(),
+  cacheRead: z.number().int(),
+  cacheWrite: z.number().int(),
+  costUsdEstimate: z.number().optional(),
+  durationMs: z.number().int(),
+  exit: RunExit,
+  permissionDenials: z.object({ count: z.number().int(), tools: z.array(z.string()) }),
+  tools: z.array(z.string()).optional(),
+  mcpServers: z.array(z.string()).optional(),
+  /** 0 in S1. */
+  undeclaredRules: z.number().int(),
+  redactions: z.number().int(),
+});
+export type RunTelemetry = z.infer<typeof RunTelemetry>;
+
+/** RL-1: the built-in profiles a registered profile extends. */
+export const ProfileBase = z.enum(["read-only", "read-only+checks", "propose-via-branch"]);
+export type ProfileBase = z.infer<typeof ProfileBase>;
+
+/** RL-1: the YAML text of a registered profile. */
+export const ProfileFile = z
+  .object({
+    description: z.string().max(200).optional(),
+    extends: ProfileBase.default("read-only"),
+    checks: z.array(z.string().min(1).max(200)).max(50).optional(),
+    allow: z.array(z.string().min(1).max(300)).max(100).optional(),
+    deny: z.array(z.string().min(1).max(300)).max(100).optional(),
+  })
+  .strict();
+export type ProfileFile = z.infer<typeof ProfileFile>;
+
+/** RL-1: the Claude Code settings a profile compiles to. */
+export const ProfileSettings = z.object({ permissions: z.object({ allow: z.array(z.string()), deny: z.array(z.string()) }) });
+export interface ProfileSettings {
+  permissions: { allow: string[]; deny: string[] };
+}
+
+export const ProfileSnapshot = z.object({ name: ProfileName, base: ProfileBase, sha256: z.string(), settings: ProfileSettings });
+export type ProfileSnapshot = z.infer<typeof ProfileSnapshot>;
+
+/** RL-1: a profile as `GET /v1/profiles` shows it. */
+export interface ProfileView extends ProfileSnapshot {
+  builtIn: boolean;
+  description: string;
+  /** Registered profiles only. */
+  text?: string;
+  createdBy?: string;
+  updatedAt?: number;
+}
+
 /** MM-3: an offer's life: `offered` until it is accepted, declined, expired or withdrawn. */
 export const OfferState = z.enum(["offered", "accepted", "declined", "expired", "withdrawn"]);
 export type OfferState = z.infer<typeof OfferState>;
@@ -97,6 +208,8 @@ export const StepOffer = z.object({
   stick: z.boolean().optional(),
   note: z.string().optional(),
   decidedAt: z.number().optional(),
+  /** RL-1: the profile snapshot a headless offer carried (the hub's record of what the run may do). */
+  profile: z.object({ name: ProfileName, sha256: z.string() }).optional(),
 });
 export type StepOffer = z.infer<typeof StepOffer>;
 
@@ -146,6 +259,10 @@ export const Round = z.object({
   gate: z.object({ by: z.string(), rule: z.string().optional(), inputs: z.record(z.string(), z.unknown()).optional(), comment: z.string().optional() }).optional(),
   /** The rule that parked the step after this round. */
   parked: z.string().optional(),
+  /** RL-1: ids of the hub-stored artifacts of this round, in upload order. */
+  artifactIds: z.array(z.string()).optional(),
+  /** RL-1: what the headless run of this round did. */
+  telemetry: RunTelemetry.optional(),
 });
 export type Round = z.infer<typeof Round>;
 
@@ -221,6 +338,22 @@ export const StepPolicy = z.object({
   reworks: z.string().max(100).optional(),
   /** For gate steps: the gate's name (R1, R2, R3). */
   gate: z.string().max(20).optional(),
+  /** RL-1: `headless` = a machine runs the step unattended (`claude -p`). */
+  mode: z.enum(["interactive", "headless"]).optional(),
+  /** RL-1: an agent name in the step repo's `.claude/agents/`. */
+  agent: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "an agent name is 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit")
+    .optional(),
+  /** RL-1: the permission profile of a headless run. */
+  profile: ProfileName.optional(),
+  /** RL-1: turns, minutes and dollars a headless run may spend. */
+  budget: StepBudget.optional(),
+  /** RL-1: what mesh_context serves as untrusted input (artifacts of the named steps). */
+  inputs: z
+    .array(z.union([z.enum(["previous", "dispositions", "artifacts"]), localId]))
+    .max(20)
+    .optional(),
 });
 export type StepPolicy = z.infer<typeof StepPolicy>;
 export const POLICY_KEYS = Object.keys(StepPolicy.shape) as (keyof StepPolicy)[];

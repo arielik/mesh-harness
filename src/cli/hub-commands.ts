@@ -15,6 +15,7 @@ import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
 import { clearCredentials, HubClient, hubFetch, installId, loadCredentials, saveCredentials } from "./hub-client.ts";
 import { isRemoteShell, login } from "./login.ts";
+import { artifactCommand, profileCommand } from "./artifact-commands.ts";
 import { machineCommand, machinesCommand } from "./machine-commands.ts";
 import { renderGoal } from "./show.ts";
 import { writeTrailHere } from "./trail-files.ts";
@@ -138,7 +139,7 @@ export function goalCommand(c: CliEnv): Command {
     "  mesh goal tag <G> <topic>…          # untag <G> <topic>… to take topics off",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",
-    "  mesh goal plan <G> --preset sdd-split --repo R [--acs acs.yaml] [--no-approve]",
+    "  mesh goal plan <G> --preset sdd-split --repo R [--params k=v,k2=v2] [--acs acs.yaml] [--no-approve]",
     '  mesh goal approve <G> [--comment "…"]',
     '  mesh goal revise <G> "<comment>"',
     '  mesh goal replan <G> ["<comment>"]',
@@ -149,7 +150,7 @@ export function goalCommand(c: CliEnv): Command {
     summary: "goals and plans: new, ls, show, tag, plan, approve, revise",
     async run(args) {
       const [sub, ...rest] = args;
-      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs", "topic", "topics"]);
+      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs", "topic", "topics", "params"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "new": {
@@ -202,7 +203,25 @@ export function goalCommand(c: CliEnv): Command {
             c.io.err("--preset needs --repo (the repo the template's steps work in)");
             return 2;
           }
-          const plan = file ? readPlan(file) : instantiate(findPreset(c.cwd, presetName as string), { repo: a.str("repo") as string, goal: id, acs: readAcs(a.str("acs")) });
+          let plan: PlanInput;
+          if (file) plan = readPlan(file);
+          else {
+            const params = parseParams(a.has("params") ? (a.str("params") ?? "") : undefined);
+            if ("error" in params) {
+              c.io.err(params.error);
+              return 2;
+            }
+            try {
+              plan = instantiate(findPreset(c.cwd, presetName as string), { repo: a.str("repo") as string, goal: id, acs: readAcs(a.str("acs")), params: params.params });
+            } catch (e) {
+              // RL-1: a placeholder left in `agent` or `profile` (nothing is sent).
+              if (e instanceof Error && e.message.startsWith("preset ")) {
+                c.io.err(e.message);
+                return 2;
+              }
+              throw e;
+            }
+          }
           const r = await hub().post<{ plan: { version: number }; detail?: GoalDetail }>(`/v1/goals/${encodeURIComponent(id)}/plan`, { ...plan, approve: !a.has("no-approve") });
           c.io.out(r.detail ? `Plan v${r.plan.version} approved; ${r.detail.steps.filter((s) => s.state === "ready").length} step(s) ready.` : `Plan v${r.plan.version} proposed; waiting for approval.`);
           return 0;
@@ -471,5 +490,39 @@ export function presetCommand(c: CliEnv): Command {
 }
 
 export function hubCommands(c: CliEnv): Command[] {
-  return [loginCommand(c), logoutCommand(c), whoamiCommand(c), goalCommand(c), topicCommand(c), showCommand(c), nextCommand(c), takeCommand(c), stepCommand(c), presetCommand(c), answerCommand(c), autopilotCommand(c), machinesCommand(c, "machines"), machinesCommand(c, "fleet"), machineCommand(c)];
+  return [
+    loginCommand(c),
+    logoutCommand(c),
+    whoamiCommand(c),
+    goalCommand(c),
+    topicCommand(c),
+    showCommand(c),
+    nextCommand(c),
+    takeCommand(c),
+    stepCommand(c),
+    presetCommand(c),
+    profileCommand(c),
+    artifactCommand(c),
+    answerCommand(c),
+    autopilotCommand(c),
+    machinesCommand(c, "machines"),
+    machinesCommand(c, "fleet"),
+    machineCommand(c),
+  ];
+}
+
+/**
+ * RL-1: `--params k=v,k2=v2` for a preset: split on `,`, each item on its first `=`. Undefined when
+ * the flag is absent.
+ */
+export function parseParams(raw: string | undefined): { params?: Record<string, string> | undefined } | { error: string } {
+  if (raw === undefined) return {};
+  const params: Record<string, string> = {};
+  for (const item of raw.split(",").map((x) => x.trim()).filter(Boolean)) {
+    const eq = item.indexOf("=");
+    if (eq <= 0) return { error: "--params takes k=v pairs separated by commas" };
+    params[item.slice(0, eq).trim()] = item.slice(eq + 1).trim();
+  }
+  if (raw.trim() === "") return { error: "--params takes k=v pairs separated by commas" };
+  return { params };
 }

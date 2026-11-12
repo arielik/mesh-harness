@@ -1,8 +1,8 @@
-// The twelve mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
+// The thirteen mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
 // stdio shim (`mesh mcp`) and the daemon that executes them.
 
 import { z } from "zod";
-import { AcState, Failure, Findings, PlanAc, PlanStep, Verdict } from "./goal.ts";
+import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanAc, PlanStep, Verdict } from "./goal.ts";
 
 export const TOOLS = {
   mesh_context: {
@@ -44,6 +44,16 @@ export const TOOLS = {
       acs_addressed: z.array(z.string()).optional().describe("only if your brief lists acceptance criteria: the ids your work covers, e.g. ['AC-01']"),
     },
   },
+  mesh_artifact: {
+    description:
+      "Store a report (or other output that is not part of the repo) on the hub for this step's round. The content is redacted for secrets on this machine first, then stored on the hub, where the team can read it.",
+    input: {
+      kind: ArtifactKind.describe("report | review | transcript"),
+      title: z.string().max(200).optional(),
+      media_type: ArtifactMediaType.optional().describe("text/markdown (default), application/json or text/plain"),
+      content: z.string().min(1),
+    },
+  },
   mesh_ask: {
     description: "Ask your person (and the goal owner) a question. After calling it, end your turn and wait: the answer arrives as a message.",
     input: { question: z.string().min(1) },
@@ -82,6 +92,9 @@ export const TOOLS = {
 } as const;
 
 export type ToolName = keyof typeof TOOLS;
+
+/** RL-1: the permission rules every headless profile allows first, in this order. */
+export const MESH_TOOL_RULES = ["mcp__mesh__mesh_context", "mcp__mesh__mesh_artifact", "mcp__mesh__mesh_review", "mcp__mesh__mesh_done"] as const;
 export const TOOL_NAMES = Object.keys(TOOLS) as ToolName[];
 
 /** POST /local/mcp/:tool from the shim to the daemon. */

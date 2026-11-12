@@ -380,6 +380,12 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET /v1/offers` | Assign (v0.1.12): open offers to the caller's machines |
 | `GET /v1/steps/:id/suggest` | Suggest (v0.1.13): machines to offer a ready step to, best first, each with a reason; `team=1`, `any=1` (read-only) |
 | `GET /v1/goals/:id/suggest` | Suggest (v0.1.13): machines to offer a goal's offerable steps to, best first; `team=1`, `any=1` (read-only) |
+| `GET /v1/profiles`, `GET /v1/profiles/:name` | Headless steps (v0.1.15): permission profiles, the three built-ins first, then registered ones; one profile with its compiled settings |
+| `POST /v1/profiles` | Headless steps (v0.1.15): register or replace a profile (its creator or an admin); 201 new, 200 replaced |
+| `POST /v1/steps/:id/artifacts` | Artifacts (v0.1.15): store a report, review or transcript for the held step's current round (size and per-round limits) |
+| `GET /v1/artifacts/:id` | Artifacts (v0.1.15): one artifact with its content (`null` once pruned) |
+| `GET /v1/goals/:id/artifacts` | Artifacts (v0.1.15): a goal's artifacts (metadata), oldest first |
+| `POST /v1/steps/:id/run` | Headless steps (v0.1.15): a run started or finished, with its telemetry (and branch) |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

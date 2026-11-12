@@ -26,7 +26,13 @@ const TABLES: readonly { name: string; identity?: string }[] = [
   { name: "message", identity: "id" },
   { name: "event", identity: "seq" },
   { name: "idem" },
+  // RL-1
+  { name: "artifact" },
+  { name: "profile" },
 ];
+
+/** BLOB columns (RL-1 artifact content) go to Postgres bytea as Buffers. */
+const bytes = (v: SqlValue): SqlValue => (v instanceof Uint8Array && !Buffer.isBuffer(v) ? Buffer.from(v) : v);
 
 /** Rows per INSERT; well under Postgres's 65535 parameters for the widest table. */
 const BATCH = 500;
@@ -79,7 +85,7 @@ export async function copyHubToPostgres(from: string, to: string, opts: { force?
           for (;;) {
             const batch = src.all<Record<string, SqlValue>>(`SELECT rowid AS mesh_rowid, * FROM ${q(t.name)} WHERE rowid > ? ORDER BY rowid LIMIT ?`, last, BATCH);
             if (batch.length === 0) break;
-            await dst.run(insert(batch.length), ...batch.flatMap((r) => cols.map((c) => r[c] ?? null)));
+            await dst.run(insert(batch.length), ...batch.flatMap((r) => cols.map((c) => bytes(r[c] ?? null))));
             last = Number(batch[batch.length - 1]?.mesh_rowid);
             rows += batch.length;
           }

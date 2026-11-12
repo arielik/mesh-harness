@@ -215,6 +215,66 @@ else a sid prefix of at least 4 characters. When several sessions match, use a s
 Under `shareSessions: steps` the hub does not know an idle session, so a `<machine>/<session>`
 target answers 404 until that session holds a step; offer to the machine alone instead.
 
+### Run a step headless
+
+A step a machine runs on its own, with no person watching (an audit, a triage). In the plan:
+
+```yaml
+# plan.yaml — mesh goal plan G9 --file plan.yaml
+steps:
+  - id: audit
+    repo: payments-api
+    kind: review
+    title: Audit the error handling
+    brief: Read the error paths and report what is missing.
+    mode: headless
+    agent: auditor          # .claude/agents/auditor.md in payments-api (optional)
+    profile: read-only      # or a registered profile; default read-only
+    budget: { turns: 20, minutes: 15 }
+```
+
+A template can leave the agent and profile open (`agent: "{agent}"`, `profile: "{profile}"`):
+`mesh goal plan G9 --preset audit --repo payments-api --params agent=auditor,profile=read-only`.
+
+A profile beyond the three built-ins:
+
+```sh
+cat > lint-checks.yaml <<'EOF'
+description: read the repo and run its linters
+extends: read-only+checks
+checks: ["pnpm lint", "pnpm typecheck"]
+EOF
+mesh profile add lint-checks --file lint-checks.yaml
+#   Saved profile lint-checks (sha256 3f9a1c0b7e22).
+mesh profile ls
+mesh profile show lint-checks        # the compiled Claude Code settings
+```
+
+Offer the step to a machine that can run it:
+
+```sh
+mesh assign G9.audit --to build-box
+```
+
+The machine needs mesh 0.1.15, `workspaceRoots` in its `daemon.json` with a checkout of the repo,
+and an accept policy that takes your offer automatically (a manual offer of a headless step waits
+and expires; `mesh accept` does not take one). Its daemon accepts, makes a worktree of that checkout
+and starts `claude -p`. Then:
+
+```sh
+mesh artifact ls G9
+#   a-01JD3K…  G9.audit r1  report  4180 B  Error handling audit
+mesh artifact show a-01JD3K… > audit.md
+```
+
+On the machine, each run has a folder `<stateDir>/runs/<run id>/` (Linux:
+`~/.local/state/mesh/runs/`): `run.json`, `stream.jsonl` (Claude Code's output), `stderr.log`,
+the profile and MCP config it ran with. The worktree is removed when the run ends; the folder
+stays. To read a run as a conversation: `claude --resume <sessionId>` (the `sessionId` in
+`run.json`). Claude Code looks a session up by the folder it ran in, so run it from the run's
+`worktree` path (`mkdir -p` it again if it was removed). A run that ended without `mesh_done` closed the step as
+failed and stored its transcript as an artifact.
+
 ## 4. A goal from design to done
 
 ```bash
