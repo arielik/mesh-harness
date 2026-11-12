@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dispatch, webRootFor, type Command } from "./commands.ts";
@@ -64,7 +64,7 @@ describe("command help", () => {
 
 describe("webRootFor", () => {
   it("finds web/ next to the real script when called through a bin symlink", () => {
-    const root = mkdtempSync(join(tmpdir(), "mesh-web-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "mesh-web-"))); // macOS: /var is a symlink to /private/var
     mkdirSync(join(root, "lib", "dist", "web"), { recursive: true });
     writeFileSync(join(root, "lib", "dist", "main.mjs"), "");
     mkdirSync(join(root, "bin"));
@@ -74,7 +74,7 @@ describe("webRootFor", () => {
   });
 
   it("is undefined when there is no built dashboard or no such script", () => {
-    const root = mkdtempSync(join(tmpdir(), "mesh-web-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "mesh-web-"))); // macOS: /var is a symlink to /private/var
     writeFileSync(join(root, "main.mjs"), "");
     expect(webRootFor(join(root, "main.mjs"))).toBeUndefined();
     expect(webRootFor(join(root, "missing.mjs"))).toBeUndefined();
