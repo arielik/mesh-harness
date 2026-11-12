@@ -461,3 +461,31 @@ describe("AC-17 mesh agent source and help", { timeout: 30_000 }, () => {
     expect(res.all).toMatch(/^\s+agent\b/m);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+
+// RL-7 AC-08 (CLI): `mesh agents` flags a group with an invalid version and prints the version line
+// `  <hash12>  invalid: <invalid>` in place of the description (docs/specs/RL-7.md, Agent front matter).
+describe("RL-7 AC-08 mesh agents invalid", { timeout: 30_000 }, () => {
+  const BAD = "---\nname: bad\ndescription: Validates: findings\n---\nYou validate.\n";
+  const GOOD = "---\ndescription: Good agent\n---\nYou review.\n";
+  const INV = "front matter is not valid YAML: sample at line 2, column 14";
+
+  it("test_AC08_cli_agents", async () => {
+    k = await Rk.start();
+    const m = await k.k.bare("ann", "ann-box", { repos: [ALPHA] });
+    await k.report(m, [rep(ALPHA, "bad", BAD, { invalid: INV }), rep(ALPHA, "good", GOOD, { description: "Good agent" })], { share: "all" });
+    const ann = await k.w.person("ann", "work");
+    const res = await cli(ann, ["agents"]);
+    expect(res.code, res.all).toBe(0);
+    const h12 = (t: string) => H(t).slice(0, 12);
+    expect(lines(res.out)).toStrictEqual([
+      "bad  versions 1  copies 1  invalid",
+      `  ${h12(BAD)}  invalid: ${INV}`,
+      "    alpha/bad  repo",
+      "good  versions 1  copies 1",
+      `  ${h12(GOOD)}  Good agent`,
+      "    alpha/good  repo",
+    ]);
+  });
+});

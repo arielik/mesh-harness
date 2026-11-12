@@ -81,3 +81,30 @@ describe("RL-4 AC-16 mesh-debrief skill", () => {
     expect(readFileSync(q, "utf8")).toBe(MESH_SKILL);
   });
 });
+
+// RL-7 AC-16: the "Headless runs" section says the step record mesh writes is not committed in a
+// headless run, because the run's worktree is discarded (docs/specs/RL-7.md, Docs).
+describe("RL-7 AC-16 skill", () => {
+  /** The text from the heading line holding `title` up to the next heading. */
+  const section = (text: string, title: string): string => {
+    const lines = text.split("\n");
+    const start = lines.findIndex((l) => /^#+ /.test(l) && l.includes(title));
+    if (start < 0) return "";
+    const end = lines.findIndex((l, i) => i > start && /^#+ /.test(l));
+    return lines.slice(start, end < 0 ? undefined : end).join("\n");
+  };
+  const NOT_COMMITTED = /not (be )?committed|never commit|do not commit|don't commit/i;
+
+  it("test_AC16_skill_headless_record", () => {
+    const repoSkill = readFileSync(join(import.meta.dirname, "..", "..", "skills", "mesh", "SKILL.md"), "utf8");
+    expect(repoSkill).toBe(MESH_SKILL);
+    const s = section(MESH_SKILL, "Headless runs");
+    expect(s.length, "a Headless runs section").toBeGreaterThan(0);
+    expect(s).toContain("step record");
+    expect(s).toMatch(NOT_COMMITTED);
+    expect(s).toMatch(/discarded/i);
+    // Control: the regex is not vacuous: a section that does not say it does not match.
+    expect(section(MESH_SKILL, "Pulse goals")).not.toMatch(NOT_COMMITTED);
+    expect("Commit the step record with your work.").not.toMatch(NOT_COMMITTED);
+  });
+});

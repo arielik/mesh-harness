@@ -682,7 +682,8 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
   const STATS = { method: "GET", path: "/v1/agents/:key/stats", rule: "member", scope: "goals:read", tag: "goals" };
 
   it("test_AC16_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.20");
+    // RL-7 AC-17: the release is v0.1.21.
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.21");
   });
 
   it("test_AC07_route_table", () => {
@@ -731,5 +732,20 @@ describe("RL-6 AC-15 docs and skill", () => {
     for (const t of ["/v1/agents/:key/stats", "v0.1.20"]) expect(s56, t).toContain(t);
     const events = read("docs/events.md");
     for (const t of ["calibration.opened", "calibration.done", "opened calibration of", "done: "]) expect(events, t).toContain(t);
+  });
+});
+
+// RL-7 AC-17: the OpenAPI document is generated (`pnpm schemas`) and its agent report schema (the
+// machine report's `agents` rows of POST /v1/sync) has `invalid` (docs/specs/RL-7.md, Agent front matter).
+describe("RL-7 AC-17 OpenAPI", () => {
+  it("test_AC17_agent_report_invalid", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON document
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as any;
+    const rows = doc.paths["/v1/sync"].post.requestBody.content["application/json"].schema.properties.machine.properties.agents.items;
+    // Control: this is the agent report row (it has the RL-5 fields).
+    expect(Object.keys(rows.properties)).toEqual(expect.arrayContaining(["repo", "kind", "path", "name", "hash", "description"]));
+    expect(rows.properties.invalid).toMatchObject({ type: "string", maxLength: 300 });
+    expect(rows.required ?? []).not.toContain("invalid");
   });
 });

@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parsePreset, presetText } from "../src/core/index.ts";
+import { BUILTIN_PRESETS, parsePreset, presetText } from "../src/core/index.ts";
 import { git, Relay } from "./helpers/relay-kit.ts";
 import { body, DAY, HOUR, iso, MIN, Pk, RELAY_TEXT, sha, sha12, T0, type Bare, type Json } from "./helpers/pulse-kit.ts";
 import type { Person } from "./helpers/world.ts";
@@ -380,5 +380,98 @@ describe("AC-29 mesh pulse fire, error", { timeout: 30_000 }, () => {
     expect(`${res.out}\n${res.err}`).toContain(`Pulse p-1 missed slot ${s.slot}: boom-cli`);
     // Positive control: another pulse fires with exit 0.
     expect((await cli(c.ann, ["pulse", "fire", "p-2"])).code).toBe(0);
+  });
+});
+
+// RL-7 AC-12: `mesh preset ls` lists repo templates (`.mesh/presets/*.yaml` from the current directory
+// up to the git root), sorted by name, after the built-ins (docs/specs/RL-7.md, `mesh preset ls`).
+describe("RL-7 AC-12 mesh preset ls", { timeout: 30_000 }, () => {
+  const HINT = 'Repo templates: .mesh/presets/<name>.yaml (a description and steps, repo "{repo}").';
+  const builtinLines = () => BUILTIN_PRESETS.map((p) => `${p.name.padEnd(14)} ${p.description}`);
+  const preset = (description: string) => SOLO_FILE.replace("description: One step", `description: ${description}`);
+  const BROKEN = "steps: [\n";
+  const brokenFirstLine = (): string => {
+    try {
+      parsePreset("broken", BROKEN);
+    } catch (e) {
+      return (e instanceof Error ? e.message : String(e)).split("\n")[0] as string;
+    }
+    throw new Error("parsePreset accepted the broken preset");
+  };
+  const put = (dir: string, name: string, text: string) => {
+    mkdirSync(join(dir, ".mesh", "presets"), { recursive: true });
+    writeFileSync(join(dir, ".mesh", "presets", `${name}.yaml`), text);
+  };
+  /** A git folder `t` with a subdirectory `sub`; returns both. */
+  const gitTree = (parent = plainDir()) => {
+    const t = join(parent, "t");
+    mkdirSync(join(t, "sub"), { recursive: true });
+    git(t, ["init", "-q"]);
+    return { t, sub: join(t, "sub") };
+  };
+  const outLines = (out: string) => out.split("\n").filter((l) => l !== "");
+
+  it("test_AC12_repo_templates", async () => {
+    const c = await cast();
+    const { t, sub } = gitTree();
+    // Written out of name order on purpose.
+    put(t, "sdd-split", preset("Split RL7"));
+    put(t, "hotfix", preset("Quick fix"));
+    put(t, "broken", BROKEN);
+    const res = await cli(c.ann, ["preset", "ls"], sub);
+    expect(res.code, res.err).toBe(0);
+    expect(outLines(res.out)).toStrictEqual([
+      ...builtinLines(),
+      `${"broken".padEnd(14)} invalid: ${brokenFirstLine()}  [../.mesh/presets/broken.yaml]`,
+      `${"hotfix".padEnd(14)} Quick fix  [../.mesh/presets/hotfix.yaml]`,
+      `${"sdd-split".padEnd(14)} Split RL7  [../.mesh/presets/sdd-split.yaml]  (replaces the built-in)`,
+    ]);
+    expect(res.out).not.toContain("Repo templates:");
+  });
+
+  it("test_AC12_nearer_wins", async () => {
+    const c = await cast();
+    const { t, sub } = gitTree();
+    put(t, "hotfix", preset("Quick fix"));
+    put(sub, "hotfix", preset("Near fix"));
+    const res = await cli(c.ann, ["preset", "ls"], sub);
+    expect(res.code, res.err).toBe(0);
+    const hot = outLines(res.out).filter((l) => l.startsWith("hotfix "));
+    expect(hot).toStrictEqual([`${"hotfix".padEnd(14)} Near fix  [.mesh/presets/hotfix.yaml]`]);
+  });
+
+  it("test_AC12_stops_at_git_root", async () => {
+    const c = await cast();
+    const outer = plainDir();
+    put(outer, "outer", preset("Outer"));
+    const { t, sub } = gitTree(outer);
+    put(t, "hotfix", preset("Quick fix"));
+    const res = await cli(c.ann, ["preset", "ls"], sub);
+    expect(res.code, res.err).toBe(0);
+    expect(res.out).toContain("hotfix ");
+    expect(res.out).not.toContain("outer");
+    // Control: with no `.git` on the way up, the walk goes to the root and finds it (only when the
+    // temp folder lies in no git checkout).
+    const free = plainDir();
+    let inGit = true;
+    try {
+      git(free, ["rev-parse", "--git-dir"]);
+    } catch {
+      inGit = false;
+    }
+    if (inGit) return;
+    put(free, "outer", preset("Outer"));
+    mkdirSync(join(free, "a", "b"), { recursive: true });
+    const res2 = await cli(c.ann, ["preset", "ls"], join(free, "a", "b"));
+    expect(res2.code, res2.err).toBe(0);
+    expect(outLines(res2.out)).toContain(`${"outer".padEnd(14)} Outer  [../../.mesh/presets/outer.yaml]`);
+  });
+
+  it("test_AC12_no_templates", async () => {
+    const c = await cast();
+    const { sub } = gitTree();
+    const res = await cli(c.ann, ["preset", "ls"], sub);
+    expect(res.code, res.err).toBe(0);
+    expect(outLines(res.out)).toStrictEqual([...builtinLines(), HINT]);
   });
 });

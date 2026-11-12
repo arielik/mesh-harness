@@ -300,6 +300,22 @@ export class Relay {
     return this.calls(step)[n - 1];
   }
 
+  /**
+   * RL-7: the daemon's sessions whose `claudeSessionIds` holds `claudeSid`, ended included: those of
+   * `/local/sessions`, plus any the daemon tracks that the listing leaves out (e.g. ended ones).
+   */
+  async sessionsOf(p: Person, claudeSid: string): Promise<Json[]> {
+    const r = await this.local(p, "GET", "/local/sessions");
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const listed = (r.json.sessions as Json[]).filter((s) => (s.claudeSessionIds as string[] | undefined)?.includes(claudeSid));
+    const tracked = (p.daemon.sessions as Json[]).filter((s) => (s.claudeSessionIds as string[] | undefined)?.includes(claudeSid) && !listed.some((x) => x.sid === s.sid));
+    return [...listed, ...tracked.map((s) => JSON.parse(JSON.stringify(s)) as Json)];
+  }
+  /** RL-7: the run's worktree folder. */
+  worktreeOf(p: Person, run: Json): string {
+    return join(this.runDir(p, run), "worktree");
+  }
+
   /** Register the run's session as the run's user hooks would (claude session id = the run's sessionId). */
   async runSession(p: Person, step: string, pid: number): Promise<Json> {
     const run = await this.runOf(p, step);

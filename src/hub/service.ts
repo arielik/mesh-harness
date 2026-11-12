@@ -4024,6 +4024,14 @@ export class HubService {
       const current = await this.store.listCatalogDefs({ current: true, ...(name !== undefined ? { name } : {}) });
       const currentOf = new Map(current.map((d) => [`${d.source}\n${d.name}`, d]));
       type Entry = { copy: AgentCopy; front: AgentFront; name: string; machines: Set<string> };
+      // RL-7: `invalid` (front matter that is not valid YAML) is carried like the other fields.
+      const frontOf = ({ description, model, tools, rules, invalid }: AgentFront): AgentFront => ({
+        ...(description !== undefined ? { description } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(tools !== undefined ? { tools } : {}),
+        ...(rules !== undefined ? { rules } : {}),
+        ...(invalid !== undefined ? { invalid } : {}),
+      });
       const merged = new Map<string, Entry>();
       for (const row of await this.store.listRepoAgents(name !== undefined ? { name } : {})) {
         const m = machines.get(row.machine);
@@ -4039,11 +4047,10 @@ export class HubService {
         const repoName = m?.repos?.find((r) => r.id === row.repo)?.name ?? row.repo.slice(row.repo.lastIndexOf("/") + 1);
         const pin = row.pin;
         const cur = pin ? currentOf.get(`${pin.source}\n${row.name}`) : undefined;
-        const { description, model, tools, rules } = row;
         merged.set(mk, {
           name: row.name,
           machines: new Set([row.machine]),
-          front: { ...(description !== undefined ? { description } : {}), ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}), ...(rules !== undefined ? { rules } : {}) },
+          front: frontOf(row),
           copy: {
             key: canonicalKey(row.repo, row.name),
             repo: { id: row.repo, name: repoName },
@@ -4062,11 +4069,10 @@ export class HubService {
       }
       const entries: Entry[] = [...merged.values()];
       for (const d of current) {
-        const { description, model, tools, rules } = d;
         entries.push({
           name: d.name,
           machines: new Set(),
-          front: { ...(description !== undefined ? { description } : {}), ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}), ...(rules !== undefined ? { rules } : {}) },
+          front: frontOf(d),
           copy: {
             key: d.key,
             repo: { id: d.source, name: sourceName.get(d.source) ?? d.source.slice(d.source.lastIndexOf("/") + 1) },
@@ -4101,6 +4107,7 @@ export class HubService {
           pinned: copies.some((c) => c.pinned),
           behind: copies.some((c) => c.behind),
           modified: copies.some((c) => c.modified),
+          invalid: versions.some((v) => v.invalid !== undefined),
         });
       }
       groups.sort((a, b) => cmp(a.name, b.name));

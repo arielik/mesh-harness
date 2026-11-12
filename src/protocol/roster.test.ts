@@ -161,3 +161,18 @@ describe("RL-5 AC-01 schemas", () => {
     expect(P.Goal.parse({ ...goal, agents: { "agents/rev": { ...def, hash: H2 } } }).agents["agents/rev"].hash).toBe(H2);
   });
 });
+
+// RL-7 AC-07: `AgentFront` gains `invalid: z.string().max(300).optional()`, so `AgentReport` carries it
+// (docs/specs/RL-7.md, Agent front matter).
+describe("RL-7 invalid", () => {
+  it("test_AC07_schema_limit", () => {
+    const ok = P.AgentReport.safeParse({ ...report(1), invalid: "x".repeat(300) });
+    expect(ok.success, JSON.stringify(ok.error?.issues)).toBe(true);
+    expect(ok.data.invalid).toBe("x".repeat(300));
+    expect(P.AgentReport.safeParse({ ...report(1), invalid: "x".repeat(301) }).success, "301 characters").toBe(false);
+    // Positive control: the same row without `invalid` parses, and has none.
+    const plain = P.AgentReport.safeParse(report(1));
+    expect(plain.success).toBe(true);
+    expect("invalid" in plain.data).toBe(false);
+  });
+});

@@ -11,7 +11,7 @@ import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { HeadlessRunner } from "../claude/index.ts";
-import { agentFileHash, builtinProfile, headlessArgv, headlessPrompt, parseAgentFile, profileSha256, redactSecrets, renderTail, stepSlug, telemetryFromStream } from "../core/index.ts";
+import { agentFileHash, builtinProfile, HEADLESS_ENV_UNSET, headlessArgv, headlessPrompt, parseAgentFile, profileSha256, redactSecrets, renderTail, stepSlug, telemetryFromStream } from "../core/index.ts";
 import {
   AgentDef,
   MESH_TOOL_RULES,
@@ -52,6 +52,14 @@ export interface RunsDeps {
   sessions(): readonly Session[];
   /** The repo of a folder (its name names the agent: `<repo name>/<agent>`). */
   repoForCwd(cwd: string): Repo | undefined;
+  /**
+   * RL-7: make a running run's session exist and hold its step (no hook needed): reuse or create the
+   * session of `claudeSessionId` (or bind the live session `sid`), and bind the step at the hub once
+   * per (sid, step). Returns the session's sid.
+   */
+  registerRunSession(r: { runId: string; claudeSessionId: string; pid: number; cwd: string; step: string; sid?: string | undefined }): Promise<string | undefined>;
+  /** RL-7: end these live sessions (the run ended). */
+  endRunSessions(sids: ReadonlySet<string>, reason: string): void;
   now(): number;
   log(line: string): void;
 }
@@ -77,6 +85,8 @@ interface RunMeta {
   sids: string[];
   /** Why the run did not start, when it did not. */
   notStarted?: string | undefined;
+  /** RL-7: a mesh_done of the run's step from one of its sessions was accepted (or queued offline). */
+  doneAccepted?: boolean | undefined;
 }
 
 /** Run-directory sidecar: progress of the run's hub calls, so a retry goes on where it stopped. */
@@ -248,6 +258,46 @@ export class HeadlessRuns {
       return run.step;
     }
     return undefined;
+  }
+
+  /** RL-7: remember a daemon session as the run's (the daemon registered or bound it). */
+  adoptSid(runId: string, sid: string): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    const m = this.meta(run);
+    if (!m.sids.includes(sid)) this.saveMeta(run, { ...m, sids: [...m.sids, sid] });
+  }
+
+  /**
+   * RL-7: the running run whose started `claude` process has this pid, while its mesh_done has not
+   * been accepted (a tool call from it may bind the run's session).
+   */
+  runForPid(pid: number): { runId: string; claudeSessionId: string; step: string; worktree: string } | undefined {
+    for (const run of this.runs.values()) {
+      if (run.state !== "running" || run.endedAt !== undefined || run.pid !== pid || !run.worktree) continue;
+      if (this.meta(run).doneAccepted === true) continue;
+      return { runId: run.runId, claudeSessionId: run.sessionId, step: run.step, worktree: run.worktree };
+    }
+    return undefined;
+  }
+
+  /** RL-7: a mesh_done of `step` from this session was accepted: the run's step is never bound again. */
+  doneAccepted(sid: string, step: string): void {
+    for (const run of this.runs.values()) {
+      if (run.state !== "running" || run.step !== step || !this.runSids(run).has(sid)) continue;
+      const m = this.meta(run);
+      if (m.doneAccepted !== true) this.saveMeta(run, { ...m, doneAccepted: true });
+    }
+  }
+
+  /** RL-7: the sessions of every running run that has not ended (the tick never stalls or presumes them ended). */
+  liveRunSids(): Set<string> {
+    const out = new Set<string>();
+    for (const run of this.runs.values()) {
+      if (run.state !== "running" || run.endedAt !== undefined) continue;
+      for (const sid of this.runSids(run)) out.add(sid);
+    }
+    return out;
   }
 
   /** Running runs whose session has not shown up (or has ended already): they count for maxSessions. */
@@ -433,6 +483,7 @@ export class HeadlessRuns {
   private notStarted(run: RunFile, reason: string): void {
     this.saveMeta(run, { ...this.meta(run), notStarted: reason });
     this.save({ ...run, state: "running", endedAt: this.deps.now() });
+    this.deps.endRunSessions(this.runSids(run), "headless run ended");
     this.deps.log(`run ${run.runId}: headless run of ${run.step} did not start: ${reason}`);
   }
 
@@ -468,6 +519,9 @@ export class HeadlessRuns {
         return this.notStarted(next, `roster agent ${def.key} is not available: ${e instanceof Error ? e.message : String(e)}`);
       }
       if (typeof text !== "string" || agentFileHash(text) !== def.hash) return this.notStarted(next, `roster agent ${def.key} does not match its hash`);
+      // RL-7: an agent whose front matter is not valid YAML never runs (no default settings).
+      const invalid = parseAgentFile(text).invalid;
+      if (invalid !== undefined) return this.notStarted(next, `roster agent ${def.key} has invalid front matter: ${invalid}`);
       writeFileAtomic(this.file(run, "agent.md"), text);
       writeFileAtomic(this.file(run, "agents.json"), JSON.stringify({ [def.name]: agentsJsonEntry(text) }));
       agentName = def.name;
@@ -481,6 +535,8 @@ export class HeadlessRuns {
       } catch {
         return this.notStarted(next, `no agent ${meta.agent} in ${this.repoName(run)}/.claude/agents`);
       }
+      const invalid = parseAgentFile(text).invalid;
+      if (invalid !== undefined) return this.notStarted(next, `agent ${meta.agent} has invalid front matter: ${invalid}`);
       writeFileAtomic(this.file(run, "agents.json"), JSON.stringify({ [meta.agent]: agentsJsonEntry(text) }));
       next = { ...next, agent: { name: meta.agent, key: `${this.repoName(run)}/${meta.agent}`, hash: agentFileHash(text) } };
       this.save(next);
@@ -494,11 +550,18 @@ export class HeadlessRuns {
       agent: agentName,
       usd: run.budget.usd,
     });
-    const r = await runner.start({ argv, cwd: worktree, env: { MESH_STEP: run.step, MESH_RUN: run.runId }, runDir: run.dir });
+    // RL-7: terminal- and session-binding variables of the daemon never reach the run.
+    const r = await runner.start({ argv, cwd: worktree, env: { MESH_STEP: run.step, MESH_RUN: run.runId }, unsetEnv: HEADLESS_ENV_UNSET, runDir: run.dir });
     if (!r.ok) return this.notStarted(next, r.error);
     next = { ...next, state: "running", pid: r.pid, startId: r.startId, startedAt: this.deps.now() };
     this.save(next);
     this.deps.log(`run ${run.runId}: started ${run.step} (pid ${r.pid})`);
+    // RL-7: the run's session exists and holds the step before the hub hears the run started.
+    try {
+      await this.deps.registerRunSession({ runId: run.runId, claudeSessionId: run.sessionId, pid: r.pid, cwd: worktree, step: run.step });
+    } catch (e) {
+      this.deps.log(`run ${run.runId}: could not register its session: ${String(e)}`);
+    }
     await this.reportStarted(next);
   }
 
@@ -592,6 +655,8 @@ export class HeadlessRuns {
   private markEnded(run: RunFile): void {
     const exitCode = this.exitCode(run);
     this.save({ ...run, endedAt: run.endedAt ?? this.deps.now(), ...(exitCode !== undefined ? { exitCode } : {}) });
+    // RL-7: the run's sessions end with it, before the end-of-run hub calls.
+    this.deps.endRunSessions(this.runSids(run), "headless run ended");
   }
 
   private telemetry(run: RunFile): { telemetry: RunTelemetry; exit: RunExit } {

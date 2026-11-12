@@ -15,4 +15,6 @@ auth:
         - { name: erin, token_sha256: eca88da20b78923c3caeea329be08f4f6fd975116615c295e87e8ceaf259499b }
         # frank: the RL-6 calibration spec only; no other spec asserts on his machines, goals or agents.
         - { name: frank, token_sha256: 30857e3bf06ec1d5cef258fe4225e6e8f541ef344e6fd5289f7ef2b4fec23dd7 }
+        # grace: the RL-7 spec only; no other spec asserts on her machines, goals or agents.
+        - { name: grace, token_sha256: e86af65da1787821021dc915c2db7e8a449feb26b0b712a99894ea11f444112c }
   bootstrap_admins: [team:alice]

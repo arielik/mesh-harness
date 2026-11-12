@@ -4,23 +4,44 @@
 
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { PlanInput, PlanStep, type PlanAc } from "../protocol/index.ts";
+import { PlanInput, PlanStep, StepBudget, type PlanAc } from "../protocol/index.ts";
+
+/** RL-7: a budget value that is exactly one placeholder (`{turns}`). */
+const BUDGET_PLACEHOLDER = z.string().regex(/^\{[a-z][a-z0-9_]*\}$/);
 
 /**
  * RL-1: a step of a template. As a plan step, but `agent` and `profile` may hold placeholders
- * ("{agent}", "{profile}") that `instantiate` fills from `params`.
+ * ("{agent}", "{profile}") that `instantiate` fills from `params`. RL-7: `budget.turns` and
+ * `budget.minutes` may each be a single placeholder too.
  */
-export const PresetStep = PlanStep.extend({ agent: z.string().min(1).max(100).optional(), profile: z.string().min(1).max(100).optional() });
+export const PresetStep = PlanStep.extend({
+  agent: z.string().min(1).max(100).optional(),
+  profile: z.string().min(1).max(100).optional(),
+  budget: z
+    .object({
+      turns: z.union([StepBudget.shape.turns.unwrap(), BUDGET_PLACEHOLDER]).optional(),
+      minutes: z.union([StepBudget.shape.minutes.unwrap(), BUDGET_PLACEHOLDER]).optional(),
+      usd: StepBudget.shape.usd,
+    })
+    .strict()
+    .optional(),
+});
 export type PresetStep = z.infer<typeof PresetStep>;
+
+/** RL-7: the name of a preset parameter (`params:` key). */
+const PARAM_NAME = /^[a-z][a-z0-9_]{0,39}$/;
+const PARAMS_RULE = "params must map names (a-z, 0-9, _) to values";
 
 /** A template: a plan whose `repo` may be "{repo}" and whose strings may use {goal} and {<param>}. */
 export interface Preset {
   name: string;
   description: string;
+  /** RL-7: default values of parameters (an explicit param beats a default). */
+  params?: Record<string, string> | undefined;
   plan: { steps: PresetStep[] };
 }
 
-const s = (x: Partial<PlanStep> & Pick<PlanStep, "id" | "kind" | "title" | "brief">): PlanStep => ({ repo: "{repo}", deps: [], ...x }) as PlanStep;
+const s = (x: Partial<PresetStep> & Pick<PresetStep, "id" | "kind" | "title" | "brief">): PresetStep => ({ repo: "{repo}", deps: [], ...x }) as PresetStep;
 
 /** design → spec ⇄ cold review → R2 → split plans → blind build → combine → verify ⇄ fixes → diff review → R3. */
 const SDD_SPLIT: Preset = {
@@ -63,6 +84,7 @@ const SDD_COLLAPSE: Preset = {
 const AUDIT_RELAY: Preset = {
   name: "audit-relay",
   description: "Audit by an agent, validated by an agent, filed by an agent (agent-only; a person's debrief comes with S4).",
+  params: { turns: "80", minutes: "60" },
   plan: {
     steps: [
       s({
@@ -72,7 +94,7 @@ const AUDIT_RELAY: Preset = {
         mode: "headless",
         profile: "read-only",
         output: "review-record",
-        budget: { turns: 80, minutes: 60 },
+        budget: { turns: "{turns}", minutes: "{minutes}" },
         inputs: ["previous"],
         title: "Audit {repo}",
         brief: "Audit {repo}. Report every finding you see, with keys from your declared rules; the hub works out what is new.",
@@ -134,14 +156,32 @@ export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDI
 
 /** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, steps}. */
 export function parsePreset(name: string, text: string): Preset {
-  const doc = parse(text) as { description?: string; steps?: unknown };
+  const doc = parse(text) as { description?: string; params?: unknown; steps?: unknown };
   const plan = z.object({ steps: z.array(PresetStep) }).parse({ steps: (doc.steps as unknown[] | undefined)?.map((x) => ({ repo: "{repo}", ...(x as object) })) ?? [] });
-  return { name, description: doc.description ?? "", plan: { steps: plan.steps } };
+  const params = doc.params === undefined ? undefined : parseParams(doc.params);
+  return { name, description: doc.description ?? "", ...(params ? { params } : {}), plan: { steps: plan.steps } };
+}
+
+/** RL-7: a `params:` mapping; numbers become their decimal string. */
+function parseParams(v: unknown): Record<string, string> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(PARAMS_RULE);
+  const out: Record<string, string> = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (!PARAM_NAME.test(k)) throw new Error(PARAMS_RULE);
+    if (typeof x === "string") out[k] = x;
+    else if (typeof x === "number" && Number.isFinite(x)) out[k] = String(x);
+    else throw new Error(PARAMS_RULE);
+  }
+  return out;
 }
 
 export function presetText(p: Preset): string {
-  return stringify({ preset: p.name, description: p.description, steps: p.plan.steps }, { lineWidth: 0 });
+  const params = p.params && Object.keys(p.params).length > 0 ? { params: p.params } : {};
+  return stringify({ preset: p.name, description: p.description, ...params, steps: p.plan.steps }, { lineWidth: 0 });
 }
+
+/** RL-7: the largest `budget.turns` / `budget.minutes` a filled placeholder may give. */
+const BUDGET_MAX = { turns: 500, minutes: 1440 } as const;
 
 const PLACEHOLDER = /\{([a-z][a-z0-9_]*)\}/g;
 
@@ -154,7 +194,7 @@ export function instantiate(
   p: Preset,
   opts: { repo: string; goal?: string | undefined; acs?: PlanAc[] | undefined; params?: Record<string, string> | undefined },
 ): PlanInput {
-  const vars: Record<string, string> = { ...opts.params, repo: opts.repo, goal: opts.goal ?? "this goal" };
+  const vars: Record<string, string> = { ...p.params, ...opts.params, repo: opts.repo, goal: opts.goal ?? "this goal" };
   const text = (t: string) => t.replace(PLACEHOLDER, (m, name: string) => (Object.hasOwn(vars, name) ? (vars[name] as string) : m));
   const fill = (v: unknown): unknown => {
     if (typeof v === "string") return text(v);
@@ -173,6 +213,20 @@ export function instantiate(
     for (const v of [step.agent, step.profile]) {
       const left = v === undefined ? null : /\{([a-z][a-z0-9_]*)\}/.exec(v);
       if (left) throw new Error(`preset ${p.name}: unknown parameter {${left[1]}} in step ${step.id}`);
+    }
+    const b = step.budget;
+    if (b) {
+      for (const k of ["turns", "minutes"] as const) {
+        const v = b[k];
+        if (typeof v !== "string") continue;
+        const left = /^\{([a-z][a-z0-9_]*)\}$/.exec(v);
+        if (left) throw new Error(`preset ${p.name}: unknown parameter {${left[1]}} in step ${step.id}`);
+        const n = /^\d+$/.test(v) ? Number(v) : NaN;
+        if (!(n >= 1 && n <= BUDGET_MAX[k])) {
+          throw new Error(`preset ${p.name}: budget.${k} in step ${step.id} must be a whole number from 1 to ${BUDGET_MAX[k]}, got "${v}"`);
+        }
+        b[k] = n;
+      }
     }
   }
   return PlanInput.parse({ steps, ...(hasAcs ? { acs: opts.acs } : {}) });

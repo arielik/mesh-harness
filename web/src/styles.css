@@ -643,6 +643,10 @@ p.assigned {
 .roster .roster-mark {
   color: var(--accent);
 }
+/* RL-7: a version whose front matter is not valid YAML. */
+.roster .roster-invalid {
+  color: var(--bad);
+}
 
 /* RL-6: the Roster statistics of a group. */
 .roster .roster-stats-toggle {

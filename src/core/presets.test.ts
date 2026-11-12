@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { validatePlan } from "./dag.ts";
 import { validatePolicies } from "./policy.ts";
-import { BUILTIN_PRESETS, instantiate, parsePreset } from "./presets.ts";
+import { BUILTIN_PRESETS, instantiate, parsePreset, presetText } from "./presets.ts";
 
 // `params` is new in RL-1: passed loosely so the file compiles before it exists.
 type Opts = Parameters<typeof instantiate>[1] & { params?: Record<string, string> };
@@ -184,5 +184,67 @@ describe("RL-6 AC-03 calibrate", () => {
     const relay = BUILTIN_PRESETS.find((x) => x.name === "audit-relay");
     expect(relay?.description).toBe("Audit by an agent, validated by an agent, filed by an agent (agent-only; a person's debrief comes with S4).");
     expect(relay?.plan.steps.map((x) => x.id)).toStrictEqual(["audit", "validate", "file"]);
+  });
+});
+
+// RL-7 AC-15: preset parameter defaults (`params:`) and budget placeholders (docs/specs/RL-7.md,
+// Preset parameter defaults and budget placeholders). `params` on a preset is read loosely.
+describe("RL-7 params", () => {
+  const relay = () => {
+    const p = BUILTIN_PRESETS.find((x) => x.name === "audit-relay");
+    if (!p) throw new Error("audit-relay missing");
+    return p;
+  };
+  const AVF = { agent: "a", validator: "v", filer: "f" };
+  const budgetOf = (params: Record<string, string>) => stepOf(inst(relay(), { repo: "alpha", goal: "G", params })).budget;
+  const BAD = (field: "turns" | "minutes", value: string) => `preset audit-relay: budget.${field} in step audit must be a whole number from 1 to ${field === "turns" ? 500 : 1440}, got "${value}"`;
+  const PARAMS_RULE = "params must map names (a-z, 0-9, _) to values";
+  const P1 = (extra = "") => `description: P1\n${extra}steps:\n  - id: s\n    kind: implement\n    mode: headless\n    title: S\n    brief: b\n    budget: { turns: "{t}" }\n`;
+
+  it("test_AC15_defaults", () => {
+    const b = budgetOf(AVF);
+    expect(b).toStrictEqual({ turns: 80, minutes: 60 });
+    expect(typeof b.turns).toBe("number");
+    expect(typeof b.minutes).toBe("number");
+    expect((relay() as unknown as { params?: unknown }).params).toStrictEqual({ turns: "80", minutes: "60" });
+  });
+
+  it("test_AC15_explicit", () => {
+    expect(budgetOf({ ...AVF, turns: "40", minutes: "20" })).toStrictEqual({ turns: 40, minutes: 20 });
+  });
+
+  it("test_AC15_bad_values", () => {
+    for (const v of ["abc", "0", "501"]) expect(() => budgetOf({ ...AVF, turns: v }), v).toThrow(new Error(BAD("turns", v)));
+    expect(() => budgetOf({ ...AVF, minutes: "1441" })).toThrow(new Error(BAD("minutes", "1441")));
+    // Controls: the bounds are accepted.
+    expect(budgetOf({ ...AVF, turns: "500", minutes: "1440" })).toStrictEqual({ turns: 500, minutes: 1440 });
+    expect(budgetOf({ ...AVF, turns: "1" })).toStrictEqual({ turns: 1, minutes: 60 });
+  });
+
+  it("test_AC15_unknown_placeholder", () => {
+    expect(() => inst(parsePreset("p1", P1()), { repo: "alpha", goal: "G" })).toThrow(new Error("preset p1: unknown parameter {t} in step s"));
+    // Control: with a default for t it fills a number.
+    const plan = inst(parsePreset("p1", P1("params:\n  t: 7\n")), { repo: "alpha", goal: "G" });
+    expect(stepOf(plan, "s").budget).toStrictEqual({ turns: 7 });
+  });
+
+  it("test_AC15_parse_params", () => {
+    const p = parsePreset("p1", P1("params:\n  t: 5\n")) as unknown as { params?: unknown };
+    expect(p.params).toStrictEqual({ t: "5" });
+    expect(() => parsePreset("p1", P1("params:\n  T: 1\n"))).toThrow(new Error(PARAMS_RULE));
+    expect(() => parsePreset("p1", P1("params: [1]\n"))).toThrow(new Error(PARAMS_RULE));
+  });
+
+  it("test_AC15_round_trip", () => {
+    for (const p of BUILTIN_PRESETS) expect(parsePreset(p.name, presetText(p)), p.name).toStrictEqual(p);
+    const text = presetText(relay());
+    expect(text).toMatch(/^params:/m);
+    const at = (re: RegExp) => text.search(re);
+    expect(at(/^description:/m)).toBeLessThan(at(/^params:/m));
+    expect(at(/^params:/m)).toBeLessThan(at(/^steps:/m));
+    // Control: a built-in without params has no `params:` line.
+    const split = BUILTIN_PRESETS.find((x) => x.name === "sdd-split");
+    if (!split) throw new Error("sdd-split missing");
+    expect(presetText(split)).not.toMatch(/^params:/m);
   });
 });

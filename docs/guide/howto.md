@@ -464,6 +464,9 @@ mesh pulse add --preset audit-relay --repo alpha --params agent=auditor,validato
 #   Created pulse p-1 "audit-relay on alpha": every 7d, next run 2026-11-19T10:00:00.000Z.
 mesh pulse add --preset audit-relay --repo alpha --params agent=auditor,validator=checker,filer=filer \
   --cron "0 9 * * 1" --tz Europe/Berlin       # Mondays at 09:00 Berlin time
+mesh pulse add --preset audit-relay --repo alpha \
+  --params agent=auditor,validator=checker,filer=filer,turns=40,minutes=20 --every 1d
+                                              # a smaller audit budget (defaults: 80 turns, 60 minutes)
 ```
 
 Check it, run a slot now, and read what happened:
@@ -476,7 +479,7 @@ mesh pulse fire p-1
 mesh pulse show p-1
 #   p-1 "audit-relay on alpha"  @alice  active
 #   schedule: every 7d, next 2026-11-19T10:00:00.000Z
-#   preset: audit-relay 4c43bb0f30b3, params agent=auditor,filer=filer,repo=alpha,validator=checker
+#   preset: audit-relay 999b7a4eb79b, params agent=auditor,filer=filer,repo=alpha,validator=checker
 #   target: labels runner
 #   slots:
 #     manual:01JCX…              fired  G12  tried m-7f3a
@@ -750,7 +753,19 @@ steps:
   - { id: land, kind: gate, gate: R3, title: Approve, brief: "approve", deps: [check] }
 ```
 
-`mesh preset ls` lists the built-in and repo templates. `mesh goal new … --preset hotfix` hands the template to the design session.
+`mesh preset ls` lists the built-in and repo templates (from the current folder up to the top of the checkout; the nearer file wins):
+
+```sh
+mesh preset ls
+#   sdd-split      Spec and a cold review, a person's R2 gate, …
+#   sdd-collapse   Spec, cold review, R2, one builder writing the tests …
+#   audit-relay    Audit by an agent, validated by an agent, filed by an agent …
+#   calibrate      Calibrate an agent from the dismissals of its findings …
+#   hotfix         Fix, independent check, approval  [.mesh/presets/hotfix.yaml]
+```
+
+A template may give its parameters defaults (`params: {turns: 30}`) and use `{turns}` as a step's
+`budget.turns` or `budget.minutes`. `mesh goal new … --preset hotfix` hands the template to the design session.
 
 ## 11. Run a team hub
 

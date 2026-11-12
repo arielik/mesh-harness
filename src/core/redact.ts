@@ -18,7 +18,9 @@ const WHOLE_MARK = /^\[REDACTED[^\]]*\]$/;
 /**
  * Replaces private key blocks, the given literals (each at least 8 characters), known token forms
  * and `password=…`-style values with `[REDACTED…]`, in this order: PEM blocks, literals, tokens,
- * assignments. `count` is the number of secrets replaced, each counted once: an assignment whose value
+ * assignments. RL-7: an assignment with `=` or a quoted value is always redacted; an unquoted `:` value
+ * only when it is token-like (after trailing `.,;:!?)]}` are set aside: at least 6 characters, no
+ * `://`, and a digit or at least 20 characters), so prose such as `secret: hardcoded API token` is kept. `count` is the number of secrets replaced, each counted once: an assignment whose value
  * is exactly a redaction mark is left as it is, and one whose value contains a mark among other text is
  * redacted whole, in both cases without being counted again.
  */
@@ -47,8 +49,18 @@ export function redactSecrets(text: string, literals?: readonly string[]): { tex
     if (WHOLE_MARK.test(value) || value === MARK) return m;
     // A value that holds a secret an earlier pass replaced (with text around it): redact all of it,
     // so no tail is kept, but the secret was counted already.
-    if (!value.includes(MARK)) count++;
-    return `${key}${sep}${q}[REDACTED]${q}`;
+    if (value.includes(MARK)) return `${key}${sep}${q}[REDACTED]${q}`;
+    if (sep.includes("=") || q !== "") {
+      count++;
+      return `${key}${sep}${q}[REDACTED]${q}`;
+    }
+    // RL-7: unquoted `:` form — only token-like values; trailing punctuation is kept.
+    const tail = /[.,;:!?)\]}]+$/.exec(value)?.[0] ?? "";
+    const core = value.slice(0, value.length - tail.length);
+    const tokenLike = core.length >= 6 && !core.includes("://") && (/\d/.test(core) || core.length >= 20);
+    if (!tokenLike) return m;
+    count++;
+    return `${key}${sep}[REDACTED]${tail}`;
   });
   return { text: count ? out : text, count };
 }

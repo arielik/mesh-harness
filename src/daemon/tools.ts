@@ -79,6 +79,18 @@ export interface ToolHost {
   runOf?(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined; agentFile?: string | undefined } | undefined;
   /** RL-2: a session's review record was stored (a headless run counts its undeclared rules). */
   reviewStored?(sid: string, undeclaredRules: number): void;
+  /** RL-7: is this session one of a running headless run's sessions? */
+  isRunSession?(sid: string): boolean;
+  /** RL-7: a mesh_done of `step` from this session was accepted by the hub or queued offline. */
+  doneAccepted?(sid: string, step: string): void;
+}
+
+/**
+ * RL-7: a headless call (the session is a running run's, or the step's policy is headless) gets no
+ * commit hint: the run's worktree is discarded.
+ */
+function isHeadlessCall(host: ToolHost, s: Session, mode: string | undefined): boolean {
+  return host.isRunSession?.(s.sid) === true || host.runOf?.(s.sid) !== undefined || mode === "headless";
 }
 
 const ok = (text: string): ToolResult => ({ text });
@@ -212,7 +224,15 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
         const tail = offlineSince ? `\n\n(mesh: the hub is offline; this is the brief as of ${new Date(offlineSince).toISOString().slice(0, 16)}Z. Keep working; mesh_done and mesh_note are recorded locally and sent later.)` : "";
         return ok(brief(ctx) + tail);
       }
-      const steps = await readySteps(host, repoId);
+      // RL-7: a session with no step (a run's session after its done was accepted included) gets
+      // the no-step text while the hub is offline too; only the ready list needs the hub.
+      let steps: Step[];
+      try {
+        steps = await readySteps(host, repoId);
+      } catch (e) {
+        if (!isOffline(e)) throw e;
+        return ok(`This session holds no mesh step. mesh cannot list ready steps now: ${(e as Error).message}; claiming new work needs the hub.`);
+      }
       return ok(
         steps.length
           ? `This session holds no mesh step. Ready steps for ${s.repo?.name ?? "this repo"}:\n${steps.map(fmtStep).join("\n")}\nClaim one with mesh_claim if you were asked to pick work.`
@@ -296,13 +316,16 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
         return doneOffline(host, s, s.step, body, key);
       }
       if (r.rejected) return fail(`Not accepted: ${r.rejected}. You still hold ${r.step.id}.`);
+      const headless = isHeadlessCall(host, s, r.step.policy?.mode);
+      host.doneAccepted?.(s.sid, s.step);
       host.update(s.sid, { clearStep: true });
       const lines = [`${r.step.id} is ${r.step.state}.`];
       if (r.parked) lines.push(`It is parked: ${r.parked}. A person decides how to go on; end your turn.`);
       if (r.record) {
         const w = writeTrail(s.cwd, [r.record, ...(r.files ?? [])]);
-        if (w.written.length) lines.push(`mesh wrote ${w.written.length === 1 ? "the step record" : "the step record and goal file"} ${w.written.join(", ")}. ${commitHint(w.written)}`);
-        else lines.push(`Step record (save as ${r.record.path} and commit it):\n${r.record.text}`);
+        const wrote = `mesh wrote ${w.written.length === 1 ? "the step record" : "the step record and goal file"} ${w.written.join(", ")}.`;
+        if (w.written.length) lines.push(headless ? wrote : `${wrote} ${commitHint(w.written)}`);
+        else if (!headless) lines.push(`Step record (save as ${r.record.path} and commit it):\n${r.record.text}`);
       }
       if (r.reopened.length) lines.push(`Reopened for fixing: ${r.reopened.join(", ")}.`);
       if (r.goalDone) lines.push(`Goal ${r.step.goal} is done.`);
@@ -528,7 +551,9 @@ async function reviewUpload(host: ToolHost, s: Session, step: string, rec: Revie
 /** mesh_done while the hub is offline: record locally from local facts, send later (M4, 4.0.4). */
 function doneOffline(host: ToolHost, s: Session, stepId: string, body: Record<string, unknown> & { at: number }, key: string): ToolResult {
   const cached = host.local.cached(stepId);
+  const headless = isHeadlessCall(host, s, cached?.ctx.step.policy?.mode);
   host.local.queueCall({ key, at: body.at, method: "POST", path: `/v1/steps/${encodeURIComponent(stepId)}/done`, body, label: `mesh_done ${stepId}`, cwd: s.cwd });
+  host.doneAccepted?.(s.sid, stepId);
   host.update(s.sid, { clearStep: true });
   if (!cached) return ok(`The hub is offline. mesh recorded your mesh_done for ${stepId} and sends it when the hub is back; the step record follows then.`);
   const prev = cached.ctx.step;
@@ -562,7 +587,6 @@ function doneOffline(host: ToolHost, s: Session, stepId: string, body: Record<st
   const record = stepRecord(step, stepFacts(step, events), cached.ctx.notes.filter((n) => !n.text.startsWith("Reopened by")));
   const text = record.text.replace(/^---\n/, "---\nrecorded_offline: true\n");
   const w = writeTrail(s.cwd, [{ path: record.path, text }]);
-  return ok(
-    `The hub is offline: mesh recorded ${stepId} as ${step.state} locally${w.written.length ? ` and wrote the step record ${w.written[0]}. ${commitHint(w.written)}` : ""}. The hub gets it when it is back (facts from other people's sessions are added then).`,
-  );
+  const wrote = w.written.length ? ` and wrote the step record ${w.written[0]}${headless ? "" : `. ${commitHint(w.written)}`}` : "";
+  return ok(`The hub is offline: mesh recorded ${stepId} as ${step.state} locally${wrote}. The hub gets it when it is back (facts from other people's sessions are added then).`);
 }

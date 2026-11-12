@@ -1475,6 +1475,35 @@ function contract(d: Driver) {
       expect(names.slice(i + 1, i + 3)).toStrictEqual(["agent_def", "catalog_source"]);
     });
   });
+
+  // RL-7 AC-18: a re-push of a known (repo, name, hash) also replaces the stored `front`
+  // (docs/specs/RL-7.md, Agent front matter, `HubStore.putCatalogDefs`). Postgres leg: CI only.
+  describe("RL-7 catalog re-push", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- store methods, read loosely
+    const X = (s: HubStore): any => s;
+    const SRC = "git.example.com/team/agents";
+    const hx = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
+    const c = (n: number) => n.toString(16).padStart(40, "0");
+    const TEXT = "---\nname: bad\ndescription: Validates: findings\n---\nYou validate.\n";
+    const INVALID = "front matter is not valid YAML: x";
+    const bad = (front: Record<string, unknown>) => ({ path: "agents/bad.md", name: "bad", hash: hx(TEXT), text: TEXT, front });
+    const invalidOf = (x: Record<string, unknown> | undefined) => x?.invalid ?? (x?.front as Record<string, unknown> | undefined)?.invalid;
+
+    it("test_AC18_store_repush", async () => {
+      const s = await store();
+      expect(await X(s).putCatalogDefs(SRC, c(1), [bad({})], "ada", T0)).toStrictEqual({ added: 1 });
+      const [before] = (await X(s).listCatalogDefs({ repo: SRC, name: "bad" })) as Record<string, unknown>[];
+      // Control: stored as v0.1.20 stored an invalid file (no `invalid`), one commit.
+      expect(invalidOf(before)).toBeUndefined();
+      expect(before?.commits).toStrictEqual([c(1)]);
+      await X(s).putCatalogDefs(SRC, c(2), [bad({ invalid: INVALID })], "ada", T0 + 1);
+      const after = (await X(s).listCatalogDefs({ repo: SRC, name: "bad" })) as Record<string, unknown>[];
+      expect(after).toHaveLength(1);
+      expect(invalidOf(after[0])).toBe(INVALID);
+      expect(after[0]?.commits).toStrictEqual([c(1), c(2)]);
+      expect(after[0]).toMatchObject({ hash: hx(TEXT), text: TEXT, current: true });
+    });
+  });
 }
 
 describe("store contract: sqlite", () => contract(sqlite));

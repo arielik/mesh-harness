@@ -1687,3 +1687,43 @@ describe("AC-29 errors and topics", () => {
     await firedGoal("p-1", iso(T0));
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+
+// RL-7 AC-15 (World): preset `params:` defaults and budget placeholders through POST /v1/pulses and a
+// fire (docs/specs/RL-7.md, Preset parameter defaults and budget placeholders).
+describe("RL-7 AC-15", () => {
+  /** The `audit` step's budget in the fired goal's plan (and on the step record when it carries one). */
+  async function auditBudget(G: string): Promise<Json> {
+    const d = await k.goal(G);
+    const planStep = ((d.plans as Json[]).at(-1)?.steps as Json[]).find((s) => s.id === "audit");
+    const st = (d.steps as Json[]).find((s) => s.id === `${G}.audit`);
+    if (st && "budget" in st) expect(st.budget).toStrictEqual(planStep?.budget);
+    return planStep?.budget;
+  }
+
+  it("test_AC15_hub_prefix_once", async () => {
+    await start();
+    const text = `${SOLO}params:\n  T: 1\n`;
+    const p = "preset solo-params: params must map names (a-z, 0-9, _) to values";
+    expect(await k.pulse("ann", body({}, "solo-params", text))).toStrictEqual({ status: 422, json: { error: PROBLEMS([p]), details: [p] } });
+  });
+
+  it("test_AC15_hub_bad_turns", async () => {
+    await start();
+    const p = 'preset audit-relay: budget.turns in step audit must be a whole number from 1 to 500, got "abc"';
+    expect(await k.pulse("ann", relayBody({ params: { ...RELAY_PARAMS, turns: "abc" } }))).toStrictEqual({ status: 422, json: { error: PROBLEMS([p]), details: [p] } });
+  });
+
+  it("test_AC15_fire_budget", async () => {
+    await start();
+    k.at(NOW);
+    await k.pulseOk("ann", relayBody({ params: { ...RELAY_PARAMS, turns: "40", minutes: "20" } }));
+    const G = (await k.fireOk("ann", "p-1")).goal as string;
+    expect(await auditBudget(G)).toStrictEqual({ turns: 40, minutes: 20 });
+    // Control: a pulse without them fires with the defaults.
+    await k.pulseOk("ann", relayBody());
+    const G2 = (await k.fireOk("ann", "p-2")).goal as string;
+    expect(await auditBudget(G2)).toStrictEqual({ turns: 80, minutes: 60 });
+  });
+});

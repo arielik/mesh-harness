@@ -728,7 +728,7 @@ export function GoalPage({ id }: { id: string }) {
         {g.id} · {g.title}
       </h2>
       <p className="muted">
-        {g.state.replace(/_/g, " ")} · owner @{g.ownerId} · {visible.filter((s: Step) => s.state === "done").length}/{visible.length} steps done
+        {g.state.replace(/_/g, " ")} · owner @{g.ownerId} · {visible.filter((s: Step) => s.state === "done" || s.state === "skipped").length}/{visible.length} steps done
         {g.primaryRepo ? ` · ${g.primaryRepo}` : ""}
         {g.state === "in_progress" && (
           <button className="small" style={{ marginLeft: 12 }} onClick={() => api.replan(g.id).then(load, (e: Error) => setError(e.message))}>

@@ -949,6 +949,10 @@
                                 "maxLength": 100
                               }
                             },
+                            "invalid": {
+                              "type": "string",
+                              "maxLength": 300
+                            },
                             "repo": {
                               "type": "string",
                               "maxLength": 200

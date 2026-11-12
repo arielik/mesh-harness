@@ -1,5 +1,6 @@
 // Write trail files (goal.yaml, plan versions, step records) into a session's repo so the agent
-// commits them with its work (journeys doc §3.1).
+// commits them with its work (journeys doc §3.1). RL-7: a headless run's mesh_done reply carries no
+// commit hint (its worktree is discarded); the files are still written.
 
 import { join, normalize } from "node:path";
 import { writeFileAtomic, type TrailFile } from "../protocol/index.ts";

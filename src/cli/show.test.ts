@@ -120,3 +120,21 @@ describe("RL-2 skipped mark", () => {
     expect(renderGoal(detail)).not.toContain("↷");
   });
 });
+
+// RL-7 AC-13 (unit): the "steps done" count counts `done` or `skipped` non-dropped steps; the total is
+// unchanged (non-dropped steps). docs/specs/RL-7.md, Progress text.
+describe("RL-7 AC-13 progress", () => {
+  const goalWith = (state: string, steps: Step[]): GoalDetail => ({ ...detail, goal: { ...detail.goal, state } as GoalDetail["goal"], steps, holders: {} });
+  const sk = (id: string) => step(id, { state: "skipped", summary: `skipped: ${id}` } as unknown as Partial<Step>);
+
+  it("test_AC13_render_counts", () => {
+    const done = renderGoal(goalWith("done", [step("a", { state: "done", summary: "ok" }), sk("b"), sk("c"), step("d", { state: "dropped" })]));
+    expect(done).toContain("done · owner @ariel · 3/3 steps done");
+    // Positive control: the skipped steps are rendered (with the RL-2 mark).
+    expect(done).toContain("↷");
+    const mixed = renderGoal(goalWith("in_progress", [step("a", { state: "done", summary: "ok" }), step("r", { state: "ready" }), sk("c")]));
+    expect(mixed).toContain("· owner @ariel · 2/3 steps done");
+    // The existing fixture (no skipped steps) still reads 2/7.
+    expect(renderGoal(detail)).toContain("in progress · owner @ariel · 2/7 steps done");
+  });
+});

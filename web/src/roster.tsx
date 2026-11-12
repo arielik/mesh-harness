@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import type { AgentCopy, AgentGroup, AgentHashStats, AgentStats, AgentsView, AgentVersion } from "../../src/protocol/roster.ts";
 import { api } from "./api.ts";
 
-const FLAGS = ["diverged", "pinned", "behind", "modified"] as const;
+const FLAGS = ["diverged", "pinned", "behind", "modified", "invalid"] as const;
 const c7 = (s: string | undefined) => (s ?? "").slice(0, 7);
 
 function Copy({ c }: { c: AgentCopy }) {
@@ -28,7 +28,8 @@ function Version({ v }: { v: AgentVersion }) {
   return (
     <div className="roster-version" data-hash={v.hash}>
       <p>
-        <code>{v.hash.slice(0, 12)}</code> {v.description ?? <span className="muted">no description</span>}
+        <code>{v.hash.slice(0, 12)}</code>{" "}
+        {v.invalid !== undefined ? <span className="roster-invalid">invalid: {v.invalid}</span> : (v.description ?? <span className="muted">no description</span>)}
       </p>
       {(!!v.model || (v.tools?.length ?? 0) > 0 || (v.rules?.length ?? 0) > 0) && (
         <p className="muted">

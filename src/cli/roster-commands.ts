@@ -31,7 +31,7 @@ const AGENT_USAGE = [
   "  mesh agent source ls [--json]",
 ].join("\n");
 
-const FLAGS = ["diverged", "pinned", "behind", "modified"] as const;
+const FLAGS = ["diverged", "pinned", "behind", "modified", "invalid"] as const;
 
 /** A usage error: printed, exit 2, nothing written. */
 class Usage extends Error {}
@@ -53,7 +53,7 @@ function groupText(g: AgentGroup): string[] {
   const flags = FLAGS.filter((f) => g[f]).map((f) => `  ${f}`).join("");
   const out = [`${g.name}  versions ${g.versions.length}  copies ${copies}${flags}`];
   for (const v of g.versions) {
-    out.push(`  ${v.hash.slice(0, 12)}  ${v.description ?? "-"}`);
+    out.push(v.invalid !== undefined ? `  ${v.hash.slice(0, 12)}  invalid: ${v.invalid}` : `  ${v.hash.slice(0, 12)}  ${v.description ?? "-"}`);
     for (const c of v.copies) {
       const origin = c.origin === "repo" ? "repo" : `catalog ${c7(c.commit)}`;
       out.push(`    ${c.key}  ${origin}${c.pin ? `  pin ${c7(c.pin.commit)}` : ""}${c.behind ? "  behind" : ""}${c.modified ? "  modified" : ""}`);

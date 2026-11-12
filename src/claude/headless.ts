@@ -15,6 +15,11 @@ export interface HeadlessSpec {
   cwd: string;
   /** Added to the daemon's environment. */
   env: Record<string, string>;
+  /**
+   * RL-7: removed from the child's environment after `env` is added (so `env` cannot re-add one).
+   * The child sees the waiter's environment, plus `env`, minus these.
+   */
+  unsetEnv?: readonly string[] | undefined;
   /** stream.jsonl, stderr.log and exit are written here. */
   runDir: string;
 }
@@ -51,7 +56,9 @@ const out = fs.openSync(file("stream.jsonl"), "a");
 const err = fs.openSync(file("stderr.log"), "a");
 let child;
 try {
-  child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env: { ...process.env, ...spec.env }, detached: true, stdio: ["ignore", out, err] });
+  const env = { ...process.env, ...spec.env };
+  for (const k of spec.unsetEnv || []) delete env[k];
+  child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env, detached: true, stdio: ["ignore", out, err] });
 } catch (e) {
   put("start-error", String(e && e.message ? e.message : e));
   process.exit(1);
@@ -141,7 +148,7 @@ export const processRunner: HeadlessRunner = {
     if (!spec.argv[0]) return { ok: false, error: "no command" };
     try {
       mkdirSync(spec.runDir, { recursive: true });
-      const waiter = spawn(process.execPath, ["-e", WAITER, JSON.stringify({ argv: spec.argv, cwd: spec.cwd, env: spec.env, runDir: spec.runDir })], {
+      const waiter = spawn(process.execPath, ["-e", WAITER, JSON.stringify({ argv: spec.argv, cwd: spec.cwd, env: spec.env, unsetEnv: spec.unsetEnv ?? [], runDir: spec.runDir })], {
         detached: true,
         stdio: "ignore",
         env: process.env,

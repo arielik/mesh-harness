@@ -241,8 +241,11 @@ export class World {
       maxSessions?: number | undefined;
     } = {},
     opts: PersonOptions = {},
+    /** RL-7: awaited after the old daemon stopped and before the new one starts. */
+    whileStopped?: () => Promise<void>,
   ): Promise<void> {
     await p.daemon.stop();
+    if (whileStopped) await whileStopped();
     p.config = { ...p.config, ...change } as DaemonConfig;
     if ("maxSessions" in change && change.maxSessions === undefined) delete (p.config as Record<string, unknown>).maxSessions;
     // RL-1: the headless deps are kept unless `opts.headless` replaces them.

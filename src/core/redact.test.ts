@@ -52,8 +52,11 @@ describe("AC-13 redactSecrets", () => {
   it("test_AC13_short_value", () => {
     expect(redact("token: abc")).toStrictEqual({ text: "token: abc", count: 0 });
     expect(redact("the password policy is strict")).toStrictEqual({ text: "the password policy is strict", count: 0 });
-    // Positive control: the same key with a long enough value is redacted.
-    expect(redact("token: abcdef").count).toBe(1);
+    // RL-7 (Compatibility): `token: abcdef` is no longer token-like, so it is unchanged.
+    expect(redact("token: abcdef")).toStrictEqual({ text: "token: abcdef", count: 0 });
+    // Positive control: the same key with a long enough value is redacted (`=` form, and a value with a digit).
+    expect(redact("token=abcdef").count).toBe(1);
+    expect(redact("token: abcde1").count).toBe(1);
   });
 
   it("test_AC13_literals", () => {
@@ -95,5 +98,46 @@ describe("AC-13 redactSecrets", () => {
     const r = redact(text);
     expect(r.count).toBe(0);
     expect(r.text === text).toBe(true);
+  });
+});
+
+// RL-7 AC-11: the `:` assignment form (docs/specs/RL-7.md, `redactSecrets`). An unquoted colon value
+// is redacted only when token-like: at least 6 characters, no `://`, and a digit or 20+ characters,
+// after stripping trailing `.,;:!?)]}` (kept in the output).
+describe("RL-7 AC-11 colon rule", () => {
+  it.each([
+    ["### 1. secret: hardcoded API token", "### 1. secret: hardcoded API token", 0],
+    ["password: correcthorse", "password: correcthorse", 0],
+    ["token: abcdef", "token: abcdef", 0],
+    ["api_key: abcdef123", `api_key: ${R}`, 1],
+    ["secret: s3cr3tvalue", `secret: ${R}`, 1],
+    ["password: hunter2.", `password: ${R}.`, 1],
+    ["password: P@ssw0rd1", `password: ${R}`, 1],
+    ["secret: S3cr3t#42", `secret: ${R}`, 1],
+    ["token: abcdefghijklmnopqrstuv", `token: ${R}`, 1],
+    ["Token: 'abcdefgh'", `Token: '${R}'`, 1],
+    ["token=abcdef", `token=${R}`, 1],
+    [`token: ${ghp}`, `token: ${R}`, 1],
+    ["token: https://example.invalid/x1", "token: https://example.invalid/x1", 0],
+  ])("test_AC11_examples %s", (input, text, count) => {
+    expect(redact(input)).toStrictEqual({ text, count });
+  });
+
+  it("test_AC11_boundaries", () => {
+    const n19 = "abcdefghijklmnopqrs";
+    const n20 = "abcdefghijklmnopqrst";
+    expect(n19).toHaveLength(19);
+    expect(n20).toHaveLength(20);
+    expect(redact(`token: ${n19}`)).toStrictEqual({ text: `token: ${n19}`, count: 0 });
+    expect(redact(`token: ${n20}`)).toStrictEqual({ text: `token: ${R}`, count: 1 });
+    expect(redact("secret: abcde1")).toStrictEqual({ text: `secret: ${R}`, count: 1 });
+    expect(redact("password: hunter2),")).toStrictEqual({ text: `password: ${R}),`, count: 1 });
+    expect(redact("token: http://a.b/c1")).toStrictEqual({ text: "token: http://a.b/c1", count: 0 });
+    expect(redact("token: http-a.b/c1")).toStrictEqual({ text: `token: ${R}`, count: 1 });
+  });
+
+  it("test_AC11_prose", () => {
+    const text = "## Findings\n### 1. secret: hardcoded API token\nToken: see below\napi_key=abcdef123\nend\n";
+    expect(redact(text)).toStrictEqual({ text: `## Findings\n### 1. secret: hardcoded API token\nToken: see below\napi_key=${R}\nend\n`, count: 1 });
   });
 });

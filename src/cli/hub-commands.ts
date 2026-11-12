@@ -2,8 +2,8 @@
 // and `mesh hub init` (writes a starter mesh-hub.yaml).
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stringify, parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -115,17 +115,56 @@ export function findPreset(cwd: string, name: string): Preset {
  * found in (the first directory from the file's up that has `.git`).
  */
 export function findPresetSource(cwd: string, name: string): { preset: Preset; root?: string | undefined } {
-  for (let dir = resolve(cwd); ; ) {
+  for (const dir of presetDirs(cwd)) {
     const f = join(dir, ".mesh", "presets", `${name}.yaml`);
     if (existsSync(f)) return { preset: parsePreset(name, readFileSync(f, "utf8")), root: gitRootOf(dir) };
+  }
+  const b = BUILTIN_PRESETS.find((p) => p.name === name);
+  if (!b) throw new Error(`no template "${name}" (built in: ${BUILTIN_PRESETS.map((p) => p.name).join(", ")}; or .mesh/presets/${name}.yaml in this repo)`);
+  return { preset: b };
+}
+
+/**
+ * The directories whose `.mesh/presets/` hold repo templates: from `cwd` up to and including the
+ * first one with `.git` (or up to the filesystem root when none has it), nearest first.
+ */
+function presetDirs(cwd: string): string[] {
+  const out: string[] = [];
+  for (let dir = resolve(cwd); ; ) {
+    out.push(dir);
     if (existsSync(join(dir, ".git"))) break;
     const up = dirname(dir);
     if (up === dir) break;
     dir = up;
   }
-  const b = BUILTIN_PRESETS.find((p) => p.name === name);
-  if (!b) throw new Error(`no template "${name}" (built in: ${BUILTIN_PRESETS.map((p) => p.name).join(", ")}; or .mesh/presets/${name}.yaml in this repo)`);
-  return { preset: b };
+  return out;
+}
+
+/** RL-7: the repo templates `mesh preset ls` lists: per name the nearest file, sorted by name. */
+export function repoPresetFiles(cwd: string): { name: string; file: string }[] {
+  const found = new Map<string, string>();
+  for (const dir of presetDirs(cwd)) {
+    const d = join(dir, ".mesh", "presets");
+    let names: string[];
+    try {
+      names = readdirSync(d);
+    } catch {
+      continue;
+    }
+    for (const f of names) {
+      if (!f.endsWith(".yaml")) continue;
+      const name = f.slice(0, -".yaml".length);
+      if (!name || found.has(name)) continue;
+      const file = join(d, f);
+      try {
+        if (!statSync(file).isFile()) continue;
+      } catch {
+        continue;
+      }
+      found.set(name, file);
+    }
+  }
+  return [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, file]) => ({ name, file }));
 }
 
 function gitRootOf(from: string): string | undefined {
@@ -495,7 +534,21 @@ export function presetCommand(c: CliEnv): Command {
       const [sub, name] = args;
       if (sub === "ls" || sub === undefined) {
         for (const p of BUILTIN_PRESETS) c.io.out(`${p.name.padEnd(14)} ${p.description}`);
-        c.io.out("Repo templates: .mesh/presets/<name>.yaml (a description and steps, repo \"{repo}\").");
+        const repo = repoPresetFiles(c.cwd);
+        if (repo.length === 0) c.io.out("Repo templates: .mesh/presets/<name>.yaml (a description and steps, repo \"{repo}\").");
+        for (const t of repo) {
+          const rel = relative(c.cwd, t.file).split(sep).join("/");
+          let line: string;
+          try {
+            const p = parsePreset(t.name, readFileSync(t.file, "utf8"));
+            const builtin = BUILTIN_PRESETS.some((b) => b.name === t.name);
+            line = `${t.name.padEnd(14)} ${p.description || "-"}  [${rel}]${builtin ? "  (replaces the built-in)" : ""}`;
+          } catch (e) {
+            const msg = (e instanceof Error ? e.message : String(e)).split("\n")[0] ?? "";
+            line = `${t.name.padEnd(14)} invalid: ${msg}  [${rel}]`;
+          }
+          c.io.out(line);
+        }
         return 0;
       }
       if (sub === "show" && name) {

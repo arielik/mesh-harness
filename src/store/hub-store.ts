@@ -1227,7 +1227,8 @@ export class HubStore {
 
   /**
    * Store the definitions of one push: a new `(repo, name, hash)` is added, a known one gets `commit`
-   * appended (at most 50 kept); afterwards exactly the pushed pairs are current. Texts are never deleted.
+   * appended (at most 50 kept) and (RL-7) its stored `front` replaced by the pushed one; afterwards
+   * exactly the pushed pairs are current. Texts are never deleted.
    */
   async putCatalogDefs(
     repo: string,
@@ -1258,7 +1259,7 @@ export class HubStore {
       } else {
         const v = JSON.parse(r.value) as CatalogDefValue;
         const commits = v.commits.includes(commit) ? v.commits : [...v.commits, commit].slice(-50);
-        const value: CatalogDefValue = { ...v, path: d.path, commits, pushedAt: now };
+        const value: CatalogDefValue = { ...v, path: d.path, commits, pushedAt: now, front: d.front };
         await this.db.run("UPDATE agent_def SET value = ?, updated_at = ? WHERE id = ?", json(value), now, id);
       }
     }

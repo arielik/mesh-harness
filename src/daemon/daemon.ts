@@ -11,7 +11,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
   applyHook,
   applyObservation,
+  applyRunSession,
   applyTick,
+  endSessions,
   agentRecords,
   applyTranscriptMtime,
   applyLaunch,
@@ -62,6 +64,7 @@ import {
   type DebriefList,
   type RevertResult,
   type Step,
+  type StepContext,
   type StepView,
   type ToolName,
   type AgentEntry,
@@ -237,7 +240,9 @@ export class Daemon {
   /** Recently typed deliveries, to tag the resulting UserPromptSubmit as not human. */
   private typed: { text: string; at: number }[] = [];
   private notified = new Map<string, string>();
-  private reconciling = false;
+  /** The reconcile pass running now, and the one queued behind it (at most one). */
+  private reconcileCur: Promise<void> | undefined;
+  private reconcileNext: Promise<void> | undefined;
   /**
    * MM-1: the last scan of the workspace roots, redone at most every REPO_SCAN_MS. RL-5: with the
    * agent files and the checkouts of that scan; `seq` counts scans.
@@ -364,6 +369,8 @@ export class Daemon {
             pendingCallPaths: () => this.store.pendingCalls().map((c) => c.path),
             sessions: () => this.sessions,
             repoForCwd: (cwd) => this.deps.repoForCwd(cwd),
+            registerRunSession: (r) => this.bindRunSession(r),
+            endRunSessions: (sids, reason) => this.endRunSessions(sids, reason),
             now: () => this.deps.now(),
             log: (l) => this.deps.log(l),
           })
@@ -913,6 +920,47 @@ export class Daemon {
     return live.length + this.pendingLaunches.size + (this.runs?.runningWithoutSession() ?? 0);
   }
 
+  /**
+   * RL-7: a headless run's session, registered by the daemon itself (rule 1) or bound by a tool call
+   * from the run's process (rule 3): the session holds the step locally, is remembered as the run's,
+   * and the step is bound at the hub once per (sid, step) with the key a `SessionStart` hook uses.
+   * Returns the sid.
+   */
+  private async bindRunSession(r: { runId: string; claudeSessionId: string; pid: number; cwd: string; step: string; sid?: string | undefined }): Promise<string | undefined> {
+    const result = applyRunSession(this.sessions, { ...r, repo: this.deps.repoForCwd(r.cwd) }, this.ctx());
+    this.commit(result);
+    const sid = result.changed[0];
+    if (!sid) return undefined;
+    this.runs?.adoptSid(r.runId, sid);
+    const key = `${sid}:${r.step}`;
+    if (this.link && !this.boundSteps.has(key)) {
+      this.boundSteps.add(key);
+      try {
+        await this.link.rpc("POST", `/v1/steps/${encodeURIComponent(r.step)}/claim`, { sid }, `bind:${sid}:${r.step}`);
+      } catch (e) {
+        // Offline or refused: the session keeps the step locally.
+        this.deps.log(`could not bind ${sid} to ${r.step}: ${String(e)}`);
+      }
+      // A run may call mesh_done before mesh_context: keep the step's context, so a mesh_done while
+      // the hub is offline still writes the step record from local facts.
+      try {
+        if (!this.link.offline) this.store.cacheStep(await this.link.rpc<StepContext>("GET", `/v1/steps/${encodeURIComponent(r.step)}/context?agent=1`), this.deps.now());
+      } catch (e) {
+        this.deps.log(`could not read the context of ${r.step}: ${String(e)}`);
+      }
+    }
+    void this.link?.flush();
+    return sid;
+  }
+
+  /** RL-7: a headless run ended: its live sessions end with it. */
+  private endRunSessions(sids: ReadonlySet<string>, reason: string): void {
+    const result = endSessions(this.sessions, sids, reason, this.ctx());
+    if (result.changed.length === 0) return;
+    this.commit(result);
+    void this.link?.flush();
+  }
+
   /** A session took an offered step: bind it and queue the brief (delivered when the session is idle). */
   private bindOffered(sid: string, step: string): void {
     this.update(sid, { step, nudges: 0, escalated: false });
@@ -1040,14 +1088,24 @@ export class Daemon {
       git: (cwd, args) => (this.deps.headless ? this.deps.headless.git(cwd, args) : runCommand("git", args, { cwd, timeoutMs: 30_000 })),
       runOf: (sid) => this.runs?.runForSid(sid),
       reviewStored: (sid, n) => this.runs?.reviewStored(sid, n),
+      isRunSession: (sid) => this.runs?.isRunSession(sid) ?? false,
+      doneAccepted: (sid, step) => this.runs?.doneAccepted(sid, step),
     };
   }
 
   async callTool(tool: ToolName, call: ToolCall): Promise<{ text: string; isError?: boolean }> {
     // OpenCode names the session in each MCP call; Claude Code's shim is bound to its Claude pid.
-    const s = call.agentSessionId
-      ? this.sessions.find((x) => x.state !== "ended" && x.claudeSessionIds.includes(call.agentSessionId as string))
-      : this.sessions.find((x) => x.agent !== "opencode" && x.pid === call.pid && x.state !== "ended");
+    const byPid = () => this.sessions.find((x) => x.agent !== "opencode" && x.pid === call.pid && x.state !== "ended");
+    let s = call.agentSessionId ? this.sessions.find((x) => x.state !== "ended" && x.claudeSessionIds.includes(call.agentSessionId as string)) : byPid();
+    // RL-7: a call from a headless run's process binds the run's session when no session of that
+    // pid holds a step (hooks missing, or sent to another daemon), until the run's done is accepted.
+    if (!call.agentSessionId && !s?.step && this.runs) {
+      const r = this.runs.runForPid(call.pid);
+      if (r) {
+        await this.bindRunSession({ runId: r.runId, claudeSessionId: r.claudeSessionId, pid: call.pid, cwd: r.worktree, step: r.step, sid: s?.sid });
+        s = byPid();
+      }
+    }
     if (!s) {
       return call.agentSessionId
         ? { text: "mesh doesn't know this OpenCode session yet (is the mesh plugin installed? run `mesh doctor`).", isError: true }
@@ -1310,27 +1368,45 @@ export class Daemon {
     for (const pid of pids) if (!alive(pid)) this.endOpenCodeServer(pid, "process exited");
   }
 
-  async reconcile(): Promise<void> {
-    if (this.reconciling) return;
-    this.reconciling = true;
-    try {
-      const entries = await this.deps.listAgents();
-      if (entries !== null) {
-        this.commit(applyObservation(this.sessions, entries, this.ctx()));
-        await this.checkLaunches();
-      }
-      // RL-1: queue, budgets and ends of headless runs. An ended run waiting for the hub gets a
-      // flush first, so a mesh_done queued while offline is replayed before its end is handled.
-      // A run's hub call waiting for a retry while the link is offline checks the hub at once.
-      const probeNow = this.runs?.retryDue() === true;
-      if (probeNow || this.runs?.waitingOnHub()) await this.link?.flush({ probeNow });
-      await this.runs?.reconcile();
-      if (entries === null) return;
-      await this.deliverPending();
-      await this.link?.flush();
-    } finally {
-      this.reconciling = false;
+  /**
+   * One reconcile pass that starts after this call. While a pass runs (the one `start()` begins,
+   * or a timer's), the call waits for it and then runs one more; callers waiting meanwhile share
+   * that second pass. So a run reaped at start-up is closed when a `reconcile()` returns (RL-7).
+   */
+  reconcile(): Promise<void> {
+    if (!this.reconcileCur) return this.reconcilePass();
+    this.reconcileNext ??= this.reconcileCur
+      .catch(() => undefined)
+      .then(() => {
+        this.reconcileNext = undefined;
+        return this.reconcilePass();
+      });
+    return this.reconcileNext;
+  }
+
+  private reconcilePass(): Promise<void> {
+    const p = this.reconcileOnce().finally(() => {
+      if (this.reconcileCur === p) this.reconcileCur = undefined;
+    });
+    this.reconcileCur = p;
+    return p;
+  }
+
+  private async reconcileOnce(): Promise<void> {
+    const entries = await this.deps.listAgents();
+    if (entries !== null) {
+      this.commit(applyObservation(this.sessions, entries, this.ctx()));
+      await this.checkLaunches();
     }
+    // RL-1: queue, budgets and ends of headless runs. An ended run waiting for the hub gets a
+    // flush first, so a mesh_done queued while offline is replayed before its end is handled.
+    // A run's hub call waiting for a retry while the link is offline checks the hub at once.
+    const probeNow = this.runs?.retryDue() === true;
+    if (probeNow || this.runs?.waitingOnHub()) await this.link?.flush({ probeNow });
+    await this.runs?.reconcile();
+    if (entries === null) return;
+    await this.deliverPending();
+    await this.link?.flush();
   }
 
   /** `mesh run` opened a window for Claude: record it until Claude's first hook arrives. */
@@ -1366,7 +1442,7 @@ export class Daemon {
   tick(): void {
     const now = this.deps.now();
     this.checkOpenCodeServers();
-    this.commit(applyTick(this.sessions, this.ctx()));
+    this.commit(applyTick(this.sessions, this.ctx(), this.runs?.liveRunSids()));
     this.autopilot();
     // Forget long-ended sessions in memory; the store keeps them a week.
     this.sessions = this.sessions.filter((s) => s.state !== "ended" || now - (s.endedAt ?? 0) < 24 * 60 * 60_000);

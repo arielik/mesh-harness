@@ -659,3 +659,83 @@ describe("AC-25 R-6 for pulses", () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+
+// RL-7 AC-08 (hub part) and AC-18 (World): invalid agent front matter on the roster and the catalog
+// (docs/specs/RL-7.md, Agent front matter). The `invalid` text is not computed here: a hub-side test
+// checks its documented prefix and `line 2`, and compares catalog and report texts with each other.
+describe("RL-7 invalid agents (hub)", () => {
+  /** Line 2 of the front matter is not valid YAML. */
+  const BAD = "---\nname: bad\ndescription: Validates: findings\n---\nYou validate.\n";
+  const GOOD = "---\ndescription: Good agent\n---\nYou review.\n";
+  const INV = "front matter is not valid YAML: sample at line 2, column 14";
+  const isInvalidText = (s: unknown) => typeof s === "string" && s.startsWith("front matter is not valid YAML: ") && s.includes("line 2");
+
+  it("test_AC08_groups_from_report", async () => {
+    await start();
+    const m = await k.k.bare("ann", "ann-box", { repos: [ALPHA] });
+    await k.report(m, [rep(ALPHA, "bad", BAD, { invalid: INV }), rep(ALPHA, "good", GOOD, { description: "Good agent" })]);
+    const v = await k.view("ann");
+    const bad = groupOf(v, "bad");
+    const good = groupOf(v, "good");
+    // Control: both groups are listed.
+    expect(bad, JSON.stringify(v.agents)).toBeDefined();
+    expect(good).toBeDefined();
+    expect(good.versions[0].description).toBe("Good agent");
+    expect(bad.invalid).toBe(true);
+    expect(bad.versions).toHaveLength(1);
+    expect(bad.versions[0]).toMatchObject({ hash: H(BAD), invalid: INV });
+    expect(good.invalid).toBe(false);
+    for (const x of good.versions as Json[]) expect(x.invalid).toBeUndefined();
+  });
+
+  it("test_AC08_catalog_resolve", async () => {
+    await start();
+    await k.catalog({ bad: BAD, good: GOOD });
+    const bad = await k.resolve("ann", "agents/bad");
+    expect(bad.status, JSON.stringify(bad.json)).toBe(200);
+    expect(bad.json).toMatchObject({ key: "agents/bad", hash: H(BAD), text: BAD });
+    expect(isInvalidText(bad.json.invalid), String(bad.json.invalid)).toBe(true);
+    for (const f of ["description", "tools", "model", "rules"]) expect(bad.json[f], f).toBeUndefined();
+    // Control: the valid definition resolves with its description and no `invalid`.
+    const good = await k.resolve("ann", "agents/good");
+    expect(good.json).toMatchObject({ key: "agents/good", description: "Good agent" });
+    expect(good.json.invalid).toBeUndefined();
+    // GET /v1/agents shows the catalog version as invalid too.
+    const v = await k.view("ann");
+    expect(groupOf(v, "bad")).toMatchObject({ invalid: true });
+    expect(groupOf(v, "bad").versions[0].invalid).toBe(bad.json.invalid);
+    expect(groupOf(v, "good").invalid).toBe(false);
+  });
+
+  it("test_AC18_world_repush", async () => {
+    await start();
+    await k.sourceOk();
+    const m = await k.pusher();
+    // As v0.1.20 stored the invalid file: `front: {}`.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- store method, read loosely
+    await (k.w.hubStore as any).putCatalogDefs(SRC, C1, [{ path: "agents/bad.md", name: "bad", hash: H(BAD), text: BAD, front: {} }], "root", k.w.clock);
+    const before = await k.resolve("ann", "agents/bad");
+    expect(before.status, JSON.stringify(before.json)).toBe(200);
+    expect(before.json.invalid).toBeUndefined();
+    k.w.clock += 1000;
+    await k.pushOk(m, C2, { bad: BAD });
+    const after = await k.resolve("ann", "agents/bad");
+    expect(isInvalidText(after.json.invalid), String(after.json.invalid)).toBe(true);
+    expect(after.json.commits).toStrictEqual([C1, C2]);
+  });
+
+  it("test_AC18_world_push_twice", async () => {
+    await start();
+    await k.sourceOk();
+    const m = await k.pusher();
+    await k.pushOk(m, C1, { bad: BAD });
+    k.w.clock += 1000;
+    await k.pushOk(m, C2, { bad: BAD });
+    const after = await k.resolve("ann", "agents/bad");
+    expect(after.status, JSON.stringify(after.json)).toBe(200);
+    expect(isInvalidText(after.json.invalid), String(after.json.invalid)).toBe(true);
+    expect(after.json.commits).toStrictEqual([C1, C2]);
+  });
+});
+

@@ -18,6 +18,8 @@ export const AgentFront = z.object({
   model: z.string().max(100).optional(),
   tools: z.array(z.string().max(200)).max(100).optional(),
   rules: z.array(z.string().max(100)).max(200).optional(),
+  /** RL-7: the front matter is not valid YAML or not a mapping (then no other field is set). */
+  invalid: z.string().max(300).optional(),
 });
 export type AgentFront = z.infer<typeof AgentFront>;
 
@@ -160,6 +162,8 @@ export interface AgentGroup {
   pinned: boolean;
   behind: boolean;
   modified: boolean;
+  /** RL-7: some version's front matter is not valid YAML (`AgentVersion.invalid`). */
+  invalid: boolean;
 }
 
 export interface AgentsView {

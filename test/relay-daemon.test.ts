@@ -177,7 +177,13 @@ describe("AC-21 headless start", { timeout: 40_000 }, () => {
     const st = await r.stepOf(id);
     expect(st.state).toBe("claimed");
     expect(st.holderMachine).toBe(r.w.machineOf(k.ann));
-    expect(st.holderSid).toBeUndefined();
+    // RL-7 rule 1: the daemon registers the run's own session at start and binds the step to it
+    // (the person's session 1 stays unbound, above).
+    const run = await r.runOf(k.ann, id);
+    const own = await r.sessionsOf(k.ann, run.sessionId);
+    expect(own, JSON.stringify(own)).toHaveLength(1);
+    expect(own[0].sid).not.toBe(r.w.session(k.ann, 1).sid);
+    expect(st.holderSid).toBe(own[0].sid);
     expect(st.offer.state).toBe("accepted");
     expect(await until(() => acksOf(k.ann, msg.id).length > 0)).toBe(true);
     expect(acksOf(k.ann, msg.id)).toStrictEqual([{ id: msg.id, state: "delivered", method: "headless" }]);
@@ -946,8 +952,11 @@ describe("AC-37 run idempotency", { timeout: 40_000 }, () => {
     r.go("end");
     await r.endRun(k.ann, id);
     const run = await r.runOf(k.ann, id);
+    // RL-7 rule 1: the bind claim of the run's own session goes before the run-started call.
+    const own = await r.sessionsOf(k.ann, run.sessionId);
+    expect(own, JSON.stringify(own)).toHaveLength(1);
     const keys = k.ann.requests.filter((q) => q.path.startsWith(`/v1/steps/${id}/`) && q.method === "POST").map((q) => `${q.path.split("/").pop()} ${q.key}`);
-    expect(keys).toStrictEqual([`accept offer-${msg.id}`, `run run-${run.runId}-started`, `artifacts run-${run.runId}-transcript`, `done run-${run.runId}-done`, `run run-${run.runId}-finished`]);
+    expect(keys).toStrictEqual([`accept offer-${msg.id}`, `claim bind:${own[0].sid}:${id}`, `run run-${run.runId}-started`, `artifacts run-${run.runId}-transcript`, `done run-${run.runId}-done`, `run run-${run.runId}-finished`]);
   });
 
   it("test_AC37_lost_replies", async () => {
@@ -1205,14 +1214,22 @@ describe("AC-39 run inbox", { timeout: 40_000 }, () => {
     expect(k.ann.store.message(mid)?.state, "held while the run runs").toBe("pending");
     r.go("end");
     await r.endRun(k.ann, id);
-    expect(r.w.session(k.ann, 7).state, "the run's session is still alive").not.toBe("ended");
+    // RL-7 rule 4: the run's end ends its session.
+    expect(r.w.session(k.ann, 7).state, "the run's end ends its session").toBe("ended");
+    await k.ann.daemon.deliverPending();
+    expect(k.ann.store.message(mid)?.state, "not failed while the session is ended").toBe("pending");
+    // A hook after the end (as `claude --resume` gives) makes the session alive again.
+    r.w.clock += 60_000;
+    const revive = await r.w.hook(k.ann, "SessionStart", 7, { session_id: run.sessionId, cwd: join(r.runDir(k.ann, run), "worktree") });
+    expect(r.w.session(k.ann, 7).sid, "the same session, revived").toBe(s7);
+    expect(r.w.session(k.ann, 7).state, "the run's session is alive again").not.toBe("ended");
     await k.ann.daemon.deliverPending();
     expect(k.ann.store.message(mid)?.state, "not failed for its age").toBe("pending");
     r.w.clock += 60_000;
     const stop = await r.w.hook(k.ann, "Stop", 7, { session_id: run.sessionId, stop_hook_active: false, last_assistant_message: "z" });
     const m = k.ann.store.message(mid);
     expect(m?.state, JSON.stringify(m)).toBe("delivered");
-    const got = JSON.stringify(stop ?? {}).includes("ping-H") || k.ann.pastes.some((p) => p.text.includes("ping-H"));
+    const got = JSON.stringify(stop ?? {}).includes("ping-H") || JSON.stringify(revive ?? {}).includes("ping-H") || k.ann.pastes.some((p) => p.text.includes("ping-H"));
     expect(got).toBe(true);
   });
 });

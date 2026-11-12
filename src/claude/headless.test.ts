@@ -208,3 +208,43 @@ describe("AC-18 process runner", { timeout: 20_000 }, () => {
     expect(r.stdout.trim()).toBe(head);
   });
 });
+
+// RL-7 AC-06: `HeadlessSpec.unsetEnv` (docs/specs/RL-7.md, Environment of a headless run). The child's
+// environment is the waiter's environment, plus `spec.env`, minus `unsetEnv`.
+describe("RL-7 unsetEnv", { timeout: 20_000 }, () => {
+  const saved: Record<string, string | undefined> = {};
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+      delete saved[k];
+    }
+  });
+  const setEnv = (k: string, v: string) => {
+    if (!(k in saved)) saved[k] = process.env[k];
+    process.env[k] = v;
+  };
+  async function probeOf(s: ReturnType<typeof setup>, extra: Record<string, unknown>) {
+    const spec = { ...s.spec, env: { ...s.spec.env, A: "1", TMUX: "x" }, ...extra } as typeof s.spec;
+    const r = await runner().start(spec);
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (!r.ok) throw new Error(r.error);
+    groups.push(r.pid);
+    expect(await until(() => s.calls().length === 1 && s.exitFile() !== undefined)).toBe(true);
+    return s.calls()[0].probe as Record<string, string | null>;
+  }
+
+  it("test_AC06_unit_unset_env", async () => {
+    setEnv("B", "2");
+    setEnv("C", "3");
+    const probe = await probeOf(setup("u6", []), { unsetEnv: ["TMUX", "B"] });
+    expect(probe.A).toBe("1");
+    expect(probe.C).toBe("3");
+    expect(probe.TMUX).toBeNull();
+    expect(probe.B).toBeNull();
+    // Positive control: without unsetEnv the probe sees both (it reports variables that are there).
+    const control = await probeOf(setup("u6c", []), {});
+    expect(control.B).toBe("2");
+    expect(control.TMUX).toBe("x");
+  });
+});

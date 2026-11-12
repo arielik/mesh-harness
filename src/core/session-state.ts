@@ -5,7 +5,7 @@
 // busy/waiting/idle, spike S7). Sessions are bound by Claude pid so /clear, startup id switches and
 // resume keep one stable `sid` (spike S9).
 
-import type { AgentEntry, HookEvent, Needs, Session, SessionKind } from "../protocol/index.ts";
+import type { AgentEntry, HookEvent, Needs, Repo, Session, SessionKind } from "../protocol/index.ts";
 
 export interface Rules {
   /** Idle with an unfinished step for this long → stalled. */
@@ -421,8 +421,86 @@ export function applyTranscriptMtime(sessions: Session[], sid: string, mtime: nu
   return { sessions: put(sessions, s, i), changed: [sid] };
 }
 
-/** Time-based rules: quiet flag, stalled, presumed end. */
-export function applyTick(sessions: Session[], ctx: Ctx): Result {
+/** RL-7: what the daemon knows of a headless run when it registers or binds the run's session. */
+export interface RunSessionInput {
+  /** The `--session-id` the daemon passed to `claude -p`. */
+  claudeSessionId: string;
+  /** The pid of the started `claude` process. */
+  pid: number;
+  /** The run's worktree. */
+  cwd: string;
+  step: string;
+  repo?: Repo | undefined;
+  /**
+   * A live session (found by pid) to bind instead of the session of `claudeSessionId` (a tool call
+   * from the run's process whose session a hook registered under another id).
+   */
+  sid?: string | undefined;
+}
+
+/**
+ * RL-7: the daemon registers a headless run's session itself, without hooks. The session of
+ * `r.claudeSessionId` is reused (a live one first, else the newest ended one, revived) or created;
+ * with `r.sid` that session is bound instead (the run's Claude session id is added to it). The
+ * session is `working`, `kind: "print"`, holds `r.step`, and has the run's pid and worktree and no
+ * pane. `stateAt` is left as it is, so a later hook is never treated as stale against this.
+ */
+export function applyRunSession(sessions: Session[], r: RunSessionInput, ctx: Ctx): Result {
+  const own = r.sid !== undefined ? sessions.findIndex((x) => x.sid === r.sid && x.state !== "ended") : -1;
+  if (own >= 0) {
+    // A live session a hook registered for the run's process: it takes the step and the run's id.
+    const s = structuredClone(sessions[own] as Session);
+    if (!s.claudeSessionIds.includes(r.claudeSessionId)) s.claudeSessionIds.push(r.claudeSessionId);
+    s.step = r.step;
+    delete s.nudges;
+    delete s.escalated;
+    return { sessions: put(sessions, s, own), changed: [s.sid] };
+  }
+  let index = sessions.findIndex((x) => x.claudeSessionIds.includes(r.claudeSessionId) && x.state !== "ended");
+  if (index < 0) {
+    for (let i = sessions.length - 1; i >= 0; i--) {
+      if (sessions[i]?.claudeSessionIds.includes(r.claudeSessionId)) {
+        index = i;
+        break;
+      }
+    }
+  }
+  const s = index >= 0 ? structuredClone(sessions[index] as Session) : blank(ctx.newId(), r.cwd, ctx.now, "print");
+  revive(s);
+  if (!s.claudeSessionIds.includes(r.claudeSessionId)) s.claudeSessionIds.push(r.claudeSessionId);
+  setWorking(s);
+  s.kind = "print";
+  s.pid = r.pid;
+  s.cwd = r.cwd;
+  s.step = r.step;
+  if (r.repo) s.repo = r.repo;
+  s.lastEventAt = Math.max(s.lastEventAt, ctx.now);
+  delete s.nudges;
+  delete s.escalated;
+  delete s.pane;
+  delete s.tmuxSocket;
+  delete s.launching;
+  return { sessions: put(sessions, s, index), changed: [s.sid] };
+}
+
+/** RL-7: end these sessions (a headless run ended); sessions already ended stay as they are. */
+export function endSessions(sessions: Session[], sids: ReadonlySet<string>, reason: string, ctx: Ctx): Result {
+  const changed: string[] = [];
+  const next = sessions.map((x) => {
+    if (!sids.has(x.sid) || x.state === "ended") return x;
+    const s = structuredClone(x);
+    end(s, ctx.now, reason);
+    changed.push(s.sid);
+    return s;
+  });
+  return { sessions: changed.length ? next : sessions, changed };
+}
+
+/**
+ * Time-based rules: quiet flag, stalled, presumed end. RL-7: sessions in `keep` (a running headless
+ * run's sessions) are never stalled or presumed ended; the run's end ends them.
+ */
+export function applyTick(sessions: Session[], ctx: Ctx, keep?: ReadonlySet<string>): Result {
   const rules = ctx.rules ?? DEFAULT_RULES;
   const changed: string[] = [];
   const next = sessions.map((orig) => {
@@ -435,10 +513,11 @@ export function applyTick(sessions: Session[], ctx: Ctx): Result {
     } else {
       s.quiet = false;
     }
-    if (s.state === "idle" && s.step !== undefined && ctx.now - (s.lastStopAt ?? s.lastEventAt) > rules.stallAfterMs) {
+    const kept = keep?.has(s.sid) === true;
+    if (!kept && s.state === "idle" && s.step !== undefined && ctx.now - (s.lastStopAt ?? s.lastEventAt) > rules.stallAfterMs) {
       s.state = "stalled";
     }
-    if (!s.seenByReconciler && ctx.now - activity > rules.presumedEndAfterMs) {
+    if (!kept && !s.seenByReconciler && ctx.now - activity > rules.presumedEndAfterMs) {
       end(s, ctx.now, "presumed ended");
     }
     if (JSON.stringify(s) !== JSON.stringify(orig)) {

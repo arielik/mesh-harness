@@ -47,7 +47,9 @@ A session gets its labels when the daemon first records it, from the first of th
 
 Sessions already recorded keep their labels when the file or the remembered list changes; `mesh label <session>` changes them (`--add` and `--rm` merge). Session labels reach the hub with the session record. **Machine labels** (`mesh machine label gpu`) are stored on the hub only; a sync never changes them.
 
-**Template.** A plan shape such as `sdd-split` (built in) or `.mesh/presets/<name>.yaml`. `mesh goal new --preset` gives it to the design session; `mesh goal plan --preset` fills it in directly. Checking a plan against its template only gives warnings.
+**Template.** A plan shape such as `sdd-split` (built in) or `.mesh/presets/<name>.yaml`. `mesh goal new --preset` gives it to the design session; `mesh goal plan --preset` fills it in directly. Checking a plan against its template only gives warnings. `mesh preset ls` lists the built-in templates, then the repo templates of `.mesh/presets/` from the current folder up to the top of the checkout (the nearer file wins), each with its file and `(replaces the built-in)` when it shadows one; a file that does not parse is listed as `invalid: <reason>`.
+
+**Preset parameters.** A template may give parameters default values in a top-level `params:` mapping (names `a-z`, `0-9`, `_`, starting with a letter; values strings or numbers). `{<name>}` placeholders in its steps are filled from the defaults, then from `--params` (an explicit param beats a default), then `{repo}` and `{goal}`. A step's `budget.turns` and `budget.minutes` may each be exactly one placeholder (`turns: "{turns}"`); the filled value must be a whole number from 1 to 500 (turns) or 1 to 1440 (minutes), else the preset is refused with `budget.<field> in step <id> must be a whole number from 1 to <max>, got "<value>"`, and a placeholder nobody fills gives `unknown parameter {<name>} in step <id>`.
 
 **Round.** One `mesh_done` on a step. A reopened step has several rounds. Each keeps its start and finish time, outcome, summary, the model the agent reported, and its artefacts. With M4.5 it can also keep:
 - the verdict (approved, changes_requested, blocked, pass, fail);
@@ -102,7 +104,8 @@ profile and a budget. Fields of such a step (all optional, and only with `mode: 
   the run as that agent. When the agent lists `tools`, mesh adds its four tools to the list. A
   roster key `<source>/<name>[@<ref>]` names a catalog agent instead (see *Roster*).
 - `profile`: a permission profile (below); default `read-only`.
-- `budget`: `turns` (default 30), `minutes` (default 30), `usd` (no default). The run gets
+- `budget`: `turns` (default 30), `minutes` (default 30), `usd` (no default). In a preset, `turns`
+  and `minutes` may be `{param}` placeholders (see *Preset parameters*). The run gets
   `--max-turns <turns + 1>`: one extra turn for loading the mesh tools. Past `minutes` the daemon
   stops the run's whole process group; `usd` becomes `--max-budget-usd`.
 - `inputs`: what `mesh_context` serves the run as input: the artifacts (below) of the last round of
@@ -112,6 +115,25 @@ profile and a budget. Fields of such a step (all optional, and only with `mode: 
 
 A gate step can't be headless. A preset may leave `agent` and `profile` as `{agent}`/`{profile}`
 and have them filled with `mesh goal plan --params agent=auditor,profile=read-only`.
+
+**The run's session.** The daemon registers the run's session itself, by the `--session-id` it
+passes and the pid of the `claude` process it starts, right after the start and before it tells the
+hub the run started: the session is `working`, kind `print`, in the run's worktree, holds the step,
+and the step is bound to it at the hub. A run therefore needs no hooks. Hooks that do arrive (user
+hooks pointing at this daemon) update that same session and change nothing else: no second session,
+no second bind. If the session went away (a `SessionEnd`), the first mesh tool call from the run's
+process binds it again, until the run's `mesh_done` is accepted; after that the step is never bound
+again. While the run runs its session is never marked stalled or presumed ended; it ends when the
+run ends (and no longer counts toward `maxSessions`). The run's environment is the daemon's, plus
+`MESH_STEP` and `MESH_RUN`, minus `TMUX`, `TMUX_PANE`, `MESH_AUTOPILOT` and `CLAUDE_PID`, so its
+hooks never report the daemon's terminal. `mesh_done` replies to a run carry no commit hint: the
+step record is written into the run's worktree, which is discarded.
+
+**Invalid agents.** When the agent file's front matter is not valid YAML (an unquoted `: ` in
+`description` is the usual cause) or is not a mapping, the run does not start: the `claude` process
+is never spawned and the step fails with the summary `headless run of <step> did not start: agent
+<name> has invalid front matter: <reason>` (`roster agent <key> has …` for a roster key). The
+Roster flags such agents beforehand (see *Roster*).
 
 **The command line.** Every run is, in this order:
 `claude -p <prompt> --output-format stream-json --verbose --session-id <uuid> --max-turns <n>
@@ -179,7 +201,11 @@ transcript), stored on the hub: `mesh_artifact` (MCP) from the session that hold
   the round's artifact ids on the round.
 - **Redaction on the machine.** The daemon removes private key blocks, known token forms
   (`ghp_…`, `glpat-…`, `xox…-`, `AKIA…`, `sk-…`, …), `password=…`-style values and its own key and
-  hub token before sending; the hub records how many were removed. Redaction is best effort.
+  hub token before sending; the hub records how many were removed. For a `key: value` form
+  (`password`, `passwd`, `secret`, `token`, `api_key`) the value is removed when it is quoted, or
+  when it looks like a token: at least 6 characters, no `://`, and a digit or at least 20
+  characters (trailing punctuation is kept). Prose such as `secret: hardcoded API token` stays as
+  it is. Redaction is best effort.
 - **Team-visible.** Every member can read every artifact (`mesh artifact ls <G>`,
   `mesh artifact show <id>`). Artifact content never appears in hub events or in the ledger export,
   only ids and hashes.
@@ -361,7 +387,9 @@ themselves.
 `read-only`) raises findings; `validate` (`{validator}`) runs only when items are open and confirms
 or dismisses them; `file` (`{filer}`, profile `propose-via-branch`) runs only when items are
 confirmed, proposes an entry for each on the run's branch and records it `accepted` with its link.
-It needs params `agent`, `validator` and `filer`. It stays agent-only; a repo that wants its owner to
+It needs params `agent`, `validator` and `filer`; params `turns` (default 80) and `minutes`
+(default 60) set the `audit` stage's budget (`--params agent=a,validator=v,filer=f,turns=40,minutes=20`).
+It stays agent-only; a repo that wants its owner to
 decide the findings adds a debrief stage in its own `.mesh/presets` (see *Debriefs*).
 
 ## Roster
@@ -390,7 +418,11 @@ owns the calibration goals of its agents (see Calibration).
 
 **Flags.** A group (one agent name) is `diverged` when it has more than one version (hash). A repo
 copy is `pinned` when its lock names a catalog definition, `modified` when its hash differs from the
-pin's, and `behind` when the source's current definition has another hash than the pin.
+pin's, and `behind` when the source's current definition has another hash than the pin. A version
+whose front matter is not valid YAML (or not a mapping) carries `invalid` (the parse error) in place
+of its fields, and its group is flagged `invalid`; `mesh agents` prints `invalid: <reason>` for it.
+A headless step that names such an agent fails at start. A catalog definition gets the flag on its
+next push, even when its text is unchanged.
 
 **Install by reference.** `mesh agent add <source>/<name>[@<ref>]` writes the catalog definition
 unchanged into `.claude/agents/<name>.md` and pins it in `.mesh/agents.lock`:

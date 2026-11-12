@@ -360,3 +360,30 @@ spec asserts on. The `HubStore` contract's Postgres legs run only when `MESH_TES
 - 2026-11-12 **Trail files in headless runs** are still written into the run worktree (harmless,
   discarded). Only the hint is dropped. A `propose-via-branch` run pushes only what the agent
   committed, as before.
+- 2026-11-12 **Binding a hook-registered session on a tool call** (implementation). In rule 3's
+  second case (a live session of the run's pid with no step) the daemon sets only the step and adds
+  the run's session id (one bind claim); it keeps that session's `cwd`, `kind` and state, as the
+  rule names only those effects. Rule 1's full registration (`working`, `print`, worktree) applies
+  when the daemon creates or revives the session of the run's session id.
+- 2026-11-12 **Ended run session reason** (implementation). Sessions ended by rule 4 get
+  `endedReason: "headless run ended"`; the text is not part of the contract.
+- 2026-11-12 **`SessionStart` after done** (implementation). A `SessionStart` hook with the run's
+  session id still sets the run's step locally as in RL-1 (`onSessionStart`), even after the run's
+  done was accepted; only tool-call binding (rule 3) stops at done. A run sends no `SessionStart`
+  after its first turn, so this was left as it was.
+- 2026-11-12 **`reconcile()` waits for a running pass** (round 2). `Daemon.start()` begins a reconcile
+  pass in the background. A `reconcile()` called while a pass runs used to return at once, so a run
+  reaped at start-up could still be unclosed when it returned (AC-19). Now such a call waits for the
+  running pass and then runs one more; callers that arrive meanwhile share that one queued pass, so
+  timers never pile up passes.
+- 2026-11-12 **No-step text while the link is offline** (round 2). After a run's done is accepted
+  offline, the daemon's link stays offline until its probe or a flush reopens it. `mesh_context` from
+  a session with no step then answers `This session holds no mesh step. mesh cannot list ready steps
+  now: <offline message>; claiming new work needs the hub.` instead of the bare offline error. The
+  ready list needs the hub; the no-step text does not. The call does not probe the hub itself
+  (`mesh_next` doesn't either).
+- 2026-11-12 **A run's context is cached when its session is bound** (round 2). The offline
+  `mesh_done` record is built from the cached step context. A run may call `mesh_done` without a
+  `mesh_context` first, so the daemon reads `GET /v1/steps/<step>/context?agent=1` once after the
+  bind claim of a run's session (when the link is online) and caches it. Without any cached context
+  the offline reply stays the M4 text without a record.

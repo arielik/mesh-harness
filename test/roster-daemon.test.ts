@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { git, MESH_TOOL_RULES, Relay, until } from "./helpers/relay-kit.ts";
+import { parseAgentFile } from "../src/core/index.ts";
 import { C1, H, H1, OTHER, REV1, REV2, REV3, SRC, SRC_URL } from "./helpers/roster-kit.ts";
 import type { Json, Person } from "./helpers/world.ts";
 
@@ -503,5 +504,77 @@ describe("AC-21 roster run not started", { timeout: 60_000 }, () => {
     await r.autoOffer(k.ann, k.id, k.self);
     await r.pull(k.ann);
     await r.started(k.id);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+// RL-7 AC-08 (daemon part) and AC-10 (roster agent): agent front matter that is not valid YAML is
+// reported with `invalid` and its hash, and a roster agent with such a text fails the step at start
+// (docs/specs/RL-7.md, Agent front matter; Headless start).
+describe("RL-7 AC-08 invalid agents", { timeout: 60_000 }, () => {
+  /** Line 2 of the front matter is not valid YAML. */
+  const BAD = "---\nname: bad\ndescription: Validates: findings\n---\nYou validate.\n";
+  const GOOD = "---\ndescription: Good agent\n---\nYou review.\n";
+  const INV_PREFIX = "front matter is not valid YAML: ";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new field, read loosely
+  const invalidOf = (text: string): string => (parseAgentFile(text) as any).invalid;
+
+  it("test_AC08_report_and_groups", async () => {
+    await start();
+    const ann = await scanned("ann", "alpha", ALPHA_URL, "me", { ".claude/agents/bad.md": BAD, ".claude/agents/good.md": GOOD });
+    await rescan();
+    const rows = (withAgents(ann).at(-1)?.machine.agents ?? []) as Json[];
+    const bad = rows.find((a) => a.name === "bad");
+    const good = rows.find((a) => a.name === "good");
+    // Control: the valid file is reported with its description.
+    expect(good, JSON.stringify(rows)).toMatchObject({ description: "Good agent", hash: H(GOOD) });
+    expect(good.invalid).toBeUndefined();
+    expect(bad, JSON.stringify(rows)).toBeDefined();
+    expect(bad.hash).toBe(H(BAD));
+    expect(typeof bad.invalid).toBe("string");
+    expect(bad.invalid.startsWith(INV_PREFIX), bad.invalid).toBe(true);
+    expect(bad.invalid).toContain("line 2");
+    expect(bad.invalid).toBe(invalidOf(BAD));
+    for (const f of ["description", "tools", "model", "rules"]) expect(bad[f], f).toBeUndefined();
+    const v = await view(ann);
+    const groups = v.agents as Json[];
+    const gb = groups.find((g) => g.name === "bad");
+    const gg = groups.find((g) => g.name === "good");
+    expect(gb, JSON.stringify(groups)).toMatchObject({ invalid: true });
+    expect(gb.versions[0]).toMatchObject({ hash: H(BAD), invalid: bad.invalid });
+    expect(gg).toMatchObject({ invalid: false });
+    for (const x of gg.versions as Json[]) expect(x.invalid).toBeUndefined();
+  });
+
+  it("test_AC10_roster_agent_invalid", async () => {
+    await start();
+    const t = await root();
+    expect((await r.w.call(t, "POST", "/v1/catalog-sources", { repo: SRC_URL, folder: "agents" })).status).toBe(201);
+    expect((await r.w.call(t, "POST", "/v1/sync", { events: [], counts: {}, sessions: [], machine: { share: "me", repos: [{ id: SRC, name: "agents" }] } })).status).toBe(200);
+    const p = await r.w.call(t, "POST", "/v1/catalog-sources/push", { repo: SRC, commit: C1, defs: [{ path: "agents/bad.md", text: BAD }] });
+    expect(p.status, JSON.stringify(p.json)).toBe(200);
+    const ann = await r.headlessPerson("ann", { nick: "hl", person: { shareSessions: "me" } });
+    const self = await r.otherLogin("ann");
+    await r.w.flush();
+    const G = await r.goal(self, [{ id: "ff2", mode: "headless", agent: "agents/bad" }]);
+    const id = `${G}.ff2`;
+    const key = ((await r.w.hubStore.getGoal(G)) as Json).agents?.["agents/bad"]?.key ?? "agents/bad";
+    r.script(id, []);
+    await r.autoOffer(ann, id, self);
+    await r.pull(ann);
+    await r.reconcile(ann);
+    expect(await until(async () => (await r.stepOf(id)).state === "failed", 8_000), "step failed").toBe(true);
+    const st = await r.stepOf(id);
+    const inv = invalidOf(BAD);
+    expect(typeof inv).toBe("string");
+    expect(inv.startsWith(INV_PREFIX)).toBe(true);
+    expect(st.rounds.at(-1)).toMatchObject({ outcome: "fail", summary: `headless run of ${id} did not start: roster agent ${key} has invalid front matter: ${inv}` });
+    await r.reconcile(ann);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(r.calls(id)).toStrictEqual([]);
+    const run = (await r.runs(ann)).find((x) => x.step === id);
+    expect(run?.state).toBe("finished");
+    expect(existsSync(join(r.runDir(ann, run), "agents.json"))).toBe(false);
   });
 });

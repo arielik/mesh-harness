@@ -89,7 +89,8 @@ A step can run headless: a machine starts \`claude -p\` for it, with no person w
 prompt then says "This is a headless run". In a headless run, never call \`mesh_ask\` (nobody
 answers); work from the brief and its inputs, store reports with \`mesh_artifact\`, and always
 finish with \`mesh_done\` (\`outcome: "fail"\` with a summary when you could not do the step). A run
-that ends without \`mesh_done\` is closed as failed.
+that ends without \`mesh_done\` is closed as failed. The step record mesh writes on \`mesh_done\` is
+not committed in a headless run: the run's worktree is discarded, so do not spend turns on it.
 
 ## Pulse goals
 

@@ -2,7 +2,9 @@
 // A fake `claude` for headless-run tests (RL-1). Never the real binary.
 //
 // On start it writes $FAKE_CLAUDE_DIR/calls/<MESH_STEP>-<pid>.json with its argv, cwd, the MESH_*
-// environment, pid and process group, then runs $FAKE_CLAUDE_DIR/scripts/<MESH_STEP>.json: a JSON
+// environment, pid and process group, and `probe` (RL-7: for each of A, B, C, TMUX, TMUX_PANE,
+// MESH_AUTOPILOT, CLAUDE_PID, FAKE_PARENT_VAR, MESH_STEP, MESH_RUN its value, or null when the variable
+// is absent), then runs $FAKE_CLAUDE_DIR/scripts/<MESH_STEP>.json: a JSON
 // array of actions run in order (a missing script = exit 0):
 //   {"stdout": ["line", …]}   lines on stdout; "$SESSION" becomes the --session-id argument
 //   {"stderr": ["line", …]}   lines on stderr
@@ -33,6 +35,9 @@ const call = {
   bin: process.argv[1],
   cwd: process.cwd(),
   env: { MESH_STEP: process.env.MESH_STEP, MESH_RUN: process.env.MESH_RUN, FAKE_PARENT_VAR: process.env.FAKE_PARENT_VAR },
+  probe: Object.fromEntries(
+    ["A", "B", "C", "TMUX", "TMUX_PANE", "MESH_AUTOPILOT", "CLAUDE_PID", "FAKE_PARENT_VAR", "MESH_STEP", "MESH_RUN"].map((n) => [n, Object.hasOwn(process.env, n) ? process.env[n] : null]),
+  ),
   pid: process.pid,
   pgid,
 };

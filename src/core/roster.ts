@@ -25,6 +25,8 @@ export function catalogDigest(defs: { path: string; hash: string }[]): string {
  */
 export function agentFront(text: string): AgentFront {
   const f = parseAgentFile(text);
+  // RL-7: an invalid front matter block is reported as such, with no other field.
+  if (f.invalid !== undefined) return { invalid: f.invalid };
   const out: AgentFront = {};
   if (f.description !== undefined) out.description = f.description.slice(0, 1000);
   if (f.model !== undefined && f.model.length <= 100) out.model = f.model;

@@ -158,7 +158,13 @@ matching `gh[pousr]_[A-Za-z0-9]{36,}`, `github_pat_[A-Za-z0-9_]{22,}`, `glpat-[A
 `xox[abprs]-[A-Za-z0-9-]{10,}`, `AKIA[0-9A-Z]{16}`, `sk-ant-[A-Za-z0-9_-]{20,}`, `sk-[A-Za-z0-9]{32,}`,
 `AIza[0-9A-Za-z_-]{35}` → `[REDACTED]`; then assignments matching
 `/\b(password|passwd|secret|token|api[_-]?key)(\s*[=:]\s*)(["']?)([^\s"']{6,})\3/gi` → the value only
-becomes `[REDACTED]` (key, separator and quotes kept). `count` counts each secret once: one per PEM
+becomes `[REDACTED]` (key, separator and quotes kept) when the separator holds `=` or the value is
+quoted. (changed in RL-7) With an unquoted `:` separator, trailing characters from `.,;:!?)]}` are set
+aside first; the rest is replaced (and the set-aside characters kept) only when it is token-like: at
+least 6 characters, no `://`, and a digit or at least 20 characters. Any other unquoted `:` value is
+left unchanged and not counted, so `secret: hardcoded API token`, `password: correcthorse`,
+`token: abcdef` and `token: https://…` stay as they are, while `api_key: abcdef123`,
+`password: hunter2.` (→ `password: [REDACTED].`) and `secret: S3cr3t#42` are redacted. `count` counts each secret once: one per PEM
 block, literal occurrence and token replaced, and one per assignment whose value held no redaction
 mark. An assignment whose value is exactly a mark (`/^\[REDACTED[^\]]*\]$/`, or `[REDACTED` cut at the
 space of `[REDACTED private key]`) is left as it is and not counted; one whose value contains a mark
