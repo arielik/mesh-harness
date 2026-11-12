@@ -111,6 +111,19 @@ export function repoForCwd(cwd: string): Repo | undefined {
   }
 }
 
+/** RL-5: the name of the remote `repoForCwd` takes the repo id from (`origin`, else the first). */
+export function remoteNameForCwd(cwd: string): string | undefined {
+  try {
+    const gitDir = findGitDir(cwd);
+    if (!gitDir) return undefined;
+    const remotes = parseRemotes(readFileSync(configFile(gitDir), "utf8"));
+    if (remotes.has("origin")) return "origin";
+    return remotes.keys().next().value;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The working tree root for `cwd` (the folder holding `.git`, a dir or a worktree's file). */
 export function findRepoRoot(cwd: string): string | undefined {
   let dir = resolve(cwd);

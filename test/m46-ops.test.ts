@@ -11,6 +11,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { sha256 } from "../src/auth/index.ts";
 import { buildHubConfig, startHub, type HubConfig, type RunningHub } from "../src/hub/index.ts";
 import type { LoginResult } from "../src/protocol/index.ts";
+import { TABLES as COPY_TABLES } from "../src/store/hub-copy.ts";
 import { copyHubToPostgres, HubStore, openPgDb, openSyncDb, HUB_MIGRATIONS, HUB_MIGRATIONS_PG } from "../src/store/index.ts";
 import { PG_URL, PgFixture } from "./helpers/pg.ts";
 
@@ -68,10 +69,10 @@ describe("probes", () => {
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
   });
 
-  // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9; RL-3 AC-05 (migration 10) to 10.
-  it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08, RL-3 AC-05)", async () => {
+  // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9; RL-3 AC-05 (migration 10) to 10; RL-5 AC-03 (migration 11) to 11.
+  it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08, RL-3 AC-05, RL-5 AC-03)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 10 } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 11 } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
@@ -379,5 +380,66 @@ describe.skipIf(!PG_URL)(`RL-3 tables${PG_URL ? "" : " (skipped: set MESH_TEST_P
     } finally {
       await p.close();
     }
+  });
+});
+
+// RL-5 AC-03: the roster tables go through `mesh hub migrate` (Postgres only). Written from the
+// spec's contracts only (docs/specs/RL-5.md); the new store methods are read loosely.
+describe.skipIf(!PG_URL)(`RL-5 tables${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+  const X = (s: HubStore): any => s;
+  const SRC = "git.example.com/team/agents";
+  const h = (c: string) => c.repeat(64);
+
+  it("test_AC03_migrate_copies_roster_tables", async () => {
+    const file = join(tmp(), "hub.db");
+    await seedSqliteHub(file);
+    const s = await HubStore.open(file);
+    await X(s).saveCatalogSource({ repo: SRC, name: "agents", folder: "agents", createdBy: "alice", createdAt: clock, count: 0 });
+    await X(s).putCatalogDefs(SRC, "c".repeat(40), [
+      { path: "agents/rev.md", name: "rev", hash: h("a"), text: "rev\r\ntext\n", front: { description: "Rev" } },
+      { path: "agents/doc.md", name: "doc", hash: h("b"), text: "doc", front: {} },
+    ], "alice", clock);
+    await X(s).replaceMachineAgents("m-1", [{ repo: "git.example.com/team/alpha", kind: "claude", path: ".claude/agents/x.md", name: "x", hash: h("c") }], clock);
+    const before = { sources: await X(s).listCatalogSources(), defs: await X(s).listCatalogDefs({}), repo: await X(s).listRepoAgents() };
+    await s.close();
+    const url = await pgdb.fresh();
+    const report = await copyHubToPostgres(file, url);
+    expect(report.tables.find((x) => x.name === "catalog_source")?.rows).toBe(1);
+    expect(report.tables.find((x) => x.name === "agent_def")?.rows).toBe(3);
+    const p = await HubStore.open(url);
+    try {
+      expect(await X(p).listCatalogSources()).toStrictEqual(before.sources);
+      expect(await X(p).listCatalogDefs({})).toStrictEqual(before.defs);
+      expect(await X(p).listRepoAgents()).toStrictEqual(before.repo);
+    } finally {
+      await p.close();
+    }
+  });
+});
+
+// RL-5 AC-03 (verify c1): without Postgres, check the SQLite side of `mesh hub migrate`: every table
+// that migration 11 creates is in hub-copy TABLES (which drive both the emptiness check and the row
+// copy), so the roster tables are copied.
+describe("RL-5 tables: SQLite side of mesh hub migrate", () => {
+  const tablesOf = async (file: string, migrations: readonly string[]): Promise<string[]> => {
+    const db = await openSyncDb(file, migrations);
+    try {
+      return db
+        .all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .map((t) => t.name);
+    } finally {
+      db.close();
+    }
+  };
+
+  it("test_AC03_migrate_covers_roster_tables", async () => {
+    const dir = tmp();
+    const v10 = await tablesOf(join(dir, "v10.db"), HUB_MIGRATIONS.slice(0, 10));
+    const v11 = await tablesOf(join(dir, "v11.db"), HUB_MIGRATIONS.slice(0, 11));
+    const added = v11.filter((t) => !v10.includes(t));
+    expect(added).toStrictEqual(["agent_def", "catalog_source"]);
+    const copied = COPY_TABLES.map((t) => t.name);
+    for (const t of added) expect(copied, t).toContain(t);
   });
 });

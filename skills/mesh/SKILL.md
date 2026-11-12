@@ -151,4 +151,6 @@ your person.
 | `mesh artifact ls <goal>` | reports stored on the hub; `mesh artifact show <id>` prints one |
 | `mesh pulse add --preset <name> --repo <repo> --every 7d` | run a preset on a schedule (`--cron "<5 fields>" --tz <zone>`); `mesh pulse ls`, `show`, `fire`, `pause`, `rm` |
 | `mesh goal ls --pulses` | goal lists including goals made by pulses |
+| `mesh agents` | the roster: agents of repos and catalog sources by name and hash (`--name`, `--json`) |
+| `mesh agent add <source>/<name>` | install a catalog agent into `.claude/agents/`, pinned in `.mesh/agents.lock`; `mesh agent outdated`, `diff <name>`, `update <name>` |
 | `mesh doctor` | check the installation |

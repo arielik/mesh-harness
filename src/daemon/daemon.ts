@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { claudeVersion, computeHarness, readAgentFiles, run as runCommand, scanWorkflowRuns, type HeadlessRunner } from "../claude/index.ts";
+import { claudeVersion, computeHarness, readAgentFiles, run as runCommand, scanWorkflowRuns, type HeadlessRunner, type RunResult } from "../claude/index.ts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   applyHook,
@@ -26,6 +26,8 @@ import {
   repoMatches,
   sessionLabel,
   sessionName,
+  agentFileHash,
+  catalogDigest,
   type FactEvent,
   type Result,
   type Rules,
@@ -70,17 +72,20 @@ import {
   type Message,
   type NotifyTarget,
   type OpenCodeReply,
+  type AgentReport,
+  type CatalogSourceView,
   type Repo,
   type Session,
   type SessionsResponse,
 } from "../protocol/index.ts";
 import type { DaemonStore } from "../store/index.ts";
 import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
-import { commonDir, findGitDir, findRepoRoot, headCommit, repoForCwd } from "./git.ts";
+import { commonDir, findGitDir, findRepoRoot, headCommit, remoteNameForCwd, repoForCwd } from "./git.ts";
 import { checkoutKey, initialLabels } from "./labels.ts";
 import { HubLink, HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
 import { findCheckouts, REPO_SCAN_MS, repoInventory, scanRepos } from "./repos.ts";
 import { HeadlessRuns } from "./runs.ts";
+import { catalogPushes, scanAgents, type GitRun } from "./roster.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
 import { writePending, writeTrail } from "./trail.ts";
 import type { PendingCall } from "../store/index.ts";
@@ -112,6 +117,10 @@ export interface DaemonDeps {
   alive?(pid: number): boolean;
   /** MM-1: the repos of the checkouts under the workspace roots (ids and names only). */
   scanRepos?(roots: readonly string[]): Repo[];
+  /** RL-5: the agent files of the scanned checkouts (default: `scanAgents`). */
+  scanAgents?(checkouts: readonly { dir: string; repo: Repo | undefined }[]): AgentReport[];
+  /** RL-5: run git in a checkout (catalog pushes; default: the git binary). */
+  git?(cwd: string, args: readonly string[]): Promise<RunResult>;
   /**
    * MM-3: start a session for an offered step (`assignments: launch`, no idle session): by default
    * `mesh run <repo> --step <step> --no-tui`, detached. Without it a launch counts as failed.
@@ -208,6 +217,9 @@ const SHOW_ENDED_MS = 10 * 60_000;
 const MAX_BODY = 4 << 20;
 /** MM-4: how long a launch for an offer counts toward maxSessions before its session shows up. */
 const LAUNCH_PENDING_MS = 120_000;
+/** RL-5: the back-off of catalog pushes after a 5xx or no answer: 30 s, doubling, at most 15 min. */
+const CATALOG_RETRY_MIN_MS = 30_000;
+const CATALOG_RETRY_MAX_MS = 15 * 60_000;
 
 class HttpError extends Error {
   status: number;
@@ -226,8 +238,12 @@ export class Daemon {
   private typed: { text: string; at: number }[] = [];
   private notified = new Map<string, string>();
   private reconciling = false;
-  /** MM-1: the last scan of the workspace roots, redone at most every REPO_SCAN_MS. */
-  private repoScan: { at: number; repos: Repo[] } | undefined;
+  /**
+   * MM-1: the last scan of the workspace roots, redone at most every REPO_SCAN_MS. RL-5: with the
+   * agent files and the checkouts of that scan; `seq` counts scans.
+   */
+  private repoScan: { at: number; repos: Repo[]; agents: AgentReport[]; checkouts: { dir: string; repo: Repo | undefined }[]; seq: number } | undefined;
+  private scanSeq = 0;
   port = 0;
 
   readonly config: DaemonConfig;
@@ -314,6 +330,8 @@ export class Daemon {
         accept: () => this.config.accept,
         headless: () => this.runs?.canRun() ?? false,
         machineRepos: () => this.machineRepos(),
+        machineAgents: () => this.machineAgents(),
+        afterSync: () => this.catalogPass(),
         onMessage: (m) => this.receive(m),
         onPulled: (ids) => this.forgetOffers(ids),
         retryDue: () => this.offersAwaitingRetry.size > 0,
@@ -358,11 +376,97 @@ export class Daemon {
    */
   private machineRepos(): Repo[] {
     if (this.config.shareSessions === "steps") return [];
+    const scan = this.rescan();
+    return repoInventory([...scan.repos, ...this.sessions.filter((x) => x.state !== "ended" && !isHidden(x)).map((x) => x.repo)]);
+  }
+
+  /** The scan of the workspace roots, redone when older than REPO_SCAN_MS (never under `steps`). */
+  private rescan(): NonNullable<Daemon["repoScan"]> {
     const now = this.deps.now();
     if (!this.repoScan || now - this.repoScan.at >= REPO_SCAN_MS) {
-      this.repoScan = { at: now, repos: (this.deps.scanRepos ?? scanRepos)(this.config.workspaceRoots) };
+      const roots = this.config.workspaceRoots;
+      const checkouts = findCheckouts(roots);
+      const repos = this.deps.scanRepos ? this.deps.scanRepos(roots) : repoInventory(checkouts.map((c) => c.repo));
+      const agents = (this.deps.scanAgents ?? scanAgents)(checkouts);
+      this.repoScan = { at: now, repos, agents, checkouts, seq: ++this.scanSeq };
     }
-    return repoInventory([...this.repoScan.repos, ...this.sessions.filter((x) => x.state !== "ended" && !isHidden(x)).map((x) => x.repo)]);
+    return this.repoScan;
+  }
+
+  /**
+   * RL-5: the agent files of the machine's repos. Under `steps` nothing is read and nothing is sent
+   * (the key stays absent); copies the hub stored earlier are kept there and shown to nobody.
+   */
+  private machineAgents(): AgentReport[] | undefined {
+    if (this.config.shareSessions === "steps") return undefined;
+    return this.rescan().agents;
+  }
+
+  /**
+   * RL-5: the catalog pushes of the current scan (`seq`): whether the pass is finished, the pushes
+   * the hub settled (accepted or refused with a 4xx) as `repo\ncommit\ndigest`, and when a pass that
+   * hit a 5xx or no answer may run again. A new scan starts a fresh record.
+   */
+  private catalogRound: { seq: number; done: boolean; settled: Set<string>; retryAt: number; backoffMs: number } | undefined;
+  private pushing: Promise<void> | undefined;
+
+  /**
+   * RL-5: after a sync that followed a new rescan, push the committed definitions of the catalog
+   * sources this machine has checked out. Errors never fail the sync; a failed listing is retried
+   * at the next rescan.
+   */
+  private catalogPass(): Promise<void> {
+    if (this.pushing) return this.pushing;
+    this.pushing = this.catalogPassOnce().finally(() => {
+      this.pushing = undefined;
+    });
+    return this.pushing;
+  }
+
+  private async catalogPassOnce(): Promise<void> {
+    const link = this.link;
+    const scan = this.repoScan;
+    if (this.config.shareSessions === "steps" || !link || !scan) return;
+    if (this.catalogRound?.seq !== scan.seq) this.catalogRound = { seq: scan.seq, done: false, settled: new Set(), retryAt: 0, backoffMs: CATALOG_RETRY_MIN_MS };
+    const round = this.catalogRound;
+    if (round.done || this.deps.now() < round.retryAt) return;
+    round.done = true;
+    let sources: CatalogSourceView[];
+    try {
+      sources = (await link.rpc<{ sources: CatalogSourceView[] }>("GET", "/v1/catalog-sources")).sources ?? [];
+    } catch {
+      return; // an older hub (404) or no answer: skipped until the next rescan
+    }
+    const headless = this.deps.headless;
+    const git: GitRun = (cwd, args) => (this.deps.git ? this.deps.git(cwd, args) : headless ? headless.git(cwd, args) : runCommand("git", args, { cwd, timeoutMs: 60_000 }));
+    const pushes = await catalogPushes({ sources, checkouts: scan.checkouts, git, remoteName: remoteNameForCwd, log: (l) => this.deps.log(l) });
+    let failed = false;
+    for (const push of pushes) {
+      const digest = catalogDigest(push.defs.map((d) => ({ path: d.path, hash: agentFileHash(d.text) })));
+      const what = `${push.repo}\n${push.commit}\n${digest}`;
+      if (round.settled.has(what)) continue;
+      const key = `catalog-${createHash("sha256").update(push.repo).digest("hex").slice(0, 12)}-${push.commit}-${digest.slice(0, 12)}`;
+      try {
+        await link.rpc("POST", "/v1/catalog-sources/push", push, key);
+        round.settled.add(what);
+      } catch (e) {
+        if (e instanceof HubRpcError && e.status < 500) {
+          // A refusal (4xx) is deterministic: not sent again before the next rescan.
+          round.settled.add(what);
+          this.deps.log(`catalog push of ${push.repo} refused: ${e.message}`);
+        } else {
+          failed = true;
+          this.deps.log(`catalog push of ${push.repo} failed: ${String(e instanceof Error ? e.message : e)}`);
+        }
+      }
+    }
+    if (failed) {
+      // No answer or a 5xx: the unsettled pushes are tried again after a back-off (30 s doubling to
+      // 15 min); a new scan resets it.
+      round.done = false;
+      round.retryAt = this.deps.now() + round.backoffMs;
+      round.backoffMs = Math.min(round.backoffMs * 2, CATALOG_RETRY_MAX_MS);
+    }
   }
 
   /** A call queued while offline went through: write the hub's fuller record over the local one. */

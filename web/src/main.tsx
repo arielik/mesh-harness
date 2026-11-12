@@ -4,6 +4,7 @@ import type { Attention, LiveView, ProviderInfo } from "../../src/protocol/hub.t
 import { api, ApiError } from "./api.ts";
 import { GoalPage, GoalsBoard, TopicChips } from "./goals.tsx";
 import { MinePage } from "./mine.tsx";
+import { RosterPage } from "./roster.tsx";
 import "./styles.css";
 
 function ago(now: number, at: number | undefined): string {
@@ -119,6 +120,9 @@ function Header({ data, route, onLogout }: { data: LiveView; route: string; onLo
         </a>
         <a href="#/mine" className={route === "#/mine" ? "active" : ""}>
           Mine
+        </a>
+        <a href="#/roster" className={route === "#/roster" ? "active" : ""}>
+          Roster
         </a>
       </nav>
       <span className="muted">
@@ -269,6 +273,8 @@ function App() {
         <GoalPage key={goalMatch[1]} id={decodeURIComponent(goalMatch[1] as string)} />
       ) : route === "#/mine" ? (
         <MinePage hint={hint} />
+      ) : route === "#/roster" ? (
+        <RosterPage hint={hint} />
       ) : route === "#/goals" ? (
         <GoalsBoard progress={progress} onRefresh={() => void load()} />
       ) : (

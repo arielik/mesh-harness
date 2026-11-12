@@ -7,7 +7,7 @@
 // is used (Solo).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { Credentials, IDEMPOTENCY_HEADER, type InboxMessage, type Repo, type Session, type ShareLevel, type SyncEvent, type SyncResponse } from "../protocol/index.ts";
+import { type AgentReport, Credentials, IDEMPOTENCY_HEADER, type InboxMessage, type Repo, type Session, type ShareLevel, type SyncEvent, type SyncResponse } from "../protocol/index.ts";
 import type { DaemonStore, PendingCall } from "../store/index.ts";
 
 export class HubRpcError extends Error {
@@ -32,6 +32,13 @@ export interface HubLinkDeps {
   share?: () => ShareLevel;
   /** The machine's repo inventory (ids and names only), sent on the first sync and on change. */
   machineRepos?: () => Repo[];
+  /**
+   * RL-5: the agent files of the machine's repos, sent when they differ from the last accepted list;
+   * undefined (share `steps`): the key is not sent.
+   */
+  machineAgents?: () => AgentReport[] | undefined;
+  /** RL-5: called after a sync went through (e.g. to push catalog definitions); its errors never fail the sync. */
+  afterSync?: () => Promise<void>;
   /** MM-3: the machine's accept policy, sent on every sync (default `["self"]`). */
   accept?: () => string[];
   /** RL-1: the daemon can run headless steps (sent as `machine.headless: true` only when true). */
@@ -131,6 +138,7 @@ export class HubLink {
   private factsKey: string | undefined;
   private confirmed = false;
   private sentRepos: string | undefined;
+  private sentAgents: string | undefined;
   private warnedUnconfirmed = false;
   private probeBackoff = PROBE_MIN_MS;
 
@@ -297,6 +305,7 @@ export class HubLink {
     this.factsKey = key;
     this.confirmed = false;
     this.sentRepos = undefined;
+    this.sentAgents = undefined;
     this.warnedUnconfirmed = false;
   }
 
@@ -310,14 +319,29 @@ export class HubLink {
       const share = this.deps.share?.() ?? "steps";
       const repos = this.deps.machineRepos?.() ?? [];
       const reposJson = JSON.stringify(repos);
+      const agents = this.deps.machineAgents?.();
+      const agentsJson = agents !== undefined ? JSON.stringify(agents) : undefined;
       for (;;) {
         const batch = this.deps.store.outboxPeek(200);
         // `me` counts as `steps` until this hub has confirmed it applies the visibility rule.
         const effective: ShareLevel = share === "me" && !this.confirmed ? "steps" : share;
         const sendRepos = this.sentRepos !== reposJson;
-        const body = { events: batch.map((b) => b.value), sessions: syncedSessions(all, effective), counts, machine: { share, accept: this.deps.accept?.() ?? ["self"], ...(this.deps.headless?.() ? { headless: true } : {}), ...(sendRepos ? { repos } : {}) } };
+        const sendAgents = agents !== undefined && this.sentAgents !== agentsJson;
+        const body = {
+          events: batch.map((b) => b.value),
+          sessions: syncedSessions(all, effective),
+          counts,
+          machine: {
+            share,
+            accept: this.deps.accept?.() ?? ["self"],
+            ...(this.deps.headless?.() ? { headless: true } : {}),
+            ...(sendRepos ? { repos } : {}),
+            ...(sendAgents ? { agents } : {}),
+          },
+        };
         const reply = await this.rpc<SyncResponse | undefined>("POST", "/v1/sync", body, undefined, { probe: true });
         if (sendRepos) this.sentRepos = reposJson;
+        if (sendAgents) this.sentAgents = agentsJson;
         this.confirmed = reply?.share !== undefined;
         if (share === "me" && !this.confirmed && !this.warnedUnconfirmed) {
           this.warnedUnconfirmed = true;
@@ -326,6 +350,8 @@ export class HubLink {
         this.deps.store.outboxRemove(batch.map((b) => b.id));
         if (batch.length < 200) break;
       }
+      // Awaited (so `await flush()` includes it) but never failing the sync.
+      if (this.deps.afterSync) await this.deps.afterSync().catch((e: unknown) => this.deps.log(`after sync: ${String(e)}`));
       await this.replay();
     } catch (e) {
       if (!(e instanceof HubRpcError)) this.deps.log(`sync error: ${String(e)}`);

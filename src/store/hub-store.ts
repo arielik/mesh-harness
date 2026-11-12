@@ -16,7 +16,7 @@ import {
   StoredArtifact,
   StoredReview,
   Topic,
-  type Note, type ProfileBase, type SlotState, type ProfileSettings, type Repo, type ShareLevel } from "../protocol/index.ts";
+  type AgentFront, AgentReport, type CatalogDefView, type CatalogSourceView, type Note, type ProfileBase, type SlotState, type ProfileSettings, type Repo, type ShareLevel } from "../protocol/index.ts";
 import { openDb, SOLE_LEADER, type Channel, type Db, type Leader, type SqlValue } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
@@ -94,6 +94,12 @@ export const HUB_MIGRATIONS: readonly string[] = [
      started_at INTEGER, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (pulse, slot));
    CREATE INDEX IF NOT EXISTS pulse_slot_pending ON pulse_slot (state, started_at);
    CREATE INDEX IF NOT EXISTS pulse_slot_goal ON pulse_slot (goal);`,
+  // v0.1.19 (RL-5): the roster.
+  `CREATE TABLE IF NOT EXISTS agent_def (id TEXT PRIMARY KEY, origin TEXT NOT NULL, machine TEXT, repo TEXT NOT NULL,
+     name TEXT NOT NULL, hash TEXT NOT NULL, current INTEGER NOT NULL, value TEXT NOT NULL, body TEXT, updated_at INTEGER NOT NULL);
+   CREATE INDEX IF NOT EXISTS agent_def_machine ON agent_def (origin, machine);
+   CREATE INDEX IF NOT EXISTS agent_def_name ON agent_def (name);
+   CREATE TABLE IF NOT EXISTS catalog_source (repo TEXT PRIMARY KEY, value TEXT NOT NULL, created_at INTEGER NOT NULL);`,
 ];
 
 /**
@@ -166,9 +172,25 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
      started_at BIGINT, value TEXT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (pulse, slot));
    CREATE INDEX IF NOT EXISTS pulse_slot_pending ON pulse_slot (state, started_at);
    CREATE INDEX IF NOT EXISTS pulse_slot_goal ON pulse_slot (goal);`,
+  `CREATE TABLE IF NOT EXISTS agent_def (id TEXT PRIMARY KEY, origin TEXT NOT NULL, machine TEXT, repo TEXT NOT NULL,
+     name TEXT NOT NULL, hash TEXT NOT NULL, current INTEGER NOT NULL, value TEXT NOT NULL, body TEXT, updated_at BIGINT NOT NULL);
+   CREATE INDEX IF NOT EXISTS agent_def_machine ON agent_def (origin, machine);
+   CREATE INDEX IF NOT EXISTS agent_def_name ON agent_def (name);
+   CREATE TABLE IF NOT EXISTS catalog_source (repo TEXT PRIMARY KEY, value TEXT NOT NULL, created_at BIGINT NOT NULL);`,
 ];
 
 /** RL-1: a registered permission profile as the hub stores it. */
+/** RL-5: a catalog source as stored (the view as is). */
+export type StoredCatalogSource = CatalogSourceView;
+
+/** RL-5: the JSON value of a catalog definition row (the text is in `body`). */
+interface CatalogDefValue {
+  path: string;
+  commits: string[];
+  pushedAt: number;
+  front: AgentFront;
+}
+
 export interface StoredProfile {
   name: string;
   /** The YAML text it was registered with. */
@@ -285,6 +307,8 @@ const opt = <T>(v: T | null): T | undefined => (v === null ? undefined : v);
 // A scope this version does not know (written by a newer hub) grants nothing.
 const scopesOf = (v: string): ServiceScope[] => v.split(",").flatMap((x) => (ServiceScope.safeParse(x).success ? [x as ServiceScope] : []));
 const json = (v: unknown) => JSON.stringify(v);
+/** Code-unit order (the same on both dialects). */
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 function slug(name: string): string {
   const s = name.toLowerCase().replace(/@.*$/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -1127,6 +1151,156 @@ export class HubStore {
       args.push(f.limit);
     }
     return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => PulseSlot.parse(JSON.parse(r.value)));
+  }
+
+  // ---------- roster (RL-5) ----------
+
+  /** Replace every repo-origin agent row of a machine; `false` (nothing written) when the set is unchanged. */
+  async replaceMachineAgents(machine: string, agents: AgentReport[], now: number): Promise<boolean> {
+    const seen = new Set<string>();
+    const next = agents
+      .map((a) => AgentReport.parse(a))
+      .filter((a) => {
+        const k = `${a.repo}\n${a.path}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => cmp(a.repo, b.repo) || cmp(a.path, b.path));
+    const stored = (await this.db.all<{ value: string }>("SELECT value FROM agent_def WHERE origin = 'repo' AND machine = ?", machine))
+      .map((r) => AgentReport.parse(JSON.parse(r.value)))
+      .sort((a, b) => cmp(a.repo, b.repo) || cmp(a.path, b.path));
+    if (JSON.stringify(stored) === JSON.stringify(next)) return false;
+    await this.db.run("DELETE FROM agent_def WHERE origin = 'repo' AND machine = ?", machine);
+    for (const a of next) {
+      await this.db.run(
+        "INSERT INTO agent_def (id, origin, machine, repo, name, hash, current, value, body, updated_at) VALUES (?, 'repo', ?, ?, ?, ?, 1, ?, NULL, ?)",
+        `r\n${machine}\n${a.repo}\n${a.path}`,
+        machine,
+        a.repo,
+        a.name,
+        a.hash,
+        json(a),
+        now,
+      );
+    }
+    return true;
+  }
+
+  /** Repo copies machines reported, optionally of one agent name. */
+  async listRepoAgents(f: { name?: string | undefined } = {}): Promise<(AgentReport & { machine: string; at: number })[]> {
+    const order = `ORDER BY ${this.db.dialect.binary("id")}`;
+    const rows =
+      f.name === undefined
+        ? await this.db.all<{ machine: string; value: string; updated_at: number }>(`SELECT machine, value, updated_at FROM agent_def WHERE origin = 'repo' ${order}`)
+        : await this.db.all<{ machine: string; value: string; updated_at: number }>(`SELECT machine, value, updated_at FROM agent_def WHERE origin = 'repo' AND name = ? ${order}`, f.name);
+    return rows.map((r) => ({ ...AgentReport.parse(JSON.parse(r.value)), machine: r.machine, at: Number(r.updated_at) }));
+  }
+
+  /** Register or replace a catalog source (`created_at` is kept). */
+  async saveCatalogSource(s: StoredCatalogSource): Promise<void> {
+    await this.db.run(
+      "INSERT INTO catalog_source (repo, value, created_at) VALUES (?, ?, ?) ON CONFLICT (repo) DO UPDATE SET value = excluded.value",
+      s.repo,
+      json(s),
+      s.createdAt,
+    );
+  }
+
+  async getCatalogSource(repo: string): Promise<StoredCatalogSource | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM catalog_source WHERE repo = ?", repo);
+    return r ? (JSON.parse(r.value) as StoredCatalogSource) : undefined;
+  }
+
+  /** Catalog sources by repo id. */
+  async listCatalogSources(): Promise<StoredCatalogSource[]> {
+    return (await this.db.all<{ value: string }>(`SELECT value FROM catalog_source ORDER BY ${this.db.dialect.binary("repo")}`)).map(
+      (r) => JSON.parse(r.value) as StoredCatalogSource,
+    );
+  }
+
+  /**
+   * Store the definitions of one push: a new `(repo, name, hash)` is added, a known one gets `commit`
+   * appended (at most 50 kept); afterwards exactly the pushed pairs are current. Texts are never deleted.
+   */
+  async putCatalogDefs(
+    repo: string,
+    commit: string,
+    defs: { path: string; name: string; hash: string; text: string; front: AgentFront }[],
+    _by: string,
+    now: number,
+  ): Promise<{ added: number }> {
+    let added = 0;
+    const ids: string[] = [];
+    for (const d of defs) {
+      const id = `c\n${repo}\n${d.name}\n${d.hash}`;
+      ids.push(id);
+      const r = await this.db.get<{ value: string }>(`SELECT value FROM agent_def WHERE id = ?${this.db.dialect.forUpdate}`, id);
+      if (!r) {
+        const value: CatalogDefValue = { path: d.path, commits: [commit], pushedAt: now, front: d.front };
+        await this.db.run(
+          "INSERT INTO agent_def (id, origin, machine, repo, name, hash, current, value, body, updated_at) VALUES (?, 'catalog', NULL, ?, ?, ?, 0, ?, ?, ?)",
+          id,
+          repo,
+          d.name,
+          d.hash,
+          json(value),
+          d.text,
+          now,
+        );
+        added++;
+      } else {
+        const v = JSON.parse(r.value) as CatalogDefValue;
+        const commits = v.commits.includes(commit) ? v.commits : [...v.commits, commit].slice(-50);
+        const value: CatalogDefValue = { ...v, path: d.path, commits, pushedAt: now };
+        await this.db.run("UPDATE agent_def SET value = ?, updated_at = ? WHERE id = ?", json(value), now, id);
+      }
+    }
+    await this.db.run("UPDATE agent_def SET current = 0 WHERE origin = 'catalog' AND repo = ?", repo);
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      await this.db.run(`UPDATE agent_def SET current = 1 WHERE id IN (${chunk.map(() => "?").join(", ")})`, ...chunk);
+    }
+    return { added };
+  }
+
+  /** Catalog definitions with their texts: by name, newest push first, then hash. */
+  async listCatalogDefs(f: { repo?: string | undefined; name?: string | undefined; current?: boolean | undefined } = {}): Promise<CatalogDefView[]> {
+    const where = ["origin = 'catalog'"];
+    const args: SqlValue[] = [];
+    if (f.repo !== undefined) {
+      where.push("repo = ?");
+      args.push(f.repo);
+    }
+    if (f.name !== undefined) {
+      where.push("name = ?");
+      args.push(f.name);
+    }
+    if (f.current !== undefined) {
+      where.push("current = ?");
+      args.push(f.current ? 1 : 0);
+    }
+    const rows = await this.db.all<{ repo: string; name: string; hash: string; current: number; value: string; body: string | null }>(
+      `SELECT repo, name, hash, current, value, body FROM agent_def WHERE ${where.join(" AND ")}`,
+      ...args,
+    );
+    const defs = rows.map((r): CatalogDefView => {
+      const v = JSON.parse(r.value) as CatalogDefValue;
+      return {
+        ...v.front,
+        key: `${r.repo.slice(r.repo.lastIndexOf("/") + 1)}/${r.name}`,
+        source: r.repo,
+        name: r.name,
+        path: v.path,
+        hash: r.hash,
+        commits: v.commits,
+        commit: v.commits.at(-1) ?? "",
+        current: Number(r.current) === 1,
+        pushedAt: v.pushedAt,
+        text: r.body ?? "",
+      };
+    });
+    return defs.sort((a, b) => cmp(a.name, b.name) || b.pushedAt - a.pushedAt || cmp(a.hash, b.hash) || cmp(a.source, b.source));
   }
 
   // ---------- notes and questions ----------

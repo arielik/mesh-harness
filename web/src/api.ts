@@ -1,5 +1,6 @@
 import type { Goal } from "../../src/protocol/goal.ts";
 import type { PulseView } from "../../src/protocol/pulse.ts";
+import type { AgentsView } from "../../src/protocol/roster.ts";
 import type {
   AssignResult,
   DebriefList,
@@ -45,6 +46,8 @@ const suggestQuery = (o: { team?: boolean; any?: boolean }) => {
 };
 
 export const api = {
+  /** RL-5: the roster. */
+  agents: () => call<AgentsView>("GET", "/v1/agents"),
   live: () => call<LiveView>("GET", "/v1/live"),
   fleet: () => call<FleetView>("GET", "/v1/fleet"),
   /** MM-3: open offers to the user's machines; the web declines (accepting needs a session). */

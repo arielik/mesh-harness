@@ -99,7 +99,8 @@ profile and a budget. Fields of such a step (all optional, and only with `mode: 
 
 - `agent`: an agent of the step repo (`.claude/agents/<agent>.md`). The daemon reads the file,
   turns its front matter (`description`, `tools`, `model`) and body into `--agents` JSON and runs
-  the run as that agent. When the agent lists `tools`, mesh adds its four tools to the list.
+  the run as that agent. When the agent lists `tools`, mesh adds its four tools to the list. A
+  roster key `<source>/<name>[@<ref>]` names a catalog agent instead (see *Roster*).
 - `profile`: a permission profile (below); default `read-only`.
 - `budget`: `turns` (default 30), `minutes` (default 30), `usd` (no default). The run gets
   `--max-turns <turns + 1>`: one extra turn for loading the mesh tools. Past `minutes` the daemon
@@ -292,8 +293,9 @@ permission profile its steps use (resolved on the hub). Later edits of the repo'
 slot runs; `mesh pulse update --preset …` (or new `--params`) takes a new snapshot and bumps the
 pulse's `version`. Saving the pulse is the plan approval of every slot until that update. Goals
 made by a pulse keep the profile snapshot (`profiles`); their headless steps are offered only with
-it, and a step whose profile is not in it is not offered. The agent definition file is not pinned
-yet: the run reads it from the run's worktree.
+it, and a step whose profile is not in it is not offered. An agent named by a roster key
+(`<source>/<name>`, see *Roster*) is pinned by hash when the pulse is saved; an RL-1 repo agent is not
+pinned: the run reads it from the run's worktree.
 
 **Schedule.** `--every <duration>` (`30m`, `4h`, `7d`; 5 minutes to 366 days) counts periods from
 an anchor: `--at <ISO>` when given (an `--at` in the future is the first slot, however far ahead),
@@ -349,6 +351,65 @@ or dismisses them; `file` (`{filer}`, profile `propose-via-branch`) runs only wh
 confirmed, proposes an entry for each on the run's branch and records it `accepted` with its link.
 It needs params `agent`, `validator` and `filer`. It stays agent-only; a repo that wants its owner to
 decide the findings adds a debrief stage in its own `.mesh/presets` (see *Debriefs*).
+
+## Roster
+
+**Roster.** The hub lists the agent definitions of every repo machines report and of registered
+**catalog sources**, by name and hash (`mesh agents`, web **Roster** page, `GET /v1/agents`).
+
+**What is discovered.** During its repo scan a daemon reads `<checkout>/.claude/agents/*.md` and
+`<checkout>/.opencode/agent/*.md` (files directly in the folder; sub-folders, user-level and plugin
+agents are not discovered) of remote-backed checkouts, only when its `shareSessions` is `me` or
+`all`. An agent's name is its file name without `.md` (front matter `name` is ignored). Each report
+carries the front matter fields `description`, `model`, `tools` and `mesh-rules` (as `rules`), the
+hash (SHA-256 of the text with CRLF turned into LF) and the pin of `.mesh/agents.lock` when there
+is one, never the text. At most 2000 reports per machine; a file over 256 KiB is skipped. Under
+share `me` only the machine's own user sees its copies, under `all` everyone; under `steps` nothing
+is read, and copies stored earlier are shown to nobody.
+
+**Catalog sources.** An admin registers a repo and a folder in it (`mesh agent source add
+https://git.example.com/team/agents.git --folder agents`). A machine that reports the repo in its
+inventory and has it checked out pushes the **committed** definitions of `<folder>/*.md` at the
+remote's default branch (`refs/remotes/<remote>/HEAD`, else `HEAD`), with their texts: never the
+working tree, never untracked files. Pushes only move forward (the new commit must descend from the
+stored one) and happen when the folder's digest (`<path>\t<hash>` lines) changed. The hub keeps
+every text it was sent; the definitions of the latest push are **current**. A source's `calibrator`
+is stored and shown only.
+
+**Flags.** A group (one agent name) is `diverged` when it has more than one version (hash). A repo
+copy is `pinned` when its lock names a catalog definition, `modified` when its hash differs from the
+pin's, and `behind` when the source's current definition has another hash than the pin.
+
+**Install by reference.** `mesh agent add <source>/<name>[@<ref>]` writes the catalog definition
+unchanged into `.claude/agents/<name>.md` and pins it in `.mesh/agents.lock`:
+
+```json
+{
+  "version": 1,
+  "agents": [
+    { "name": "rev", "source": "git.example.com/team/agents", "commit": "<40 hex>", "hash": "<64 hex>" }
+  ]
+}
+```
+
+`source` is the full repo id of the catalog source. `mesh agent outdated` checks each pin (`ok`,
+`modified`, `behind`, `missing`, `gone`), `mesh agent diff <name>` shows the change to the latest
+definition, `mesh agent update <name>` installs it after a confirmation. Only catalog definitions
+can be installed: register a repo as a catalog source to share its agents.
+
+**Roster keys in headless steps.** A headless step's `agent` may be a roster key
+`<source>/<name>[@<ref>]` (`<source>`: the full repo id or a suffix of it, e.g. `agents`; `@<ref>`:
+7-64 hex of a definition hash or of a commit the hub saw in a push). The step repo then needs no copy
+of the agent. The key is resolved and **pinned by hash** (R-6) when the plan is approved, when a
+pulse is saved (or its preset or params change) and when an ingest goal is made; offers carry the
+pin, and the daemon runs exactly that definition (it fetches the text by hash and refuses a
+mismatch) through `--agents`/`--agent` without writing into the worktree. A later push, a new source
+with the same name or a dropped name never changes what a pinned step runs; a later plan of the same
+goal keeps an existing pin of the same key (name another key, e.g. with `@<ref>`, to move it).
+
+**Limits.** Declared rules of a roster agent come from its front matter `mesh-rules` only: a sibling
+`<name>.rules.yaml` is not carried, so rules declared only there count as undeclared in roster runs.
+RL-1 repo agents (`agent: <name>`, read from the run's worktree) are not pinned.
 
 ## Debriefs
 

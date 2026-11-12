@@ -42,6 +42,7 @@ import {
 } from "./hub.ts";
 import { HubEvent } from "./json-schema.ts";
 import { PulseCreate, PulseUpdate } from "./pulse.ts";
+import { CatalogPush, CatalogSourceSave } from "./roster.ts";
 
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
@@ -161,6 +162,12 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "GET", path: "/v1/profiles", rule: "member", scope: "goals:read", tag: "goals", summary: "Permission profiles for headless steps: the built-ins, then registered ones." },
   { method: "GET", path: "/v1/profiles/:name", rule: "member", scope: "goals:read", tag: "goals", summary: "One permission profile with its compiled settings." },
   { method: "POST", path: "/v1/profiles", rule: "member", tag: "goals", body: ProfileSave, status: 201, summary: "Register or replace a permission profile (its creator or an admin); 200 when replaced." },
+  // RL-5: the roster.
+  { method: "POST", path: "/v1/catalog-sources", rule: "admin", tag: "admin", body: CatalogSourceSave, status: 201, summary: "Register a catalog source of agent definitions (repo and folder); 200 when it replaced one." },
+  { method: "GET", path: "/v1/catalog-sources", rule: "member", scope: "goals:read", tag: "goals", summary: "The catalog sources, by repo id." },
+  { method: "POST", path: "/v1/catalog-sources/push", rule: "member", tag: "daemon", body: CatalogPush, summary: "A daemon pushes the committed agent definitions of a catalog source at one commit." },
+  { method: "GET", path: "/v1/agents", rule: "member", scope: "goals:read", tag: "goals", query: { name: "exact agent name" }, summary: "The roster: agents of the repos the caller sees and of catalog sources, grouped by name." },
+  { method: "GET", path: "/v1/agents/resolve", rule: "member", scope: "goals:read", tag: "goals", query: { key: "<source>/<name>[@<ref>]" }, summary: "Resolve a roster key to one catalog definition with its text." },
 
   {
     method: "GET",

@@ -10,7 +10,7 @@ import { HUB_MIGRATIONS, HUB_MIGRATIONS_PG } from "./hub-store.ts";
 import { openPgDb } from "./pg.ts";
 
 /** Hub tables in foreign-key order, with the identity column Postgres generates (if any). */
-const TABLES: readonly { name: string; identity?: string }[] = [
+export const TABLES: readonly { name: string; identity?: string }[] = [
   { name: "user" },
   { name: "identity" },
   { name: "token" },
@@ -36,6 +36,9 @@ const TABLES: readonly { name: string; identity?: string }[] = [
   // RL-3: `pulse.num` is copied, so new pulses continue after the largest copied number.
   { name: "pulse" },
   { name: "pulse_slot" },
+  // RL-5: the roster.
+  { name: "agent_def" },
+  { name: "catalog_source" },
 ];
 
 /** BLOB columns (RL-1 artifact content) go to Postgres bytea as Buffers. */

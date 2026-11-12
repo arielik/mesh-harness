@@ -5,6 +5,7 @@ import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, S
 import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
+import { AgentReport } from "./roster.ts";
 import { PresetSnapshot, PulseParams } from "./pulse.ts";
 import {
   Disposition,
@@ -52,6 +53,8 @@ export const SyncRequest = z.object({
       repos: z.array(Repo).max(500).optional(),
       /** RL-1: the daemon can run headless steps. Absent: the hub keeps the stored value. */
       headless: z.boolean().optional(),
+      /** RL-5: agent files of its remote-backed repos. Absent: the hub keeps what it has; `[]`: none. */
+      agents: z.array(AgentReport).max(2000).optional(),
     })
     .optional(),
 });

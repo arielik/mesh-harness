@@ -11,6 +11,8 @@ import { AuthError } from "../auth/index.ts";
 import { allowed, type RouteRule } from "../core/index.ts";
 import {
   AckRequest,
+  CatalogPush,
+  CatalogSourceSave,
   ArtifactUpload,
   ReviewUpload,
   ProfileSave,
@@ -269,6 +271,16 @@ export function buildRoutes(svc: HubService): Route[] {
       const { view, created } = await svc.saveProfile(a, await body(c, ProfileSave));
       return c.json(view, created ? 201 : 200);
     }),
+
+    // ---------- roster (RL-5) ----------
+    r("POST", "/v1/catalog-sources", "admin", async (c, a) => {
+      const { view, created } = await svc.saveCatalogSource(a, await body(c, CatalogSourceSave));
+      return c.json(view, created ? 201 : 200);
+    }),
+    r("GET", "/v1/catalog-sources", "member", async (c) => c.json(await svc.listCatalogSources()), "goals:read"),
+    r("POST", "/v1/catalog-sources/push", "member", async (c, a) => c.json(await svc.pushCatalog(a, await body(c, CatalogPush)))),
+    r("GET", "/v1/agents", "member", async (c, a) => c.json(await svc.agentsView(a, c.req.query("name") || undefined)), "goals:read"),
+    r("GET", "/v1/agents/resolve", "member", async (c) => c.json(await svc.resolveAgent(c.req.query("key"))), "goals:read"),
 
     // ---------- steps ----------
     r("GET", "/v1/steps", "member", async (c, a) =>

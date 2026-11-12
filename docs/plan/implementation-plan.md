@@ -400,6 +400,11 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/pulses/:id/fire` | Pulses (v0.1.17): fire a manual slot now (also while paused) |
 | `POST /v1/goals/from-preset` | Ingest (v0.1.17): a goal with an approved plan from a preset snapshot, no design step (scope `goals:write`) |
 | `GET /v1/goals?pulses=1` | Pulses (v0.1.17): goal lists leave out pulse goals unless `pulses=1` |
+| `POST /v1/catalog-sources` | Roster (v0.1.19): register a catalog source (repo and folder) or change its folder/calibrator (admin); 201 new, 200 replaced |
+| `GET /v1/catalog-sources` | Roster (v0.1.19): catalog sources by repo id (scope `goals:read`) |
+| `POST /v1/catalog-sources/push` | Roster (v0.1.19): a daemon pushes the committed definitions of a source it reports at one commit (device token) |
+| `GET /v1/agents?name=` | Roster (v0.1.19): repo copies the caller sees and current catalog definitions, grouped by name, with `diverged`/`pinned`/`behind`/`modified` (scope `goals:read`) |
+| `GET /v1/agents/resolve?key=` | Roster (v0.1.19): one catalog definition with its text for `<source>/<name>[@<ref>]` (scope `goals:read`) |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

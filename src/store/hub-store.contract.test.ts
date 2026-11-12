@@ -2,7 +2,7 @@
 // Postgres runs when MESH_TEST_PG_URL points at a server where the user may create databases
 // (each test gets a fresh one), e.g. postgres://postgres:mesh@127.0.0.1:55432/postgres.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -432,12 +432,12 @@ function contract(d: Driver) {
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
     it("test_AC05_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(10);
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(10);
+      expect(HUB_MIGRATIONS.length).toBe(11);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -573,9 +573,9 @@ function contract(d: Driver) {
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
     it("test_AC08_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(10);
-      expect(HUB_MIGRATIONS.length).toBe(10);
-      expect(HUB_MIGRATIONS_PG.length).toBe(10);
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HUB_MIGRATIONS.length).toBe(11);
+      expect(HUB_MIGRATIONS_PG.length).toBe(11);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -665,9 +665,9 @@ function contract(d: Driver) {
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
     it("test_AC06_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(10);
-      expect(HUB_MIGRATIONS.length).toBe(10);
-      expect(HUB_MIGRATIONS_PG.length).toBe(10);
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HUB_MIGRATIONS.length).toBe(11);
+      expect(HUB_MIGRATIONS_PG.length).toBe(11);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */
@@ -766,9 +766,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(10);
-      expect(HUB_MIGRATIONS.length).toBe(10);
-      expect(HUB_MIGRATIONS_PG.length).toBe(10);
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HUB_MIGRATIONS.length).toBe(11);
+      expect(HUB_MIGRATIONS_PG.length).toBe(11);
     });
 
     it("test_AC08_v7_migrates", async () => {
@@ -787,7 +787,7 @@ function contract(d: Driver) {
       await raw.run("DROP TABLE IF EXISTS artifact");
       await raw.run("DROP TABLE IF EXISTS profile");
       // RL-2: and without the migration-9 tables, which the store re-creates after migration 8.
-      for (const t of ["review_record", "review_item", "item_history", "pulse_slot", "pulse"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      for (const t of ["review_record", "review_item", "item_history", "pulse_slot", "pulse", "agent_def", "catalog_source"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
       await raw.run("UPDATE schema_version SET version = 7");
       await raw.close();
       const s = track(await HubStore.open(target));
@@ -802,7 +802,7 @@ function contract(d: Driver) {
       expect(await X(s).listArtifacts({})).toStrictEqual([]);
       expect(await X(s).listProfiles()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(10);
+      expect(Number((v as { version: number }).version)).toBe(11);
     });
 
     it("test_AC08_artifact_roundtrip", async () => {
@@ -951,9 +951,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(10);
-      expect(HUB_MIGRATIONS.length).toBe(10);
-      expect(HUB_MIGRATIONS_PG.length).toBe(10);
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HUB_MIGRATIONS.length).toBe(11);
+      expect(HUB_MIGRATIONS_PG.length).toBe(11);
     });
 
     it("test_AC08_v8_migrates", async () => {
@@ -970,7 +970,7 @@ function contract(d: Driver) {
       await s1.close();
       // Make it a v8 database: without the migration-9 tables and at version 8.
       const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
-      for (const t of ["review_record", "review_item", "item_history", "pulse_slot", "pulse"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      for (const t of ["review_record", "review_item", "item_history", "pulse_slot", "pulse", "agent_def", "catalog_source"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
       await raw.run("UPDATE schema_version SET version = 8");
       await raw.close();
       const s = track(await HubStore.open(target));
@@ -985,7 +985,7 @@ function contract(d: Driver) {
       expect(await X(s).listItems("L")).toStrictEqual([]);
       expect(await X(s).itemHistory("L")).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(10);
+      expect(Number((v as { version: number }).version)).toBe(11);
     });
 
     it("test_AC08_addReview", async () => {
@@ -1104,9 +1104,9 @@ function contract(d: Driver) {
     const slotIds = (xs: { slot: string }[]) => xs.map((x) => x.slot);
 
     it("test_AC05_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(10);
-      expect(HUB_MIGRATIONS.length).toBe(10);
-      expect(HUB_MIGRATIONS_PG.length).toBe(10);
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HUB_MIGRATIONS.length).toBe(11);
+      expect(HUB_MIGRATIONS_PG.length).toBe(11);
     });
 
     it("test_AC05_v9_upgrade", async () => {
@@ -1145,7 +1145,7 @@ function contract(d: Driver) {
       await s1.close();
       // Make it a v9 database: without the migration-10 tables and at version 9.
       const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
-      for (const t of ["pulse_slot", "pulse"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      for (const t of ["pulse_slot", "pulse", "agent_def", "catalog_source"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
       await raw.run("UPDATE schema_version SET version = 9");
       await raw.close();
       const s = track(await HubStore.open(target));
@@ -1159,7 +1159,7 @@ function contract(d: Driver) {
       expect(await X(s).listPulses()).toStrictEqual([]);
       expect((await X(s).createPulse(pulseRow())).id).toBe("p-1");
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(10);
+      expect(Number((v as { version: number }).version)).toBe(11);
     });
 
     it("test_AC05_ids", async () => {
@@ -1210,10 +1210,11 @@ function contract(d: Driver) {
         when: { cron: "0 9 * * 1", tz: "Europe/Berlin" },
       });
       const p = await X(s).createPulse(full);
-      expect(await X(s).getPulse(p.id)).toStrictEqual({ ...full, id: p.id });
+      // RL-5: Pulse.agents defaults to {} (a stored pulse without it reads as having no pins).
+      expect(await X(s).getPulse(p.id)).toStrictEqual({ ...full, agents: {}, id: p.id });
       const bare = await X(s).createPulse(pulseRow());
       const got = await X(s).getPulse(bare.id);
-      expect(got).toStrictEqual({ ...pulseRow(), id: bare.id });
+      expect(got).toStrictEqual({ ...pulseRow(), agents: {}, id: bare.id });
       for (const k of ["window", "maxGoalAge", "pausedReason", "deletedAt"]) expect(Object.hasOwn(got, k), k).toBe(false);
     });
 
@@ -1298,7 +1299,7 @@ function contract(d: Driver) {
     });
 
     it("test_AC25_schema_version_unchanged", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(10);
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
     });
 
     it("test_AC25_listSteps_updatedSince", async () => {
@@ -1330,6 +1331,148 @@ function contract(d: Driver) {
       expect(row).toMatchObject({ via: "debrief-session", answer: "yes", decider: { kind: "person", user: "ada" }, at: T0 + 10 });
       // Control: the existing filters alone are unchanged.
       expect(await got({ lineage: "L" })).toStrictEqual(["L:x@G1.s1", "L:x@G1.s2", "L:y@G1.s3"]);
+    });
+  });
+
+  // RL-5 AC-03: migration 11 and the roster store methods (docs/specs/RL-5.md, Hub store). New
+  // methods are read loosely.
+  describe("RL-5 roster store", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+    const X = (s: HubStore): any => s;
+    const SRC = "git.example.com/team/agents";
+    const OTHER_SRC = "git.example.com/other/agents";
+    const hx = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
+    const c = (n: number) => n.toString(16).padStart(40, "0");
+    const rep = (repo: string, name: string, over: Record<string, unknown> = {}) => ({ repo, kind: "claude", path: `.claude/agents/${name}.md`, name, hash: hx(`${repo}/${name}`), ...over });
+    const def = (name: string, text: string) => ({ path: `agents/${name}.md`, name, hash: hx(text), text, front: { description: `about ${name}` } });
+    const strip = (xs: Record<string, unknown>[]) =>
+      xs.map(({ at: _a, ...x }) => x).sort((a, b) => `${String(a.machine)}${String(a.repo)}${String(a.name)}`.localeCompare(`${String(b.machine)}${String(b.repo)}${String(b.name)}`));
+
+    it("test_AC03_schema_version", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HUB_MIGRATIONS.length).toBe(11);
+      expect(HUB_MIGRATIONS_PG.length).toBe(11);
+    });
+
+    it("test_AC03_v10_migrates", async () => {
+      const target = await d.fresh();
+      const s1 = await HubStore.open(target);
+      await s1.createGoal(goalInput("kept"));
+      await s1.saveSteps([step("G1.a")]);
+      const p = await X(s1).createPulse({
+        owner: "ada",
+        title: "weekly",
+        when: { every: "7d", anchor: T0 },
+        preset: { name: "weekly", text: "steps: []\n", sha256: "a".repeat(64) },
+        params: { repo: "example/app" },
+        profiles: {},
+        topics: [],
+        target: {},
+        windowMs: 3_600_000,
+        overlap: "skip",
+        maxGoalAgeMs: 86_400_000,
+        missed: "record",
+        enabled: true,
+        nextAt: T0 + 1,
+        version: 1,
+        createdAt: T0,
+        updatedAt: T0,
+      });
+      const item = { lineage: "L", fp: "abcdefghijklmnop", state: "open", rule: "I-03", path: "a.ts", title: "T", severity: "S2", category: "c", raisedBy: { key: "app/auditor" }, first: { goal: "G1", step: "G1.a", round: 1, at: T0 }, last: { goal: "G1", step: "G1.a", round: 1, at: T0 } };
+      await X(s1).saveItem(item);
+      const pre = { goal: await s1.getGoal("G1"), step: await s1.getStep("G1.a"), pulse: await X(s1).getPulse(p.id), items: await X(s1).listItems("L") };
+      await s1.close();
+      // Make it a v10 database: without the migration-11 tables and at version 10.
+      const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
+      for (const t of ["agent_def", "catalog_source"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      await raw.run("UPDATE schema_version SET version = 10");
+      await raw.close();
+      const s = track(await HubStore.open(target));
+      expect(await s.getGoal("G1")).toStrictEqual(pre.goal);
+      expect(await s.getStep("G1.a")).toStrictEqual(pre.step);
+      expect(await X(s).getPulse(p.id)).toStrictEqual(pre.pulse);
+      expect(await X(s).listItems("L")).toStrictEqual(pre.items);
+      expect(pre.items).toHaveLength(1);
+      expect(await X(s).listRepoAgents()).toStrictEqual([]);
+      expect(await X(s).listCatalogSources()).toStrictEqual([]);
+      const v = await s.db.get("SELECT version FROM schema_version");
+      expect(Number((v as { version: number }).version)).toBe(11);
+    });
+
+    it("test_AC03_replace_machine_agents", async () => {
+      const s = await store();
+      const r1 = rep("git.example.com/team/alpha", "r1", { description: "one", tools: ["Read"], rules: ["x"] });
+      const r2 = rep("git.example.com/team/alpha", "r2", { pin: { source: SRC, commit: c(1), hash: hx("p") } });
+      const r3 = rep("git.example.com/team/beta", "r3", { kind: "opencode", path: ".opencode/agent/r3.md" });
+      expect(await X(s).replaceMachineAgents("m1", [r1, r2], T0)).toBe(true);
+      expect(await X(s).replaceMachineAgents("m2", [r3], T0 + 1)).toBe(true);
+      expect(await X(s).replaceMachineAgents("m1", [r1, r2], T0 + 2)).toBe(false);
+      expect(strip(await X(s).listRepoAgents())).toStrictEqual(strip([{ ...r1, machine: "m1" }, { ...r2, machine: "m1" }, { ...r3, machine: "m2" }]));
+      expect(await X(s).replaceMachineAgents("m1", [r2], T0 + 3)).toBe(true);
+      const all = (await X(s).listRepoAgents()) as Record<string, unknown>[];
+      expect(strip(all)).toStrictEqual(strip([{ ...r2, machine: "m1" }, { ...r3, machine: "m2" }]));
+      for (const x of all) expect(typeof x.at, String(x.name)).toBe("number");
+      expect(all.find((x) => x.name === "r3")?.at).toBe(T0 + 1);
+      expect(strip(await X(s).listRepoAgents({ name: "r3" }))).toStrictEqual(strip([{ ...r3, machine: "m2" }]));
+      // [] clears only that machine.
+      expect(await X(s).replaceMachineAgents("m1", [], T0 + 4)).toBe(true);
+      expect(strip(await X(s).listRepoAgents())).toStrictEqual(strip([{ ...r3, machine: "m2" }]));
+    });
+
+    it("test_AC03_put_catalog_defs", async () => {
+      const s = await store();
+      const rev1 = def("rev", "rev one");
+      const other = def("other", "other one");
+      const rev2 = def("rev", "rev two");
+      expect(await X(s).putCatalogDefs(SRC, c(1), [rev1, other], "ada", T0)).toStrictEqual({ added: 2 });
+      expect(await X(s).putCatalogDefs(SRC, c(2), [rev1, other], "ada", T0 + 1)).toStrictEqual({ added: 0 });
+      expect(await X(s).putCatalogDefs(SRC, c(2), [rev1, other], "ada", T0 + 2)).toStrictEqual({ added: 0 });
+      const r = ((await X(s).listCatalogDefs({ repo: SRC, name: "rev" })) as Record<string, unknown>[]).find((x) => x.hash === rev1.hash);
+      expect(r?.commits).toStrictEqual([c(1), c(2)]);
+      expect(r).toMatchObject({ source: SRC, name: "rev", path: "agents/rev.md", text: "rev one", current: true, key: "agents/rev", description: "about rev" });
+      expect(await X(s).putCatalogDefs(SRC, c(3), [rev2], "ada", T0 + 3)).toStrictEqual({ added: 1 });
+      const cur = (await X(s).listCatalogDefs({ repo: SRC, current: true })) as Record<string, unknown>[];
+      expect(cur.map((x) => `${String(x.name)}:${String(x.hash)}`)).toStrictEqual([`rev:${rev2.hash}`]);
+      expect(cur[0]).toMatchObject({ text: "rev two", commits: [c(3)], current: true, pushedAt: T0 + 3 });
+      const old = (await X(s).listCatalogDefs({ repo: SRC, name: "other" })) as Record<string, unknown>[];
+      expect(old).toHaveLength(1);
+      expect(old[0]).toMatchObject({ hash: other.hash, text: "other one", current: false });
+      const notCur = (await X(s).listCatalogDefs({ repo: SRC, current: false })) as Record<string, unknown>[];
+      expect(notCur.map((x) => `${String(x.name)}:${String(x.hash)}`).sort()).toStrictEqual([`other:${other.hash}`, `rev:${rev1.hash}`].sort());
+      // 52 more pushes of rev2: 50 commits kept, the oldest dropped, the newest last.
+      for (let i = 10; i < 62; i++) await X(s).putCatalogDefs(SRC, c(i), [rev2], "ada", T0 + i);
+      const [kept] = (await X(s).listCatalogDefs({ repo: SRC, current: true })) as Record<string, unknown>[];
+      const commits = kept?.commits as string[];
+      expect(commits).toHaveLength(50);
+      expect(commits.at(-1)).toBe(c(61));
+      expect(commits[0]).toBe(c(12));
+      // Another repo: the name filter spans repos, the repo filter does not.
+      expect(await X(s).putCatalogDefs(OTHER_SRC, c(5), [def("rev", "elsewhere")], "bob", T0)).toStrictEqual({ added: 1 });
+      const byName = (await X(s).listCatalogDefs({ name: "rev" })) as Record<string, unknown>[];
+      expect(new Set(byName.map((x) => x.source))).toStrictEqual(new Set([SRC, OTHER_SRC]));
+      expect(((await X(s).listCatalogDefs({ repo: OTHER_SRC })) as Record<string, unknown>[]).map((x) => x.text)).toStrictEqual(["elsewhere"]);
+    });
+
+    it("test_AC03_catalog_sources", async () => {
+      const s = await store();
+      const zed = { repo: "git.example.com/zed/agents", name: "agents", folder: "defs", createdBy: "ada", createdAt: T0, count: 0 };
+      const src = { repo: SRC, name: "agents", folder: "agents", calibrator: "carol", createdBy: "ada", createdAt: T0 + 1, count: 2, commit: c(1), digest: hx("d"), pushedAt: T0 + 2, pushedBy: "bob" };
+      await X(s).saveCatalogSource(zed);
+      await X(s).saveCatalogSource(src);
+      expect(await X(s).getCatalogSource(SRC)).toStrictEqual(src);
+      expect(await X(s).getCatalogSource("x/y")).toBeUndefined();
+      expect(((await X(s).listCatalogSources()) as { repo: string }[]).map((x) => x.repo)).toStrictEqual([SRC, zed.repo]);
+      await X(s).saveCatalogSource({ ...zed, folder: "other" });
+      expect((await X(s).getCatalogSource(zed.repo)).folder).toBe("other");
+      expect(await X(s).listCatalogSources()).toHaveLength(2);
+    });
+
+    it("test_AC03_tables", async () => {
+      const copy = await import("./hub-copy.ts");
+      const names = copy.TABLES.map((t) => t.name);
+      const i = names.indexOf("pulse_slot");
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(names.slice(i + 1, i + 3)).toStrictEqual(["agent_def", "catalog_source"]);
     });
   });
 }

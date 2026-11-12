@@ -918,6 +918,92 @@
                       },
                       "headless": {
                         "type": "boolean"
+                      },
+                      "agents": {
+                        "maxItems": 2000,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "description": {
+                              "type": "string",
+                              "maxLength": 1000
+                            },
+                            "model": {
+                              "type": "string",
+                              "maxLength": 100
+                            },
+                            "tools": {
+                              "maxItems": 100,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 200
+                              }
+                            },
+                            "rules": {
+                              "maxItems": 200,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 100
+                              }
+                            },
+                            "repo": {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "claude",
+                                "opencode"
+                              ]
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 300
+                            },
+                            "name": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+                            },
+                            "hash": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{64}$"
+                            },
+                            "pin": {
+                              "type": "object",
+                              "properties": {
+                                "source": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 200
+                                },
+                                "commit": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{40}$"
+                                },
+                                "hash": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{64}$"
+                                }
+                              },
+                              "required": [
+                                "source",
+                                "commit",
+                                "hash"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "repo",
+                            "kind",
+                            "path",
+                            "name",
+                            "hash"
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -2570,8 +2656,7 @@
                           ]
                         },
                         "agent": {
-                          "type": "string",
-                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+                          "type": "string"
                         },
                         "profile": {
                           "type": "string",
@@ -3606,6 +3691,275 @@
             "name": "name",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/catalog-sources": {
+      "post": {
+        "operationId": "postVCatalogsources",
+        "summary": "Register a catalog source of agent definitions (repo and folder); 200 when it replaced one.",
+        "description": "Admins only.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "folder": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "calibrator": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "repo",
+                  "folder"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      },
+      "get": {
+        "operationId": "getVCatalogsources",
+        "summary": "The catalog sources, by repo id.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "goals"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/catalog-sources/push": {
+      "post": {
+        "operationId": "postVCatalogsourcesPush",
+        "summary": "A daemon pushes the committed agent definitions of a catalog source at one commit.",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "daemon"
+        ],
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "commit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "defs": {
+                    "maxItems": 2000,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 300
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100000
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "text"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "repo",
+                  "commit",
+                  "defs"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/agents": {
+      "get": {
+        "operationId": "getVAgents",
+        "summary": "The roster: agents of the repos the caller sees and of catalog sources, grouped by name.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "description": "exact agent name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/agents/resolve": {
+      "get": {
+        "operationId": "getVAgentsResolve",
+        "summary": "Resolve a roster key to one catalog definition with its text.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "query",
+            "required": false,
+            "description": "<source>/<name>[@<ref>]",
             "schema": {
               "type": "string"
             }

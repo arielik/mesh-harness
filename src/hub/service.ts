@@ -6,6 +6,11 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AuthError, loginIdentity, pkceChallenge, randomId, Tokens, type AuthProvider, type Identity } from "../auth/index.ts";
 import {
   acceptMatches,
+  agentFileHash,
+  agentFront,
+  canonicalKey,
+  catalogDigest,
+  repoFromRemote,
   suggest,
   endOffersLeavingReady,
   machineName,
@@ -76,6 +81,16 @@ import {
 } from "../core/index.ts";
 import type {
   AcState,
+  AgentCopy,
+  AgentDef,
+  AgentFront,
+  AgentGroup,
+  AgentsView,
+  AgentVersion,
+  CatalogDefView,
+  CatalogPush,
+  CatalogSourceSave,
+  CatalogSourceView,
   AssignRequest,
   AssignResult,
   GoalAssignResult,
@@ -160,7 +175,7 @@ import type {
   PulseWhenInput,
   SlotReason,
 } from "../protocol/index.ts";
-import { ALL_TOPIC, HEADLESS_DEFAULTS, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
+import { AGENT_NAME_RE, ALL_TOPIC, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
@@ -401,6 +416,14 @@ export class HubService {
   }
 
   /** Offer a ready step (inside `goalTx`): set the offer, message the target machine, emit `step.offered`. */
+  /** RL-5: offer data of a roster-key step: the goal's pin, or why there is none (never resolves). */
+  private static rosterOffer(step: Step, goal: Goal): Record<string, unknown> {
+    const agent = step.policy?.agent;
+    if (agent === undefined || !agent.includes("/")) return {};
+    const def = goal.agents?.[agent];
+    return def ? { agentDef: def } : { agentError: `${agent} is not pinned in ${goal.id}` };
+  }
+
   private async offerStep(
     step: Step,
     target: { machine: MachineRow; session?: HubSession | undefined },
@@ -419,6 +442,7 @@ export class HubService {
           budget: effectiveBudget(step.policy),
           deadline: opts.deadline ?? now + this.config.thresholds.offerExpiryMs,
           ...(step.policy?.agent ? { agent: step.policy.agent } : {}),
+          ...HubService.rosterOffer(step, opts.goal),
         }
       : {};
     const offer: StepOffer = {
@@ -2101,6 +2125,8 @@ export class HubService {
       if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
       const errors = [...validatePlan(input.steps), ...validatePolicies(input.steps, input.acs)];
       for (const s of input.steps) if (s.profile !== undefined && !(await this.resolveProfile(s.profile))) errors.push(`step "${s.id}": unknown profile "${s.profile}"`);
+      // RL-5: roster keys must resolve to a catalog definition.
+      errors.push(...(await this.pinAgents(input.steps, goal.agents ?? {})).problems);
       if (errors.length) throw new HubError(422, `the plan has ${errors.length} problem(s): ${errors.join("; ")}`, errors);
       const plans = await this.store.listPlans(goal.id);
       const now = this.now();
@@ -2145,6 +2171,10 @@ export class HubService {
       if (!plan) throw new HubError(404, `no pending plan for ${goal.id}`);
       if (plan.decision !== "pending") throw new HubError(409, `plan v${plan.version} is already ${plan.decision}`);
       const now = this.now();
+      // RL-5 (R-6): pin the plan's new roster keys; a key pinned before keeps its pin.
+      const pins = await this.pinAgents(plan.steps, goal.agents ?? {});
+      if (pins.problems.length) throw new HubError(422, `the plan has ${pins.problems.length} problem(s): ${pins.problems.join("; ")}`, pins.problems);
+      if (Object.keys(pins.agents).length > Object.keys(goal.agents ?? {}).length) await this.store.saveGoal({ ...goal, agents: pins.agents, updatedAt: now });
       await this.store.savePlan({ ...plan, decision: "approved", decidedBy: actor.userId, decidedAt: now, ...(comment ? { comment } : {}) });
       const existing = await this.store.listSteps({ goal: goal.id });
       const m = materialize(goal.id, plan.version, plan.steps, existing, now);
@@ -2711,8 +2741,17 @@ export class HubService {
           }
         : undefined;
       await this.store.touchMachine(machine, now, req.counts, facts);
+      const stored = await this.store.getMachine(machine);
+      // RL-5: agent files of the machine's repos; reports outside its inventory are dropped.
+      if (req.machine?.agents !== undefined) {
+        const inventory = new Set((stored?.repos ?? []).map((r) => r.id));
+        const kept = req.machine.agents.filter((a) => inventory.has(a.repo));
+        if (await this.store.replaceMachineAgents(machine, kept, now)) {
+          await this.emit({ type: "agents.reported", user: actor.userId, payload: { machine, count: kept.length } });
+        }
+      }
       // MM-1: the stored share level tells the daemon this hub applies the visibility rule.
-      const share = (await this.store.getMachine(machine))?.share;
+      const share = stored?.share;
       return { accepted, ...(share ? { share } : {}) };
     });
   }
@@ -2951,6 +2990,8 @@ export class HubService {
       const step = plan.steps.find((s) => (s.profile ?? (s.mode === "headless" ? HEADLESS_DEFAULTS.profile : undefined)) === name);
       problems.push(`step "${step?.id ?? "?"}": unknown profile "${name}"`);
     }
+    // RL-5: roster keys must resolve to a catalog definition.
+    problems.push(...(await this.pinAgents(plan.steps)).problems);
     if (problems.length) fail();
     return plan;
   }
@@ -2988,11 +3029,12 @@ export class HubService {
   }
 
   private async pulseView(p: Pulse): Promise<PulseView> {
-    const { preset, profiles, ...rest } = p;
+    const { preset, profiles, agents, ...rest } = p;
     return {
       ...rest,
       preset: { name: preset.name, sha256: preset.sha256, ...(preset.source ? { source: preset.source } : {}) },
       profiles: Object.fromEntries(Object.entries(profiles).map(([k, v]) => [k, v.sha256])),
+      agents: Object.fromEntries(Object.entries(agents ?? {}).map(([k, v]) => [k, v.hash])),
       schedule: scheduleText(p.when),
       recent: await this.store.listSlots({ pulse: p.id, limit: 10 }),
     };
@@ -3016,6 +3058,8 @@ export class HubService {
       const topics = await this.knownTopics(body.topics ?? []);
       const when = this.scheduleOf(body.when, now);
       const profiles = await this.snapshotProfiles(plan.steps);
+      // RL-5 (R-6): roster keys pinned when the pulse is saved.
+      const { agents } = await this.pinAgents(plan.steps);
       const t = HubService.timings(when, body.window, body.maxGoalAge, now);
       const nextAt = body.enabled ? nextSlot(when, now) : undefined;
       const p = await this.store.createPulse({
@@ -3025,6 +3069,7 @@ export class HubService {
         preset: body.preset,
         params: body.params,
         profiles,
+        agents,
         topics,
         target: body.target,
         ...(body.window !== undefined ? { window: body.window } : {}),
@@ -3079,7 +3124,7 @@ export class HubService {
         const preset = body.preset ?? p.preset;
         const params = body.params ?? p.params;
         const plan = await this.presetChecks(preset, params);
-        next = { ...next, preset, params, profiles: await this.snapshotProfiles(plan.steps), version: p.version + 1 };
+        next = { ...next, preset, params, profiles: await this.snapshotProfiles(plan.steps), agents: (await this.pinAgents(plan.steps)).agents, version: p.version + 1 };
       }
       if (body.topics !== undefined) next.topics = await this.knownTopics(body.topics);
       if (body.when !== undefined) {
@@ -3178,6 +3223,7 @@ export class HubService {
       const plan = await this.presetChecks(b.preset, b.params);
       const topics = await this.knownTopics(b.topics ?? []);
       const profiles = await this.snapshotProfiles(plan.steps);
+      const { agents } = await this.pinAgents(plan.steps);
       const goal = await this.createWithPlan(
         {
           owner: actor.userId,
@@ -3185,6 +3231,7 @@ export class HubService {
           preset: b.preset,
           params: b.params,
           profiles,
+          agents,
           topics,
           priority: b.priority,
           refs: b.refs,
@@ -3209,6 +3256,8 @@ export class HubService {
       preset: { name: string; text: string; sha256: string };
       params: Record<string, string>;
       profiles: Record<string, ProfileSnapshot>;
+      /** RL-5: the roster pins of the goal (R-6). */
+      agents: Record<string, AgentDef>;
       topics: readonly string[];
       priority: number;
       refs?: Record<string, string> | undefined;
@@ -3228,6 +3277,7 @@ export class HubService {
       ...(o.topics.length ? { topics: [...o.topics] } : {}),
       priority: o.priority,
       profiles: o.profiles,
+      ...(Object.keys(o.agents).length ? { agents: o.agents } : {}),
       createdAt: now,
       updatedAt: now,
     });
@@ -3457,6 +3507,7 @@ export class HubService {
         preset: p.preset,
         params: p.params,
         profiles: p.profiles,
+        agents: p.agents ?? {},
         topics: p.topics,
         priority: 3,
         refs: { pulse: p.id, slot: slotId },
@@ -3579,6 +3630,256 @@ export class HubService {
         process.stderr.write(`hub tick failed: ${errorText(e)}\n`);
       }
     }
+  }
+
+  // ---------- roster (RL-5) ----------
+
+  /**
+   * A repo copy reported by machine `m` is visible to its user when `m` shares `me` or `all`, and to
+   * everyone when it shares `all`; under `steps` (or no stored level) to nobody.
+   */
+  private static agentCopyVisible(viewer: Actor, m: MachineRow | undefined): boolean {
+    return m?.share === "all" || (m?.share === "me" && m.userId === viewer.userId);
+  }
+
+  /** `POST /v1/catalog-sources` (admin): register a catalog source or change its folder/calibrator. */
+  async saveCatalogSource(actor: Actor, body: CatalogSourceSave): Promise<{ view: CatalogSourceView; created: boolean }> {
+    return await this.store.tx(async () => {
+      await this.store.serialize();
+      const now = this.now();
+      const fromRemote = repoFromRemote(body.repo);
+      let id: string;
+      if (fromRemote && !fromRemote.id.startsWith("local/")) id = fromRemote.id;
+      else {
+        const lower = body.repo.toLowerCase().replace(/\.git$/, "");
+        if (!/^[a-z0-9][a-z0-9.-]*(\/[a-z0-9._-]+)+$/.test(lower)) throw new HubError(422, "repo must be a repo id (host/path) or a remote URL");
+        id = lower;
+      }
+      if (!/^[a-z0-9][a-z0-9._-]*(\/[a-z0-9._-]+)+$/.test(id)) throw new HubError(422, `repo id ${id} cannot be used in an agent key`);
+      if (id.length > CATALOG_REPO_MAX) throw new HubError(422, `repo id ${id} is over ${CATALOG_REPO_MAX} characters`);
+      const segments = body.folder.split("/");
+      if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(body.folder) || segments.some((s) => s === "." || s === "..")) {
+        throw new HubError(422, "folder must be a relative path inside the repo");
+      }
+      const existing = await this.store.getCatalogSource(id);
+      // A body without `calibrator` keeps the stored one.
+      const view: CatalogSourceView = existing
+        ? { ...existing, folder: body.folder, ...(body.calibrator !== undefined ? { calibrator: body.calibrator } : {}) }
+        : {
+            repo: id,
+            name: id.slice(id.lastIndexOf("/") + 1),
+            folder: body.folder,
+            ...(body.calibrator !== undefined ? { calibrator: body.calibrator } : {}),
+            createdBy: actor.userId,
+            createdAt: now,
+            count: 0,
+          };
+      await this.store.saveCatalogSource(view);
+      await this.emit({ type: "catalog.saved", user: actor.userId, payload: { repo: id, folder: body.folder } });
+      return { view, created: !existing };
+    });
+  }
+
+  /** `GET /v1/catalog-sources`. */
+  async listCatalogSources(): Promise<{ sources: CatalogSourceView[] }> {
+    return { sources: await this.store.listCatalogSources() };
+  }
+
+  /** `POST /v1/catalog-sources/push`: the committed definitions of a source at one commit. */
+  async pushCatalog(actor: Actor, body: CatalogPush): Promise<{ source: CatalogSourceView; added: number }> {
+    if (!actor.machineId) throw new HubError(403, "a catalog push needs a device token");
+    const machineId = actor.machineId;
+    return await this.store.tx(async () => {
+      // Reads the source and its definitions, then writes current flags and the source row.
+      await this.store.serialize();
+      const now = this.now();
+      const src = await this.store.getCatalogSource(body.repo);
+      if (!src) throw new HubError(404, `no catalog source ${body.repo}`);
+      const machine = await this.store.getMachine(machineId);
+      if (!(machine?.repos ?? []).some((r) => r.id === src.repo)) throw new HubError(403, `this machine does not report ${body.repo} in its repo inventory`);
+      const seen = new Set<string>();
+      const defs: { path: string; name: string; hash: string; text: string; front: AgentFront }[] = [];
+      let total = 0;
+      for (const d of body.defs) {
+        const rest = d.path.startsWith(`${src.folder}/`) ? d.path.slice(src.folder.length + 1) : undefined;
+        const name = rest !== undefined && !rest.includes("/") && rest.endsWith(".md") ? rest.slice(0, -3) : undefined;
+        if (name === undefined || !AGENT_NAME_RE.test(name)) throw new HubError(422, `catalog push: ${d.path} is not ${src.folder}/<name>.md`);
+        if (seen.has(d.path)) throw new HubError(422, `catalog push: ${d.path} appears twice`);
+        seen.add(d.path);
+        total += d.text.length;
+        defs.push({ path: d.path, name, hash: agentFileHash(d.text), text: d.text, front: agentFront(d.text) });
+      }
+      if (total > 8_000_000) throw new HubError(422, `catalog push: texts total ${total} characters, over 8000000`);
+      const { added } = await this.store.putCatalogDefs(src.repo, body.commit, defs, actor.userId, now);
+      const source: CatalogSourceView = {
+        ...src,
+        commit: body.commit,
+        digest: catalogDigest(defs),
+        count: defs.length,
+        pushedAt: now,
+        pushedBy: actor.userId,
+      };
+      await this.store.saveCatalogSource(source);
+      await this.emit({ type: "catalog.pushed", user: actor.userId, payload: { repo: src.repo, commit: body.commit, added, count: defs.length } });
+      return { source, added };
+    });
+  }
+
+  /** Resolve a roster key to one catalog definition (never throws). */
+  private async resolveRoster(key: string): Promise<{ ok: true; def: CatalogDefView } | { ok: false; status: number; error: string }> {
+    const k = parseRosterKey(key);
+    if (!k) return { ok: false, status: 400, error: ROSTER_KEY_RULE };
+    const sources = await this.store.listCatalogSources();
+    let src = sources.find((s) => s.repo === k.source);
+    if (!src) {
+      const matches = sources.filter((s) => repoMatches({ id: s.repo, name: s.name }, k.source));
+      if (matches.length === 0) return { ok: false, status: 404, error: `no catalog source matches ${k.source}` };
+      if (matches.length > 1) return { ok: false, status: 409, error: `${k.source} matches ${matches.length} catalog sources: ${matches.map((s) => s.repo).join(", ")}` };
+      src = matches[0]!;
+    }
+    if (k.ref === undefined) {
+      const def = (await this.store.listCatalogDefs({ repo: src.repo, name: k.name, current: true }))[0];
+      if (!def) return { ok: false, status: 404, error: `no agent ${k.name} in catalog source ${src.repo}` };
+      return { ok: true, def };
+    }
+    const ref = k.ref;
+    const ckey = canonicalKey(src.repo, k.name);
+    const found = (await this.store.listCatalogDefs({ repo: src.repo, name: k.name })).filter((d) => d.hash.startsWith(ref) || d.commits.some((c) => c.startsWith(ref)));
+    if (found.length === 0) return { ok: false, status: 404, error: `no definition of ${ckey} matches @${ref}` };
+    const hashes = new Set(found.map((d) => d.hash));
+    if (hashes.size > 1) return { ok: false, status: 409, error: `@${ref} matches ${hashes.size} definitions of ${ckey}; give more characters` };
+    const def = found[0]!;
+    const commit = [...def.commits].reverse().find((c) => c.startsWith(ref)) ?? def.commits.at(-1) ?? def.commit;
+    return { ok: true, def: { ...def, commit } };
+  }
+
+  /** `GET /v1/agents/resolve`. */
+  async resolveAgent(key: string | undefined): Promise<CatalogDefView> {
+    if (key === undefined || key === "") throw new HubError(400, ROSTER_KEY_RULE);
+    return await this.store.tx(async () => {
+      const r = await this.resolveRoster(key);
+      if (!r.ok) throw new HubError(r.status, r.error);
+      return r.def;
+    });
+  }
+
+  /**
+   * Pin the roster keys (`agent` with `/`) of steps to catalog definitions (R-6): entries of
+   * `existing` are kept; each other key is resolved once. Problems name every step using a key that
+   * does not resolve.
+   */
+  private async pinAgents(
+    steps: readonly { id: string; agent?: string | undefined; policy?: { agent?: string | undefined } | undefined }[],
+    existing: Record<string, AgentDef> = {},
+  ): Promise<{ agents: Record<string, AgentDef>; problems: string[] }> {
+    const agents: Record<string, AgentDef> = { ...existing };
+    const problems: string[] = [];
+    const users = new Map<string, string[]>();
+    for (const s of steps) {
+      const a = s.agent ?? s.policy?.agent;
+      if (a === undefined || !a.includes("/")) continue;
+      users.set(a, [...(users.get(a) ?? []), s.id]);
+    }
+    for (const [key, ids] of users) {
+      if (agents[key]) continue;
+      const r = await this.resolveRoster(key);
+      if (r.ok) agents[key] = { key: r.def.key, source: r.def.source, name: r.def.name, hash: r.def.hash, commit: r.def.commit };
+      else for (const id of ids) problems.push(`step "${id}": ${r.error}`);
+    }
+    return { agents, problems };
+  }
+
+  /** `GET /v1/agents`: the roster as the caller sees it. */
+  async agentsView(viewer: Actor, name?: string): Promise<AgentsView> {
+    return await this.store.tx(async () => {
+      const machines = new Map((await this.store.listMachines()).map((m) => [m.id, m]));
+      const sources = await this.store.listCatalogSources();
+      const sourceName = new Map(sources.map((s) => [s.repo, s.name]));
+      const current = await this.store.listCatalogDefs({ current: true, ...(name !== undefined ? { name } : {}) });
+      const currentOf = new Map(current.map((d) => [`${d.source}\n${d.name}`, d]));
+      type Entry = { copy: AgentCopy; front: AgentFront; name: string; machines: Set<string> };
+      const merged = new Map<string, Entry>();
+      for (const row of await this.store.listRepoAgents(name !== undefined ? { name } : {})) {
+        const m = machines.get(row.machine);
+        if (!HubService.agentCopyVisible(viewer, m)) continue;
+        const mk = `${row.repo}\n${row.path}\n${row.hash}\n${JSON.stringify(row.pin ?? null)}`;
+        const e = merged.get(mk);
+        if (e) {
+          e.machines.add(row.machine);
+          e.copy.machines = e.machines.size;
+          e.copy.seenAt = Math.max(e.copy.seenAt, row.at);
+          continue;
+        }
+        const repoName = m?.repos?.find((r) => r.id === row.repo)?.name ?? row.repo.slice(row.repo.lastIndexOf("/") + 1);
+        const pin = row.pin;
+        const cur = pin ? currentOf.get(`${pin.source}\n${row.name}`) : undefined;
+        const { description, model, tools, rules } = row;
+        merged.set(mk, {
+          name: row.name,
+          machines: new Set([row.machine]),
+          front: { ...(description !== undefined ? { description } : {}), ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}), ...(rules !== undefined ? { rules } : {}) },
+          copy: {
+            key: canonicalKey(row.repo, row.name),
+            repo: { id: row.repo, name: repoName },
+            origin: "repo",
+            kind: row.kind,
+            path: row.path,
+            hash: row.hash,
+            machines: 1,
+            ...(pin ? { pin } : {}),
+            pinned: pin !== undefined,
+            behind: pin !== undefined && cur !== undefined && cur.hash !== pin.hash,
+            modified: pin !== undefined && row.hash !== pin.hash,
+            seenAt: row.at,
+          },
+        });
+      }
+      const entries: Entry[] = [...merged.values()];
+      for (const d of current) {
+        const { description, model, tools, rules } = d;
+        entries.push({
+          name: d.name,
+          machines: new Set(),
+          front: { ...(description !== undefined ? { description } : {}), ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}), ...(rules !== undefined ? { rules } : {}) },
+          copy: {
+            key: d.key,
+            repo: { id: d.source, name: sourceName.get(d.source) ?? d.source.slice(d.source.lastIndexOf("/") + 1) },
+            origin: "catalog",
+            kind: "claude",
+            path: d.path,
+            hash: d.hash,
+            commit: d.commit,
+            pinned: false,
+            behind: false,
+            modified: false,
+            seenAt: d.pushedAt,
+          },
+        });
+      }
+      const copyOrder = (a: Entry, b: Entry): number =>
+        (a.copy.origin === b.copy.origin ? 0 : a.copy.origin === "catalog" ? -1 : 1) || cmp(a.copy.key, b.copy.key) || cmp(a.copy.kind, b.copy.kind) || cmp(a.copy.repo.id, b.copy.repo.id) || cmp(a.copy.path, b.copy.path);
+      const byName = new Map<string, Entry[]>();
+      for (const e of entries) byName.set(e.name, [...(byName.get(e.name) ?? []), e]);
+      const groups: AgentGroup[] = [];
+      for (const [agentName, list] of byName) {
+        const byHash = new Map<string, Entry[]>();
+        for (const e of list.sort(copyOrder)) byHash.set(e.copy.hash, [...(byHash.get(e.copy.hash) ?? []), e]);
+        const versions: AgentVersion[] = [...byHash.entries()]
+          .map(([hash, es]) => ({ ...es[0]!.front, hash, copies: es.map((e) => e.copy) }))
+          .sort((a, b) => b.copies.length - a.copies.length || cmp(a.hash, b.hash));
+        const copies = versions.flatMap((v) => v.copies);
+        groups.push({
+          name: agentName,
+          versions,
+          diverged: versions.length > 1,
+          pinned: copies.some((c) => c.pinned),
+          behind: copies.some((c) => c.behind),
+          modified: copies.some((c) => c.modified),
+        });
+      }
+      groups.sort((a, b) => cmp(a.name, b.name));
+      return { agents: groups, sources };
+    });
   }
 
   // ---------- time rules (plan §3.4) ----------
@@ -3710,6 +4011,14 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       const ls = (payload.labels as string[] | undefined) ?? [];
       return ls.length ? `labelled machine ${host} ${ls.join(", ")}` : `cleared the labels of machine ${host}`;
     }
+    case "agents.reported": {
+      const host = hostnames?.get(String(payload.machine)) ?? String(payload.machine);
+      return `${host} reported ${String(payload.count)} agent(s)`;
+    }
+    case "catalog.saved":
+      return `registered catalog source ${String(payload.repo)}`;
+    case "catalog.pushed":
+      return `${String(payload.repo)} pushed at ${String(payload.commit).slice(0, 7)}: ${String(payload.added)} new, ${String(payload.count)} current`;
     case "goal.created":
       return `created ${s} "${String(payload.title ?? "")}"`;
     case "goal.topics": {

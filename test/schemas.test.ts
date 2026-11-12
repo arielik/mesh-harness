@@ -557,9 +557,7 @@ describe("RL-4 AC-24 checks, schema, boundaries", () => {
     { method: "POST", path: "/v1/steps/:id/dispositions/revert", scope: undefined },
   ];
 
-  it("test_AC24_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.18");
-  });
+  // The RL-4 version pin (test_AC24_version, 0.1.18) is superseded by RL-5 AC-24 (test_AC24_version below).
 
   it("test_AC24_openapi_routes", () => {
     for (const want of ROUTES) {
@@ -614,5 +612,68 @@ describe("RL-4 AC-23 docs and skill", () => {
     for (const t of ["/v1/steps/:id/read", "/v1/steps/:id/debrief", "/v1/debriefs", "/v1/steps/:id/dispositions", "/v1/steps/:id/dispositions/revert", "v0.1.18"]) expect(s56, t).toContain(t);
     const events = read("docs/events.md");
     for (const t of ["item.reverted", "step.read", "debrief-session", "already"]) expect(events, t).toContain(t);
+  });
+});
+
+// RL-5 AC-23 (docs and skill) and AC-24 (version, OpenAPI, routes, boundaries). Written from the
+// spec's contracts only (docs/specs/RL-5.md).
+describe("RL-5 AC-24 checks, schema, routes", () => {
+  const ROUTES = [
+    { method: "POST", path: "/v1/catalog-sources", rule: "admin", scope: undefined, tag: "admin" },
+    { method: "GET", path: "/v1/catalog-sources", rule: "member", scope: "goals:read", tag: "goals" },
+    { method: "POST", path: "/v1/catalog-sources/push", rule: "member", scope: undefined, tag: "daemon" },
+    { method: "GET", path: "/v1/agents", rule: "member", scope: "goals:read", tag: "goals" },
+    { method: "GET", path: "/v1/agents/resolve", rule: "member", scope: "goals:read", tag: "goals" },
+  ];
+
+  it("test_AC24_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.19");
+  });
+
+  it("test_AC24_openapi_routes", () => {
+    for (const want of ROUTES) {
+      const row = HUB_API.find((x) => x.method === want.method && x.path === want.path) as { rule: string; scope?: string; tag: string } | undefined;
+      expect(row, `${want.method} ${want.path}`).toBeDefined();
+      expect(row?.rule, `${want.method} ${want.path}`).toBe(want.rule);
+      expect(row?.scope, `${want.method} ${want.path}`).toBe(want.scope);
+      expect(row?.tag, `${want.method} ${want.path}`).toBe(want.tag);
+    }
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, unknown>> };
+    for (const want of ROUTES) expect(doc.paths[want.path]?.[want.method.toLowerCase()], `${want.method} ${want.path} in the OpenAPI document`).toBeDefined();
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule}`);
+    for (const want of ROUTES) expect(served, `${want.method} ${want.path} served`).toContain(`${want.method} ${want.path} ${want.rule}`);
+  });
+
+  it("test_AC24_boundaries", async () => {
+    const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
+    for (const f of ["catalogDigest", "unifiedDiff", "canonicalKey"]) expect(typeof core[f], f).toBe("function");
+    const roster = (await import("../src/core/roster.ts" as string)) as Record<string, unknown>;
+    expect(typeof roster.unifiedDiff).toBe("function");
+    const protocol = (await import("../src/protocol/index.ts")) as Record<string, unknown>;
+    for (const t of ["AgentKind", "AgentFront", "AgentPin", "AgentReport", "AgentsLock", "AgentDef", "CatalogSourceSave", "CatalogPush", "parseRosterKey", "ROSTER_KEY_RULE"]) expect(protocol[t], t).toBeDefined();
+  });
+});
+
+describe("RL-5 AC-23 docs and skill", () => {
+  it("test_AC23_skill", () => {
+    expect(MESH_SKILL).toContain("mesh agents");
+    expect(MESH_SKILL).toContain("mesh agent add");
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+  });
+
+  it("test_AC23_docs", () => {
+    const concepts = read("docs/guide/concepts.md");
+    expect(concepts).toMatch(/^#+ .*Roster/m);
+    for (const t of [".claude/agents", ".opencode/agent", "agents.lock", "diverged", "behind", "modified", "pinned", "mesh-rules", "rules.yaml", "@"]) expect(concepts, t).toContain(t);
+    const howto = read("docs/guide/howto.md");
+    expect(howto).toContain("Share agents through the roster");
+    for (const t of ["mesh agents", "mesh agent add", "outdated", "diff", "update"]) expect(howto, t).toContain(t);
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    for (const t of ["/v1/catalog-sources", "/v1/catalog-sources/push", "/v1/agents", "/v1/agents/resolve", "v0.1.19"]) expect(s56, t).toContain(t);
+    const events = read("docs/events.md");
+    for (const t of ["catalog.saved", "catalog.pushed", "agents.reported"]) expect(events, t).toContain(t);
   });
 });

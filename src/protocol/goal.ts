@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Disposition, Fold, ItemState, StepWhen } from "./review.ts";
+import { AGENT_NAME_RE, AGENT_NAME_RULE, AgentDef, parseRosterKey, ROSTER_KEY_RULE } from "./roster.ts";
 
 /**
  * A topic is a label for goals ("dataplane", "performance"). People define topics, then tag goals
@@ -94,6 +95,8 @@ export const Goal = z.object({
   stick: GoalStick.optional(),
   /** RL-3: the profile snapshots this goal's offers use (goals made by a pulse or by ingest). */
   profiles: z.record(z.string(), ProfileSnapshot).optional(),
+  /** RL-5: roster keys of its steps pinned to catalog definitions, keyed by the policy string. */
+  agents: z.record(z.string(), AgentDef).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -352,10 +355,17 @@ export const StepPolicy = z.object({
    * assignee runs it, in an interactive session that records the person's decisions one at a time.
    */
   mode: z.enum(["interactive", "headless", "debrief"]).optional(),
-  /** RL-1: an agent name in the step repo's `.claude/agents/`. */
+  /**
+   * RL-1: an agent name in the step repo's `.claude/agents/`. RL-5: or a roster key
+   * `<source>/<name>[@<ref>]` (a catalog definition, pinned by hash when the plan is approved).
+   */
   agent: z
     .string()
-    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "an agent name is 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit")
+    .superRefine((s, ctx) => {
+      if (s.includes("/")) {
+        if (!parseRosterKey(s)) ctx.addIssue({ code: "custom", message: ROSTER_KEY_RULE });
+      } else if (!AGENT_NAME_RE.test(s)) ctx.addIssue({ code: "custom", message: AGENT_NAME_RULE });
+    })
     .optional(),
   /** RL-1: the permission profile of a headless run. */
   profile: ProfileName.optional(),

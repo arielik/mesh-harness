@@ -608,3 +608,38 @@ a {
 p.assigned {
   color: var(--muted);
 }
+
+/* RL-5: the Roster page. */
+.roster input[name="roster-filter"] {
+  margin-bottom: 1rem;
+}
+.roster .roster-group {
+  margin-bottom: 1rem;
+}
+.roster .roster-group h3 {
+  margin: 0 0 0.25rem;
+}
+.roster .roster-flag {
+  font-size: 0.75em;
+  font-weight: normal;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.5em;
+  margin-left: 0.5em;
+}
+.roster .roster-version p {
+  margin: 0.25rem 0;
+}
+.roster .roster-version ul,
+.roster .roster-sources ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.5rem;
+}
+.roster .roster-copy {
+  padding: 0.15rem 0 0.15rem 1rem;
+}
+.roster .roster-mark {
+  color: var(--accent);
+}

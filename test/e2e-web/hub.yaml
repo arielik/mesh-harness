@@ -11,4 +11,6 @@ auth:
         - { name: carol, token_sha256: c9891b73f5d2b4c6b99bd76ea8578e4756dce88417d6f08d2c2ef9e18e7cebb6 }
         # dave: the RL-4 debrief assignee; only the RL-4 specs log in as dave, so carol keeps no machines.
         - { name: dave, token_sha256: 66e12a32c35f532d01db549d3ed1ee4eaf5560c9de6d5e15ac8dcad5930a5718 }
+        # erin: the RL-5 roster spec only; no other spec asserts on her machines or agents.
+        - { name: erin, token_sha256: eca88da20b78923c3caeea329be08f4f6fd975116615c295e87e8ceaf259499b }
   bootstrap_admins: [team:alice]

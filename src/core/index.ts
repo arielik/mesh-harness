@@ -18,6 +18,7 @@ export * from "./profiles.ts";
 export * from "./redact.ts";
 export * from "./telemetry.ts";
 export * from "./headless.ts";
+export * from "./roster.ts";
 export * from "./review.ts";
 export * from "./schedule.ts";
 export * from "./pulse.ts";

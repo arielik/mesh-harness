@@ -36,6 +36,7 @@ import { hubCommands } from "./hub-commands.ts";
 import { offerCommands } from "./offer-commands.ts";
 import { debriefCommand } from "./review-commands.ts";
 import { pulseCommand } from "./pulse-commands.ts";
+import { agentCommand, agentsCommand } from "./roster-commands.ts";
 import { assetsCommand } from "./assets.ts";
 import { ledgerCommand } from "./ledger.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
@@ -737,6 +738,8 @@ export function meshCommands(c: CliEnv): Command[] {
     assetsCommand(c),
     ...hubCommands(c),
     pulseCommand(c),
+    agentsCommand(c),
+    agentCommand(c),
     ...offerCommands(c, (args) => runCommand(c).run(args)),
     debriefCommand(c, (args) => runCommand(c).run(args)),
   ];

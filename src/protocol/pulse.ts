@@ -1,6 +1,7 @@
 // RL-3: pulses (hub schedules that create goals from a preset snapshot) and their slots.
 import { z } from "zod";
 import { type GoalState, ProfileSnapshot } from "./goal.ts";
+import { AgentDef } from "./roster.ts";
 import { Label } from "./session.ts";
 
 /** A duration: a number and m (minutes), h (hours) or d (days), e.g. 30m, 4h, 7d. */
@@ -160,6 +161,8 @@ export const Pulse = z.object({
   preset: PresetSnapshot,
   params: PulseParams,
   profiles: z.record(z.string(), ProfileSnapshot),
+  /** RL-5: roster keys of the plan pinned to catalog definitions (R-6), keyed by the policy string. */
+  agents: z.record(z.string(), AgentDef).default({}),
   topics: z.array(z.string()),
   target: PulseTarget,
   /** As given; absent = the default. */
@@ -182,9 +185,11 @@ export const Pulse = z.object({
 export type Pulse = z.infer<typeof Pulse>;
 
 /** A pulse as lists show it: no preset text, profiles by sha256 only. */
-export type PulseView = Omit<Pulse, "preset" | "profiles"> & {
+export type PulseView = Omit<Pulse, "preset" | "profiles" | "agents"> & {
   preset: { name: string; sha256: string; source?: { repo: string; commit: string } | undefined };
   profiles: Record<string, string>;
+  /** RL-5: roster key to the pinned hash. */
+  agents: Record<string, string>;
   schedule: string;
   /** The 10 newest slots. */
   recent: PulseSlot[];

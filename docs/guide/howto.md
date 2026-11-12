@@ -391,6 +391,60 @@ debrief's record and calls `mesh_done`; `file` then runs if you accepted somethi
 Changed your mind? Revert a decision while it is the item's latest change: `u` on the entry under
 DECIDED IN DEBRIEF in the TUI `o` panel, or **Revert** on the Mine page or the step panel.
 
+### Share agents through the roster
+
+Register the repo that holds your shared agents as a catalog source (an admin does this once):
+
+```sh
+mesh agent source add https://git.example.com/team/agents.git --folder agents
+#   Saved catalog source git.example.com/team/agents (folder agents).
+mesh agent source ls
+#   git.example.com/team/agents  agents  3 agent(s)  1a2b3c4
+```
+
+A machine with a checkout of that repo (share level `me` or `all`, the repo under `workspaceRoots`)
+pushes the committed definitions of `agents/` at the remote's default branch on its next repo scan.
+See which agents exist where, and which copies drifted:
+
+```sh
+mesh agents
+#   reviewer  versions 2  copies 3  diverged  pinned  behind  modified
+#     5f0c1d2e3a4b  Reviews changes
+#       agents/reviewer  catalog 1a2b3c4
+#       alpha/reviewer  repo  pin 9f8e7d6
+#     77aa01bc23de  Reviews changes
+#       beta/reviewer  repo  pin 9f8e7d6  behind  modified
+mesh agents --name reviewer --json
+```
+
+Install a catalog agent into a repo by pinned reference, then keep it current:
+
+```sh
+mesh agent add agents/reviewer --repo ~/src/alpha
+#   Installed agents/reviewer@1a2b3c4 into .claude/agents/reviewer.md (hash 5f0c1d2e3a4b); pinned in .mesh/agents.lock.
+mesh agent outdated --repo ~/src/alpha
+#   reviewer  agents/reviewer@1a2b3c4  behind  latest 2b3c4d5
+mesh agent diff reviewer --repo ~/src/alpha
+mesh agent update reviewer --repo ~/src/alpha     # asks first; --yes without a terminal
+```
+
+Commit `.claude/agents/reviewer.md` and `.mesh/agents.lock` with your change. `mesh agent outdated`
+exits 1 when any pin is not `ok`, so it can run in CI.
+
+A headless step can run a catalog agent its repo does not contain: give a roster key as `agent`.
+
+```yaml
+steps:
+  - id: audit
+    kind: review
+    repo: alpha
+    mode: headless
+    agent: agents/reviewer          # or agents/reviewer@1a2b3c4 for one definition
+```
+
+The key is pinned by hash when the plan is approved (or the pulse saved); later pushes of the source
+do not change what the step runs.
+
 ### Run an agent audit on a schedule
 
 A pulse runs a preset on a schedule: the hub creates a goal with an approved plan at each slot and

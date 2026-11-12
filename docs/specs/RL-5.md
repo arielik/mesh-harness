@@ -73,7 +73,7 @@ definition, of the source's repo id).
 | `Goal.agents` (src/protocol/goal.ts) | zod field | New, optional: `z.record(z.string(), AgentDef)`, keyed by the step's policy string (`agent`). Stored in the goal's value (no new column). |
 | `Pulse.agents` (src/protocol/pulse.ts) | zod field | New: `z.record(z.string(), AgentDef).default({})`, keyed as `Goal.agents`; a stored pulse without it reads as `{}`. `PulseView.agents`: `Record<string, string>` (policy string to hash), as `profiles`. |
 | `ROSTER_KEY_RULE` | const | `"agent key must be <source>/<name>[@<7-64 hex>]"`. |
-| `parseRosterKey(s: string): { source: string; name: string; ref?: string } \| undefined` | function | Matches `^([A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9._-]+)*)/([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:@([0-9a-f]{7,64}))?$` and length ≤ 200; `source` is lowercased. A string without `/` or not matching → `undefined`. |
+| `parseRosterKey(s: string): { source: string; name: string; ref?: string } \| undefined` | function | Matches `^([A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9._-]+)*)/([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:@([0-9a-f]{7,64}))?$` and length ≤ `ROSTER_KEY_MAX` (330 = `CATALOG_REPO_MAX` 200 + `/` + 64-character name + `@` + 64-hex hash); `source` is lowercased. A string without `/` or not matching → `undefined`. |
 | `StepPolicy.agent` (src/protocol/goal.ts) | zod field | Accepts an agent name (as RL-1, same message) **or** a string with `/` that `parseRosterKey` accepts; a string with `/` it rejects fails with `ROSTER_KEY_RULE`. |
 | `CatalogSourceSave` | zod, strict | Body of `POST /v1/catalog-sources`: `{ repo: string 1..300, folder: string 1..200, calibrator?: string 1..100 }`. |
 | `CatalogPush` | zod, strict | Body of `POST /v1/catalog-sources/push`: `{ repo: string 1..300, commit: /^[0-9a-f]{40}$/, defs: { path: string 1..300, text: string 1..100000 }[] ≤ 2000 }`. The cap on the summed `text` length (8 000 000) is a hub check (Routes), not part of the schema. |
@@ -130,8 +130,11 @@ rescan). For each source whose `repo` equals the repo id of a scanned checkout (
    its `digest`, the daemon calls `POST /v1/catalog-sources/push {repo, commit: C, defs}`. Otherwise no call.
 
 Uncommitted and untracked files are therefore never pushed, and the `commit` of a push always contains
-its texts. A refusal is logged as `catalog push of <repo> refused: <message>` and tried again on the next
-rescan.
+its texts. A refusal (a hub answer with a 4xx status) is logged as `catalog push of <repo> refused: <message>`
+and not sent again before the next rescan (`REPO_SCAN_MS`), whatever happens to the other pushes of the
+pass. No answer or a 5xx is logged as `catalog push of <repo> failed: <message>`; the pushes of that scan
+not yet accepted or refused are tried again at the first sync after a back-off of 30 s that doubles on each
+failed retry up to 15 min, and a new rescan starts afresh (Open questions).
 
 ### Hub store (src/store/hub-store.ts, src/store/hub-copy.ts)
 
@@ -144,7 +147,7 @@ rescan.
 | `saveCatalogSource(s)`, `getCatalogSource(repo)`, `listCatalogSources()` | New; list by repo id. |
 | `putCatalogDefs(repo: string, commit: string, defs: { path: string; name: string; hash: string; text: string; front: AgentFront }[], by: string, now: number): Promise<{ added: number }>` | New; a `(repo, name, hash)` not stored yet is added (`added` counts them), an existing one gets `commit` appended to `commits` (no duplicate; oldest dropped past 50) and its `pushedAt`; afterwards exactly the pushed `(name, hash)` pairs of the repo are current. Texts are never deleted. |
 | `listCatalogDefs(f: { repo?: string; name?: string; current?: boolean }): Promise<CatalogDefView[]>` | New; with `text`. |
-| `TABLES` (src/store/hub-copy.ts) | Gains, after `pulse_slot`: `{ name: "agent_def" }`, `{ name: "catalog_source" }`. |
+| `TABLES` (src/store/hub-copy.ts) | Now exported (for the table-list check of AC-03). Gains, after `pulse_slot`: `{ name: "agent_def" }`, `{ name: "catalog_source" }`. |
 
 ### Hub behaviour (src/hub/service.ts)
 
@@ -209,7 +212,7 @@ stays the policy string. Other offers: unchanged.
 
 | Route | Rule / scope / tag | Contract |
 |---|---|---|
-| `POST /v1/catalog-sources` | `admin`, tag `admin` | Body `CatalogSourceSave`. `repo`: `repoFromRemote(repo)?.id` when that parses and does not start with `local/`, else the lowercased input without a trailing `.git` when it matches `^[a-z0-9][a-z0-9.-]*(/[a-z0-9._-]+)+$`, else 422 `repo must be a repo id (host/path) or a remote URL`. A resulting id that does not match `^[a-z0-9][a-z0-9._-]*(/[a-z0-9._-]+)+$` (so a roster key could not name it) → 422 `repo id <id> cannot be used in an agent key`. `folder` must match `^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$` with no `.` or `..` segment, else 422 `folder must be a relative path inside the repo`. 201 with `CatalogSourceView` when new; 200 when it replaced the folder/calibrator of an existing one (`createdBy`/`createdAt` and pushed data kept). Event `catalog.saved`. Non-admin → 403. |
+| `POST /v1/catalog-sources` | `admin`, tag `admin` | Body `CatalogSourceSave`. `repo`: `repoFromRemote(repo)?.id` when that parses and does not start with `local/`, else the lowercased input without a trailing `.git` when it matches `^[a-z0-9][a-z0-9.-]*(/[a-z0-9._-]+)+$`, else 422 `repo must be a repo id (host/path) or a remote URL`. A resulting id that does not match `^[a-z0-9][a-z0-9._-]*(/[a-z0-9._-]+)+$` (so a roster key could not name it) → 422 `repo id <id> cannot be used in an agent key`. A resulting id longer than `CATALOG_REPO_MAX` (200) → 422 `repo id <id> is over 200 characters`. `folder` must match `^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$` with no `.` or `..` segment, else 422 `folder must be a relative path inside the repo`. 201 with `CatalogSourceView` when new; 200 when it replaced the folder/calibrator of an existing one (`createdBy`/`createdAt` and pushed data kept; a body without `calibrator` keeps the stored one). Event `catalog.saved`. Non-admin → 403. |
 | `GET /v1/catalog-sources` | `member`, `goals:read`, tag `goals` | `{ sources: CatalogSourceView[] }` by repo id. |
 | `POST /v1/catalog-sources/push` | `member`, tag `daemon` | Body `CatalogPush`. No machine on the token → 403 `a catalog push needs a device token`; unknown `repo` → 404 `no catalog source <repo>`; the machine's stored inventory lacks it → 403 `this machine does not report <repo> in its repo inventory`; a path that is not `<folder>/<agent name>.md` → 422 `catalog push: <path> is not <folder>/<name>.md`; a path twice → 422 `catalog push: <path> appears twice`; summed `text` length over 8 000 000 → 422 `catalog push: texts total <n> characters, over 8000000`. Else stores (`putCatalogDefs`, front matter as the daemon parses it), sets the source's `commit`, `digest` (`catalogDigest` of the pushed paths and hashes), `count`, `pushedAt`, `pushedBy`; event `catalog.pushed`; 200 `{ source: CatalogSourceView, added: number }`. |
 | `GET /v1/agents` | `member`, `goals:read`, tag `goals` | Query `name` (exact agent name, optional). `AgentsView` (`sources` = all catalog sources). |
@@ -230,7 +233,7 @@ prints its text and exits 1. Wrong arguments print the usage and exit 2; a bad k
 |---|---|
 | `mesh agents [--name <n>] [--json]` | `GET /v1/agents`. `--json`: the `AgentsView` (2-space JSON). Else per group the line `<name>  versions <V>  copies <C>` followed by `  <flag>` for each true flag in the order `diverged`, `pinned`, `behind`, `modified`; per version `  <hash12>  <description or ->`; per copy `    <key>  <origin>` where origin is `repo` or `catalog <commit7>`, then `  pin <pin.commit7>` when pinned, `  behind`, `  modified` when true. No groups → `No agents on the roster.` Exit 0. |
 | `mesh agent add <key> [--repo <path>] [--force]` | Resolves `key`. When the installed file exists, its hash differs from the definition's and there is no `--force` → exit 1 `<root>/.claude/agents/<name>.md exists and differs from <canonical key>@<commit7>; use --force to replace it` (nothing written). Else writes the definition's `text` byte for byte (creating folders), sets the lock entry `{name, source, commit, hash}` (replacing one of the same name, creating the lock), prints `Installed <canonical key>@<commit7> into .claude/agents/<name>.md (hash <hash12>); pinned in .mesh/agents.lock.`, exit 0. |
-| `mesh agent outdated [--repo <path>] [--json]` | No lock → `No pinned agents in <root>.` exit 0. Per entry (lock order): its latest. A resolve failure other than a 404 whose text starts with `no agent ` (hub offline, 401, 409, any other refusal) → prints that text and no status line, exit 1. Status: `missing` when the installed file is absent; else the comma-joined subset of `modified` (file hash ≠ pin hash) and `behind` (latest resolved and its hash ≠ pin hash) or `gone` (resolve answered 404 `no agent <name> in catalog source <id>`); `ok` when none. Line `<name>  <canonical key>@<pin commit7>  <status>` plus `  latest <commit7>` when behind. `--json`: `{ agents: { name, source, commit, hash, status, latest?: { hash, commit } }[] }`. Exit 0 when every status is `ok`, else 1. |
+| `mesh agent outdated [--repo <path>] [--json]` | No lock → `No pinned agents in <root>.` exit 0. Per entry (lock order): its latest. A resolve failure other than a 404 whose text starts with `no agent ` (hub offline, 401, 409, any other refusal) → prints that text and no status line, exit 1. Status: `missing` when the installed file is absent; else the comma-joined subset of `modified` (file hash ≠ pin hash) and `behind` (latest resolved and its hash ≠ pin hash) or `gone` (resolve answered 404 `no agent <name> in catalog source <id>`); `ok` when none. Line `<name>  <canonical key>@<pin commit7>  <status>` plus `  latest <commit7>` when behind. `--json`: `{ agents: { name, source, commit, hash, status, latest?: { hash, commit } }[] }`; `latest` is present whenever the entry's latest resolved (whatever its status), absent when it did not resolve (`gone`). Exit 0 when every status is `ok`, else 1. |
 | `mesh agent diff <name> [--repo <path>]` | Not in the lock → exit 1 `<name> is not pinned in <root>/.mesh/agents.lock`. Else prints `unifiedDiff(<installed text or "">, <latest text>, ".claude/agents/<name>.md", "<canonical key>@<latest commit7>")`, or `<name>: no difference from <canonical key>@<commit7>` when it is empty. A resolve error → exit 1 with its text. Exit 0. |
 | `mesh agent update <name> [--repo <path>] [--yes]` | Not in the lock → as `diff`. When the latest hash equals the pin hash and the installed file's hash equals it too → `<name> is up to date (<canonical key>@<commit7>).` exit 0. Else prints the diff as `diff` does, then without `--yes` asks `Replace .claude/agents/<name>.md with <canonical key>@<commit7>? [y/N] ` (the injected `readLine`, else stdin when it is a terminal); `y`/`yes` (any case) → writes the latest text and lock entry, prints `Updated <name> to <canonical key>@<commit7> (hash <hash12>).` exit 0; any other answer → `Not updated.` exit 1; no terminal and no `--yes` → `Not updated: run with --yes to confirm without a terminal.` exit 1. |
 | `mesh agent source add <repo> --folder <path> [--calibrator <user>]` | `POST /v1/catalog-sources`; prints `Saved catalog source <repo id> (folder <folder>).` exit 0. |
@@ -374,6 +377,59 @@ find groups by name, copies by key, sources by repo id, events by `type`.
   source; the hub knows only commits at which the content changed.
 - 2026-11-12 **`outdated` exit code.** Assumed 1 when any entry is not `ok` (scriptable), 0 otherwise.
 - 2026-11-12 **Calibrator.** Stored and shown on catalog sources only; acting on it is S6.
+- 2026-11-12 **Implementation choices (developer).** Taken on the conservative reading, open for
+  review: under share `steps` the daemon sends no `machine.agents` key at all (the spec allows absent
+  or `[]`; absent keeps the existing sync bodies of `steps` machines unchanged), so copies stored while
+  the machine shared `me`/`all` stay on the hub and are shown to nobody; the catalog push pass runs
+  inside the sync flush (awaited, errors only logged), so a flush includes the push; a committed
+  agent file with empty text is not pushed (the push schema needs 1+ characters); `mesh agent update`
+  prints `Not updated.` on stdout and the no-terminal line on stderr; a `.mesh/agents.lock` that does
+  not parse is refused (exit 1 `<lock> is not a valid agents lock`), never overwritten.
 - 2026-11-12 **Caps.** The design gives 2000 per machine; assumed in addition 256 KiB per discovered
   file, 100 000 characters per pushed text, 2000 definitions per push, 8 000 000 characters of text per
   push (the design estimates 1-3 MB), 1000 characters of description.
+- 2026-11-12 **`TABLES` exported (verify c1 AC-03).** AC-03 checks that `TABLES` lists the two new
+  tables; the list was module-private. Decided: `TABLES` is exported from `src/store/hub-copy.ts` for
+  the table-list check (no other use).
+- 2026-11-12 **`latest` in `outdated --json` (verify c1 AC-14).** The contract did not say when
+  `latest?: { hash, commit }` is present. Decided: present whenever the lock entry's source resolved
+  (whatever its status, `ok` included), absent when it did not resolve (`gone`).
+- 2026-11-12 **Push retry (review round 2, B1).** A hub refusal (4xx: 403 inventory, 404, 422 path or
+  size) is deterministic, so the daemon keeps the scan as attempted and tries again only after the next
+  rescan (`REPO_SCAN_MS`). No answer (transport error) or a 5xx (503 included) is tried again at the next
+  sync flush (about every reconcile, and on session changes), which is faster than the rescan; assumed
+  acceptable because those failures are transient and a flush does not run while the hub is unreachable
+  for long. Open: whether 5xx should also wait for the rescan or back off. Superseded by the next entry.
+- 2026-11-12 **Push retry back-off (2026-11-12, diff r2 S8).** Contract change: the daemon keeps, per scan
+  (`seq`), the pushes the hub settled, keyed by `(repo, commit, digest)`: accepted (2xx) or refused (4xx).
+  A settled push is not sent again until the next rescan, also when another push of the same pass failed.
+  After a 5xx or no answer, the pass runs again only at the first sync flush at or after a back-off: 30 s,
+  doubling on each further failed pass of the same scan, at most 15 min; a pass without such a failure
+  ends the scan's pushes, and a new rescan resets the record and the back-off. A deterministic 5xx thus
+  costs at most one POST per back-off step instead of one per flush. Open: whether the back-off should
+  also cover the `GET /v1/catalog-sources` listing (today a failed listing waits for the next rescan).
+- 2026-11-12 **Concurrent pushes (review round 2, B2).** `pushCatalog` and `saveCatalogSource` call
+  `HubStore.serialize()` first: they read the source and its definitions and then write current flags and
+  the source row, so on Postgres (READ COMMITTED) two pushes of one source would otherwise both leave rows
+  current. Serialised, the last push to commit wins whole (definitions and source row agree).
+- 2026-11-12 **Key length (review round 2, S3).** A run of a pinned roster agent resolves
+  `<full source id>/<name>@<64-hex hash>`. Decided: the hub registers source ids of at most
+  `CATALOG_REPO_MAX` = 200 characters (the cap of `AgentPin.source` and lock `source`; longer → 422), and
+  `parseRosterKey` accepts keys up to `ROSTER_KEY_MAX` = 330, so every full-id key fits.
+  `CatalogSourceSave.repo` stays 1..300 (a remote URL may be longer than its id).
+- 2026-11-12 **Pins kept on a new plan version (review round 2, S4).** `proposePlan` checks roster keys
+  with the goal's existing pins: a key already pinned is not resolved again, so a v2 plan that repeats a
+  pinned key whose name has since left the source is accepted, as approval keeps that pin.
+- 2026-11-12 **Calibrator on re-registration (review round 2, S5).** Re-registering a source without
+  `calibrator` keeps the stored one. There is no way to clear it through this route; open whether a
+  `calibrator: null` (or a separate route) should clear it.
+- 2026-11-12 **Push gaps (review round 2, S6), open.** (1) After the folder of a source changes while
+  the checkout's commit equals the stored commit, the daemon skips the source (same commit) and nothing
+  is pushed until a new commit lands; a hub-side fix would clear `commit`/`digest` when the folder
+  changes. (2) When the folder becomes empty (or holds no valid agent file) at a newer commit, the daemon
+  pushes nothing (a push needs at least one definition here), so the old definitions stay current; a fix
+  would allow a push with `defs: []` that clears the current flags. (3) The hub does not enforce
+  forward-only; two daemons with checkouts at different commits can briefly move a source back to an
+  older commit (the next pass of the newer one moves it forward again); a fix would be an
+  `expectedCommit` compare-and-set on push. All three are kept as is for this step (conservative reading:
+  no contract change), to be decided in review.

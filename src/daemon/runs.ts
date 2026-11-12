@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { HeadlessRunner } from "../claude/index.ts";
 import { agentFileHash, builtinProfile, headlessArgv, headlessPrompt, parseAgentFile, profileSha256, redactSecrets, renderTail, stepSlug, telemetryFromStream } from "../core/index.ts";
 import {
+  AgentDef,
   MESH_TOOL_RULES,
   ProfileSnapshot,
   RunFile,
@@ -26,6 +27,7 @@ import {
   type StoredArtifact,
   type DoneResult,
   type Repo,
+  type CatalogDefView,
 } from "../protocol/index.ts";
 import { HubRpcError, type HubLink } from "./hub-link.ts";
 
@@ -54,6 +56,13 @@ export interface RunsDeps {
   log(line: string): void;
 }
 
+/** RL-1: one `--agents` entry built from an agent file (tools plus the mesh tool rules). */
+function agentsJsonEntry(text: string): Record<string, unknown> {
+  const a = parseAgentFile(text);
+  const tools = a.tools ? [...a.tools, ...MESH_TOOL_RULES.filter((r) => !a.tools?.includes(r))] : undefined;
+  return { description: a.description ?? "", prompt: a.body.trim(), ...(tools ? { tools } : {}), ...(a.model ? { model: a.model } : {}) };
+}
+
 export type OfferOutcome = { state: "delivered" | "failed"; method: string } | "retry";
 
 /** Run-directory sidecar: what the offer said and which local sessions are the run's. */
@@ -61,6 +70,9 @@ interface RunMeta {
   offerId?: number | undefined;
   title?: string | undefined;
   agent?: string | undefined;
+  /** RL-5: for a roster key (`agent` with `/`), the goal's pin the offer carried, or why there is none. */
+  agentDef?: AgentDef | undefined;
+  agentError?: string | undefined;
   /** Daemon session ids of the run's session (registered with the run's sessionId). */
   sids: string[];
   /** Why the run did not start, when it did not. */
@@ -286,11 +298,13 @@ export class HeadlessRuns {
   }
 
   /** RL-2: the running run a daemon session belongs to (its worktree and agent), if any. */
-  runForSid(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined } | undefined {
+  runForSid(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined; agentFile?: string | undefined } | undefined {
     for (const run of this.runs.values()) {
       if (run.state !== "running" || run.endedAt !== undefined) continue;
       if (!this.runSids(run).has(sid)) continue;
-      return { worktree: run.worktree, agent: run.agent };
+      // RL-5: a roster run's definition is `<runDir>/agent.md`.
+      const agentFile = this.file(run, "agent.md");
+      return { worktree: run.worktree, agent: run.agent, ...(existsSync(agentFile) ? { agentFile } : {}) };
     }
     return undefined;
   }
@@ -389,7 +403,15 @@ export class HeadlessRuns {
       profile: { name: snap.data.name, sha256: snap.data.sha256, base: snap.data.base },
       budget,
     };
-    this.saveMeta(run, { offerId: m.id, title, ...(typeof d.agent === "string" && d.agent ? { agent: d.agent } : {}), sids: [] });
+    const agentDef = AgentDef.safeParse(d.agentDef);
+    this.saveMeta(run, {
+      offerId: m.id,
+      title,
+      ...(typeof d.agent === "string" && d.agent ? { agent: d.agent } : {}),
+      ...(agentDef.success ? { agentDef: agentDef.data } : {}),
+      ...(typeof d.agentError === "string" ? { agentError: d.agentError } : {}),
+      sids: [],
+    });
     writeFileAtomic(this.file(run, "profile.json"), JSON.stringify(snap.data.settings));
     this.save(run);
     const max = this.deps.maxSessions();
@@ -431,7 +453,27 @@ export class HeadlessRuns {
       if (!b || profileSha256(b.base, b.settings) !== run.profile.sha256) return this.notStarted(next, "the run's profile.json is missing");
       writeFileAtomic(this.file(run, "profile.json"), JSON.stringify(b.settings));
     }
-    if (meta.agent) {
+    let agentName = meta.agent;
+    if (meta.agent?.includes("/")) {
+      // RL-5: a roster key runs the pinned catalog definition; nothing is read from the worktree.
+      const def = meta.agentDef;
+      if (!def) return this.notStarted(next, `roster agent ${meta.agent} was not resolved by the hub: ${meta.agentError ?? "no definition"}`);
+      const link = this.deps.link();
+      let text: string;
+      try {
+        if (!link) throw new Error("no hub configured");
+        const got = await link.rpc<CatalogDefView>("GET", `/v1/agents/resolve?key=${encodeURIComponent(`${def.source}/${def.name}@${def.hash}`)}`);
+        text = got.text;
+      } catch (e) {
+        return this.notStarted(next, `roster agent ${def.key} is not available: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (typeof text !== "string" || agentFileHash(text) !== def.hash) return this.notStarted(next, `roster agent ${def.key} does not match its hash`);
+      writeFileAtomic(this.file(run, "agent.md"), text);
+      writeFileAtomic(this.file(run, "agents.json"), JSON.stringify({ [def.name]: agentsJsonEntry(text) }));
+      agentName = def.name;
+      next = { ...next, agent: { name: def.name, key: def.key, hash: def.hash } };
+      this.save(next);
+    } else if (meta.agent) {
       const path = join(worktree, ".claude", "agents", `${meta.agent}.md`);
       let text: string;
       try {
@@ -439,10 +481,7 @@ export class HeadlessRuns {
       } catch {
         return this.notStarted(next, `no agent ${meta.agent} in ${this.repoName(run)}/.claude/agents`);
       }
-      const a = parseAgentFile(text);
-      const tools = a.tools ? [...a.tools, ...MESH_TOOL_RULES.filter((r) => !a.tools?.includes(r))] : undefined;
-      const def = { description: a.description ?? "", prompt: a.body.trim(), ...(tools ? { tools } : {}), ...(a.model ? { model: a.model } : {}) };
-      writeFileAtomic(this.file(run, "agents.json"), JSON.stringify({ [meta.agent]: def }));
+      writeFileAtomic(this.file(run, "agents.json"), JSON.stringify({ [meta.agent]: agentsJsonEntry(text) }));
       next = { ...next, agent: { name: meta.agent, key: `${this.repoName(run)}/${meta.agent}`, hash: agentFileHash(text) } };
       this.save(next);
     }
@@ -452,7 +491,7 @@ export class HeadlessRuns {
       sessionId: run.sessionId,
       maxTurns: run.budget.turns + 1,
       runDir: run.dir,
-      agent: meta.agent,
+      agent: agentName,
       usd: run.budget.usd,
     });
     const r = await runner.start({ argv, cwd: worktree, env: { MESH_STEP: run.step, MESH_RUN: run.runId }, runDir: run.dir });

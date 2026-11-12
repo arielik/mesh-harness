@@ -59,9 +59,13 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `pulse.skipped` | a slot was skipped while an earlier goal runs | `pulse`, `slot`, `reason` (`overlap`), `running` (that goal) |
 | `pulse.missed` | a slot was missed; `goal` when it had one | `pulse`, `slot`, `reason` (`no_machine`, `not_accepted`, `capacity`, `expired`, `hub_down`, `error`), `tried` (machines offered), `error` (reason `error` only) |
 | `pulse.abandoned` | a started goal older than `maxGoalAge` was dropped; `goal` | `pulse`, `slot` |
+| `catalog.saved` | an admin registered a catalog source or changed its folder/calibrator; `user` | `repo`, `folder` |
+| `catalog.pushed` | a machine pushed the committed definitions of a catalog source; `user` | `repo`, `commit`, `added` (new definitions), `count` (current definitions) |
+| `agents.reported` | a sync changed the agent files a machine reports; `user` | `machine`, `count` |
 | `hub.events_pruned` | retention ran | `count`, `days` |
 
-Pulse event payloads never carry the preset text or a profile's settings.
+Pulse event payloads never carry the preset text or a profile's settings. Roster event payloads
+never carry agent texts, descriptions or paths.
 
 A plan replaced before anyone decided is stored as `superseded`, not `revised`. It emits no `plan.revised`, so design rounds count only human requests for changes.
 

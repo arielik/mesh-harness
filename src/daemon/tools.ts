@@ -76,7 +76,7 @@ export interface ToolHost {
   /** RL-2: run git in a folder (through the process adapter). */
   git?(cwd: string, args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }>;
   /** RL-2: the running headless run a session belongs to (its worktree and agent). */
-  runOf?(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined } | undefined;
+  runOf?(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined; agentFile?: string | undefined } | undefined;
   /** RL-2: a session's review record was stored (a headless run counts its undeclared rules). */
   reviewStored?(sid: string, undeclaredRules: number): void;
 }
@@ -442,17 +442,26 @@ async function reviewUpload(host: ToolHost, s: Session, step: string, rec: Revie
   };
   const commit = rec.subject.commit ?? (await git(["rev-parse", "HEAD"]))?.trim() ?? undefined;
 
-  // Declared rules of the run's agent (or the step's policy.agent).
-  let agent = run?.agent?.name;
-  if (!agent) {
-    try {
-      agent = (await contextOf(host, step)).ctx.step.policy?.agent;
-    } catch {
-      agent = undefined;
+  // Declared rules of the run's agent (or the step's policy.agent). RL-5: a roster run's definition
+  // is `<runDir>/agent.md` (front matter `mesh-rules` only; no sibling rules file).
+  let declared: Set<string>;
+  if (run?.agentFile) {
+    const agentText = readText(run.agentFile);
+    declared = agentText !== undefined ? declaredRules(agentText, undefined) : new Set<string>();
+  } else {
+    let agent = run?.agent?.name;
+    if (!agent) {
+      try {
+        agent = (await contextOf(host, step)).ctx.step.policy?.agent;
+      } catch {
+        agent = undefined;
+      }
     }
+    // A roster key is never a file name in the worktree.
+    if (agent?.includes("/")) agent = undefined;
+    const agentText = agent && root ? readText(join(root, ".claude", "agents", `${agent}.md`)) : undefined;
+    declared = agentText !== undefined ? declaredRules(agentText, root && agent ? readText(join(root, ".claude", "agents", `${agent}.rules.yaml`)) : undefined) : new Set<string>();
   }
-  const agentText = agent && root ? readText(join(root, ".claude", "agents", `${agent}.md`)) : undefined;
-  const declared = agentText !== undefined ? declaredRules(agentText, (root && agent ? readText(join(root, ".claude", "agents", `${agent}.rules.yaml`)) : undefined)) : new Set<string>();
 
   const secrets = host.secrets?.() ?? [];
   let redactions = 0;

@@ -36,8 +36,11 @@ export const run: Runner = (cmd, args, opts = {}) =>
       child.kill("SIGTERM");
       done({ code: 124, stdout, stderr: stderr + `\n${cmd}: timed out` });
     }, opts.timeoutMs ?? 30_000);
-    child.stdout?.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.stderr?.on("data", (d: Buffer) => (stderr += d.toString()));
+    // Decoded as UTF-8 streams, so a multi-byte character split across chunks stays whole (RL-5).
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (d: string) => (stdout += d));
+    child.stderr?.on("data", (d: string) => (stderr += d));
     child.on("error", (e) => done({ code: 127, stdout, stderr: String(e) }));
     child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
     if (child.stdin) {
