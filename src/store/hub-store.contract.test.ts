@@ -432,12 +432,12 @@ function contract(d: Driver) {
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
     it("test_AC05_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(9);
+      expect(HubStore.SCHEMA_VERSION).toBe(10);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(9);
+      expect(HUB_MIGRATIONS.length).toBe(10);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -573,9 +573,9 @@ function contract(d: Driver) {
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
     it("test_AC08_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(9);
-      expect(HUB_MIGRATIONS.length).toBe(9);
-      expect(HUB_MIGRATIONS_PG.length).toBe(9);
+      expect(HubStore.SCHEMA_VERSION).toBe(10);
+      expect(HUB_MIGRATIONS.length).toBe(10);
+      expect(HUB_MIGRATIONS_PG.length).toBe(10);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -665,9 +665,9 @@ function contract(d: Driver) {
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
     it("test_AC06_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(9);
-      expect(HUB_MIGRATIONS.length).toBe(9);
-      expect(HUB_MIGRATIONS_PG.length).toBe(9);
+      expect(HubStore.SCHEMA_VERSION).toBe(10);
+      expect(HUB_MIGRATIONS.length).toBe(10);
+      expect(HUB_MIGRATIONS_PG.length).toBe(10);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */
@@ -766,9 +766,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(9);
-      expect(HUB_MIGRATIONS.length).toBe(9);
-      expect(HUB_MIGRATIONS_PG.length).toBe(9);
+      expect(HubStore.SCHEMA_VERSION).toBe(10);
+      expect(HUB_MIGRATIONS.length).toBe(10);
+      expect(HUB_MIGRATIONS_PG.length).toBe(10);
     });
 
     it("test_AC08_v7_migrates", async () => {
@@ -787,7 +787,7 @@ function contract(d: Driver) {
       await raw.run("DROP TABLE IF EXISTS artifact");
       await raw.run("DROP TABLE IF EXISTS profile");
       // RL-2: and without the migration-9 tables, which the store re-creates after migration 8.
-      for (const t of ["review_record", "review_item", "item_history"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      for (const t of ["review_record", "review_item", "item_history", "pulse_slot", "pulse"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
       await raw.run("UPDATE schema_version SET version = 7");
       await raw.close();
       const s = track(await HubStore.open(target));
@@ -802,7 +802,7 @@ function contract(d: Driver) {
       expect(await X(s).listArtifacts({})).toStrictEqual([]);
       expect(await X(s).listProfiles()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(9);
+      expect(Number((v as { version: number }).version)).toBe(10);
     });
 
     it("test_AC08_artifact_roundtrip", async () => {
@@ -951,9 +951,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(9);
-      expect(HUB_MIGRATIONS.length).toBe(9);
-      expect(HUB_MIGRATIONS_PG.length).toBe(9);
+      expect(HubStore.SCHEMA_VERSION).toBe(10);
+      expect(HUB_MIGRATIONS.length).toBe(10);
+      expect(HUB_MIGRATIONS_PG.length).toBe(10);
     });
 
     it("test_AC08_v8_migrates", async () => {
@@ -970,7 +970,7 @@ function contract(d: Driver) {
       await s1.close();
       // Make it a v8 database: without the migration-9 tables and at version 8.
       const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
-      for (const t of ["review_record", "review_item", "item_history"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      for (const t of ["review_record", "review_item", "item_history", "pulse_slot", "pulse"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
       await raw.run("UPDATE schema_version SET version = 8");
       await raw.close();
       const s = track(await HubStore.open(target));
@@ -985,7 +985,7 @@ function contract(d: Driver) {
       expect(await X(s).listItems("L")).toStrictEqual([]);
       expect(await X(s).itemHistory("L")).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(9);
+      expect(Number((v as { version: number }).version)).toBe(10);
     });
 
     it("test_AC08_addReview", async () => {
@@ -1065,6 +1065,215 @@ function contract(d: Driver) {
       expect(await fps({ goal: "G1" })).toStrictEqual(["x@G1.validate"]);
       expect(await fps({ step: "G2.validate" })).toStrictEqual(["y@G2.validate"]);
       expect(await fps({ lineage: "M" })).toStrictEqual([]);
+    });
+  });
+
+  // RL-3 AC-05: pulses and slots (migration 10; docs/specs/RL-3.md, Hub store).
+  describe("migration 10", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+    const X = (s: HubStore): any => s;
+    const HOUR = 3_600_000;
+    const DAY = 86_400_000;
+    /** A valid `Omit<Pulse, "id">`; an `undefined` override removes the key. */
+    const pulseRow = (over: Record<string, unknown> = {}): Record<string, unknown> => {
+      const p: Record<string, unknown> = {
+        owner: "ada",
+        title: "weekly on app",
+        when: { every: "7d", anchor: T0 },
+        preset: { name: "weekly", text: "steps: []\n", sha256: "a".repeat(64) },
+        params: { repo: "example/app" },
+        profiles: {},
+        topics: [],
+        target: {},
+        windowMs: 4 * HOUR,
+        overlap: "skip",
+        maxGoalAgeMs: 14 * DAY,
+        missed: "record",
+        enabled: true,
+        nextAt: T0 + 7 * DAY,
+        version: 1,
+        createdAt: T0,
+        updatedAt: T0,
+        ...over,
+      };
+      for (const k of Object.keys(p)) if (p[k] === undefined) delete p[k];
+      return p;
+    };
+    const slot = (pulse: string, id: string, at: number, over: Record<string, unknown> = {}) => ({ pulse, slot: id, at, state: "fired", tried: [], decidedAt: at, ...over });
+    const ids = (xs: { id: string }[]) => xs.map((x) => x.id);
+    const slotIds = (xs: { slot: string }[]) => xs.map((x) => x.slot);
+
+    it("test_AC05_version", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(10);
+      expect(HUB_MIGRATIONS.length).toBe(10);
+      expect(HUB_MIGRATIONS_PG.length).toBe(10);
+    });
+
+    it("test_AC05_v9_upgrade", async () => {
+      const target = await d.fresh();
+      const s1 = await HubStore.open(target);
+      await s1.upsertIdentity({ provider: "oidc", subject: "1", name: "Ada", groups: [] }, T0);
+      await s1.createGoal(goalInput("kept"));
+      await s1.saveSteps([step("G1.a"), step("G1.b", { state: "done", holderUser: "ada", rounds: [{ n: 1, user: "ada", finishedAt: T0 + 5, outcome: "done", summary: "ok" }] })]);
+      const record = {
+        goal: "G1",
+        step: "G1.b",
+        round: 1,
+        lineage: "L",
+        raising: true,
+        complete: true,
+        record: { subject: {}, coverage: "complete", assessment: "issues", items: [{ key: { rule: "I-03", path: "a.ts" }, title: "T", severity: "S2", category: "c", evidence: [], fp: "abcdefghijklmnop", mark: "new" }], dispositions: [], summary: "s" },
+        fold: { new: 1, repeat: 0, regression: 0, resolved: 0, carried: 0 },
+        artifact: "a-01J0000000000000000000000R",
+        undeclaredRules: 0,
+        decider: { kind: "agent", key: "app/auditor" },
+        by: "ada",
+        at: T0,
+      };
+      expect(await X(s1).addReview(record)).toBe(true);
+      const item = { lineage: "L", fp: "abcdefghijklmnop", state: "open", rule: "I-03", path: "a.ts", title: "T", severity: "S2", category: "c", raisedBy: { key: "app/auditor" }, first: { goal: "G1", step: "G1.b", round: 1, at: T0 }, last: { goal: "G1", step: "G1.b", round: 1, at: T0 } };
+      await X(s1).saveItem(item);
+      await X(s1).addItemHistory("L", item.fp, { at: T0, goal: "G1", step: "G1.b", round: 1, from: null, to: "open", kind: "fold", mark: "new" });
+      const pre = {
+        goal: await s1.getGoal("G1"),
+        a: await s1.getStep("G1.a"),
+        b: await s1.getStep("G1.b"),
+        reviews: await X(s1).listReviews({}),
+        items: await X(s1).listItems("L"),
+        history: await X(s1).itemHistory("L"),
+      };
+      await s1.close();
+      // Make it a v9 database: without the migration-10 tables and at version 9.
+      const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
+      for (const t of ["pulse_slot", "pulse"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      await raw.run("UPDATE schema_version SET version = 9");
+      await raw.close();
+      const s = track(await HubStore.open(target));
+      expect(await s.getGoal("G1")).toStrictEqual(pre.goal);
+      expect(await s.getStep("G1.a")).toStrictEqual(pre.a);
+      expect(await s.getStep("G1.b")).toStrictEqual(pre.b);
+      expect(await X(s).listReviews({})).toStrictEqual(pre.reviews);
+      expect(await X(s).listItems("L")).toStrictEqual(pre.items);
+      expect(await X(s).itemHistory("L")).toStrictEqual(pre.history);
+      expect(pre.reviews).toHaveLength(1);
+      expect(await X(s).listPulses()).toStrictEqual([]);
+      expect((await X(s).createPulse(pulseRow())).id).toBe("p-1");
+      const v = await s.db.get("SELECT version FROM schema_version");
+      expect(Number((v as { version: number }).version)).toBe(10);
+    });
+
+    it("test_AC05_ids", async () => {
+      const s = await store();
+      const p1 = await X(s).createPulse(pulseRow());
+      const p2 = await X(s).createPulse(pulseRow());
+      expect([p1.id, p2.id]).toStrictEqual(["p-1", "p-2"]);
+      expect(p1).toMatchObject({ ...pulseRow(), id: "p-1" });
+      await X(s).savePulse(pulseRow({ id: "p-2", deletedAt: T0 + 1, enabled: false, nextAt: undefined }));
+      expect((await X(s).createPulse(pulseRow())).id).toBe("p-3");
+      expect(await X(s).getPulse("p-2")).toMatchObject({ id: "p-2", deletedAt: T0 + 1, enabled: false });
+      expect(await X(s).getPulse("p-9")).toBeUndefined();
+    });
+
+    it("test_AC05_listPulses", async () => {
+      const s = await store();
+      await X(s).createPulse(pulseRow({ owner: "ann" }));
+      await X(s).createPulse(pulseRow({ owner: "bob" }));
+      await X(s).createPulse(pulseRow({ owner: "ann" }));
+      await X(s).savePulse({ ...(await X(s).getPulse("p-2")), deletedAt: T0 + 1, enabled: false });
+      expect(ids(await X(s).listPulses())).toStrictEqual(["p-1", "p-3"]);
+      expect(ids(await X(s).listPulses({ owner: "ann" }))).toStrictEqual(["p-1", "p-3"]);
+      expect(ids(await X(s).listPulses({ owner: "bob" }))).toStrictEqual([]);
+      expect(ids(await X(s).listPulses({ deleted: true }))).toContain("p-2");
+    });
+
+    it("test_AC05_list_by_number", async () => {
+      const s = await store();
+      for (let i = 0; i < 11; i++) await X(s).createPulse(pulseRow());
+      // By number, not by id text (p-10 after p-9).
+      expect(ids(await X(s).listPulses())).toStrictEqual(Array.from({ length: 11 }, (_, i) => `p-${i + 1}`));
+    });
+
+    it("test_AC05_round_trip", async () => {
+      const s = await store();
+      const full = pulseRow({
+        window: "2h",
+        windowMs: 2 * HOUR,
+        maxGoalAge: "3d",
+        maxGoalAgeMs: 3 * DAY,
+        pausedReason: "paused by ada",
+        enabled: false,
+        nextAt: undefined,
+        topics: ["t"],
+        target: { labels: ["gpu"], machines: ["m1"] },
+        preset: { name: "weekly", text: "steps: []\n", sha256: "b".repeat(64), source: { repo: "app", commit: "c".repeat(40) } },
+        profiles: { "read-only": { name: "read-only", base: "read-only", sha256: "d".repeat(64), settings: { permissions: { allow: ["Read"], deny: [] } } } },
+        when: { cron: "0 9 * * 1", tz: "Europe/Berlin" },
+      });
+      const p = await X(s).createPulse(full);
+      expect(await X(s).getPulse(p.id)).toStrictEqual({ ...full, id: p.id });
+      const bare = await X(s).createPulse(pulseRow());
+      const got = await X(s).getPulse(bare.id);
+      expect(got).toStrictEqual({ ...pulseRow(), id: bare.id });
+      for (const k of ["window", "maxGoalAge", "pausedReason", "deletedAt"]) expect(Object.hasOwn(got, k), k).toBe(false);
+    });
+
+    it("test_AC05_duePulses", async () => {
+      const s = await store();
+      const now = T0 + 7 * DAY;
+      await X(s).createPulse(pulseRow({ nextAt: now }));
+      await X(s).createPulse(pulseRow({ nextAt: now + 1 }));
+      await X(s).createPulse(pulseRow({ enabled: false, nextAt: now - 1 }));
+      await X(s).createPulse(pulseRow({ nextAt: now - 1 }));
+      await X(s).savePulse({ ...(await X(s).getPulse("p-4")), deletedAt: now - 2 });
+      await X(s).createPulse(pulseRow({ nextAt: undefined }));
+      await X(s).createPulse(pulseRow({ nextAt: now - 5 }));
+      expect(ids(await X(s).duePulses(now))).toStrictEqual(["p-1", "p-6"]);
+    });
+
+    it("test_AC05_addSlot", async () => {
+      const s = await store();
+      const s1 = slot("p-1", new Date(T0).toISOString(), T0, { goal: "G1", firedAt: T0, until: T0 + HOUR });
+      expect(await X(s).addSlot(s1)).toBe(true);
+      expect(await X(s).addSlot({ ...s1, state: "skipped", reason: "overlap" })).toBe(false);
+      expect(await X(s).getSlot("p-1", s1.slot)).toStrictEqual(s1);
+      // Another pulse may use the same slot id.
+      expect(await X(s).addSlot({ ...s1, pulse: "p-2" })).toBe(true);
+    });
+
+    it("test_AC05_listSlots", async () => {
+      const s = await store();
+      const [sa, sb, sc, sd, se] = [0, 1, 2, 3, 4].map((i) => new Date(T0 + i * 1000).toISOString()) as [string, string, string, string, string];
+      await X(s).addSlot(slot("p-1", sa, T0));
+      await X(s).addSlot(slot("p-1", sb, T0 + 1, { state: "missed", reason: "no_machine" }));
+      await X(s).addSlot(slot("p-1", sc, T0 + 2));
+      await X(s).addSlot(slot("p-1", sd, T0 + 2));
+      await X(s).addSlot(slot("p-2", se, T0 + 3));
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1" }))).toStrictEqual([sd, sc, sb, sa]);
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1", state: "missed" }))).toStrictEqual([sb]);
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1", limit: 2 }))).toStrictEqual([sd, sc]);
+      expect(slotIds(await X(s).listSlots({}))).toStrictEqual([se, sd, sc, sb, sa]);
+    });
+
+    it("test_AC05_pending", async () => {
+      const s = await store();
+      const [sa, sb, sc, sd] = [0, 1, 2, 3].map((i) => new Date(T0 + i * 1000).toISOString()) as [string, string, string, string];
+      const first = slot("p-1", sa, T0, { goal: "G1" });
+      await X(s).addSlot(first);
+      await X(s).addSlot(slot("p-1", sb, T0 + 1, { goal: "G2", startedAt: T0 + 2 }));
+      await X(s).addSlot(slot("p-1", sc, T0 + 2, { state: "missed", reason: "no_machine" }));
+      await X(s).addSlot(slot("p-1", sd, T0 + 3, { state: "skipped", reason: "overlap" }));
+      expect(slotIds(await X(s).listSlots({ pending: true }))).toStrictEqual([sa]);
+      await X(s).saveSlot({ ...first, startedAt: T0 + 9 });
+      expect(await X(s).listSlots({ pending: true })).toStrictEqual([]);
+      expect(await X(s).getSlot("p-1", sa)).toStrictEqual({ ...first, startedAt: T0 + 9 });
+    });
+
+    it("test_AC05_lock", async () => {
+      const dialect = await import("./dialect.ts");
+      expect(typeof (dialect.LOCKS as Record<string, unknown>).pulses).toBe("number");
+      const s = await store();
+      const made = await Promise.all([X(s).createPulse(pulseRow()), X(s).createPulse(pulseRow())]);
+      expect(ids(made).sort()).toStrictEqual(["p-1", "p-2"]);
     });
   });
 }

@@ -3,6 +3,7 @@ export * from "./agents.ts";
 export * from "./config.ts";
 export * from "./goal.ts";
 export * from "./review.ts";
+export * from "./pulse.ts";
 export * from "./hooks.ts";
 export * from "./fs.ts";
 export * from "./skill.ts";

@@ -30,6 +30,8 @@ export interface Dialect {
   readonly forUpdate: string;
   /** The text of top-level `key` in the JSON stored in text column `col` (null when absent). */
   jsonText(col: string, key: string): string;
+  /** `col` ordered by code point (Postgres's default collation is not). */
+  binary(col: string): string;
 }
 
 /** Advisory-lock keys (Postgres). One number per purpose; "mesh" in the high bytes. */
@@ -41,6 +43,8 @@ export const LOCKS = {
   events: 0x6d657368_0004,
   /** Session lock held by the one replica that runs the periodic `tick` (see `Leader`). */
   tick: 0x6d657368_0005,
+  /** RL-3: held while a pulse number is picked. */
+  pulses: 0x6d657368_0006,
 } as const;
 export type LockKey = keyof typeof LOCKS;
 
@@ -53,6 +57,7 @@ export const SQLITE: Dialect = {
   lock: () => undefined,
   forUpdate: "",
   jsonText: (col, key) => `json_extract(${col}, '$.${key}')`,
+  binary: (col) => col,
 };
 
 export const POSTGRES: Dialect = {
@@ -64,6 +69,7 @@ export const POSTGRES: Dialect = {
   lock: (key) => `SELECT pg_advisory_xact_lock(${LOCKS[key]})`,
   forUpdate: " FOR UPDATE",
   jsonText: (col, key) => `(${col}::jsonb ->> '${key}')`,
+  binary: (col) => `${col} COLLATE "C"`,
 };
 
 /** True when `db:` names a Postgres server rather than a SQLite file. */

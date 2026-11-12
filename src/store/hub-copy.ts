@@ -33,6 +33,9 @@ const TABLES: readonly { name: string; identity?: string }[] = [
   { name: "review_record" },
   { name: "review_item" },
   { name: "item_history", identity: "seq" },
+  // RL-3: `pulse.num` is copied, so new pulses continue after the largest copied number.
+  { name: "pulse" },
+  { name: "pulse_slot" },
 ];
 
 /** BLOB columns (RL-1 artifact content) go to Postgres bytea as Buffers. */

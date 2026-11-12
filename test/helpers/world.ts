@@ -108,8 +108,12 @@ export class World {
   private fails = new Map<Person, { path: RegExp; status: number }[]>();
   private installs = 0;
 
-  /** `hubYaml`: RL-1, extra top-level hub YAML keys (e.g. `artifacts`), parsed by the real config parser. */
+  /**
+   * `hubYaml`: RL-1, extra top-level hub YAML keys (e.g. `artifacts`), parsed by the real config parser.
+   * An `auth` key is merged into the test's auth (e.g. `auth: {session: {device_max_age: "60d"}}`).
+   */
   async start(users: string[], opts: { admins?: string[]; hubYaml?: Record<string, unknown> } = {}): Promise<void> {
+    const { auth: extraAuth, ...hubYaml } = opts.hubYaml ?? {};
     const config = buildHubConfig(
       {
         listen: "127.0.0.1:0",
@@ -117,14 +121,30 @@ export class World {
         auth: {
           providers: [{ id: "team", kind: "token", users: users.map((n) => ({ name: n, token_sha256: sha256(`${n}-token-secret`) })) }],
           ...(opts.admins ? { bootstrap_admins: opts.admins.map((n) => `team:${n}`) } : {}),
+          ...((extraAuth as Record<string, unknown> | undefined) ?? {}),
         },
-        ...(opts.hubYaml ?? {}),
+        ...hubYaml,
       },
       { baseDir: "/", env: {} },
     );
     this.hubConfig = config;
     this.hubStore = await HubStore.open(":memory:");
     this.hub = await startHub(config, { store: this.hubStore, tickMs: 0, now: () => this.clock });
+  }
+
+  /**
+   * `fetch` to the hub from the test itself. After `stopHub`/`startHubAgain` the first request may
+   * go out on a keep-alive socket of the stopped server (`UND_ERR_SOCKET`, "other side closed"); the
+   * request never reached a running hub, so it is sent once more on a new connection.
+   */
+  private async hubFetch(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch (e) {
+      const code = (e as { cause?: { code?: string } }).cause?.code;
+      if (code !== "UND_ERR_SOCKET" && code !== "ECONNRESET") throw e;
+      return await fetch(url, init);
+    }
   }
 
   /** The hub goes away (its data stays) … */
@@ -141,7 +161,7 @@ export class World {
   /** A login only (no daemon): a device token bound to its own machine. */
   async login(name: string, opts: { hostname?: string; install?: string } = {}): Promise<LoginResult> {
     const body = { token: `${name}-token-secret`, hostname: opts.hostname ?? `${name}-laptop`, install: opts.install ?? this.newInstall(name) };
-    const res = await fetch(`${this.hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const res = await this.hubFetch(`${this.hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return (await res.json()) as LoginResult;
   }
 
@@ -362,7 +382,7 @@ export class World {
   }
 
   async api(p: Person, method: "GET" | "POST", path: string, body?: unknown): Promise<{ status: number; json: Json }> {
-    const r = await fetch(this.hub.url + path, {
+    const r = await this.hubFetch(this.hub.url + path, {
       method,
       headers: { "content-type": "application/json", authorization: `Bearer ${p.login.token}` },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -372,7 +392,7 @@ export class World {
 
   /** A raw call with any bearer token (a device token from `login`, a service token, or none). */
   async call(token: string | undefined, method: "GET" | "POST", path: string, body?: unknown): Promise<{ status: number; json: Json }> {
-    const r = await fetch(this.hub.url + path, {
+    const r = await this.hubFetch(this.hub.url + path, {
       method,
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),

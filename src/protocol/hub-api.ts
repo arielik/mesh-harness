@@ -23,6 +23,7 @@ import {
   MessageRequest,
   NewGoal,
   NewTopic,
+  GoalFromPreset,
   GoalTopicsChange,
   NoteRequest,
   ProfileSave,
@@ -37,6 +38,7 @@ import {
   SESSION_COOKIE,
 } from "./hub.ts";
 import { HubEvent } from "./json-schema.ts";
+import { PulseCreate, PulseUpdate } from "./pulse.ts";
 
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
@@ -109,8 +111,34 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "GET", path: "/v1/attention", rule: "member", tag: "daemon", summary: "What needs the calling user: questions, gates, stalled steps." },
   { method: "GET", path: "/v1/stream", rule: "member", scope: "live:read", tag: "daemon", sse: true, summary: "Server-sent hints (changed, wake). Lossy by design: clients refetch." },
 
-  { method: "GET", path: "/v1/goals", rule: "member", scope: "goals:read", tag: "goals", query: { topic: TOPIC_QUERY }, summary: "All goals, or those with the given topics." },
+  {
+    method: "GET",
+    path: "/v1/goals",
+    rule: "member",
+    scope: "goals:read",
+    tag: "goals",
+    query: { topic: TOPIC_QUERY, pulses: "1: also goals created by pulses (left out by default)" },
+    summary: "All goals, or those with the given topics.",
+  },
   { method: "POST", path: "/v1/goals", rule: "member", scope: "goals:write", tag: "goals", body: NewGoal, status: 201, summary: "Create a goal." },
+  {
+    method: "POST",
+    path: "/v1/goals/from-preset",
+    rule: "member",
+    scope: "goals:write",
+    tag: "goals",
+    body: GoalFromPreset,
+    status: 201,
+    summary: "Ingest: create a goal with an approved plan from a preset snapshot (no design step).",
+  },
+  { method: "GET", path: "/v1/pulses", rule: "member", scope: "goals:read", tag: "goals", query: { mine: "1: only the caller's pulses" }, summary: "Pulses (schedules that create goals from a preset), by number." },
+  { method: "POST", path: "/v1/pulses", rule: "member", tag: "goals", body: PulseCreate, status: 201, summary: "Create a pulse: a preset snapshot run on a schedule." },
+  { method: "GET", path: "/v1/pulses/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "One pulse with its 50 newest slots and the state of their goals." },
+  { method: "POST", path: "/v1/pulses/:id/update", rule: "member", tag: "goals", body: PulseUpdate, summary: "Change a pulse (its owner or an admin); a new preset or params is a new version." },
+  { method: "POST", path: "/v1/pulses/:id/pause", rule: "member", tag: "goals", summary: "Pause a pulse (its owner or an admin)." },
+  { method: "POST", path: "/v1/pulses/:id/resume", rule: "member", tag: "goals", summary: "Resume a paused pulse; slots passed while paused are not recorded." },
+  { method: "POST", path: "/v1/pulses/:id/fire", rule: "member", tag: "goals", status: 201, summary: "Fire a manual slot now (also while paused); the schedule is unchanged." },
+  { method: "POST", path: "/v1/pulses/:id/delete", rule: "member", tag: "goals", summary: "Remove a pulse; its slots and goals stay." },
   { method: "GET", path: "/v1/goals/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal with its plans and steps." },
   { method: "POST", path: "/v1/goals/:id/plan", rule: "member", tag: "goals", body: ProposePlan, status: 201, summary: "Propose a plan (design sessions)." },
   { method: "POST", path: "/v1/goals/:id/approve", rule: "member", tag: "goals", body: Approve, summary: "Approve the proposed plan (approvers)." },

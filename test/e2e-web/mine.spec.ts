@@ -1,5 +1,6 @@
 // MM-1 (AC-23): the web Mine tab lists the signed-in user's machines and their sessions; another
 // user's `me` session stays off Live. Runs under `pnpm test:web` (not part of `pnpm check`).
+import { createHash } from "node:crypto";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 async function cliLogin(request: APIRequestContext, token: string, hostname: string, install: string): Promise<{ token: string; machine: string }> {
@@ -267,5 +268,87 @@ test.describe("AC-32 Assigned to you", () => {
     const item = page.locator("li.att-offer", { hasText: liveStep });
     await expect(item).toHaveCount(1);
     await expect(item.locator("code")).toHaveText(`mesh accept ${liveStep}`);
+  });
+});
+
+// RL-3 AC-23: the Pulses section of the Mine page (read-only). The e2e hub is shared: pulses are
+// found by `data-pulse`, never counted. Written from the spec's contracts only (docs/specs/RL-3.md).
+test.describe("AC-23 pulses on the Mine page", () => {
+  const PRESET = 'description: One step\nsteps:\n  - { id: run, kind: implement, repo: "{repo}", title: "Run {repo}", brief: "Do it." }\n';
+  const title = `pulse-${Math.random().toString(36).slice(2, 10)}`;
+  let mine = "";
+  let foreign = "";
+
+  const create = async (request: APIRequestContext, token: string, t: string): Promise<string> => {
+    const sha = createHash("sha256").update(PRESET, "utf8").digest("hex");
+    const r = await request.post("/v1/pulses", {
+      headers: { authorization: `Bearer ${token}` },
+      data: { title: t, preset: { name: "one-step", text: PRESET, sha256: sha }, params: { repo: "alpha" }, when: { every: "1d" } },
+    });
+    expect(r.status()).toBe(201);
+    return (await r.json()).id as string;
+  };
+
+  test.beforeAll(async ({ request }) => {
+    mine = await create(request, bobA.token, title);
+    const alice = await cliLogin(request, "alice-e2e-token", "alice-pulse", "e2e-pulse-alice");
+    foreign = await create(request, alice.token, `${title}-alice`);
+  });
+
+  test("test_AC23_pulse_shown", async ({ page }) => {
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const section = page.locator("section.pulses");
+    await expect(section.getByRole("heading", { name: "Pulses" })).toBeVisible();
+    // After "Assigned to you" in the page order.
+    await expect(page.locator("xpath=//section[contains(concat(' ', @class, ' '), ' offers ')]/following::section[contains(concat(' ', @class, ' '), ' pulses ')]")).toHaveCount(1);
+    const el = section.locator(`div.pulse[data-pulse="${mine}"]`);
+    await expect(el).toHaveCount(1);
+    for (const t of [mine, title, "every 1d", "active", "next "]) await expect(el).toContainText(t);
+  });
+
+  test("test_AC23_slots", async ({ page, request }) => {
+    const auth = { authorization: `Bearer ${bobA.token}` };
+    const first = await request.post(`/v1/pulses/${mine}/fire`, { headers: auth });
+    expect(first.status()).toBe(201);
+    const f = (await first.json()).slot;
+    expect(f.state).toBe("fired");
+    const second = await request.post(`/v1/pulses/${mine}/fire`, { headers: auth });
+    expect(second.status()).toBe(201);
+    expect((await second.json()).slot.state).toBe("skipped");
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const el = page.locator(`div.pulse[data-pulse="${mine}"]`);
+    const fired = el.locator(`li[data-slot="${f.slot}"]`);
+    await expect(fired).toHaveClass(/\bslot-fired\b/);
+    await expect(fired).toContainText("fired");
+    await expect(fired).toContainText(f.goal as string);
+    const skipped = el.locator("li[data-slot].slot-skipped");
+    await expect(skipped).toHaveCount(1);
+    await expect(skipped).toContainText("skipped");
+    await expect(skipped).toContainText("(overlap)");
+  });
+
+  test("test_AC23_foreign_hidden", async ({ page }) => {
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    // Positive control: bob's own pulse is shown.
+    await expect(page.locator(`div.pulse[data-pulse="${mine}"]`)).toHaveCount(1);
+    await expect(page.locator(`div.pulse[data-pulse="${foreign}"]`)).toHaveCount(0);
+  });
+
+  test("test_AC23_empty", async ({ page }) => {
+    await signIn(page, "carol-e2e-token");
+    await openMine(page);
+    await expect(page.locator("section.pulses").getByText("No pulses. Create one with mesh pulse add.")).toBeVisible();
+    await expect(page.locator("section.pulses div.pulse")).toHaveCount(0);
+  });
+
+  test("test_AC23_read_only", async ({ page }) => {
+    await signIn(page, "bob-e2e-token");
+    await openMine(page);
+    const el = page.locator(`div.pulse[data-pulse="${mine}"]`);
+    await expect(el).toHaveCount(1);
+    await expect(el.locator("button")).toHaveCount(0);
   });
 });

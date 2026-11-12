@@ -73,6 +73,13 @@ answers); work from the brief and its inputs, store reports with \`mesh_artifact
 finish with \`mesh_done\` (\`outcome: "fail"\` with a summary when you could not do the step). A run
 that ends without \`mesh_done\` is closed as failed.
 
+## Pulse goals
+
+A step you hold may come from a pulse: a hub schedule that creates a goal from a preset with the
+plan already approved. Such a goal has no design step and no plan to propose; its steps run with
+the permission profiles pinned when the pulse was saved. Work on it as on any step you hold. Your
+person manages pulses with \`mesh pulse\`.
+
 ## If you hold no step
 
 - \`mesh_next\` lists ready steps for this repo; \`mesh_claim\` takes one. Only claim a step when
@@ -141,6 +148,8 @@ your person.
 | \`mesh session accept <session> --from <rules>\` | whose offers a session accepts automatically (\`--off\`, \`--clear\`) |
 | \`mesh profile ls\` | permission profiles for headless steps; \`mesh profile add <name> --file F\` registers one |
 | \`mesh artifact ls <goal>\` | reports stored on the hub; \`mesh artifact show <id>\` prints one |
+| \`mesh pulse add --preset <name> --repo <repo> --every 7d\` | run a preset on a schedule (\`--cron "<5 fields>" --tz <zone>\`); \`mesh pulse ls\`, \`show\`, \`fire\`, \`pause\`, \`rm\` |
+| \`mesh goal ls --pulses\` | goal lists including goals made by pulses |
 | \`mesh doctor\` | check the installation |
 `;
 

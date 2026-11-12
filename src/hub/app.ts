@@ -32,6 +32,9 @@ import {
   MessageRequest,
   NewGoal,
   NewTopic,
+  GoalFromPreset,
+  PulseCreate,
+  PulseUpdate,
   GoalTopicsChange,
   NoteRequest,
   ProposePlan,
@@ -221,8 +224,10 @@ export function buildRoutes(svc: HubService): Route[] {
     ),
 
     // ---------- goals ----------
-    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals(topicsQuery(c)) }), "goals:read"),
+    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals(topicsQuery(c), { pulses: c.req.query("pulses") === "1" }) }), "goals:read"),
     r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201), "goals:write"),
+    // RL-3: ingest (a goal with an approved plan from a preset).
+    r("POST", "/v1/goals/from-preset", "member", async (c, a) => c.json(await svc.goalFromPreset(a, await body(c, GoalFromPreset)), 201), "goals:write"),
     r("GET", "/v1/goals/:id", "member", async (c) => c.json(await svc.goalDetail(param(c, "id"))), "goals:read"),
     r("POST", "/v1/goals/:id/plan", "member", async (c, a) => c.json(await svc.proposePlan(a, param(c, "id"), await body(c, ProposePlan)), 201)),
     r("POST", "/v1/goals/:id/approve", "member", async (c, a) => {
@@ -233,6 +238,16 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
     r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) }), "goals:read"),
     r("POST", "/v1/goals/:id/topics", "member", async (c, a) => c.json(await svc.changeGoalTopics(a, param(c, "id"), await body(c, GoalTopicsChange))), "goals:write"),
+
+    // ---------- pulses (RL-3) ----------
+    r("GET", "/v1/pulses", "member", async (c, a) => c.json({ pulses: await svc.listPulsesView(a, c.req.query("mine") === "1") }), "goals:read"),
+    r("POST", "/v1/pulses", "member", async (c, a) => c.json(await svc.createPulse(a, await body(c, PulseCreate)), 201)),
+    r("GET", "/v1/pulses/:id", "member", async (c) => c.json(await svc.pulseDetail(param(c, "id"))), "goals:read"),
+    r("POST", "/v1/pulses/:id/update", "member", async (c, a) => c.json(await svc.updatePulse(a, param(c, "id"), await body(c, PulseUpdate)))),
+    r("POST", "/v1/pulses/:id/pause", "member", async (c, a) => c.json(await svc.pausePulse(a, param(c, "id")))),
+    r("POST", "/v1/pulses/:id/resume", "member", async (c, a) => c.json(await svc.resumePulse(a, param(c, "id")))),
+    r("POST", "/v1/pulses/:id/fire", "member", async (c, a) => c.json(await svc.firePulse(a, param(c, "id")), 201)),
+    r("POST", "/v1/pulses/:id/delete", "member", async (c, a) => c.json(await svc.deletePulse(a, param(c, "id")))),
 
     // ---------- topics ----------
     r("GET", "/v1/topics", "member", async (c) => c.json({ topics: await svc.listTopics() }), "goals:read"),

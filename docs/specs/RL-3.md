@@ -518,3 +518,26 @@ slots and goals by id, events by `type` + `pulse`/`slot`, never by list position
   (as `mesh goal plan --preset` does), not from `--repo`; run it from the repo whose preset you want.
 - 2026-11-12 **Owner membership** is read as: the owner's user row has one of the roles `member`,
   `approver`, `admin`.
+- 2026-11-12 (implementation) **`hub_down` rows emit `pulse.missed`** (`reason: "hub_down"`, `tried: 0`,
+  no goal), like every other missed slot, so the Live activity and the event feed show them. The spec
+  names the event for window ends and errors only; recording it for every missed slot is the reading
+  closest to REQ-2.
+- 2026-11-12 (implementation) **A headless run step that is `done` or `failed`** counts as started
+  even without a `run.started` report (e.g. a person closed it), so its slot is never `missed` after
+  the work happened.
+- 2026-11-12 (implementation) **Tick writes.** The fire pass changes only `nextAt` (not `updatedAt`);
+  the owner-not-member pause sets `updatedAt`, as other pauses do. A cron whose second slot is more
+  than 5 years away uses a period of 366 days for the `window`/`maxGoalAge` defaults.
+- 2026-11-12 (implementation) **`goal.created` of a pulse or ingest goal** carries exactly `title`,
+  `preset` and (fire) `pulse`, `slot`, as the spec lists; `topics` is not added.
+- 2026-11-12 (implementation) **Missing `params.repo`.** The remaining checks run against a stand-in
+  repo name, so a preset that is otherwise fine reports the one problem.
+- 2026-11-12 (implementation) **`mesh pulse fire` on a missed slot** prints its line on stderr (it
+  exits 1, like other refusals); the fired and skipped lines go to stdout.
+- 2026-11-12 (verify c1 AC-07) **How a later plan reaches a pulse goal.** A pulse goal has no design
+  step, so `POST /v1/goals/:id/replan` stays 404 (`<goal> has no design step`). A new plan comes
+  through the existing direct plan route that `mesh_plan` and `mesh goal plan` use
+  (`POST /v1/goals/:id/plan`, then `POST /v1/goals/:id/approve`): proposed by a member and approved by
+  the goal owner (or an approver or admin) as usual. The goal keeps its `profiles` snapshot, so a step
+  of that plan whose profile is not in it is never offered: `POST /v1/steps/:id/assign` → 409
+  `<step>: profile <p> is not in the goal's snapshot`.

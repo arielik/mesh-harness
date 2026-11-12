@@ -147,7 +147,8 @@ describe("plan rules", () => {
 
 describe("templates", () => {
   it("instantiate into valid plans, with or without criteria", () => {
-    for (const p of BUILTIN_PRESETS) {
+    // RL-3: `audit-relay` needs params (agent, validator, filer); its own tests are in presets.test.ts.
+    for (const p of BUILTIN_PRESETS.filter((x) => x.name !== "audit-relay")) {
       const withAcs = instantiate(p, { repo: "frr", goal: "G7", acs: ACS });
       expect(validatePlan(withAcs.steps), p.name).toEqual([]);
       expect(validatePolicies(withAcs.steps, withAcs.acs), p.name).toEqual([]);

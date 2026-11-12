@@ -68,10 +68,10 @@ describe("probes", () => {
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
   });
 
-  // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9.
-  it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08)", async () => {
+  // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9; RL-3 AC-05 (migration 10) to 10.
+  it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08, RL-3 AC-05)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 9 } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 10 } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
@@ -306,6 +306,76 @@ describe.skipIf(!PG_URL)(`RL-2 tables${PG_URL ? "" : " (skipped: set MESH_TEST_P
       const later = fold("regression");
       await X(p).addItemHistory(L, row.fp, later);
       expect(await X(p).itemHistory(L, row.fp)).toStrictEqual([...before.history, later]);
+    } finally {
+      await p.close();
+    }
+  });
+});
+
+// RL-3 AC-25: the pulse tables go through `mesh hub migrate` (Postgres only). Written from the spec's
+// contracts only (docs/specs/RL-3.md); the new store methods are read loosely.
+describe.skipIf(!PG_URL)(`RL-3 tables${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+  const X = (s: HubStore): any => s;
+  const pulse = (over: Record<string, unknown> = {}) => ({
+    owner: "alice",
+    title: "weekly on app",
+    when: { every: "7d", anchor: clock },
+    preset: { name: "weekly", text: "steps: []\n", sha256: "a".repeat(64) },
+    params: { repo: "example/app" },
+    profiles: {},
+    topics: [],
+    target: {},
+    windowMs: 4 * 3_600_000,
+    overlap: "skip",
+    maxGoalAgeMs: 14 * 86_400_000,
+    missed: "record",
+    enabled: true,
+    nextAt: clock + 7 * 86_400_000,
+    version: 1,
+    createdAt: clock,
+    updatedAt: clock,
+    ...over,
+  });
+  const slot = (p: string, id: string, at: number, over: Record<string, unknown> = {}) => ({ pulse: p, slot: id, at, state: "fired", tried: [], decidedAt: at, ...over });
+
+  it("test_AC25_copy", async () => {
+    const file = join(tmp(), "hub.db");
+    await seedSqliteHub(file);
+    const s = await HubStore.open(file);
+    expect((await X(s).createPulse(pulse())).id).toBe("p-1");
+    const p2 = await X(s).createPulse(pulse());
+    expect(p2.id).toBe("p-2");
+    const { nextAt: _n, ...rest } = p2;
+    await X(s).savePulse({ ...rest, enabled: false, deletedAt: clock + 1 });
+    await X(s).addSlot(slot("p-1", "a", clock, { goal: "G1" }));
+    await X(s).addSlot(slot("p-1", "b", clock + 1, { goal: "G1", startedAt: clock + 2 }));
+    await X(s).addSlot(slot("p-2", "c", clock + 2, { state: "missed", reason: "no_machine" }));
+    const pending = await X(s).listSlots({ pending: true });
+    expect(pending.map((x: { slot: string }) => x.slot)).toStrictEqual(["a"]);
+    await s.close();
+    const url = await pgdb.fresh();
+    const report = await copyHubToPostgres(file, url);
+    const counts: Record<string, number> = {};
+    const sq = await openSyncDb(file, HUB_MIGRATIONS);
+    try {
+      for (const t of ["pulse", "pulse_slot"]) counts[t] = (sq.all(`SELECT * FROM "${t}"`) as unknown[]).length;
+    } finally {
+      sq.close();
+    }
+    expect(counts).toStrictEqual({ pulse: 2, pulse_slot: 3 });
+    for (const t of Object.keys(counts)) expect(report.tables.find((x) => x.name === t)?.rows, t).toBe(counts[t]);
+    const pgd = await openPgDb(url, HUB_MIGRATIONS_PG, { max: 1 });
+    try {
+      for (const t of Object.keys(counts)) expect((await pgd.all(`SELECT * FROM "${t}"`)).length, t).toBe(counts[t]);
+    } finally {
+      await pgd.close();
+    }
+    const p = await HubStore.open(url);
+    try {
+      expect((await X(p).getPulse("p-2")).deletedAt).toBe(clock + 1);
+      expect(await X(p).listSlots({ pending: true })).toStrictEqual(pending);
+      expect((await X(p).createPulse(pulse())).id).toBe("p-3");
     } finally {
       await p.close();
     }

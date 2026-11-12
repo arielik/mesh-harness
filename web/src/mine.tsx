@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { FleetMachine, FleetView, OfferView } from "../../src/protocol/hub.ts";
+import type { PulseView } from "../../src/protocol/pulse.ts";
 import { api } from "./api.ts";
 import { ago } from "./goals.tsx";
 
@@ -84,16 +85,53 @@ function Offers({ offers, onDecline }: { offers: OfferView[]; onDecline: (step: 
   );
 }
 
+/** RL-3: the user's pulses and their recent slots. Read-only: `mesh pulse` changes them. */
+function Pulses({ pulses }: { pulses: PulseView[] }) {
+  return (
+    <section className="pulses">
+      <h2>Pulses</h2>
+      {pulses.length === 0 ? (
+        <p className="muted">No pulses. Create one with mesh pulse add.</p>
+      ) : (
+        pulses.map((p) => (
+          <div className="pulse card" data-pulse={p.id} key={p.id}>
+            <h3>
+              {p.id} "{p.title}"
+            </h3>
+            <p className="muted">
+              {p.schedule} · {p.enabled ? "active" : "paused"}
+              {p.nextAt !== undefined ? ` · next ${new Date(p.nextAt).toLocaleString()}` : ""}
+            </p>
+            {p.recent.length > 0 && (
+              <ul className="slots">
+                {p.recent.map((s) => (
+                  <li key={s.slot} data-slot={s.slot} className={`slot-${s.state}`}>
+                    {s.slot} {s.state}
+                    {s.reason ? ` (${s.reason})` : ""}
+                    {s.goal ? ` ${s.goal}` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))
+      )}
+    </section>
+  );
+}
+
 export function MinePage({ hint }: { hint: number }) {
   const [view, setView] = useState<FleetView>();
   const [offers, setOffers] = useState<OfferView[]>([]);
+  const [pulses, setPulses] = useState<PulseView[]>([]);
   const [error, setError] = useState<string>();
 
   const load = useCallback(async () => {
     try {
-      const [fleet, open] = await Promise.all([api.fleet(), api.offers().catch(() => [] as OfferView[])]);
+      const [fleet, open, mine] = await Promise.all([api.fleet(), api.offers().catch(() => [] as OfferView[]), api.pulses().catch(() => [] as PulseView[])]);
       setView(fleet);
       setOffers(open);
+      setPulses(mine);
       setError(undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -122,6 +160,7 @@ export function MinePage({ hint }: { hint: number }) {
   return (
     <div className="mine">
       <Offers offers={offers} onDecline={decline} />
+      <Pulses pulses={pulses} />
       <h2>My machines</h2>
       {error && <p className="error">{error}</p>}
       {!view ? (

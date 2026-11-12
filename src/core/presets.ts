@@ -59,7 +59,59 @@ const SDD_COLLAPSE: Preset = {
   },
 };
 
-export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE];
+/** RL-3: the agent-only relay of design §5.6 (the person's debrief stage comes with S4). */
+const AUDIT_RELAY: Preset = {
+  name: "audit-relay",
+  description: "Audit by an agent, validated by an agent, filed by an agent (agent-only; a person's debrief comes with S4).",
+  plan: {
+    steps: [
+      s({
+        id: "audit",
+        kind: "review",
+        agent: "{agent}",
+        mode: "headless",
+        profile: "read-only",
+        output: "review-record",
+        budget: { turns: 80, minutes: 60 },
+        inputs: ["previous"],
+        title: "Audit {repo}",
+        brief: "Audit {repo}. Report every finding you see, with keys from your declared rules; the hub works out what is new.",
+      }),
+      s({
+        id: "validate",
+        kind: "review",
+        deps: ["audit"],
+        agent: "{validator}",
+        mode: "headless",
+        profile: "read-only",
+        output: "review-record",
+        when: { open: true },
+        consumes: ["open"],
+        may_set: ["confirmed", "dismissed"],
+        inputs: ["audit", "dispositions"],
+        title: "Validate the findings",
+        brief: "Try to refute each open item from the source; confirm or dismiss each with a reason.",
+      }),
+      s({
+        id: "file",
+        kind: "docs",
+        deps: ["validate"],
+        agent: "{filer}",
+        mode: "headless",
+        profile: "propose-via-branch",
+        output: "review-record",
+        when: { open: true },
+        consumes: ["confirmed"],
+        may_set: ["accepted"],
+        inputs: ["dispositions"],
+        title: "File the confirmed items",
+        brief: "Propose an entry for each confirmed item on this run's branch, then submit a review record that sets each one accepted with its link.",
+      }),
+    ],
+  },
+};
+
+export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDIT_RELAY];
 
 /** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, steps}. */
 export function parsePreset(name: string, text: string): Preset {

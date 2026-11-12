@@ -424,9 +424,7 @@ describe("RL-2 AC-31 checks, schema, boundaries", () => {
     { method: "GET", path: "/v1/items", scope: "goals:read", tag: "goals" },
   ];
 
-  it("test_AC31_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.16");
-  });
+  // The RL-2 version pin (test_AC31_version, 0.1.16) is superseded by RL-3 AC-27 (test_AC27_version below).
 
   it("test_AC31_openapi_routes", () => {
     for (const want of ROUTES) {
@@ -474,5 +472,78 @@ describe("RL-2 AC-30 docs and skill", () => {
     const plan = read("docs/plan/implementation-plan.md");
     const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
     for (const t of ["/v1/steps/:id/review", "/v1/steps/:id/reviews", "/v1/items", "v0.1.16"]) expect(s56, t).toContain(t);
+  });
+});
+
+// RL-3 AC-27 (version, OpenAPI, routes, boundaries) and AC-26 (docs and skill). Written from the
+// spec's contracts only (docs/specs/RL-3.md).
+describe("RL-3 AC-27 checks, schema, boundaries", () => {
+  const ROUTES = [
+    { method: "GET", path: "/v1/pulses", scope: "goals:read" },
+    { method: "POST", path: "/v1/pulses", scope: undefined },
+    { method: "GET", path: "/v1/pulses/:id", scope: "goals:read" },
+    { method: "POST", path: "/v1/pulses/:id/update", scope: undefined },
+    { method: "POST", path: "/v1/pulses/:id/pause", scope: undefined },
+    { method: "POST", path: "/v1/pulses/:id/resume", scope: undefined },
+    { method: "POST", path: "/v1/pulses/:id/fire", scope: undefined },
+    { method: "POST", path: "/v1/pulses/:id/delete", scope: undefined },
+    { method: "POST", path: "/v1/goals/from-preset", scope: "goals:write" },
+  ];
+
+  it("test_AC27_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.17");
+  });
+
+  it("test_AC27_openapi_routes", () => {
+    for (const want of ROUTES) {
+      const row = HUB_API.find((x) => x.method === want.method && x.path === want.path);
+      expect(row, `${want.method} ${want.path}`).toBeDefined();
+      expect(row?.rule, want.path).toBe("member");
+      expect(row?.scope, want.path).toBe(want.scope);
+      expect(row?.tag, want.path).toBe("goals");
+    }
+    const goals = HUB_API.find((x) => x.method === "GET" && x.path === "/v1/goals") as { query?: Record<string, string> } | undefined;
+    expect(Object.keys(goals?.query ?? {})).toContain("pulses");
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, { parameters?: { name: string }[] }>> };
+    for (const want of ROUTES) {
+      const p = want.path.replace(/:(\w+)/g, "{$1}");
+      expect(doc.paths[p]?.[want.method.toLowerCase()], `${want.method} ${p} in the OpenAPI document`).toBeDefined();
+    }
+    expect((doc.paths["/v1/goals"]?.get?.parameters ?? []).map((x) => x.name)).toContain("pulses");
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+  });
+
+  it("test_AC27_core_boundaries", async () => {
+    const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
+    for (const name of ["parseDurationSpec", "parseCron", "validTimeZone", "nextSlot", "periodMs", "scheduleText", "pulseCandidates", "manualSlot"]) expect(typeof core[name], name).toBe("function");
+    // They live in src/core/schedule.ts and src/core/pulse.ts (no hub or store imports there: that is
+    // `pnpm boundaries`).
+    const schedule = (await import("../src/core/schedule.ts" as string)) as Record<string, unknown>;
+    for (const name of ["parseCron", "nextSlot", "periodMs"]) expect(typeof schedule[name], name).toBe("function");
+    const pulse = (await import("../src/core/pulse.ts" as string)) as Record<string, unknown>;
+    for (const name of ["pulseCandidates", "manualSlot"]) expect(typeof pulse[name], name).toBe("function");
+  });
+});
+
+describe("RL-3 AC-26 docs and skill", () => {
+  it("test_AC26_skill_mentions", () => {
+    expect(MESH_SKILL.toLowerCase()).toContain("pulse");
+    expect(MESH_SKILL).toContain("mesh pulse");
+    expect(MESH_SKILL).toContain("design step");
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+  });
+
+  it("test_AC26_docs_sections", () => {
+    const concepts = read("docs/guide/concepts.md");
+    expect(concepts).toMatch(/^#+ .*Pulses/m);
+    for (const t of ["snapshot", "catch-up-once", "maxGoalAge", "hub_down", "audit-relay", "ingest"]) expect(concepts, t).toContain(t);
+    const howto = read("docs/guide/howto.md");
+    expect(howto).toContain("Run an agent audit on a schedule");
+    expect(howto).toContain("mesh pulse add --preset audit-relay");
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    for (const t of ["/v1/pulses", "/v1/goals/from-preset", "pulses=1", "v0.1.17"]) expect(s56, t).toContain(t);
+    const events = read("docs/events.md");
+    for (const t of ["pulse.created", "pulse.updated", "pulse.paused", "pulse.resumed", "pulse.deleted", "pulse.fired", "pulse.skipped", "pulse.missed", "pulse.abandoned", "goal.dropped"]) expect(events, t).toContain(t);
   });
 });

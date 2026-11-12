@@ -334,6 +334,54 @@ In the next goal of the same lineage, findings that come back are `repeat` (dism
 dismissed while their evidence is unchanged), findings the audit no longer reports are `resolved`,
 and resolved ones that come back are `regression`.
 
+### Run an agent audit on a schedule
+
+A pulse runs a preset on a schedule: the hub creates a goal with an approved plan at each slot and
+offers its first step to a machine that takes it now. The machine that should run it needs:
+
+- the repo, and headless runs set up (see *Run a step headless*);
+- an accept policy that takes your offers automatically (`accept: ["self"]` in `daemon.json`, the
+  default for your own machines; another person's runner needs `user:<you>`);
+- a label, if you want to pin the pulse to such machines: `mesh machine label runner`.
+
+The repo carries its agents (`.claude/agents/auditor.md`, `checker.md`, `filer.md`). Add the pulse
+from the repo (a repo preset is looked up from the current directory):
+
+```sh
+mesh pulse add --preset audit-relay --repo alpha --params agent=auditor,validator=checker,filer=filer \
+  --every 7d --labels runner
+#   Created pulse p-1 "audit-relay on alpha": every 7d, next run 2026-11-19T10:00:00.000Z.
+mesh pulse add --preset audit-relay --repo alpha --params agent=auditor,validator=checker,filer=filer \
+  --cron "0 9 * * 1" --tz Europe/Berlin       # Mondays at 09:00 Berlin time
+```
+
+Check it, run a slot now, and read what happened:
+
+```sh
+mesh pulse ls
+#   p-1  active  @alice  every 7d  next 2026-11-19T10:00:00.000Z  last fired  audit-relay on alpha
+mesh pulse fire p-1
+#   Fired pulse p-1: slot manual:01JCX… → G12.
+mesh pulse show p-1
+#   p-1 "audit-relay on alpha"  @alice  active
+#   schedule: every 7d, next 2026-11-19T10:00:00.000Z
+#   preset: audit-relay 4c43bb0f30b3, params agent=auditor,filer=filer,repo=alpha,validator=checker
+#   target: labels runner
+#   slots:
+#     manual:01JCX…              fired  G12  tried m-7f3a
+#     2026-11-12T10:00:00.000Z  missed (no_machine)  G11
+mesh goal ls --pulses                         # pulse goals are hidden from goal lists otherwise
+```
+
+A **missed** slot says why: `no_machine` (no candidate was online with the repo, the labels and an
+accept policy that takes your offer: check `mesh machines` and the runner's `accept`),
+`not_accepted` (every candidate declined or did not answer within a third of the window),
+`capacity` (the runner's queue was full), `expired` (accepted but the run did not start before the
+window ended), `hub_down` (the hub was not running at that time) or `error` (the fire failed: the
+message is in `mesh pulse show --json`). A missed slot's goal is dropped. `mesh pulse pause p-1`,
+`mesh pulse resume p-1`, `mesh pulse update p-1 --window 2h` and `mesh pulse rm p-1` change it; a new
+`--preset` or `--params` is a new version, and nothing else changes what a slot runs.
+
 ## 4. A goal from design to done
 
 ```bash

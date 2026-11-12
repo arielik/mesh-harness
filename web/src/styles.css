@@ -543,6 +543,34 @@ a {
   color: var(--muted);
 }
 
+/* RL-3: the user's pulses and their recent slots, after "Assigned to you". */
+.mine .pulses {
+  margin-bottom: 1.5rem;
+}
+.mine .pulses .pulse {
+  margin-bottom: 0.75rem;
+}
+.mine .pulses .pulse h3 {
+  margin: 0 0 0.25rem;
+}
+.mine .pulses ul.slots {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.9em;
+}
+.mine .pulses ul.slots li {
+  padding: 0.15rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.mine .pulses li.slot-missed,
+.mine .pulses li.slot-abandoned {
+  color: var(--bad);
+}
+.mine .pulses li.slot-skipped {
+  color: var(--muted);
+}
+
 /* MM-4: the assign picker (step panel and goal header) and the line after an assign. */
 .picker {
   margin: 0.5rem 0 1rem;

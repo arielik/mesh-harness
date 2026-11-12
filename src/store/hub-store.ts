@@ -7,6 +7,8 @@ import {
   ItemHistoryEntry,
   ItemRow,
   Plan,
+  Pulse,
+  PulseSlot,
   Question,
   ServiceScope,
   Session,
@@ -14,7 +16,7 @@ import {
   StoredArtifact,
   StoredReview,
   Topic,
-  type Note, type ProfileBase, type ProfileSettings, type Repo, type ShareLevel } from "../protocol/index.ts";
+  type Note, type ProfileBase, type SlotState, type ProfileSettings, type Repo, type ShareLevel } from "../protocol/index.ts";
 import { openDb, SOLE_LEADER, type Channel, type Db, type Leader, type SqlValue } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
@@ -84,6 +86,14 @@ export const HUB_MIGRATIONS: readonly string[] = [
    CREATE TABLE review_item (lineage TEXT NOT NULL, fp TEXT NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (lineage, fp));
    CREATE TABLE item_history (seq INTEGER PRIMARY KEY AUTOINCREMENT, lineage TEXT NOT NULL, fp TEXT NOT NULL, step TEXT NOT NULL, value TEXT NOT NULL);
    CREATE INDEX item_history_fp ON item_history (lineage, fp, seq);`,
+  // v0.1.17 (RL-3): pulses and their slots.
+  `CREATE TABLE IF NOT EXISTS pulse (id TEXT PRIMARY KEY, num INTEGER NOT NULL UNIQUE, owner TEXT NOT NULL, enabled INTEGER NOT NULL,
+     next_at INTEGER, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+   CREATE INDEX IF NOT EXISTS pulse_due ON pulse (enabled, next_at);
+   CREATE TABLE IF NOT EXISTS pulse_slot (pulse TEXT NOT NULL, slot TEXT NOT NULL, at INTEGER NOT NULL, state TEXT NOT NULL, goal TEXT,
+     started_at INTEGER, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (pulse, slot));
+   CREATE INDEX IF NOT EXISTS pulse_slot_pending ON pulse_slot (state, started_at);
+   CREATE INDEX IF NOT EXISTS pulse_slot_goal ON pulse_slot (goal);`,
 ];
 
 /**
@@ -149,6 +159,13 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    CREATE TABLE review_item (lineage TEXT NOT NULL, fp TEXT NOT NULL, value TEXT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (lineage, fp));
    CREATE TABLE item_history (seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, lineage TEXT NOT NULL, fp TEXT NOT NULL, step TEXT NOT NULL, value TEXT NOT NULL);
    CREATE INDEX item_history_fp ON item_history (lineage, fp, seq);`,
+  `CREATE TABLE IF NOT EXISTS pulse (id TEXT PRIMARY KEY, num INTEGER NOT NULL UNIQUE, owner TEXT NOT NULL, enabled INTEGER NOT NULL,
+     next_at BIGINT, value TEXT NOT NULL, updated_at BIGINT NOT NULL);
+   CREATE INDEX IF NOT EXISTS pulse_due ON pulse (enabled, next_at);
+   CREATE TABLE IF NOT EXISTS pulse_slot (pulse TEXT NOT NULL, slot TEXT NOT NULL, at BIGINT NOT NULL, state TEXT NOT NULL, goal TEXT,
+     started_at BIGINT, value TEXT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (pulse, slot));
+   CREATE INDEX IF NOT EXISTS pulse_slot_pending ON pulse_slot (state, started_at);
+   CREATE INDEX IF NOT EXISTS pulse_slot_goal ON pulse_slot (goal);`,
 ];
 
 /** RL-1: a registered permission profile as the hub stores it. */
@@ -975,6 +992,119 @@ export class HubStore {
       );
     }
     return out;
+  }
+
+  // ---------- pulses (RL-3) ----------
+
+  /** A new pulse, id `p-<num>`; numbers are never reused (deleted pulses keep their row). */
+  createPulse(p: Omit<Pulse, "id">): Promise<Pulse> {
+    return this.tx(async () => {
+      await this.lock("pulses");
+      const num = ((await this.db.get<{ n: number | null }>("SELECT MAX(num) AS n FROM pulse"))?.n ?? 0) + 1;
+      const pulse = Pulse.parse({ ...p, id: `p-${num}` });
+      await this.db.run(
+        "INSERT INTO pulse (id, num, owner, enabled, next_at, value, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        pulse.id,
+        num,
+        pulse.owner,
+        pulse.enabled ? 1 : 0,
+        pulse.nextAt ?? null,
+        json(pulse),
+        pulse.updatedAt,
+      );
+      return pulse;
+    });
+  }
+
+  async getPulse(id: string): Promise<Pulse | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM pulse WHERE id = ?", id);
+    return r ? Pulse.parse(JSON.parse(r.value)) : undefined;
+  }
+
+  async savePulse(p: Pulse): Promise<void> {
+    const pulse = Pulse.parse(p);
+    await this.db.run(
+      "UPDATE pulse SET owner = ?, enabled = ?, next_at = ?, value = ?, updated_at = ? WHERE id = ?",
+      pulse.owner,
+      pulse.enabled ? 1 : 0,
+      pulse.nextAt ?? null,
+      json(pulse),
+      pulse.updatedAt,
+      pulse.id,
+    );
+  }
+
+  /** Pulses by number; deleted ones only with `deleted: true`. */
+  async listPulses(f: { owner?: string | undefined; deleted?: boolean | undefined } = {}): Promise<Pulse[]> {
+    const rows =
+      f.owner === undefined
+        ? await this.db.all<{ value: string }>("SELECT value FROM pulse ORDER BY num")
+        : await this.db.all<{ value: string }>("SELECT value FROM pulse WHERE owner = ? ORDER BY num", f.owner);
+    return rows.map((r) => Pulse.parse(JSON.parse(r.value))).filter((p) => f.deleted === true || p.deletedAt === undefined);
+  }
+
+  /** Enabled, not deleted pulses whose next slot is due at `now`, by number. */
+  async duePulses(now: number): Promise<Pulse[]> {
+    const rows = await this.db.all<{ value: string }>("SELECT value FROM pulse WHERE enabled = 1 AND next_at IS NOT NULL AND next_at <= ? ORDER BY num", now);
+    return rows.map((r) => Pulse.parse(JSON.parse(r.value))).filter((p) => p.deletedAt === undefined);
+  }
+
+  /** Insert a slot row; false (nothing written) when `(pulse, slot)` exists. */
+  async addSlot(s: PulseSlot): Promise<boolean> {
+    const slot = PulseSlot.parse(s);
+    const r = await this.db.run(
+      "INSERT INTO pulse_slot (pulse, slot, at, state, goal, started_at, value, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (pulse, slot) DO NOTHING",
+      slot.pulse,
+      slot.slot,
+      slot.at,
+      slot.state,
+      slot.goal ?? null,
+      slot.startedAt ?? null,
+      json(slot),
+      slot.decidedAt,
+    );
+    return r.changes === 1;
+  }
+
+  async getSlot(pulse: string, slot: string): Promise<PulseSlot | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM pulse_slot WHERE pulse = ? AND slot = ?", pulse, slot);
+    return r ? PulseSlot.parse(JSON.parse(r.value)) : undefined;
+  }
+
+  async saveSlot(s: PulseSlot): Promise<void> {
+    const slot = PulseSlot.parse(s);
+    await this.db.run(
+      "UPDATE pulse_slot SET at = ?, state = ?, goal = ?, started_at = ?, value = ?, updated_at = ? WHERE pulse = ? AND slot = ?",
+      slot.at,
+      slot.state,
+      slot.goal ?? null,
+      slot.startedAt ?? null,
+      json(slot),
+      slot.decidedAt,
+      slot.pulse,
+      slot.slot,
+    );
+  }
+
+  /** Slots, newest first (`at`, then `slot`, descending). `pending` = fired and not started. */
+  async listSlots(f: { pulse?: string | undefined; state?: SlotState | undefined; pending?: true | undefined; limit?: number | undefined } = {}): Promise<PulseSlot[]> {
+    const where: string[] = [];
+    const args: SqlValue[] = [];
+    if (f.pulse !== undefined) {
+      where.push("pulse = ?");
+      args.push(f.pulse);
+    }
+    if (f.pending) where.push("state = 'fired' AND started_at IS NULL");
+    if (f.state !== undefined) {
+      where.push("state = ?");
+      args.push(f.state);
+    }
+    let sql = `SELECT value FROM pulse_slot ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY at DESC, ${this.db.dialect.binary("slot")} DESC`;
+    if (f.limit !== undefined) {
+      sql += " LIMIT ?";
+      args.push(f.limit);
+    }
+    return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => PulseSlot.parse(JSON.parse(r.value)));
   }
 
   // ---------- notes and questions ----------

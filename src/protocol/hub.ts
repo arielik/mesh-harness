@@ -5,6 +5,7 @@ import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, S
 import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
+import { PresetSnapshot, PulseParams } from "./pulse.ts";
 import { ReviewItem, ReviewRecord, type FoldMark, type ItemState, type StoredReview } from "./review.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
@@ -116,6 +117,19 @@ export const NewGoal = z.object({
   /** Topics to tag the goal with; each must already exist (`all` is implicit). */
   topics: z.array(z.string().max(40)).max(20).optional(),
 });
+
+/** RL-3: body of `POST /v1/goals/from-preset` (ingest: a goal with an approved plan from a preset). */
+export const GoalFromPreset = z
+  .object({
+    preset: PresetSnapshot.omit({ source: true }),
+    params: PulseParams,
+    title: z.string().min(1).max(200).optional(),
+    topics: z.array(z.string().max(40)).max(20).optional(),
+    refs: NewGoal.shape.refs,
+    priority: z.number().int().min(0).max(9).default(3),
+  })
+  .strict();
+export type GoalFromPreset = z.infer<typeof GoalFromPreset>;
 
 export const NewTopic = z.object({
   name: z.string().min(1).max(40),

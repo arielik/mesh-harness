@@ -1,4 +1,5 @@
 import type { Goal } from "../../src/protocol/goal.ts";
+import type { PulseView } from "../../src/protocol/pulse.ts";
 import type { AssignResult, FleetView, GoalAssignResult, GoalDetail, LiveView, OfferView, ProviderInfo, StepView, SuggestView, TimelineEntry, TopicView } from "../../src/protocol/hub.ts";
 
 export class ApiError extends Error {
@@ -56,5 +57,7 @@ export const api = {
   suggestGoal: (id: string, o: { team?: boolean; any?: boolean }) => call<SuggestView>("GET", `${g(id)}/suggest${suggestQuery(o)}`),
   assignStep: (id: string, to: string) => call<AssignResult>("POST", `/v1/steps/${encodeURIComponent(id)}/assign`, { to }),
   assignGoal: (id: string, to: string) => call<GoalAssignResult>("POST", `${g(id)}/assign`, { to }),
+  /** RL-3: the user's pulses (read-only on the web). */
+  pulses: async () => (await call<{ pulses: PulseView[] }>("GET", "/v1/pulses?mine=1")).pulses,
   newGoal: (title: string, primaryRepo?: string, topics: string[] = []) => call<Goal>("POST", "/v1/goals", { title, ...(primaryRepo ? { primaryRepo } : {}), ...(topics.length ? { topics } : {}) }),
 };

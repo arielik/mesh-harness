@@ -107,9 +107,17 @@ export function whoamiCommand(c: CliEnv): Command {
 
 /** A template by name: the repo's .mesh/presets/<name>.yaml first, then the built-in ones. */
 export function findPreset(cwd: string, name: string): Preset {
+  return findPresetSource(cwd, name).preset;
+}
+
+/**
+ * RL-3: `findPreset`, plus (for a repo file) `root`: the directory of the git checkout the file was
+ * found in (the first directory from the file's up that has `.git`).
+ */
+export function findPresetSource(cwd: string, name: string): { preset: Preset; root?: string | undefined } {
   for (let dir = resolve(cwd); ; ) {
     const f = join(dir, ".mesh", "presets", `${name}.yaml`);
-    if (existsSync(f)) return parsePreset(name, readFileSync(f, "utf8"));
+    if (existsSync(f)) return { preset: parsePreset(name, readFileSync(f, "utf8")), root: gitRootOf(dir) };
     if (existsSync(join(dir, ".git"))) break;
     const up = dirname(dir);
     if (up === dir) break;
@@ -117,7 +125,16 @@ export function findPreset(cwd: string, name: string): Preset {
   }
   const b = BUILTIN_PRESETS.find((p) => p.name === name);
   if (!b) throw new Error(`no template "${name}" (built in: ${BUILTIN_PRESETS.map((p) => p.name).join(", ")}; or .mesh/presets/${name}.yaml in this repo)`);
-  return b;
+  return { preset: b };
+}
+
+function gitRootOf(from: string): string | undefined {
+  for (let dir = from; ; ) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const up = dirname(dir);
+    if (up === dir) return undefined;
+    dir = up;
+  }
 }
 
 function readAcs(file: string | undefined): PlanAc[] | undefined {
@@ -136,7 +153,7 @@ export function goalCommand(c: CliEnv): Command {
   const usage = [
     "usage:",
     '  mesh goal new "<title>" [--repo R] [--repos a,b] [--topics a,b] [--refs spec=SPEC-7,backlog=ROW-42] [--preset sdd-split] [--reworks G3] [--issue URL] [--priority 0-9]',
-    "  mesh goal ls [--topic a,b]          # only goals with every topic given",
+    "  mesh goal ls [--topic a,b] [--pulses]  # only goals with every topic given; --pulses: also goals made by pulses",
     "  mesh goal tag <G> <topic>…          # untag <G> <topic>… to take topics off",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",
@@ -173,7 +190,8 @@ export function goalCommand(c: CliEnv): Command {
         }
         case "ls": {
           const topics = list(a.str("topic") ?? a.str("topics"));
-          const q = topics.length ? `?${new URLSearchParams({ topic: topics.join(",") }).toString()}` : "";
+          const query = new URLSearchParams({ ...(topics.length ? { topic: topics.join(",") } : {}), ...(a.has("pulses") ? { pulses: "1" } : {}) }).toString();
+          const q = query ? `?${query}` : "";
           const { goals } = await hub().get<{ goals: Goal[] }>(`/v1/goals${q}`);
           if (goals.length === 0) c.io.out(topics.length ? `No goals with topic ${topics.join(" and ")}.` : "No goals yet. Create one: mesh goal new \"<title>\"");
           for (const g of goals) c.io.out(`${g.id.padEnd(5)} ${g.state.padEnd(18)} @${g.ownerId.padEnd(12)} ${g.title}${g.topics?.length ? `  [${g.topics.join(", ")}]` : ""}`);

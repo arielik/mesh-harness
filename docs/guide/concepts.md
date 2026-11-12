@@ -2,7 +2,7 @@
 
 **Session.** A Claude Code session the daemon knows about: interactive in tmux, background, or `claude -p`. Its state is one of *working*, *needs you* (permission, question, dialog, input), *idle*, *stalled* or *ended*. `claude agents --json` is the authority for its status; hooks make it fast.
 
-**Goal.** A piece of work for the team, with an owner. It starts with a *design* step. Optional `refs` hold the team's own ids (`--refs spec=SPEC-7,backlog=ROW-42`).
+**Goal.** A piece of work for the team, with an owner. It starts with a *design* step (a goal made by a pulse or by ingest starts with its plan approved instead; see [Pulses](#pulses)). Optional `refs` hold the team's own ids (`--refs spec=SPEC-7,backlog=ROW-42`).
 
 **Plan.** A versioned list of steps with dependencies (a DAG), proposed by the design session with `mesh_plan` and approved by the owner, an approver or an admin. Each version is decided once:
 - *approved*;
@@ -277,6 +277,77 @@ dependency is reopened or a new plan changes it; a later disposition does not un
 `inputs: [dispositions]` serves a consuming step the items it may act on now (a raising step: its
 lineage's items that are not resolved), with their history. Both arrive fenced as untrusted input,
 like artifacts.
+
+## Pulses
+
+**Pulse.** A hub schedule that runs a preset by itself: at each **slot** it creates a goal with an
+approved plan from the preset (no design step, no approval round) and offers the goal's first step
+to a machine that can run it now. `mesh pulse add --preset audit-relay --repo alpha --params
+agent=auditor,validator=checker,filer=filer --every 7d` makes one; its owner is whoever saved it.
+
+**Snapshots (R-6).** What a slot runs is pinned when the pulse is saved: the preset text (sent by
+the CLI, with its sha256 and, for a repo file, the repo and commit it came from) and every
+permission profile its steps use (resolved on the hub). Later edits of the repo's
+`.mesh/presets/<name>.yaml` or a replaced profile (`mesh profile add`) never change what the next
+slot runs; `mesh pulse update --preset …` (or new `--params`) takes a new snapshot and bumps the
+pulse's `version`. Saving the pulse is the plan approval of every slot until that update. Goals
+made by a pulse keep the profile snapshot (`profiles`); their headless steps are offered only with
+it, and a step whose profile is not in it is not offered. The agent definition file is not pinned
+yet: the run reads it from the run's worktree.
+
+**Schedule.** `--every <duration>` (`30m`, `4h`, `7d`; 5 minutes to 366 days) counts periods from
+an anchor: `--at <ISO>` when given (an `--at` in the future is the first slot, however far ahead),
+else the save time, so the first slot is one period after saving. `--cron "<5 fields>" --tz <zone>`
+uses standard 5-field cron (minute, hour, day of month, month, day of week; `*`, lists, ranges,
+steps; day of week 0 or 7 is Sunday; when both day fields are restricted either may match) in an
+IANA time zone (default: the CLI's zone); it may fire at most every 5 minutes. Daylight saving: a
+slot in the spring-forward gap runs at the first minute after the gap (02:30 → 03:00), and a slot in
+the repeated autumn hour runs once, at its first occurrence.
+
+**Slots.** Every slot is recorded, with a reason when it did not run: `fired` (a goal was created;
+the slot's run **started** once the first step reported a headless run start, or an interactive
+first step was claimed), `skipped` (`overlap`), `missed` (`no_machine`, `not_accepted`, `capacity`,
+`expired`, `hub_down`, `error`) or `abandoned` (`max_goal_age`). `mesh pulse show <id>` lists them.
+
+**Machine choice and window.** The first step is offered by the owner to the first candidate in
+`mesh assign --suggest` order among machines that are online, have the step's repo, auto-accept an
+offer from the owner (their accept policy), carry every `--labels` label (a filter, never a rank
+key), can run headless steps when the step is headless, and match `--machines` when given. Each
+machine is tried at most once per slot. An offer not accepted within a third of the window (at most
+the hub's offer expiry) is withdrawn and the next candidate gets one; a decline or a release (a run
+queue full: `capacity`) moves on too. The goal's stick is set to the machine, so later steps follow
+it. The **window** (`--window`, default the smaller of 4 hours and the period) runs from the slot's
+due time: a slot whose run has not started when it ends is `missed` and its goal is dropped. An offer
+a person made meanwhile (`mesh assign`) is left alone until it ends.
+
+**Overlap and `maxGoalAge`.** With `--overlap skip` (the default) a slot is `skipped` while a goal of
+an earlier slot is unfinished; `allow` fires anyway. A started goal older than `--max-goal-age`
+(default twice the period) is dropped at the next slot, which is recorded `abandoned`; a goal that
+never started is ended by its window instead.
+
+**Downtime.** Slots that passed while the hub was down are recorded `missed`/`hub_down` (the 10
+latest at most). The latest one still fires when its window has not ended; with `--missed
+catch-up-once` it fires anyway (marked `catchUp`), with the default `record` it does not.
+
+**Manual fire.** `mesh pulse fire <id>` fires a slot now (`manual:<ULID>`), also while the pulse is
+paused; it counts for overlap and does not move the schedule. `pause`, `resume` (slots passed while
+paused are not recorded), `update` and `rm` (its goals stay) are for the owner or an admin. A pulse
+whose owner is no longer a member pauses itself at its next slot.
+
+**Pulse goals** carry `refs.pulse` and `refs.slot` and are left out of goal lists (`mesh goal ls`,
+the dashboard) unless asked for (`mesh goal ls --pulses`, `GET /v1/goals?pulses=1`); a goal page,
+its steps, offers and attention items show them as usual.
+
+**Ingest.** `POST /v1/goals/from-preset` (scope `goals:write` for a service token) runs the same
+create-with-plan for another system: a goal owned by the caller, with an approved plan and the
+profile snapshot, and no design step. Ingest goals are listed as usual and are not offered by
+themselves.
+
+**Built-in `audit-relay`.** Three headless review stages: `audit` (`{agent}`, profile
+`read-only`) raises findings; `validate` (`{validator}`) runs only when items are open and confirms
+or dismisses them; `file` (`{filer}`, profile `propose-via-branch`) runs only when items are
+confirmed, proposes an entry for each on the run's branch and records it `accepted` with its link.
+It needs params `agent`, `validator` and `filer`. A person's debrief stage comes later.
 
 ## Offers and accept policy
 

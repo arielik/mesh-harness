@@ -34,6 +34,7 @@ export type { CliEnv } from "./context.ts";
 import { HubClient, loadCredentials } from "./hub-client.ts";
 import { hubCommands } from "./hub-commands.ts";
 import { offerCommands } from "./offer-commands.ts";
+import { pulseCommand } from "./pulse-commands.ts";
 import { assetsCommand } from "./assets.ts";
 import { ledgerCommand } from "./ledger.ts";
 import { defaultRoots, resolveRepo } from "./repos.ts";
@@ -723,6 +724,7 @@ export function meshCommands(c: CliEnv): Command[] {
     ledgerCommand(c),
     assetsCommand(c),
     ...hubCommands(c),
+    pulseCommand(c),
     ...offerCommands(c, (args) => runCommand(c).run(args)),
   ];
 }

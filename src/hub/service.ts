@@ -57,6 +57,17 @@ import {
   validatePlan,
   pause,
   sessionVisible,
+  instantiate,
+  manualSlot,
+  nextSlot,
+  parseCron,
+  parseDurationSpec,
+  periodMs,
+  profileNames,
+  pulseCandidates,
+  scheduleText,
+  validTimeZone,
+  type Materialized,
   type Principal,
   type Role,
 } from "../core/index.ts";
@@ -121,6 +132,18 @@ import type {
   StoredRecord,
   StoredReview,
   StoredReviewItem,
+  FireResult,
+  GoalFromPreset,
+  GoalState,
+  Pulse,
+  PulseCreate,
+  PulseDetail,
+  PulseSlot,
+  PulseUpdate,
+  PulseView,
+  PulseWhen,
+  PulseWhenInput,
+  SlotReason,
 } from "../protocol/index.ts";
 import { ALL_TOPIC, HEADLESS_DEFAULTS, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
@@ -366,7 +389,7 @@ export class HubService {
     step: Step,
     target: { machine: MachineRow; session?: HubSession | undefined },
     by: { userId: string; sid?: string | undefined; machine?: MachineRow | undefined },
-    opts: { note?: string | undefined; stick: boolean; goal: Goal; snapshot?: ProfileSnapshot | undefined },
+    opts: { note?: string | undefined; stick: boolean; goal: Goal; snapshot?: ProfileSnapshot | undefined; deadline?: number | undefined },
   ): Promise<Step> {
     const now = this.now();
     const auto = this.autoFor(target, by);
@@ -378,7 +401,7 @@ export class HubService {
           mode: "headless",
           profile: snap,
           budget: effectiveBudget(step.policy),
-          deadline: now + this.config.thresholds.offerExpiryMs,
+          deadline: opts.deadline ?? now + this.config.thresholds.offerExpiryMs,
           ...(step.policy?.agent ? { agent: step.policy.agent } : {}),
         }
       : {};
@@ -434,14 +457,14 @@ export class HubService {
       session = await this.store.getSession(stick.to.sid);
       if (!session || session.session.state === "ended" || session.machineId !== machine.id) return;
     }
-    const guard = await this.headlessGuard(s, machine);
+    const guard = await this.headlessGuard(s, machine, goal);
     if (!guard.ok) return;
     const byMachine = stick.byMachine ? await this.store.getMachine(stick.byMachine) : undefined;
     await this.offerStep(s, { machine, session }, { userId: stick.by, sid: stick.bySid, machine: byMachine }, { stick: true, goal, snapshot: guard.snapshot });
   }
 
   /** End offers of steps that left `ready` in this transaction (`endOffersLeavingReady`). */
-  private async emitOffersEnded(actor: Actor | undefined, ended: readonly Step[]): Promise<void> {
+  private async emitOffersEnded(actor: { userId: string } | undefined, ended: readonly Step[]): Promise<void> {
     for (const s of ended) {
       if (!s.offer) continue;
       await this.emit({ type: "step.offer_withdrawn", user: actor?.userId, goal: s.goal, step: s.id, payload: { machine: s.offer.to.machine, reason: `step ${s.state}` } });
@@ -491,11 +514,11 @@ export class HubService {
       if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}, not ready`);
       if (step.offer?.state === "offered") throw new HubError(409, `${step.id} is already offered to ${await this.targetText(step.offer.to)}; withdraw it first (mesh withdraw ${step.id})`);
       const target = await this.resolveTarget(actor, req.to);
-      const guard = await this.headlessGuard(step, target.machine);
+      const goal = await this.goalOr404(step.goal);
+      const guard = await this.headlessGuard(step, target.machine, goal);
       if (!guard.ok) throw new HubError(409, guard.error);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
-      const goal = await this.goalOr404(step.goal);
       const next = await this.offerStep(step, target, { userId: actor.userId, sid: req.sid, machine: caller.machine }, { note: req.note, stick: false, goal, snapshot: guard.snapshot });
       if (req.stick) await this.setStick(goal, next.offer as StepOffer);
       return { step: next, auto: (next.offer as StepOffer).auto };
@@ -519,7 +542,7 @@ export class HubService {
       // RL-1: headless steps the target cannot run are skipped (not offered, not counted).
       const ready: { step: Step; snapshot?: ProfileSnapshot | undefined }[] = [];
       for (const s of await this.offerableSteps(goal.id)) {
-        const guard = await this.headlessGuard(s, target.machine);
+        const guard = await this.headlessGuard(s, target.machine, goal);
         if (guard.ok) ready.push({ step: s, snapshot: guard.snapshot });
       }
       if (ready.length === 0 && !req.stick) throw new HubError(409, `${goal.id} has no ready step to offer`);
@@ -553,12 +576,17 @@ export class HubService {
 
   /**
    * May this machine be offered this step? Interactive steps always; a headless step only on a
-   * machine that reports it can run one, with a profile that still resolves.
+   * machine that reports it can run one, with a profile that still resolves. RL-3: a goal with
+   * `profiles` (made by a pulse or by ingest) offers only the profiles of its snapshot.
    */
-  private async headlessGuard(step: Step, machine: MachineRow): Promise<{ ok: true; snapshot?: ProfileSnapshot | undefined } | { ok: false; error: string }> {
+  private async headlessGuard(step: Step, machine: MachineRow, goal?: Goal): Promise<{ ok: true; snapshot?: ProfileSnapshot | undefined } | { ok: false; error: string }> {
     if (step.policy?.mode !== "headless") return { ok: true };
     if (machine.headless !== true) return { ok: false, error: `${machineName(machine)} cannot run headless steps (it needs mesh 0.1.15 with workspaceRoots set)` };
     const name = step.policy.profile ?? HEADLESS_DEFAULTS.profile;
+    if (goal?.profiles) {
+      const snap = goal.profiles[name];
+      return snap ? { ok: true, snapshot: snap } : { ok: false, error: `${step.id}: profile ${name} is not in the goal's snapshot` };
+    }
     const snapshot = await this.resolveProfile(name);
     if (!snapshot) return { ok: false, error: `${step.id}: unknown profile ${name}` };
     return { ok: true, snapshot };
@@ -726,6 +754,8 @@ export class HubService {
           step: step.id,
           payload: { runId: b.runId, ...(actor.machineId ? { machine: actor.machineId } : {}), ...(p ? { profile: p.name, profileHash: p.sha256 } : {}) },
         });
+        // RL-3: the run of a pending pulse slot started.
+        await this.markSlotStarted(step);
         return step;
       }
       let out = step;
@@ -1214,7 +1244,7 @@ export class HubService {
   }
 
   /** End an open offer as withdrawn (inside `goalTx`). */
-  private async withdrawOffer(actor: Actor, step: Step, reason?: string): Promise<Step> {
+  private async withdrawOffer(actor: { userId: string }, step: Step, reason?: string): Promise<Step> {
     const offer = step.offer as StepOffer;
     const now = this.now();
     const next: Step = { ...step, offer: { ...offer, state: "withdrawn", decidedAt: now }, updatedAt: now };
@@ -1510,10 +1540,13 @@ export class HubService {
     });
   }
 
-  /** All goals, or those carrying every topic in `topics` (`all` matches every goal). */
-  async listGoals(topics: readonly string[] = []): Promise<Goal[]> {
+  /**
+   * All goals, or those carrying every topic in `topics` (`all` matches every goal). RL-3: goals
+   * made by a pulse are left out unless `pulses`.
+   */
+  async listGoals(topics: readonly string[] = [], o: { pulses?: boolean | undefined } = {}): Promise<Goal[]> {
     const want = await this.knownTopics(topics);
-    return (await this.store.listGoals()).filter((g) => goalHasTopics(g, want));
+    return (await this.store.listGoals()).filter((g) => goalHasTopics(g, want) && (o.pulses === true || g.refs?.pulse === undefined));
   }
 
   // ---------- topics ----------
@@ -1557,6 +1590,12 @@ export class HubService {
         const { topics: _drop, ...without } = g;
         await this.store.saveGoal({ ...without, ...(rest.length ? { topics: rest } : {}), updatedAt: now });
         touched.push(g.id);
+      }
+      // RL-3: pulses (deleted ones too) lose the topic, so a later fire does not fail on it.
+      for (const p of await this.store.listPulses({ deleted: true })) {
+        if (!p.topics.includes(name)) continue;
+        await this.store.savePulse({ ...p, topics: p.topics.filter((t) => t !== name), updatedAt: now });
+        await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: p.version, fields: ["topics"] } });
       }
       await this.store.deleteTopic(name);
       await this.emit({ type: "topic.deleted", user: actor.userId, payload: { topic: name, goals: touched } });
@@ -1787,30 +1826,39 @@ export class HubService {
         `MESH: plan v${plan.version} for ${goal.id} was approved by ${actor.userId}${comment ? ` (${comment})` : ""}. mesh updated .mesh/goals/${goal.id}/plan.v${plan.version}.yaml with the approval; commit it with the design. The steps are open now.`,
         { goal: goal.id, version: plan.version },
       );
-      const first = endOffersLeavingReady(existing, changes, now);
-      await this.store.saveSteps(first.steps);
-      const afterFirst = await this.store.listSteps({ goal: goal.id });
-      // RL-2: settle decides new, changed or reset steps with `when` (skipped or ready).
-      const settled = await this.settleSteps(afterFirst, now);
-      const second = endOffersLeavingReady(afterFirst, settled.changed, now);
-      const ready = second.steps;
-      await this.store.saveSteps(ready);
-      const finalSteps = afterFirst.map((s) => ready.find((x) => x.id === s.id) ?? s);
-      const complete = HubService.goalComplete(finalSteps);
-      const fresh = await this.store.getGoal(goal.id);
-      await this.store.saveGoal({ ...(fresh ?? goal), state: complete ? "done" : "in_progress", updatedAt: now });
-      await this.emit({ type: "plan.approved", user: actor.userId, goal: goal.id, payload: { version: plan.version } });
-      await this.emitOffersEnded(actor, [...first.ended, ...second.ended]);
-      const finalState = new Map(finalSteps.map((s) => [s.id, s.state]));
-      for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready" && finalState.get(x.id) === "ready")) await this.emitReady(goal.id, s.id);
-      await this.emitSkipped(goal.id, settled.skipped);
-      if (complete && (fresh ?? goal).state !== "done") await this.emit({ type: "goal.done", goal: goal.id });
-      for (const s of m.upserts.filter((x) => x.state === "dropped")) await this.emit({ type: "step.dropped", goal: goal.id, step: s.id });
-      for (const s of m.changedForHolder) {
-        await this.message(s.holderSid, actor.userId, "replan", `MESH: the brief of your step ${s.id} changed in plan v${plan.version}. Call mesh_context to read it.`);
-      }
+      await this.applyApproved(actor, goal, plan, existing, changes, m, now);
     });
     return await this.goalDetail(goalId);
+  }
+
+  /**
+   * The tail of an approval (inside `goalTx`): save the materialized `changes`, settle steps with
+   * `when`, set the goal's state, and emit `plan.approved`, ended offers, ready, skipped, done and
+   * dropped steps. Shared by `approvePlan` and RL-3's create-with-plan.
+   */
+  private async applyApproved(by: { userId: string }, goal: Goal, plan: Plan, existing: readonly Step[], changes: Step[], m: Materialized, now: number): Promise<void> {
+    const first = endOffersLeavingReady(existing, changes, now);
+    await this.store.saveSteps(first.steps);
+    const afterFirst = await this.store.listSteps({ goal: goal.id });
+    // RL-2: settle decides new, changed or reset steps with `when` (skipped or ready).
+    const settled = await this.settleSteps(afterFirst, now);
+    const second = endOffersLeavingReady(afterFirst, settled.changed, now);
+    const ready = second.steps;
+    await this.store.saveSteps(ready);
+    const finalSteps = afterFirst.map((s) => ready.find((x) => x.id === s.id) ?? s);
+    const complete = HubService.goalComplete(finalSteps);
+    const fresh = await this.store.getGoal(goal.id);
+    await this.store.saveGoal({ ...(fresh ?? goal), state: complete ? "done" : "in_progress", updatedAt: now });
+    await this.emit({ type: "plan.approved", user: by.userId, goal: goal.id, payload: { version: plan.version } });
+    await this.emitOffersEnded(by, [...first.ended, ...second.ended]);
+    const finalState = new Map(finalSteps.map((s) => [s.id, s.state]));
+    for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready" && finalState.get(x.id) === "ready")) await this.emitReady(goal.id, s.id);
+    await this.emitSkipped(goal.id, settled.skipped);
+    if (complete && (fresh ?? goal).state !== "done") await this.emit({ type: "goal.done", goal: goal.id });
+    for (const s of m.upserts.filter((x) => x.state === "dropped")) await this.emit({ type: "step.dropped", goal: goal.id, step: s.id });
+    for (const s of m.changedForHolder) {
+      await this.message(s.holderSid, by.userId, "replan", `MESH: the brief of your step ${s.id} changed in plan v${plan.version}. Call mesh_context to read it.`);
+    }
   }
 
   async revisePlan(actor: Actor, goalId: string, comment: string | undefined): Promise<GoalDetail> {
@@ -1917,6 +1965,7 @@ export class HubService {
       await this.saveStepFrom(next, step);
       if (note) await this.store.addNote({ step: step.id, user: actor.userId, text: note, at: this.now() });
       await this.emit({ type: "step.released", user: actor.userId, goal: step.goal, step: step.id, payload: { note } });
+      await this.slotReleased(goal, step, note);
       return next;
     });
   }
@@ -2393,7 +2442,7 @@ export class HubService {
         return { user: this.userView(u), online: ms.some((m) => m.online), machines: ms, sessions: ss };
       });
       const goals: LiveView["goals"] = [];
-      for (const g of (await this.store.listGoals()).filter((x) => goalHasTopics(x, want))) {
+      for (const g of (await this.store.listGoals()).filter((x) => goalHasTopics(x, want) && x.refs?.pulse === undefined)) {
         const steps = (await this.store.listSteps({ goal: g.id })).filter((s) => s.state !== "dropped");
         goals.push({
           id: g.id,
@@ -2508,6 +2557,672 @@ export class HubService {
     return await this.store.pruneEvents(this.now() - days * 86_400_000);
   }
 
+  // ---------- pulses and ingest (RL-3) ----------
+
+  /**
+   * Validate a preset snapshot with its params (pulse create, an update of `preset`/`params`,
+   * ingest): 400 when the sha256 does not match, else 422 listing every problem. Returns the plan
+   * as instantiated for "this goal".
+   */
+  private async presetChecks(preset: { name: string; text: string; sha256: string }, params: Record<string, string>): Promise<PlanInput> {
+    if (createHash("sha256").update(preset.text, "utf8").digest("hex") !== preset.sha256) throw new HubError(400, "preset.sha256 is not the SHA-256 of preset.text");
+    const problems: string[] = [];
+    const fail = (): never => {
+      throw new HubError(422, `the preset has ${problems.length} problem(s): ${problems.join("; ")}`, problems);
+    };
+    const repo = params.repo;
+    if (!repo) problems.push("params.repo is required (the repo the preset's steps work in)");
+    let plan: PlanInput;
+    try {
+      const parsed = parsePreset(preset.name, preset.text);
+      try {
+        // Without a repo the rest is still checked, against a stand-in name.
+        plan = instantiate(parsed, { repo: repo || "repo", goal: "this goal", params });
+      } catch (e) {
+        problems.push(errorText(e));
+        return fail();
+      }
+    } catch (e) {
+      if (e instanceof HubError) throw e;
+      problems.push(`preset ${preset.name}: ${errorText(e)}`);
+      return fail();
+    }
+    problems.push(...validatePlan(plan.steps), ...validatePolicies(plan.steps, plan.acs));
+    const first = plan.steps.filter((s) => s.deps.length === 0);
+    if (first.length !== 1 || first[0]?.kind === "gate") problems.push(`a pulse preset needs exactly one first step (no deps, not a gate); ${preset.name} has ${first.length}`);
+    for (const name of profileNames(plan.steps)) {
+      if (await this.resolveProfile(name)) continue;
+      const step = plan.steps.find((s) => (s.profile ?? (s.mode === "headless" ? HEADLESS_DEFAULTS.profile : undefined)) === name);
+      problems.push(`step "${step?.id ?? "?"}": unknown profile "${name}"`);
+    }
+    if (problems.length) fail();
+    return plan;
+  }
+
+  /** R-6: every profile a plan's steps run with, resolved now. */
+  private async snapshotProfiles(steps: PlanInput["steps"]): Promise<Record<string, ProfileSnapshot>> {
+    const out: Record<string, ProfileSnapshot> = {};
+    for (const name of profileNames(steps)) {
+      const snap = await this.resolveProfile(name);
+      if (snap) out[name] = snap;
+    }
+    return out;
+  }
+
+  /** The stored schedule of a create or update, after its checks (422). */
+  private scheduleOf(input: PulseWhenInput, now: number): PulseWhen {
+    if ("every" in input) return { every: input.every, anchor: input.at ?? now };
+    const c = parseCron(input.cron);
+    if (!c.ok) throw new HubError(422, `bad cron "${input.cron}": ${c.error}`);
+    if (!validTimeZone(input.tz)) throw new HubError(422, `unknown time zone "${input.tz}"`);
+    const when: PulseWhen = { cron: input.cron, tz: input.tz };
+    if (nextSlot(when, now) === undefined) throw new HubError(422, `cron "${input.cron}" never fires`);
+    const period = periodMs(when, now);
+    if (period !== undefined && period < 5 * 60_000) throw new HubError(422, `cron "${input.cron}" fires more often than every 5m`);
+    return when;
+  }
+
+  /** `windowMs` and `maxGoalAgeMs`: as given, else min(4h, period) and 2 × period. */
+  private static timings(when: PulseWhen, window: string | undefined, maxGoalAge: string | undefined, now: number): { windowMs: number; maxGoalAgeMs: number } {
+    const period = periodMs(when, now) ?? 366 * 86_400_000;
+    return {
+      windowMs: window !== undefined ? parseDurationSpec(window) : Math.min(4 * 3_600_000, period),
+      maxGoalAgeMs: maxGoalAge !== undefined ? parseDurationSpec(maxGoalAge) : 2 * period,
+    };
+  }
+
+  private async pulseView(p: Pulse): Promise<PulseView> {
+    const { preset, profiles, ...rest } = p;
+    return {
+      ...rest,
+      preset: { name: preset.name, sha256: preset.sha256, ...(preset.source ? { source: preset.source } : {}) },
+      profiles: Object.fromEntries(Object.entries(profiles).map(([k, v]) => [k, v.sha256])),
+      schedule: scheduleText(p.when),
+      recent: await this.store.listSlots({ pulse: p.id, limit: 10 }),
+    };
+  }
+
+  private async pulseOr404(id: string): Promise<Pulse> {
+    const p = await this.store.getPulse(id);
+    if (!p || p.deletedAt !== undefined) throw new HubError(404, `no pulse ${id}`);
+    return p;
+  }
+
+  private static ownerOrAdmin(actor: Actor, p: Pulse): void {
+    if (actor.userId !== p.owner && !actor.roles.includes("admin")) throw new HubError(403, `only @${p.owner} or an admin can change pulse ${p.id}`);
+  }
+
+  /** `POST /v1/pulses`. */
+  async createPulse(actor: Actor, body: PulseCreate): Promise<PulseView> {
+    return await this.goalTx(async () => {
+      const now = this.now();
+      const plan = await this.presetChecks(body.preset, body.params);
+      const topics = await this.knownTopics(body.topics ?? []);
+      const when = this.scheduleOf(body.when, now);
+      const profiles = await this.snapshotProfiles(plan.steps);
+      const t = HubService.timings(when, body.window, body.maxGoalAge, now);
+      const nextAt = body.enabled ? nextSlot(when, now) : undefined;
+      const p = await this.store.createPulse({
+        owner: actor.userId,
+        title: body.title ?? `${body.preset.name} on ${repoName(body.params.repo as string)}`,
+        when,
+        preset: body.preset,
+        params: body.params,
+        profiles,
+        topics,
+        target: body.target,
+        ...(body.window !== undefined ? { window: body.window } : {}),
+        windowMs: t.windowMs,
+        overlap: body.overlap,
+        ...(body.maxGoalAge !== undefined ? { maxGoalAge: body.maxGoalAge } : {}),
+        maxGoalAgeMs: t.maxGoalAgeMs,
+        missed: body.missed,
+        enabled: body.enabled,
+        ...(nextAt !== undefined ? { nextAt } : {}),
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await this.emit({ type: "pulse.created", user: actor.userId, payload: { pulse: p.id, title: p.title, preset: p.preset.name, sha256: p.preset.sha256, schedule: scheduleText(p.when) } });
+      return await this.pulseView(p);
+    });
+  }
+
+  /** `GET /v1/pulses`: by number, deleted ones left out; `mine`: only the caller's. */
+  async listPulsesView(actor: Actor, mine: boolean): Promise<PulseView[]> {
+    return this.store.tx(async () => {
+      const out: PulseView[] = [];
+      for (const p of await this.store.listPulses(mine ? { owner: actor.userId } : {})) out.push(await this.pulseView(p));
+      return out;
+    });
+  }
+
+  /** `GET /v1/pulses/:id`. */
+  async pulseDetail(id: string): Promise<PulseDetail> {
+    return this.store.tx(async () => {
+      const pulse = await this.pulseOr404(id);
+      const slots = await this.store.listSlots({ pulse: pulse.id, limit: 50 });
+      const goals: Record<string, GoalState> = {};
+      for (const s of slots) {
+        if (s.goal === undefined || goals[s.goal] !== undefined) continue;
+        const g = await this.store.getGoal(s.goal);
+        if (g) goals[s.goal] = g.state;
+      }
+      return { pulse, schedule: scheduleText(pulse.when), slots, goals };
+    });
+  }
+
+  /** `POST /v1/pulses/:id/update`: only the given fields; `preset`/`params` re-snapshot and bump `version`. */
+  async updatePulse(actor: Actor, id: string, body: PulseUpdate): Promise<PulseView> {
+    return await this.goalTx(async () => {
+      const p = await this.pulseOr404(id);
+      HubService.ownerOrAdmin(actor, p);
+      const now = this.now();
+      let next: Pulse = { ...p };
+      if (body.preset !== undefined || body.params !== undefined) {
+        const preset = body.preset ?? p.preset;
+        const params = body.params ?? p.params;
+        const plan = await this.presetChecks(preset, params);
+        next = { ...next, preset, params, profiles: await this.snapshotProfiles(plan.steps), version: p.version + 1 };
+      }
+      if (body.topics !== undefined) next.topics = await this.knownTopics(body.topics);
+      if (body.when !== undefined) {
+        const { nextAt: _old, ...rest } = next;
+        const when = this.scheduleOf(body.when, now);
+        const at = next.enabled ? nextSlot(when, now) : undefined;
+        next = { ...rest, when, ...(at !== undefined ? { nextAt: at } : {}) };
+      }
+      if (body.title !== undefined) next.title = body.title;
+      if (body.target !== undefined) next.target = body.target;
+      if (body.overlap !== undefined) next.overlap = body.overlap;
+      if (body.missed !== undefined) next.missed = body.missed;
+      if (body.window !== undefined) next.window = body.window;
+      if (body.maxGoalAge !== undefined) next.maxGoalAge = body.maxGoalAge;
+      const t = HubService.timings(next.when, next.window, next.maxGoalAge, now);
+      next = { ...next, windowMs: t.windowMs, maxGoalAgeMs: t.maxGoalAgeMs, updatedAt: now };
+      await this.store.savePulse(next);
+      await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: next.version, fields: Object.keys(body).sort() } });
+      return await this.pulseView(next);
+    });
+  }
+
+  async pausePulse(actor: Actor, id: string): Promise<PulseView> {
+    return await this.goalTx(async () => {
+      const p = await this.pulseOr404(id);
+      HubService.ownerOrAdmin(actor, p);
+      if (!p.enabled) throw new HubError(409, `pulse ${p.id} is already paused`);
+      const { nextAt: _n, ...rest } = p;
+      const reason = `paused by ${actor.userId}`;
+      const next: Pulse = { ...rest, enabled: false, pausedReason: reason, updatedAt: this.now() };
+      await this.store.savePulse(next);
+      await this.emit({ type: "pulse.paused", user: actor.userId, payload: { pulse: p.id, reason } });
+      return await this.pulseView(next);
+    });
+  }
+
+  async resumePulse(actor: Actor, id: string): Promise<PulseView> {
+    return await this.goalTx(async () => {
+      const p = await this.pulseOr404(id);
+      HubService.ownerOrAdmin(actor, p);
+      if (p.enabled) throw new HubError(409, `pulse ${p.id} is not paused`);
+      const now = this.now();
+      const { pausedReason: _r, nextAt: _n, ...rest } = p;
+      const at = nextSlot(p.when, now);
+      const next: Pulse = { ...rest, enabled: true, ...(at !== undefined ? { nextAt: at } : {}), updatedAt: now };
+      await this.store.savePulse(next);
+      await this.emit({ type: "pulse.resumed", user: actor.userId, payload: { pulse: p.id } });
+      return await this.pulseView(next);
+    });
+  }
+
+  /** `POST /v1/pulses/:id/delete`: a soft delete; its slots and goals stay. */
+  async deletePulse(actor: Actor, id: string): Promise<{ pulse: string }> {
+    return await this.goalTx(async () => {
+      const p = await this.pulseOr404(id);
+      HubService.ownerOrAdmin(actor, p);
+      const now = this.now();
+      const { nextAt: _n, ...rest } = p;
+      await this.store.savePulse({ ...rest, enabled: false, deletedAt: now, updatedAt: now });
+      await this.emit({ type: "pulse.deleted", user: actor.userId, payload: { pulse: p.id } });
+      return { pulse: p.id };
+    });
+  }
+
+  /** `POST /v1/pulses/:id/fire`: a manual slot now (also while paused); `nextAt` is not changed. */
+  async firePulse(actor: Actor, id: string): Promise<FireResult> {
+    const now = this.now();
+    const slotId = manualSlot(now);
+    try {
+      return {
+        slot: await this.goalTx(async () => {
+          const p = await this.pulseOr404(id);
+          HubService.ownerOrAdmin(actor, p);
+          return await this.fireSlot(p, slotId, now, now, { manual: true, by: actor.userId });
+        }),
+      };
+    } catch (e) {
+      if (e instanceof HubError) throw e;
+      const error = errorText(e).slice(0, 500);
+      return {
+        slot: await this.goalTx(async () => {
+          const p = await this.pulseOr404(id);
+          const slot: PulseSlot = { pulse: p.id, slot: slotId, at: now, state: "missed", reason: "error", manual: true, by: actor.userId, error, tried: [], decidedAt: now };
+          if (await this.store.addSlot(slot)) await this.emit({ type: "pulse.missed", payload: { pulse: p.id, slot: slotId, reason: "error", tried: 0, error } });
+          return (await this.store.getSlot(p.id, slotId)) ?? slot;
+        }),
+      };
+    }
+  }
+
+  /** `POST /v1/goals/from-preset` (ingest): a goal with an approved plan, owned by the caller. */
+  async goalFromPreset(actor: Actor, b: GoalFromPreset): Promise<GoalDetail> {
+    if (b.refs && (Object.hasOwn(b.refs, "pulse") || Object.hasOwn(b.refs, "slot"))) throw new HubError(400, "refs.pulse and refs.slot are set by pulses only");
+    const id = await this.goalTx(async () => {
+      const now = this.now();
+      const plan = await this.presetChecks(b.preset, b.params);
+      const topics = await this.knownTopics(b.topics ?? []);
+      const profiles = await this.snapshotProfiles(plan.steps);
+      const goal = await this.createWithPlan(
+        {
+          owner: actor.userId,
+          title: b.title ?? `${b.preset.name} on ${repoName(b.params.repo as string)}`,
+          preset: b.preset,
+          params: b.params,
+          profiles,
+          topics,
+          priority: b.priority,
+          refs: b.refs,
+          comment: `ingest (preset ${b.preset.name} ${b.preset.sha256.slice(0, 12)})`,
+          extra: {},
+        },
+        now,
+      );
+      return goal.id;
+    });
+    return await this.goalDetail(id);
+  }
+
+  /**
+   * Create-with-plan (inside `goalTx`): a goal with plan v1 approved by its owner, no design step,
+   * steps materialized and settled as an approval does. No inbox message.
+   */
+  private async createWithPlan(
+    o: {
+      owner: string;
+      title: string;
+      preset: { name: string; text: string; sha256: string };
+      params: Record<string, string>;
+      profiles: Record<string, ProfileSnapshot>;
+      topics: readonly string[];
+      priority: number;
+      refs?: Record<string, string> | undefined;
+      comment: string;
+      extra: Record<string, unknown>;
+    },
+    now: number,
+  ): Promise<Goal> {
+    const repo = o.params.repo as string;
+    const goal = await this.store.createGoal({
+      title: o.title,
+      ownerId: o.owner,
+      state: "in_progress",
+      primaryRepo: repo,
+      preset: { name: o.preset.name, text: o.preset.text },
+      ...(o.refs && Object.keys(o.refs).length ? { refs: o.refs } : {}),
+      ...(o.topics.length ? { topics: [...o.topics] } : {}),
+      priority: o.priority,
+      profiles: o.profiles,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const input = instantiate(parsePreset(o.preset.name, o.preset.text), { repo, goal: goal.id, params: o.params });
+    const plan: Plan = {
+      goal: goal.id,
+      version: 1,
+      steps: input.steps,
+      ...(input.acs?.length ? { acs: input.acs } : {}),
+      proposedBy: o.owner,
+      proposedAt: now,
+      decision: "approved",
+      decidedBy: o.owner,
+      decidedAt: now,
+      comment: o.comment,
+    };
+    await this.store.savePlan(plan);
+    await this.emit({ type: "goal.created", user: o.owner, goal: goal.id, payload: { title: goal.title, preset: o.preset.name, ...o.extra } });
+    const m = materialize(goal.id, 1, plan.steps, [], now);
+    await this.applyApproved({ userId: o.owner }, goal, plan, [], [...m.upserts], m, now);
+    return (await this.store.getGoal(goal.id)) ?? goal;
+  }
+
+  /** The run step of a pulse goal: plan v1's step without deps. */
+  private async runStepOf(goal: Goal): Promise<string | undefined> {
+    const v1 = (await this.store.listPlans(goal.id)).find((p) => p.version === 1);
+    const first = v1?.steps.find((s) => s.deps.length === 0);
+    return first ? `${goal.id}.${first.id}` : undefined;
+  }
+
+  /** The pending slot of a pulse goal whose run step is `step`, or undefined. */
+  private async pendingSlotOf(goal: Goal | undefined, step: Step): Promise<PulseSlot | undefined> {
+    const pulse = goal?.refs?.pulse;
+    const slotId = goal?.refs?.slot;
+    if (!goal || pulse === undefined || slotId === undefined) return undefined;
+    if ((await this.runStepOf(goal)) !== step.id) return undefined;
+    const slot = await this.store.getSlot(pulse, slotId);
+    return slot && slot.state === "fired" && slot.startedAt === undefined ? slot : undefined;
+  }
+
+  /** A `run.started` report on a pending slot's run step: the slot started. */
+  private async markSlotStarted(step: Step): Promise<void> {
+    const slot = await this.pendingSlotOf(await this.store.getGoal(step.goal), step);
+    if (slot) await this.store.saveSlot({ ...slot, startedAt: this.now() });
+  }
+
+  /** A release of a pending slot's run step: the last try's outcome (`capacity:` notes: capacity). */
+  private async slotReleased(goal: Goal, step: Step, note: string | undefined): Promise<void> {
+    const slot = await this.pendingSlotOf(goal, step);
+    const last = slot?.tried.at(-1);
+    if (!slot || !last) return;
+    const outcome = note?.startsWith("capacity:") ? "capacity" : "released";
+    await this.store.saveSlot({ ...slot, tried: [...slot.tried.slice(0, -1), { ...last, outcome }] });
+  }
+
+  /** The last try's outcome from the run step's offer to that machine, when it has none yet. */
+  private static syncLastTry(slot: PulseSlot, rs: Step): PulseSlot {
+    const last = slot.tried.at(-1);
+    const o = rs.offer;
+    if (!last || last.outcome !== undefined || !o || o.to.machine !== last.machine || o.at < last.at) return slot;
+    const outcome = o.state === "declined" ? "declined" : o.state === "expired" || o.state === "withdrawn" ? "timeout" : o.state === "accepted" ? "accepted" : undefined;
+    if (!outcome) return slot;
+    return { ...slot, tried: [...slot.tried.slice(0, -1), { ...last, outcome }] };
+  }
+
+  /** Has the slot's run started (a run report, an interactive claim, or the goal is done)? */
+  private async slotStarted(goal: Goal, rs: Step | undefined): Promise<boolean> {
+    if (goal.state === "done") return true;
+    if (!rs) return false;
+    if (rs.policy?.mode === "headless") {
+      if (rs.state === "done" || rs.state === "failed") return true;
+      return (await this.store.eventsFor({ step: rs.id })).some((e) => e.type === "run.started");
+    }
+    return rs.state === "claimed" || rs.state === "paused" || rs.state === "done" || rs.state === "failed";
+  }
+
+  /**
+   * Drop a goal (inside `goalTx`): every step not done, skipped, dropped or failed is dropped (open
+   * offers withdrawn); `goal.dropped` and `step.dropped` carry the reason.
+   */
+  private async dropGoal(goalId: string, reason: "abandoned" | "missed", now: number): Promise<void> {
+    const goal = await this.store.getGoal(goalId);
+    if (!goal || goal.state === "dropped") return;
+    const dropped: Step[] = [];
+    const ended: Step[] = [];
+    for (const s of await this.store.listSteps({ goal: goal.id })) {
+      if (s.state === "done" || s.state === "skipped" || s.state === "dropped" || s.state === "failed") continue;
+      const next: Step = { ...s, state: "dropped", updatedAt: now };
+      if (s.offer?.state === "offered") {
+        next.offer = { ...s.offer, state: "withdrawn", decidedAt: now };
+        ended.push(next);
+      }
+      dropped.push(next);
+    }
+    if (dropped.length) await this.store.saveSteps(dropped);
+    await this.store.saveGoal({ ...goal, state: "dropped", updatedAt: now });
+    await this.emit({ type: "goal.dropped", goal: goal.id, payload: { reason } });
+    for (const s of dropped) await this.emit({ type: "step.dropped", goal: goal.id, step: s.id, payload: { reason } });
+    await this.emitOffersEnded(undefined, ended);
+  }
+
+  /**
+   * Advance a pending slot (inside `goalTx`): started → `startedAt`; window over → `missed` and its
+   * goal dropped; else (with `attempt`) offer the run step to the next machine.
+   */
+  private async advanceSlot(slot: PulseSlot, p: Pulse, now: number, o: { attempt: boolean }): Promise<PulseSlot> {
+    const goal = slot.goal !== undefined ? await this.store.getGoal(slot.goal) : undefined;
+    if (!goal) return slot;
+    const rsId = await this.runStepOf(goal);
+    const rs = rsId ? await this.store.getStep(rsId) : undefined;
+    let s = rs ? HubService.syncLastTry(slot, rs) : slot;
+    if (await this.slotStarted(goal, rs)) {
+      s = { ...s, startedAt: now };
+      await this.store.saveSlot(s);
+      return s;
+    }
+    if (s.until !== undefined && now >= s.until) {
+      const last = s.tried.at(-1);
+      const reason: SlotReason = !last ? "no_machine" : last.outcome === "capacity" ? "capacity" : last.outcome === "accepted" ? "expired" : "not_accepted";
+      if (rs?.offer?.state === "offered") await this.withdrawOffer({ userId: p.owner }, rs, "pulse: slot missed");
+      await this.dropGoal(goal.id, "missed", now);
+      s = { ...s, state: "missed", reason, decidedAt: now };
+      await this.store.saveSlot(s);
+      await this.emit({ type: "pulse.missed", goal: goal.id, payload: { pulse: p.id, slot: s.slot, reason, tried: s.tried.length } });
+      return s;
+    }
+    if (o.attempt && rs?.state === "ready") s = await this.attempt(s, p, goal, rs, now);
+    if (s !== slot) await this.store.saveSlot(s);
+    return s;
+  }
+
+  /**
+   * One attempt (inside `goalTx`): wait on an open offer (a person's, or the last try's within its
+   * timeout), withdraw a timed-out one, then offer the run step to the first candidate not tried.
+   */
+  private async attempt(slot: PulseSlot, p: Pulse, goal: Goal, rs: Step, now: number): Promise<PulseSlot> {
+    let s = slot;
+    let step = rs;
+    const expiry = this.config.thresholds.offerExpiryMs;
+    if (step.offer?.state === "offered") {
+      const last = s.tried.at(-1);
+      if (!last || step.offer.to.machine !== last.machine) return s;
+      if (now - step.offer.at < Math.min(expiry, Math.floor(p.windowMs / 3))) return s;
+      step = await this.withdrawOffer({ userId: p.owner }, step, "pulse: not accepted in time");
+      s = { ...s, tried: [...s.tried.slice(0, -1), { ...last, outcome: "timeout" }] };
+    }
+    const machines = await this.store.listMachines();
+    const candidates = pulseCandidates({
+      owner: p.owner,
+      repo: step.repo,
+      topics: goal.topics ?? [],
+      target: p.target,
+      headless: step.policy?.mode === "headless",
+      tried: new Set(s.tried.map((t) => t.machine)),
+      now,
+      onlineMs: this.config.thresholds.machineOfflineMs,
+      machines,
+      sessions: await this.store.listSessions({ live: true }),
+    });
+    for (const c of candidates) {
+      const machine = machines.find((m) => m.id === c.machine);
+      if (!machine) continue;
+      const guard = await this.headlessGuard(step, machine, goal);
+      if (!guard.ok) continue;
+      const offered = await this.offerStep(step, { machine }, { userId: p.owner }, { stick: false, goal, snapshot: guard.snapshot, deadline: Math.min(now + expiry, s.until ?? Number.MAX_SAFE_INTEGER) });
+      s = { ...s, tried: [...s.tried, { machine: machine.id, at: now }] };
+      await this.setStick((await this.store.getGoal(goal.id)) ?? goal, { to: offered.offer?.to ?? { machine: machine.id }, by: p.owner });
+      return s;
+    }
+    return s;
+  }
+
+  /**
+   * Fire a slot (inside the pulse's transaction): insert its row (once), retire pending slots whose
+   * window is over, abandon started goals past `maxGoalAge`, skip on overlap, else create the goal
+   * and make one attempt.
+   */
+  private async fireSlot(p: Pulse, slotId: string, at: number, now: number, o: { manual?: boolean; by?: string; catchUp?: boolean }): Promise<PulseSlot> {
+    const base: PulseSlot = {
+      pulse: p.id,
+      slot: slotId,
+      at,
+      state: "fired",
+      ...(o.manual ? { manual: true as const, ...(o.by !== undefined ? { by: o.by } : {}) } : {}),
+      ...(o.catchUp ? { catchUp: true as const } : {}),
+      tried: [],
+      decidedAt: now,
+    };
+    if (!(await this.store.addSlot(base))) return (await this.store.getSlot(p.id, slotId)) ?? base;
+    // Retire: pending slots whose window is over end now (their goals dropped).
+    for (const s of await this.store.listSlots({ pulse: p.id, pending: true })) {
+      if (s.slot !== slotId) await this.advanceSlot(s, p, now, { attempt: false });
+    }
+    // Abandon: started goals older than maxGoalAge.
+    for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
+      if (s.slot === slotId || s.startedAt === undefined || s.goal === undefined) continue;
+      const g = await this.store.getGoal(s.goal);
+      if (!g || g.state === "done" || g.state === "dropped" || now - g.createdAt < p.maxGoalAgeMs) continue;
+      await this.dropGoal(g.id, "abandoned", now);
+      await this.store.saveSlot({ ...s, state: "abandoned", reason: "max_goal_age", decidedAt: now });
+      await this.emit({ type: "pulse.abandoned", goal: g.id, payload: { pulse: p.id, slot: s.slot } });
+    }
+    // Overlap.
+    if (p.overlap === "skip") {
+      let running: string | undefined;
+      for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
+        if (s.slot === slotId || s.goal === undefined) continue;
+        const g = await this.store.getGoal(s.goal);
+        if (g && g.state !== "done" && g.state !== "dropped") {
+          running = g.id;
+          break;
+        }
+      }
+      if (running !== undefined) {
+        const skipped: PulseSlot = { ...base, state: "skipped", reason: "overlap" };
+        await this.store.saveSlot(skipped);
+        await this.emit({ type: "pulse.skipped", payload: { pulse: p.id, slot: slotId, reason: "overlap", running } });
+        return skipped;
+      }
+    }
+    const goal = await this.createWithPlan(
+      {
+        owner: p.owner,
+        title: `${p.title} (${slotId})`,
+        preset: p.preset,
+        params: p.params,
+        profiles: p.profiles,
+        topics: p.topics,
+        priority: 3,
+        refs: { pulse: p.id, slot: slotId },
+        comment: `pulse ${p.id} (preset ${p.preset.name} ${p.preset.sha256.slice(0, 12)})`,
+        extra: { pulse: p.id, slot: slotId },
+      },
+      now,
+    );
+    let slot: PulseSlot = { ...base, goal: goal.id, firedAt: now, until: (o.manual || o.catchUp ? now : at) + p.windowMs };
+    await this.store.saveSlot(slot);
+    await this.emit({
+      type: "pulse.fired",
+      ...(o.manual && o.by !== undefined ? { user: o.by } : {}),
+      goal: goal.id,
+      payload: { pulse: p.id, slot: slotId, ...(o.manual ? { manual: true } : {}), ...(o.catchUp ? { catchUp: true } : {}) },
+    });
+    const rsId = await this.runStepOf(goal);
+    const rs = rsId ? await this.store.getStep(rsId) : undefined;
+    if (rs?.state === "ready") {
+      const tried = await this.attempt(slot, p, goal, rs, now);
+      if (tried !== slot) {
+        slot = tried;
+        await this.store.saveSlot(slot);
+      }
+    }
+    return slot;
+  }
+
+  /** The due slot times `nextAt <= t <= now`, the latest 11 of them, ascending. */
+  private static dueSlots(when: PulseWhen, from: number, now: number): number[] {
+    const KEEP = 11;
+    if ("every" in when) {
+      const period = parseDurationSpec(when.every);
+      const count = Math.floor((now - from) / period) + 1;
+      const out: number[] = [];
+      for (let k = Math.max(0, count - KEEP); k < count; k++) out.push(from + k * period);
+      return out;
+    }
+    const out: number[] = [];
+    let t: number | undefined = from;
+    while (t !== undefined && t <= now) {
+      out.push(t);
+      if (out.length > KEEP) out.shift();
+      t = nextSlot(when, t);
+    }
+    return out;
+  }
+
+  /**
+   * Fire one due pulse (inside its own `goalTx`): re-read it; pause it when its owner is no longer a
+   * member; record `hub_down` slots; fire the latest due slot when within its window (or catch up);
+   * then move `nextAt`. With `error` (the first transaction threw), the latest slot is recorded
+   * `missed` with that error instead of firing.
+   */
+  private async firePulseTx(id: string, now: number, error?: string): Promise<void> {
+    const p = await this.store.getPulse(id);
+    if (!p || !p.enabled || p.deletedAt !== undefined || p.nextAt === undefined || p.nextAt > now) return;
+    const owner = await this.store.getUser(p.owner);
+    if (!owner || !owner.roles.some((r) => r === "member" || r === "approver" || r === "admin")) {
+      const { nextAt: _n, ...rest } = p;
+      const reason = `owner ${p.owner} is not a member`;
+      await this.store.savePulse({ ...rest, enabled: false, pausedReason: reason, updatedAt: now });
+      await this.emit({ type: "pulse.paused", payload: { pulse: p.id, reason } });
+      return;
+    }
+    const due = HubService.dueSlots(p.when, p.nextAt, now);
+    const last = due.at(-1) as number;
+    const inWindow = now - last < p.windowMs;
+    const fires = inWindow || p.missed === "catch-up-once";
+    const down = (fires ? due.slice(0, -1) : due).slice(-10);
+    for (const t of down) {
+      const slot = new Date(t).toISOString();
+      if (await this.store.addSlot({ pulse: p.id, slot, at: t, state: "missed", reason: "hub_down", tried: [], decidedAt: now })) {
+        await this.emit({ type: "pulse.missed", payload: { pulse: p.id, slot, reason: "hub_down", tried: 0 } });
+      }
+    }
+    if (fires) {
+      const slot = new Date(last).toISOString();
+      if (error !== undefined) {
+        const message = error.slice(0, 500);
+        if (await this.store.addSlot({ pulse: p.id, slot, at: last, state: "missed", reason: "error", error: message, tried: [], decidedAt: now })) {
+          await this.emit({ type: "pulse.missed", payload: { pulse: p.id, slot, reason: "error", tried: 0, error: message } });
+        }
+      } else {
+        await this.fireSlot(p, slot, last, now, inWindow ? {} : { catchUp: true });
+      }
+    }
+    const { nextAt: _old, ...rest } = p;
+    const next = nextSlot(p.when, now);
+    await this.store.savePulse({ ...rest, ...(next !== undefined ? { nextAt: next } : {}) });
+  }
+
+  /** Tick: fire every due pulse, each in its own transaction; a throw is recorded as an `error` slot. */
+  private async fireDue(now: number): Promise<void> {
+    for (const seen of await this.store.duePulses(now)) {
+      try {
+        await this.goalTx(() => this.firePulseTx(seen.id, now));
+      } catch (e) {
+        try {
+          await this.goalTx(() => this.firePulseTx(seen.id, now, errorText(e)));
+        } catch (e2) {
+          process.stderr.write(`hub tick failed: ${errorText(e2)}\n`);
+        }
+      }
+    }
+  }
+
+  /** Tick: advance every pending slot of a pulse that is not deleted, each in its own transaction. */
+  private async advancePending(now: number): Promise<void> {
+    for (const seen of await this.store.listSlots({ pending: true })) {
+      try {
+        await this.goalTx(async () => {
+          const s = await this.store.getSlot(seen.pulse, seen.slot);
+          if (!s || s.state !== "fired" || s.startedAt !== undefined) return;
+          const p = await this.store.getPulse(s.pulse);
+          if (!p || p.deletedAt !== undefined) return;
+          await this.advanceSlot(s, p, now, { attempt: true });
+        });
+      } catch (e) {
+        process.stderr.write(`hub tick failed: ${errorText(e)}\n`);
+      }
+    }
+  }
+
   // ---------- time rules (plan §3.4) ----------
 
   /** Set when the hub is shutting down, so `/readyz` takes it out of the load balancer first. */
@@ -2585,6 +3300,9 @@ export class HubService {
         await this.reportBack(s, o, "offer_expired", `MESH: the offer of ${s.id} "${s.title}" to ${name} expired (not accepted within ${Math.round(expiry / 60_000)} min). It is ready again.`);
       }
     });
+    // RL-3: end or retry pending pulse slots first, then fire due pulses.
+    await this.advancePending(now);
+    await this.fireDue(now);
   }
 
   /** Mint a service token: the event feed, plus the member routes its scopes name. */
@@ -2686,7 +3404,29 @@ function describe(type: string, subject: string | undefined, payload: Record<str
     case "step.ready":
       return `${s} is ready`;
     case "step.dropped":
+      if (payload.reason === "abandoned") return `${s} dropped: its goal was abandoned`;
+      if (payload.reason === "missed") return `${s} dropped: its pulse slot was missed`;
       return `${s} dropped by a new plan`;
+    case "goal.dropped":
+      return `${s} dropped (${String(payload.reason)})`;
+    case "pulse.created":
+      return `created pulse ${String(payload.pulse)} "${String(payload.title ?? "")}"`;
+    case "pulse.updated":
+      return `updated pulse ${String(payload.pulse)} (v${String(payload.version)})`;
+    case "pulse.paused":
+      return `paused pulse ${String(payload.pulse)}: ${String(payload.reason)}`;
+    case "pulse.resumed":
+      return `resumed pulse ${String(payload.pulse)}`;
+    case "pulse.deleted":
+      return `removed pulse ${String(payload.pulse)}`;
+    case "pulse.fired":
+      return `pulse ${String(payload.pulse)} fired ${String(payload.slot)}${s ? ` → ${s}` : ""}`;
+    case "pulse.skipped":
+      return `pulse ${String(payload.pulse)} skipped ${String(payload.slot)} (${String(payload.running)} still running)`;
+    case "pulse.missed":
+      return `pulse ${String(payload.pulse)} missed ${String(payload.slot)} (${String(payload.reason)})`;
+    case "pulse.abandoned":
+      return `pulse ${String(payload.pulse)} abandoned ${s || String(payload.slot)}`;
     case "question.asked":
       return `asked a question on ${s}`;
     case "question.answered":
@@ -2715,6 +3455,11 @@ function describe(type: string, subject: string | undefined, payload: Record<str
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }
+}
+
+/** The message of a thrown value. */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 /** A topic name from a request: trimmed and lowercased, 400 when it isn't a valid name. */

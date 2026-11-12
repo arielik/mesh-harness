@@ -389,6 +389,12 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/steps/:id/review` | Review records (v0.1.16): the review record of the held step's current round; the hub fingerprints and folds its items (raising) or applies its dispositions (consuming) |
 | `GET /v1/steps/:id/reviews` | Review records (v0.1.16): a step's review records, by round |
 | `GET /v1/items?lineage=` | Review records (v0.1.16): the items of a lineage with their history, most severe first |
+| `GET /v1/pulses?mine=1`, `GET /v1/pulses/:id` | Pulses (v0.1.17): pulses by number (no preset text); one pulse with its 50 newest slots and their goals' states (scope `goals:read`) |
+| `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 |
+| `POST /v1/pulses/:id/{update,pause,resume,delete}` | Pulses (v0.1.17): change, pause, resume or remove a pulse (its owner or an admin) |
+| `POST /v1/pulses/:id/fire` | Pulses (v0.1.17): fire a manual slot now (also while paused) |
+| `POST /v1/goals/from-preset` | Ingest (v0.1.17): a goal with an approved plan from a preset snapshot, no design step (scope `goals:write`) |
+| `GET /v1/goals?pulses=1` | Pulses (v0.1.17): goal lists leave out pulse goals unless `pulses=1` |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

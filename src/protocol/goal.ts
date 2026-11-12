@@ -53,6 +53,25 @@ export const GoalStick = z.object({
 });
 export type GoalStick = z.infer<typeof GoalStick>;
 
+/** RL-1: the name of a permission profile (built in or registered on the hub). */
+export const ProfileName = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9+._-]{0,39}$/, "a profile name is 1-40 characters: lowercase letters, digits, '+', '.', '_' or '-', starting with a letter or digit");
+export type ProfileName = z.infer<typeof ProfileName>;
+
+/** RL-1: the built-in profiles a registered profile extends. */
+export const ProfileBase = z.enum(["read-only", "read-only+checks", "propose-via-branch"]);
+export type ProfileBase = z.infer<typeof ProfileBase>;
+
+/** RL-1: the Claude Code settings a profile compiles to. */
+export const ProfileSettings = z.object({ permissions: z.object({ allow: z.array(z.string()), deny: z.array(z.string()) }) });
+export interface ProfileSettings {
+  permissions: { allow: string[]; deny: string[] };
+}
+
+export const ProfileSnapshot = z.object({ name: ProfileName, base: ProfileBase, sha256: z.string(), settings: ProfileSettings });
+export type ProfileSnapshot = z.infer<typeof ProfileSnapshot>;
+
 export const Goal = z.object({
   id: z.string(),
   title: z.string(),
@@ -73,16 +92,12 @@ export const Goal = z.object({
   priority: z.number().int(),
   /** MM-3: later ready steps of this goal are offered to this target (`--stick`). */
   stick: GoalStick.optional(),
+  /** RL-3: the profile snapshots this goal's offers use (goals made by a pulse or by ingest). */
+  profiles: z.record(z.string(), ProfileSnapshot).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
 export type Goal = z.infer<typeof Goal>;
-
-/** RL-1: the name of a permission profile (built in or registered on the hub). */
-export const ProfileName = z
-  .string()
-  .regex(/^[a-z0-9][a-z0-9+._-]{0,39}$/, "a profile name is 1-40 characters: lowercase letters, digits, '+', '.', '_' or '-', starting with a letter or digit");
-export type ProfileName = z.infer<typeof ProfileName>;
 
 /** RL-1: what a headless run may spend. */
 export const StepBudget = z
@@ -154,10 +169,6 @@ export const RunTelemetry = z.object({
 });
 export type RunTelemetry = z.infer<typeof RunTelemetry>;
 
-/** RL-1: the built-in profiles a registered profile extends. */
-export const ProfileBase = z.enum(["read-only", "read-only+checks", "propose-via-branch"]);
-export type ProfileBase = z.infer<typeof ProfileBase>;
-
 /** RL-1: the YAML text of a registered profile. */
 export const ProfileFile = z
   .object({
@@ -169,15 +180,6 @@ export const ProfileFile = z
   })
   .strict();
 export type ProfileFile = z.infer<typeof ProfileFile>;
-
-/** RL-1: the Claude Code settings a profile compiles to. */
-export const ProfileSettings = z.object({ permissions: z.object({ allow: z.array(z.string()), deny: z.array(z.string()) }) });
-export interface ProfileSettings {
-  permissions: { allow: string[]; deny: string[] };
-}
-
-export const ProfileSnapshot = z.object({ name: ProfileName, base: ProfileBase, sha256: z.string(), settings: ProfileSettings });
-export type ProfileSnapshot = z.infer<typeof ProfileSnapshot>;
 
 /** RL-1: a profile as `GET /v1/profiles` shows it. */
 export interface ProfileView extends ProfileSnapshot {
