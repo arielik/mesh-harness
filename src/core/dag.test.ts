@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PlanStep, Step } from "../protocol/index.ts";
+import * as dag from "./dag.ts";
 import { dependents, materialize, recomputeReady, reopen, topoOrder, validatePlan } from "./dag.ts";
 
 const p = (id: string, deps: string[] = [], over: Partial<PlanStep> = {}): PlanStep => ({
@@ -80,5 +81,131 @@ describe("readiness and reopen", () => {
     const steps = materialize("G1", 1, [p("c", ["b"]), p("b", ["a"]), p("a")], [], 1).upserts;
     expect(topoOrder(steps).map((s) => s.id)).toEqual(["G1.a", "G1.b", "G1.c"]);
     expect(dependents(steps, "G1.a").map((s) => s.id)).toEqual(["G1.b"]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// RL-2 AC-07 (unit): `settle()`, the `skipped` state and the dag changes. Written from the spec's
+// contracts only (docs/specs/RL-2.md). `settle` is read loosely so the file compiles before it exists.
+
+describe("RL-2 skipped", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new export, read loosely
+  const settle = (dag as any).settle as (steps: readonly Step[], now: number, holds: (s: Step) => boolean) => { changed: Step[]; skipped: string[] };
+  const WHEN = { when: { open: true }, consumes: ["open"] };
+  const st = (id: string, state: string, deps: string[] = [], policy?: Record<string, unknown>): Step =>
+    ({ id: `G1.${id}`, goal: "G1", planVersion: 1, kind: "implement", repo: "r", title: id, brief: `do ${id}`, deps: deps.map((d) => `G1.${d}`), state, fixCycles: 0, updatedAt: 0, ...(policy ? { policy } : {}) }) as unknown as Step;
+  const stateOf = (steps: readonly Step[], id: string) => steps.find((s) => s.id === `G1.${id}`)?.state;
+  const recorder = (answer: boolean | ((s: Step) => boolean)) => {
+    const calls: string[] = [];
+    const fn = (s: Step) => {
+      calls.push(s.id);
+      return typeof answer === "function" ? answer(s) : answer;
+    };
+    return { calls, fn };
+  };
+  const applied = (steps: Step[], changed: Step[]) => steps.map((s) => changed.find((c) => c.id === s.id) ?? s);
+
+  it("test_AC07_settle_skip_and_cascade", () => {
+    const steps = [st("a", "done"), st("v", "blocked", ["a"], WHEN), st("d", "blocked", ["v"])];
+    const h = recorder(false);
+    const out = settle(steps, 5, h.fn);
+    expect(out.skipped).toStrictEqual(["G1.v"]);
+    expect(stateOf(out.changed, "v")).toBe("skipped");
+    expect(stateOf(out.changed, "d")).toBe("ready");
+    expect(h.calls).toStrictEqual(["G1.v"]);
+  });
+
+  it("test_AC07_settle_ready", () => {
+    const steps = [st("a", "done"), st("v", "blocked", ["a"], WHEN), st("d", "blocked", ["v"])];
+    const out = settle(steps, 5, recorder(true).fn);
+    expect(out.skipped).toStrictEqual([]);
+    expect(stateOf(out.changed, "v")).toBe("ready");
+    const after = applied(steps, out.changed);
+    expect(stateOf(after, "d")).toBe("blocked");
+  });
+
+  it("test_AC07_ready_not_reevaluated", () => {
+    const steps = [st("a", "done"), st("v", "ready", ["a"], WHEN)];
+    const h = recorder(false);
+    const out = settle(steps, 5, h.fn);
+    expect(h.calls).not.toContain("G1.v");
+    expect(out.changed).toStrictEqual([]);
+    expect(out.skipped).toStrictEqual([]);
+    // Control: the same step blocked is decided (and skipped).
+    const h2 = recorder(false);
+    const out2 = settle([st("a", "done"), st("v", "blocked", ["a"], WHEN)], 5, h2.fn);
+    expect(h2.calls).toStrictEqual(["G1.v"]);
+    expect(out2.skipped).toStrictEqual(["G1.v"]);
+  });
+
+  it("test_AC07_skipped_to_blocked", () => {
+    const steps = [st("a", "ready"), st("v", "skipped", ["a"], WHEN)];
+    const out = settle(steps, 5, recorder(false).fn);
+    expect(stateOf(out.changed, "v")).toBe("blocked");
+    // A ready step with an unsatisfied dep goes back to blocked too.
+    const out2 = settle([st("a", "ready"), st("w", "ready", ["a"])], 5, recorder(false).fn);
+    expect(stateOf(out2.changed, "w")).toBe("blocked");
+  });
+
+  it("test_AC07_holds_only_when", () => {
+    const steps = [st("a", "done"), st("x", "blocked", ["a"]), st("v", "blocked", ["a"], WHEN), st("y", "blocked", ["a"])];
+    const h = recorder(true);
+    const out = settle(steps, 5, h.fn);
+    expect(h.calls).toStrictEqual(["G1.v"]);
+    for (const id of ["x", "v", "y"]) expect(stateOf(out.changed, id), id).toBe("ready");
+  });
+
+  it("test_AC07_dropped_satisfies", () => {
+    const out = settle([st("a", "dropped"), st("b", "skipped"), st("v", "blocked", ["a", "b"], WHEN)], 5, recorder(true).fn);
+    expect(stateOf(out.changed, "v")).toBe("ready");
+  });
+
+  it("test_AC07_recomputeReady", () => {
+    const a = recomputeReady([st("a", "skipped"), st("c", "blocked", ["a"])], 5);
+    expect(a.map((s) => [s.id, s.state])).toStrictEqual([["G1.c", "ready"]]);
+    const b = recomputeReady([st("a", "done"), st("v", "blocked", ["a"], WHEN)], 5);
+    expect(b.find((s) => s.id === "G1.v")?.state ?? "blocked").toBe("blocked");
+    expect(b.filter((s) => s.state === "ready")).toStrictEqual([]);
+  });
+
+  it("test_AC07_reopen_cascade", () => {
+    const steps = [st("a", "done"), st("v", "skipped", ["a"], WHEN), st("d", "done", ["v"]), st("o", "ready")];
+    const changed = reopen(steps, ["G1.a"], 5);
+    expect(stateOf(changed, "a")).toBe("ready");
+    expect(stateOf(changed, "v")).toBe("blocked");
+    expect(stateOf(changed, "d")).toBe("blocked");
+    expect(changed.find((s) => s.id === "G1.o")).toBeUndefined();
+  });
+
+  const plan = (over: Record<string, unknown> = {}) => [p("a"), p("v", ["a"], { when: { open: true }, consumes: ["open"], ...over } as Partial<PlanStep>)];
+  const existing = () => {
+    const m = materialize("G1", 1, plan(), [], 1).upserts;
+    return m.map((s) => (s.id === "G1.a" ? { ...s, state: "done" as const } : s.id === "G1.v" ? ({ ...s, state: "skipped", summary: "skipped: no item of a is open" } as unknown as Step) : s));
+  };
+
+  it("test_AC07_materialize_unchanged_skipped", () => {
+    const m = materialize("G1", 2, plan(), existing(), 2);
+    expect(stateOf(m.upserts, "v")).toBe("skipped");
+    expect(stateOf(m.upserts, "a")).toBe("done");
+  });
+
+  it.each([
+    ["brief", [p("a"), p("v", ["a"], { brief: "new brief", when: { open: true }, consumes: ["open"] } as Partial<PlanStep>)]],
+    ["when.min_severity", plan({ when: { open: true, min_severity: "S2" } })],
+    ["deps", [p("a"), p("b"), p("v", ["a", "b"], { when: { open: true }, consumes: ["open"] } as Partial<PlanStep>)]],
+  ])("test_AC07_materialize_changed %s", (_what, next) => {
+    const m = materialize("G1", 2, next as PlanStep[], existing(), 2);
+    expect(stateOf(m.upserts, "v")).toBe("blocked");
+  });
+
+  it("test_AC07_materialize_new_when", () => {
+    const done = materialize("G1", 1, [p("a")], [], 1).upserts.map((s) => ({ ...s, state: "done" as const }));
+    const m = materialize("G1", 2, [p("a"), p("v", ["a"], { when: { open: true }, consumes: ["open"] } as Partial<PlanStep>), p("w", ["a"])], done, 2);
+    expect(stateOf(m.upserts, "v")).toBe("blocked");
+    // Control: a new sibling without `when` and done deps is ready.
+    expect(stateOf(m.upserts, "w")).toBe("ready");
+    // A new root step with `when` is not ready either.
+    const r = materialize("G2", 1, [{ ...p("v"), when: { open: true }, consumes: ["open"] } as PlanStep], [], 1);
+    expect(r.upserts.find((s) => s.id === "G2.v")?.state).toBe("blocked");
   });
 });

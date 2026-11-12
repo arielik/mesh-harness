@@ -285,6 +285,26 @@ export class HeadlessRuns {
     }
   }
 
+  /** RL-2: the running run a daemon session belongs to (its worktree and agent), if any. */
+  runForSid(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined } | undefined {
+    for (const run of this.runs.values()) {
+      if (run.state !== "running" || run.endedAt !== undefined) continue;
+      if (!this.runSids(run).has(sid)) continue;
+      return { worktree: run.worktree, agent: run.agent };
+    }
+    return undefined;
+  }
+
+  /** RL-2: a session's review record was stored; a run's session counts its undeclared rules. */
+  reviewStored(sid: string, undeclaredRules: number): void {
+    for (const run of this.runs.values()) {
+      if (run.state !== "running") continue;
+      if (!this.runSids(run).has(sid)) continue;
+      appendFileSync(this.file(run, "reviews.jsonl"), `${JSON.stringify({ undeclaredRules })}\n`);
+      return;
+    }
+  }
+
   // ---------- hub calls ----------
 
   /**
@@ -550,13 +570,22 @@ export class HeadlessRuns {
         // blank line
       }
     }
+    let undeclaredRules = 0;
+    for (const line of this.read(run, "reviews.jsonl").split("\n")) {
+      try {
+        const v = JSON.parse(line) as { undeclaredRules?: unknown };
+        if (typeof v.undeclaredRules === "number") undeclaredRules += v.undeclaredRules;
+      } catch {
+        // blank line
+      }
+    }
     const telemetry: RunTelemetry = {
       ...t,
       runId: run.runId,
       profile: run.profile.name,
       profileHash: run.profile.sha256,
       ...(run.agent ? { agentKey: run.agent.key, agentHash: run.agent.hash } : {}),
-      undeclaredRules: 0,
+      undeclaredRules,
       redactions,
     };
     return { telemetry, exit: t.exit };

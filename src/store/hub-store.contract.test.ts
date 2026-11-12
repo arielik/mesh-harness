@@ -432,12 +432,12 @@ function contract(d: Driver) {
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
     it("test_AC05_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(8);
+      expect(HubStore.SCHEMA_VERSION).toBe(9);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(8);
+      expect(HUB_MIGRATIONS.length).toBe(9);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -573,9 +573,9 @@ function contract(d: Driver) {
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
     it("test_AC08_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(8);
-      expect(HUB_MIGRATIONS.length).toBe(8);
-      expect(HUB_MIGRATIONS_PG.length).toBe(8);
+      expect(HubStore.SCHEMA_VERSION).toBe(9);
+      expect(HUB_MIGRATIONS.length).toBe(9);
+      expect(HUB_MIGRATIONS_PG.length).toBe(9);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -665,9 +665,9 @@ function contract(d: Driver) {
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
     it("test_AC06_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(8);
-      expect(HUB_MIGRATIONS.length).toBe(8);
-      expect(HUB_MIGRATIONS_PG.length).toBe(8);
+      expect(HubStore.SCHEMA_VERSION).toBe(9);
+      expect(HUB_MIGRATIONS.length).toBe(9);
+      expect(HUB_MIGRATIONS_PG.length).toBe(9);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */
@@ -766,9 +766,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(8);
-      expect(HUB_MIGRATIONS.length).toBe(8);
-      expect(HUB_MIGRATIONS_PG.length).toBe(8);
+      expect(HubStore.SCHEMA_VERSION).toBe(9);
+      expect(HUB_MIGRATIONS.length).toBe(9);
+      expect(HUB_MIGRATIONS_PG.length).toBe(9);
     });
 
     it("test_AC08_v7_migrates", async () => {
@@ -786,6 +786,8 @@ function contract(d: Driver) {
       const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
       await raw.run("DROP TABLE IF EXISTS artifact");
       await raw.run("DROP TABLE IF EXISTS profile");
+      // RL-2: and without the migration-9 tables, which the store re-creates after migration 8.
+      for (const t of ["review_record", "review_item", "item_history"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
       await raw.run("UPDATE schema_version SET version = 7");
       await raw.close();
       const s = track(await HubStore.open(target));
@@ -800,7 +802,7 @@ function contract(d: Driver) {
       expect(await X(s).listArtifacts({})).toStrictEqual([]);
       expect(await X(s).listProfiles()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(8);
+      expect(Number((v as { version: number }).version)).toBe(9);
     });
 
     it("test_AC08_artifact_roundtrip", async () => {
@@ -886,6 +888,183 @@ function contract(d: Driver) {
       expect(await s.getMachine("m1")).toMatchObject({ headless: true, accept: ["self"], repos: [A], labels: ["gpu"] });
       await s.touchMachine("m1", T0 + 4, { idle: 1 }, facts({ headless: false }));
       expect(await s.getMachine("m1")).toMatchObject({ headless: false, accept: ["self"], repos: [A], labels: ["gpu"] });
+    });
+  });
+
+  // RL-2 AC-08: migration 9 (review_record, review_item, item_history) and the review store methods.
+  // Written from the spec's contracts only (docs/specs/RL-2.md); new methods are read loosely.
+  describe("migration 9", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+    const X = (s: HubStore): any => s;
+    const fold = { new: 1, repeat: 0, regression: 0, resolved: 0, carried: 0 };
+    const rv = (stepId: string, round: number, over: Record<string, unknown> = {}) => ({
+      goal: stepId.split(".")[0] as string,
+      step: stepId,
+      round,
+      lineage: "L",
+      raising: true,
+      complete: true,
+      record: {
+        subject: { commit: "c1" },
+        coverage: "complete",
+        assessment: "issues",
+        items: [{ key: { rule: "I-03", path: "src/a.ts" }, title: "T", severity: "S2", category: "c", evidence: [], fp: "abcdefghijklmnop", mark: "new" }],
+        dispositions: [],
+        summary: "s",
+      },
+      fold,
+      artifact: "a-01J0000000000000000000000R",
+      undeclaredRules: 0,
+      decider: { kind: "agent", key: "svc/auditor" },
+      by: "ada",
+      at: T0,
+      ...over,
+    });
+    const itemRow = (fp: string, over: Record<string, unknown> = {}) => ({
+      lineage: "L",
+      fp,
+      state: "open",
+      rule: "I-03",
+      path: "src/a.ts",
+      title: "T",
+      severity: "S2",
+      category: "c",
+      raisedBy: { key: "svc/auditor" },
+      first: { goal: "G1", step: "G1.audit", round: 1, at: T0 },
+      last: { goal: "G1", step: "G1.audit", round: 1, at: T0 },
+      ...over,
+    });
+    const foldEntry = (goal: string, step: string, over: Record<string, unknown> = {}) => ({ at: T0, goal, step, round: 1, from: null, to: "open", kind: "fold", mark: "new", ...over });
+    const dispEntry = (goal: string, step: string, over: Record<string, unknown> = {}) => ({
+      at: T0 + 1,
+      goal,
+      step,
+      round: 1,
+      from: "open",
+      to: "dismissed",
+      kind: "disposition",
+      disposition: "dismissed",
+      reason: "not a bug",
+      decider: { kind: "agent", key: "svc/validator", hash: "h1" },
+      via: "stage",
+      ...over,
+    });
+
+    it("test_AC08_version", () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(9);
+      expect(HUB_MIGRATIONS.length).toBe(9);
+      expect(HUB_MIGRATIONS_PG.length).toBe(9);
+    });
+
+    it("test_AC08_v8_migrates", async () => {
+      const target = await d.fresh();
+      const s1 = await HubStore.open(target);
+      await s1.upsertIdentity({ provider: "oidc", subject: "1", name: "Ada", groups: [] }, T0);
+      await s1.createGoal(goalInput("kept"));
+      await s1.saveSteps([step("G1.a"), step("G1.b", { state: "done", holderUser: "ada", rounds: [{ n: 1, user: "ada", finishedAt: T0 + 5, outcome: "done", summary: "ok" }] })]);
+      const art = { id: "a-01J0000000000000000000000A", goal: "G1", step: "G1.b", round: 1, kind: "report", mediaType: "text/markdown", bytes: 4, sha256: "0".repeat(64), redactions: 0, createdAt: T0, by: "ada" };
+      await X(s1).addArtifact(art, Buffer.from("kept"));
+      const prof = { name: "p1", text: "extends: read-only\n", createdBy: "ada", updatedAt: T0, base: "read-only", sha256: "a".repeat(64), settings: { permissions: { allow: ["Read"], deny: [] } } };
+      await X(s1).saveProfile(prof);
+      const pre = { goal: await s1.getGoal("G1"), a: await s1.getStep("G1.a"), b: await s1.getStep("G1.b"), art: await X(s1).getArtifact(art.id), prof: await X(s1).getProfile("p1") };
+      await s1.close();
+      // Make it a v8 database: without the migration-9 tables and at version 8.
+      const raw = await d.openDb(target, d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG);
+      for (const t of ["review_record", "review_item", "item_history"]) await raw.run(`DROP TABLE IF EXISTS ${t}`);
+      await raw.run("UPDATE schema_version SET version = 8");
+      await raw.close();
+      const s = track(await HubStore.open(target));
+      expect(await s.getGoal("G1")).toStrictEqual(pre.goal);
+      expect(await s.getStep("G1.a")).toStrictEqual(pre.a);
+      expect(await s.getStep("G1.b")).toStrictEqual(pre.b);
+      const got = await X(s).getArtifact(art.id);
+      expect(got.artifact).toStrictEqual(pre.art.artifact);
+      expect(Buffer.from(got.content).toString()).toBe("kept");
+      expect(await X(s).getProfile("p1")).toStrictEqual(pre.prof);
+      expect(await X(s).listReviews({})).toStrictEqual([]);
+      expect(await X(s).listItems("L")).toStrictEqual([]);
+      expect(await X(s).itemHistory("L")).toStrictEqual([]);
+      const v = await s.db.get("SELECT version FROM schema_version");
+      expect(Number((v as { version: number }).version)).toBe(9);
+    });
+
+    it("test_AC08_addReview", async () => {
+      const s = await store();
+      const r1 = rv("G1.audit", 1);
+      expect(await X(s).addReview(r1)).toBe(true);
+      expect(await X(s).getReview("G1.audit", 1)).toStrictEqual(r1);
+      expect(await X(s).addReview(rv("G1.audit", 1, { lineage: "M", at: T0 + 9, record: { ...r1.record, summary: "other" } }))).toBe(false);
+      expect(await X(s).getReview("G1.audit", 1)).toStrictEqual(r1);
+      expect(await X(s).listReviews({ step: "G1.audit" })).toHaveLength(1);
+      // Another round of the same step is a new record.
+      expect(await X(s).addReview(rv("G1.audit", 2))).toBe(true);
+      expect(await X(s).getReview("G1.audit", 3)).toBeUndefined();
+    });
+
+    it("test_AC08_list_filters", async () => {
+      const s = await store();
+      await X(s).addReview(rv("G1.audit", 1));
+      await X(s).addReview(rv("G1.validate", 1, { raising: false, fold: undefined }));
+      await X(s).addReview(rv("G2.audit", 1, { complete: false }));
+      await X(s).addReview(rv("H.audit", 1, { lineage: "M" }));
+      const ids = async (f: Record<string, unknown>) => ((await X(s).listReviews(f)) as { step: string }[]).map((x) => x.step);
+      expect(await ids({ step: "G1.audit" })).toStrictEqual(["G1.audit"]);
+      expect(await ids({ lineage: "L" })).toStrictEqual(["G1.audit", "G1.validate", "G2.audit"]);
+      expect(await ids({ lineage: "L", raising: true })).toStrictEqual(["G1.audit", "G2.audit"]);
+      expect(await ids({ lineage: "L", raising: true, complete: true })).toStrictEqual(["G1.audit"]);
+      expect(await ids({ raising: false })).toStrictEqual(["G1.validate"]);
+      expect(await ids({ lineage: "M" })).toStrictEqual(["H.audit"]);
+      expect(await ids({})).toStrictEqual(["G1.audit", "G1.validate", "G2.audit", "H.audit"]);
+    });
+
+    it("test_AC08_insertion_order", async () => {
+      const s = await store();
+      await X(s).addReview(rv("G10.audit", 1, { at: T0 + 10 }));
+      await X(s).addReview(rv("G9.audit", 1, { at: T0 + 10 }));
+      await X(s).addReview(rv("G1.audit", 1, { at: T0 }));
+      const steps = ((await X(s).listReviews({ lineage: "L" })) as { step: string }[]).map((x) => x.step);
+      expect(steps).toStrictEqual(["G10.audit", "G9.audit", "G1.audit"]);
+    });
+
+    it("test_AC08_items", async () => {
+      const s = await store();
+      const row = itemRow("abcdefghijklmnop");
+      await X(s).saveItem(row);
+      expect(await X(s).getItem("L", "abcdefghijklmnop")).toStrictEqual(row);
+      const dismissed = { ...row, state: "dismissed", dismissedEh: "e".repeat(64), eh: "e".repeat(64) };
+      await X(s).saveItem(dismissed);
+      expect(await X(s).getItem("L", "abcdefghijklmnop")).toStrictEqual(dismissed);
+      await X(s).saveItem(itemRow("qrstuvwxyz234567", { lineage: "M" }));
+      const inL = (await X(s).listItems("L")) as { fp: string; state: string }[];
+      expect(inL).toHaveLength(1);
+      expect(inL[0]).toMatchObject({ fp: "abcdefghijklmnop", state: "dismissed" });
+      expect(((await X(s).listItems("M")) as { fp: string }[]).map((x) => x.fp)).toStrictEqual(["qrstuvwxyz234567"]);
+      expect(await X(s).getItem("L", "qrstuvwxyz234567")).toBeUndefined();
+    });
+
+    it("test_AC08_history_and_dispositions", async () => {
+      const s = await store();
+      const e1 = foldEntry("G1", "G1.audit");
+      const e2 = dispEntry("G1", "G1.validate");
+      const e3 = foldEntry("G2", "G2.audit", { mark: "new" });
+      const e4 = dispEntry("G2", "G2.validate", { disposition: "confirmed", to: "confirmed", reason: "real", link: "https://tracker.invalid/1" });
+      await X(s).addItemHistory("L", "x", e1);
+      await X(s).addItemHistory("L", "x", e2);
+      await X(s).addItemHistory("L", "y", e3);
+      await X(s).addItemHistory("L", "y", e4);
+      await X(s).addItemHistory("M", "x", foldEntry("H", "H.audit"));
+      expect(await X(s).itemHistory("L", "x")).toStrictEqual([e1, e2]);
+      expect(await X(s).itemHistory("L", "y")).toStrictEqual([e3, e4]);
+      expect(await X(s).itemHistory("L")).toStrictEqual([e1, e2, e3, e4]);
+      const rows = (await X(s).listDispositions({ lineage: "L" })) as Record<string, unknown>[];
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ lineage: "L", fp: "x", goal: "G1", step: "G1.validate", round: 1, disposition: "dismissed", from: "open", reason: "not a bug", decider: { kind: "agent", key: "svc/validator", hash: "h1" }, via: "stage", at: T0 + 1 });
+      expect(rows[1]).toMatchObject({ lineage: "L", fp: "y", goal: "G2", step: "G2.validate", disposition: "confirmed", link: "https://tracker.invalid/1" });
+      const fps = async (f: Record<string, unknown>) => ((await X(s).listDispositions(f)) as { fp: string; step: string }[]).map((x) => `${x.fp}@${x.step}`);
+      expect(await fps({ fp: "y" })).toStrictEqual(["y@G2.validate"]);
+      expect(await fps({ goal: "G1" })).toStrictEqual(["x@G1.validate"]);
+      expect(await fps({ step: "G2.validate" })).toStrictEqual(["y@G2.validate"]);
+      expect(await fps({ lineage: "M" })).toStrictEqual([]);
     });
   });
 }

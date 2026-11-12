@@ -200,6 +200,84 @@ and `profileHash`, `sessionId`, `turns`, `tokensIn`, `tokensOut`, `cacheRead`, `
   there is no cost.
 - The cost is the client's estimate (`total_cost_usd`), not a bill.
 
+## Review records
+
+**Review record.** A step with `output: review-record` (a review stage) records its findings as
+structured data with `mesh_review`, then calls `mesh_done`. The step closes `done` only with a
+record for its current round (REQ-5: `mesh_done` without one is refused with 409); with a record it
+closes `done` whatever its outcome or verdict says. The record's `assessment` never fails the step,
+and a step with `output` never reopens other steps: its record carries the findings.
+
+A record has `subject` (`repo`, `commit`, `artifact`; `commit` defaults to `HEAD` of the step's
+worktree), `coverage` (`complete` or `partial`), `scope` (paths looked at), `assessment` (`clean`,
+`issues`, `blocked`), `items`, `dispositions` and `summary`. Each item has `key` (`rule`, `path`,
+`symbol`), `title`, `severity` (`S1` most severe … `S4`), `category`, `evidence` (`path`, `lines`
+`[start, end]`, `note`) and a `proposal`. The hub stores the record as a `review` artifact of the
+round too (it does not count against `per_round`).
+
+**Declared rules.** An agent lists the rules it checks in its front matter (`mesh-rules: [I-03,
+secrets]`, or a comma-separated string) or in a sibling `<name>.rules.yaml` (a list, or a mapping
+whose keys are rule ids). A `key.rule` the agent does not declare is recorded as `other:<slug>` and
+counted (`undeclaredRules`, also in a headless run's telemetry). With no agent, every rule is
+`other:<slug>`.
+
+**Fingerprint.** An item's identity: the first 16 characters of the lowercased base32 SHA-256 of
+`rule`, the normalised `path` (relative to the repo root, `/` separators) and `symbol`. Line
+numbers, title, severity and evidence never enter it, so a finding keeps its identity when code
+moves.
+
+**Evidence hash.** The daemon reads each evidence region (`lines`) at `subject.commit` (`git show`)
+and hashes it with whitespace collapsed: `eh`. A region that cannot be read hashes as `missing`.
+Agent-written text never enters it; a moved region keeps its hash, an edit inside it changes it.
+
+**Lineage.** Records of the same reviewer on the same repo form a lineage `<preset>|<repo>|<agent>`
+(the goal's preset name or `-`; the step's repo; the step's `agent`, else its local id). A
+consuming step belongs to the lineage of its run (the first raising step up its deps).
+
+**Fold.** The hub folds each raising record (a step with `output` and no `consumes`) against the
+**fold base**, the last complete raising record of its lineage: each item is `new`, `repeat` or
+`regression`; with `coverage: complete`, an item of the base that is absent now is `resolved`. A
+partial record is folded for new, repeat and regression but resolves nothing and is never a base;
+consuming records are never a base either. The round of the step gets `fold` (counts of `new`,
+`repeat`, `regression`, `resolved` and `carried`); `findings` keeps its own meaning.
+
+**Item states.** Each fingerprint of a lineage has one item with a state and a history:
+
+| From | Event | To |
+|---|---|---|
+| (none) | raised | `open` (`new`) |
+| `open`, `confirmed`, `accepted` | raised again | unchanged (`repeat`) |
+| `dismissed` | raised again with the same `eh` | `dismissed` (`repeat`, carried) |
+| `dismissed` | raised again with another `eh` | `open` (`regression`) |
+| `deferred` | raised again, `until` passed | `open` (`repeat`) |
+| `deferred` | raised again, `until` not passed | `deferred` (`repeat`) |
+| `resolved` | raised again | `open` (`regression`) |
+| any | absent from a complete record whose base held it | `resolved` |
+| a consumed state | a disposition | `confirmed`, `dismissed`, `deferred` (with `until`) or `accepted` (with `link`) |
+
+**Dispositions.** A consuming step (`consumes: [open]`, for example a validator) records
+dispositions in its own `mesh_review` record, each with the item's fingerprint, a reason and the
+decider: an agent (a headless step, by its agent key and hash) or a person (an interactive step, by
+the caller). It may set only the dispositions in its `may_set`, and only on items of its run's
+record whose state is in its `consumes`. A record with a problem (a disposition outside `may_set`,
+`deferred` without `until`, a fingerprint listed twice or not in the run's record, an item in a
+state the step does not consume) is refused whole with 422. **Person precedence:** when a person
+decided an item in the same goal, a later agent disposition of it is ignored (listed as ignored, the
+record is still accepted). Across goals the latest disposition applies; the history keeps all.
+
+**Conditional stages.** `when: {open: true}` or `when: {min_severity: S2}` (with `consumes`) makes a
+step run only when its run's record has an item in a consumed state (at or above that severity).
+Otherwise the step becomes **`skipped`** (summary `skipped: no item of <run> is …`, event
+`step.skipped`), counts as satisfied for its dependants, and a goal whose steps are all `done`,
+`skipped` or `dropped` is done. The hub decides a `when` step when its dependencies are done (plan
+approve, step done, gate decide, reopen, resume). A skipped step is decided again only when a
+dependency is reopened or a new plan changes it; a later disposition does not un-skip it.
+
+**Inputs.** `inputs: [previous]` serves a raising step the fold base of its lineage;
+`inputs: [dispositions]` serves a consuming step the items it may act on now (a raising step: its
+lineage's items that are not resolved), with their history. Both arrive fenced as untrusted input,
+like artifacts.
+
 ## Offers and accept policy
 
 **Offer.** Someone hands a ready step to a machine, or to a session on it: `mesh assign G7.api --to build-box` or `--to build-box/perf`. An offer is an overlay on a `ready` step: `offered`, then `accepted`, `declined`, `expired` or `withdrawn`. The step keeps its last offer (the goal page and `mesh show` show it). A goal is assigned through its ready steps (in a new goal: its design step).

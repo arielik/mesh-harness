@@ -284,8 +284,8 @@ describe("M2: the MCP shim", () => {
     const { tools } = await client.listTools();
     // MM-1 (AC-20): mesh_fleet is the ninth.
     // MM-3 adds mesh_assign, mesh_offers and mesh_accept.
-    // RL-1 adds mesh_artifact.
-    expect(tools.map((t) => t.name).sort()).toEqual(["mesh_accept", "mesh_artifact", "mesh_ask", "mesh_assign", "mesh_claim", "mesh_context", "mesh_done", "mesh_fleet", "mesh_next", "mesh_note", "mesh_offers", "mesh_plan", "mesh_release"]);
+    // RL-1 adds mesh_artifact. RL-2 adds mesh_review (and no mesh_dispose).
+    expect(tools.map((t) => t.name).sort()).toEqual(["mesh_accept", "mesh_artifact", "mesh_ask", "mesh_assign", "mesh_claim", "mesh_context", "mesh_done", "mesh_fleet", "mesh_next", "mesh_note", "mesh_offers", "mesh_plan", "mesh_release", "mesh_review"]);
     const r = (await client.callTool({ name: "mesh_context", arguments: {} })) as { content: { text: string }[] };
     expect(r.content[0]?.text).toContain(".proto");
     await client.close();

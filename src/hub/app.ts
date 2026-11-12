@@ -12,6 +12,7 @@ import { allowed, type RouteRule } from "../core/index.ts";
 import {
   AckRequest,
   ArtifactUpload,
+  ReviewUpload,
   ProfileSave,
   RunReport,
   Approve,
@@ -284,6 +285,20 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/offers", "member", async (c, a) => c.json({ offers: await svc.offers(a) })),
     r("POST", "/v1/steps/:id/artifacts", "member", async (c, a) => c.json(await svc.uploadArtifact(a, param(c, "id"), await body(c, ArtifactUpload)), 201)),
     r("POST", "/v1/steps/:id/run", "member", async (c, a) => c.json(await svc.runReport(a, param(c, "id"), await body(c, RunReport)))),
+    // RL-2: review records and items.
+    r("POST", "/v1/steps/:id/review", "member", async (c, a) => c.json(await svc.submitReview(a, param(c, "id"), await body(c, ReviewUpload)), 201)),
+    r("GET", "/v1/steps/:id/reviews", "member", async (c) => c.json(await svc.stepReviews(param(c, "id"))), "goals:read"),
+    r(
+      "GET",
+      "/v1/items",
+      "member",
+      async (c) => {
+        const lineage = c.req.query("lineage");
+        if (!lineage) throw new HubError(400, "lineage is required");
+        return c.json(await svc.lineageItems(lineage));
+      },
+      "goals:read",
+    ),
 
     // ---------- questions, messages ----------
     r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),

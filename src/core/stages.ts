@@ -33,6 +33,7 @@ export function stepStage(s: Step): StepStage {
     case "blocked":
       return "waiting";
     case "done":
+    case "skipped":
       return "done";
     case "dropped":
       return "dropped";

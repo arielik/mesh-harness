@@ -72,16 +72,24 @@ function findCycle(steps: readonly PlanStep[]): string[] | undefined {
   return undefined;
 }
 
-const SATISFIED = new Set(["done", "dropped"]);
+/** RL-2: a skipped dependency counts as satisfied (as done). */
+const SATISFIED = new Set(["done", "dropped", "skipped"]);
 
-/** blocked ↔ ready according to deps. Claimed/paused/done/failed/dropped steps are left alone. */
+function depsSatisfied(s: Step, byId: ReadonlyMap<string, Step>): boolean {
+  return s.deps.every((d) => SATISFIED.has(byId.get(d)?.state ?? "dropped"));
+}
+
+/**
+ * blocked ↔ ready according to deps. Claimed/paused/done/failed/dropped/skipped steps are left
+ * alone. RL-2: a blocked step with `policy.when` is never made ready here (only `settle` decides it).
+ */
 export function recomputeReady(steps: readonly Step[], now: number): Step[] {
   const byId = new Map(steps.map((s) => [s.id, s]));
   const changed: Step[] = [];
   for (const s of steps) {
     if (s.state !== "blocked" && s.state !== "ready") continue;
-    const ok = s.deps.every((d) => SATISFIED.has(byId.get(d)?.state ?? "dropped"));
-    const want = ok ? "ready" : "blocked";
+    const ok = depsSatisfied(s, byId);
+    const want = ok ? (s.state === "blocked" && s.policy?.when ? "blocked" : "ready") : "blocked";
     if (s.state !== want) {
       const next = { ...s, state: want, updatedAt: now } as Step;
       byId.set(s.id, next);
@@ -89,6 +97,59 @@ export function recomputeReady(steps: readonly Step[], now: number): Step[] {
     }
   }
   return changed;
+}
+
+/**
+ * RL-2: readiness with conditional stages. Repeated until nothing changes: a blocked step whose deps
+ * are satisfied becomes ready (no `when`, or `holds`) or skipped; a ready or skipped step with an
+ * unsatisfied dep goes back to blocked. `holds` is called only for steps with `policy.when`.
+ */
+export function settle(steps: readonly Step[], now: number, holds: (s: Step) => boolean): { changed: Step[]; skipped: string[] } {
+  const byId = new Map(steps.map((s) => [s.id, s]));
+  const before = new Map(steps.map((s) => [s.id, s.state]));
+  const memo = new Map<string, boolean>();
+  const held = (s: Step) => {
+    let v = memo.get(s.id);
+    if (v === undefined) {
+      v = holds(s);
+      memo.set(s.id, v);
+    }
+    return v;
+  };
+  const touched = new Set<string>();
+  for (let pass = 0; pass <= steps.length + 1; pass++) {
+    let moved = false;
+    for (const s0 of steps) {
+      const s = byId.get(s0.id) as Step;
+      let want: Step["state"] | undefined;
+      if (s.state === "blocked") {
+        if (depsSatisfied(s, byId)) want = !s.policy?.when || held(s) ? "ready" : "skipped";
+      } else if (s.state === "ready" || s.state === "skipped") {
+        if (!depsSatisfied(s, byId)) want = "blocked";
+      }
+      if (want && want !== s.state) {
+        byId.set(s.id, { ...s, state: want, updatedAt: now });
+        touched.add(s.id);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  const changed = [...touched].map((id) => byId.get(id) as Step).filter((s) => s.state !== before.get(s.id));
+  return { changed, skipped: changed.filter((s) => s.state === "skipped").map((s) => s.id) };
+}
+
+/** Stable JSON (keys sorted) for comparing policies. */
+function canon(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canon).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v)
+      .sort()
+      .filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canon((v as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
 }
 
 export interface Materialized {
@@ -119,7 +180,13 @@ export function materialize(goal: string, version: number, plan: readonly PlanSt
         out.set(id, { ...old, planVersion: version });
         continue;
       }
-      const next: Step = { ...old, ...fields, state: old.state === "dropped" ? "blocked" : old.state, updatedAt: now };
+      // RL-2: a skipped step stays skipped while its definition is unchanged; changed, it waits again.
+      // A ready step that has `when` and changed is decided again as well (never made ready here).
+      const same = () =>
+        old.kind === p.kind && old.repo === p.repo && old.title === p.title && old.brief === p.brief && canon(old.deps) === canon(fields.deps) && canon(old.policy ?? {}) === canon(policy ?? {});
+      let state = old.state === "dropped" ? "blocked" : old.state;
+      if (old.state === "skipped" || (old.state === "ready" && policy?.when)) state = same() ? old.state : "blocked";
+      const next: Step = { ...old, ...fields, state, updatedAt: now };
       if (!policy) delete next.policy;
       if (old.brief !== p.brief && (old.state === "claimed" || old.state === "paused")) changedForHolder.push(next);
       out.set(id, next);
@@ -165,7 +232,8 @@ export function reopen(steps: readonly Step[], ids: readonly string[], now: numb
   const queue = [...changed.keys()];
   while (queue.length) {
     const id = queue.shift() as string;
-    for (const d of [...all.values()].filter((x) => x.deps.includes(id) && x.state === "done")) {
+    // RL-2: skipped dependants wait again too (they are decided again once their deps are done).
+    for (const d of [...all.values()].filter((x) => x.deps.includes(id) && (x.state === "done" || x.state === "skipped"))) {
       const next: Step = { ...d, state: "blocked", updatedAt: now };
       delete next.outcome;
       delete next.holderSid;

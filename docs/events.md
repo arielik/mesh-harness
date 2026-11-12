@@ -44,6 +44,9 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `run.started` | a machine started a headless run of the step | `runId`, `machine`, `profile`, `profileHash` (the profile the offer carried) |
 | `run.finished` | a headless run ended (after its close-as-fail, if any) | `runId`, `round` (absent when the run has no round of its own), `branch`, and the telemetry fields (`turns`, `turnsApprox`, tokens, `costUsdEstimate`, `durationMs`, `exit`, `permissionDenials`, …) |
 | `profile.saved` | a permission profile was registered or replaced | `name`, `sha256` |
+| `review.recorded` | a review record was stored (`mesh_review`); `user`, `sid` | `round`, `lineage`, `coverage`, `assessment`, `items` (unique fingerprints), `artifact`, `fold` (raising records: `new`, `repeat`, `regression`, `resolved`, `carried`), `dispositions` (applied), `ignored`, `undeclaredRules` (never item titles, evidence, proposals or reasons) |
+| `item.disposed` | a consuming step's record set an item's disposition; one per applied disposition | `lineage`, `fp`, `disposition`, `from`, `decider` (`agent` or `person`), `via` (`stage`), `round` (never the reason) |
+| `step.skipped` | a conditional step (`when`) had nothing to consume when its dependencies were done | `reason` (`when`) |
 | `hub.events_pruned` | retention ran | `count`, `days` |
 
 A plan replaced before anyone decided is stored as `superseded`, not `revised`. It emits no `plan.revised`, so design rounds count only human requests for changes.

@@ -15,15 +15,17 @@ export interface AgentFile {
   description?: string | undefined;
   tools?: string[] | undefined;
   model?: string | undefined;
+  /** RL-2: the rules the agent declares (front matter `mesh-rules`). */
+  rules?: string[] | undefined;
   /** The prompt (the text after the front matter). */
   body: string;
 }
 
-/** A `.claude/agents/<name>.md` file: YAML front matter between `---` lines, then the prompt. */
-export function parseAgentFile(text: string): AgentFile {
+/** The YAML front matter of an agent file (between `---` lines) and the text after it. */
+function splitFrontMatter(text: string): { fm: Record<string, unknown>; body: string; found: boolean } {
   const t = text.replace(/\r\n/g, "\n");
   const m = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/.exec(t);
-  if (!m) return { body: t };
+  if (!m) return { fm: {}, body: t, found: false };
   let fm: Record<string, unknown> = {};
   try {
     const v: unknown = parse(m[1] ?? "");
@@ -31,11 +33,28 @@ export function parseAgentFile(text: string): AgentFile {
   } catch {
     fm = {};
   }
+  return { fm, body: t.slice(m[0].length), found: true };
+}
+
+/** RL-2: the front matter keys of an agent file (empty when it has none or it is invalid YAML). */
+export function frontMatter(text: string): Record<string, unknown> {
+  return splitFrontMatter(text).fm;
+}
+
+/** A front matter list: a YAML list or a comma-separated string; entries trimmed, empty ones dropped. */
+export function listField(v: unknown): string[] | undefined {
+  if (Array.isArray(v)) return v.map(String).map((x) => x.trim()).filter(Boolean);
+  if (typeof v === "string") return v.split(",").map((x) => x.trim()).filter(Boolean);
+  return undefined;
+}
+
+/** A `.claude/agents/<name>.md` file: YAML front matter between `---` lines, then the prompt. */
+export function parseAgentFile(text: string): AgentFile {
+  const { fm, body, found } = splitFrontMatter(text);
+  if (!found) return { body };
   const str = (v: unknown) => (typeof v === "string" ? v : undefined);
-  let tools: string[] | undefined;
-  if (Array.isArray(fm.tools)) tools = fm.tools.map(String).map((x) => x.trim()).filter(Boolean);
-  else if (typeof fm.tools === "string") tools = fm.tools.split(",").map((x) => x.trim()).filter(Boolean);
-  return { name: str(fm.name), description: str(fm.description), tools, model: str(fm.model), body: t.slice(m[0].length) };
+  const rules = listField(fm["mesh-rules"]);
+  return { name: str(fm.name), description: str(fm.description), tools: listField(fm.tools), model: str(fm.model), ...(rules ? { rules } : {}), body };
 }
 
 /** Hex SHA-256 of an agent file with CRLF turned into LF. */

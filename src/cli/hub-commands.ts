@@ -16,6 +16,7 @@ import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
 import { clearCredentials, HubClient, hubFetch, installId, loadCredentials, saveCredentials } from "./hub-client.ts";
 import { isRemoteShell, login } from "./login.ts";
 import { artifactCommand, profileCommand } from "./artifact-commands.ts";
+import { itemsCommand } from "./review-commands.ts";
 import { machineCommand, machinesCommand } from "./machine-commands.ts";
 import { renderGoal } from "./show.ts";
 import { writeTrailHere } from "./trail-files.ts";
@@ -503,6 +504,7 @@ export function hubCommands(c: CliEnv): Command[] {
     presetCommand(c),
     profileCommand(c),
     artifactCommand(c),
+    itemsCommand(c),
     answerCommand(c),
     autopilotCommand(c),
     machinesCommand(c, "machines"),

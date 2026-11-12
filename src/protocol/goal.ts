@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Disposition, Fold, ItemState, StepWhen } from "./review.ts";
 
 /**
  * A topic is a label for goals ("dataplane", "performance"). People define topics, then tag goals
@@ -35,7 +36,7 @@ export const StepKind = z.enum(["design", "spec", "plan", "implement", "test", "
 export type StepKind = z.infer<typeof StepKind>;
 
 /** `parked`: stopped by a rule (round cap, churn, stall, an unrouted failure); a person decides. */
-export const StepState = z.enum(["blocked", "ready", "claimed", "paused", "done", "failed", "parked", "dropped"]);
+export const StepState = z.enum(["blocked", "ready", "claimed", "paused", "done", "failed", "parked", "dropped", "skipped"]);
 export type StepState = z.infer<typeof StepState>;
 
 /** MM-3: the target of an offer or a goal's stick: a machine, and a session on it when named. */
@@ -263,6 +264,8 @@ export const Round = z.object({
   artifactIds: z.array(z.string()).optional(),
   /** RL-1: what the headless run of this round did. */
   telemetry: RunTelemetry.optional(),
+  /** RL-2: the fold of the round's review record (raising steps only). Separate from `findings`. */
+  fold: Fold.optional(),
 });
 export type Round = z.infer<typeof Round>;
 
@@ -354,6 +357,14 @@ export const StepPolicy = z.object({
     .array(z.union([z.enum(["previous", "dispositions", "artifacts"]), localId]))
     .max(20)
     .optional(),
+  /** RL-2: the step closes done only with a review record (`mesh_review`). */
+  output: z.enum(["review-record"]).optional(),
+  /** RL-2: run only when the run's record has an item this step consumes; else the step is skipped. */
+  when: StepWhen.optional(),
+  /** RL-2: the item states this step acts on (a consuming step: its record disposes, never raises). */
+  consumes: z.array(ItemState.exclude(["resolved"])).min(1).max(5).optional(),
+  /** RL-2: the dispositions this step may record. */
+  may_set: z.array(Disposition).min(1).max(4).optional(),
 });
 export type StepPolicy = z.infer<typeof StepPolicy>;
 export const POLICY_KEYS = Object.keys(StepPolicy.shape) as (keyof StepPolicy)[];

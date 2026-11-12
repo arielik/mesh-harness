@@ -275,6 +275,65 @@ stays. To read a run as a conversation: `claude --resume <sessionId>` (the `sess
 `worktree` path (`mkdir -p` it again if it was removed). A run that ended without `mesh_done` closed the step as
 failed and stored its transcript as an artifact.
 
+### Review an agent's findings
+
+A raising step records findings; a consuming step after it confirms or dismisses them, and runs
+only when there is something to look at:
+
+```yaml
+# plan.yaml — mesh goal plan G10 --file plan.yaml
+steps:
+  - id: audit
+    repo: alpha
+    kind: review
+    title: Audit the error handling
+    brief: Review the error paths; record each finding with mesh_review.
+    mode: headless
+    agent: auditor
+    output: review-record     # closes done only with a review record
+    inputs: [previous]        # the last complete record of this lineage
+  - id: validate
+    repo: alpha
+    kind: review
+    title: Validate the audit's findings
+    brief: Check each open finding; confirm or dismiss it with a reason.
+    deps: [audit]
+    mode: headless
+    agent: validator
+    output: review-record
+    consumes: [open]          # the item states it acts on
+    may_set: [confirmed, dismissed]
+    when: { open: true }      # skipped when no item is open
+    inputs: [dispositions]    # the items it may act on now
+```
+
+The auditor declares the rules it checks in `.claude/agents/auditor.md`:
+
+```markdown
+---
+name: auditor
+description: Audits error handling
+mesh-rules: [E-01, E-02, secrets]
+---
+Report each finding with key.rule set to one of your rules …
+```
+
+A rule it does not declare is recorded as `other:<slug>`. Reuse the previous record's keys for the
+same finding: the hub matches findings by rule, path and symbol, never by line numbers.
+
+Read the items of the lineage:
+
+```sh
+mesh items G10.audit                 # or the lineage key: mesh items '-|alpha|auditor'
+#   q3k7d2m5x4c6v8b2  confirmed  S2  E-01  src/handler.ts  error swallowed in retry loop
+mesh items G10.audit --all           # resolved items too
+mesh items G10.audit --json          # with each item's history
+```
+
+In the next goal of the same lineage, findings that come back are `repeat` (dismissed ones stay
+dismissed while their evidence is unchanged), findings the audit no longer reports are `resolved`,
+and resolved ones that come back are `regression`.
+
 ## 4. A goal from design to done
 
 ```bash

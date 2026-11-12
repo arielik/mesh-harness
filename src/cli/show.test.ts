@@ -106,3 +106,17 @@ describe("AC-29 offers in mesh show", () => {
     expect(plain).not.toContain("sticks to");
   });
 });
+
+// RL-2 AC-23 (unit): a `skipped` step renders with the mark ↷ (MARK in src/cli/show.ts).
+describe("RL-2 skipped mark", () => {
+  it("test_AC23_show_mark_unit", () => {
+    const skipped = { ...detail, steps: detail.steps.map((s) => (s.id === "G17.e2e" ? ({ ...s, state: "skipped", summary: "skipped: no item of dplane is open" } as unknown as Step) : s)) } as GoalDetail;
+    const line = renderGoal(skipped)
+      .split("\n")
+      .find((l) => l.includes("e2e"));
+    expect(line).toBeDefined();
+    expect(line).toContain("↷");
+    // Control: the unchanged goal does not show it.
+    expect(renderGoal(detail)).not.toContain("↷");
+  });
+});

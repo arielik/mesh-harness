@@ -386,6 +386,9 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET /v1/artifacts/:id` | Artifacts (v0.1.15): one artifact with its content (`null` once pruned) |
 | `GET /v1/goals/:id/artifacts` | Artifacts (v0.1.15): a goal's artifacts (metadata), oldest first |
 | `POST /v1/steps/:id/run` | Headless steps (v0.1.15): a run started or finished, with its telemetry (and branch) |
+| `POST /v1/steps/:id/review` | Review records (v0.1.16): the review record of the held step's current round; the hub fingerprints and folds its items (raising) or applies its dispositions (consuming) |
+| `GET /v1/steps/:id/reviews` | Review records (v0.1.16): a step's review records, by round |
+| `GET /v1/items?lineage=` | Review records (v0.1.16): the items of a lineage with their history, most severe first |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

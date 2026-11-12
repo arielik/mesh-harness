@@ -49,13 +49,13 @@ function cmp(a: string, b: string): number {
 }
 
 /** The repo name of a repo string: the part after its last `/`, lower-cased. */
-export function repoName(r: string): string {
+export function repoLabel(r: string): string {
   return r.slice(r.lastIndexOf("/") + 1).toLowerCase();
 }
 
 /** The wanted labels: the topics and the repo name of each subject repo. */
 export function wantedLabels(topics: readonly string[], repos: readonly string[]): Set<string> {
-  return new Set([...topics, ...repos.map(repoName)]);
+  return new Set([...topics, ...repos.map(repoLabel)]);
 }
 
 /** What to pass as `--to` for a machine: own → nickname, else id; another's → `<user>/<nickname>` when unambiguous, else id. */
@@ -87,7 +87,7 @@ export function suggestionReason(
   if (s.user !== ctx.caller) parts.push(`@${s.user}`);
   parts.push(s.auto ? "auto-accept" : "waits for them to accept");
   parts.push(s.online ? "online" : `last seen ${age(ctx.now - s.lastSeen)} ago`);
-  if (ctx.repos.length) parts.push(s.repo ? `has ${ctx.repos.map(repoName).join(",")}` : `no ${ctx.unmatched.map(repoName).join(",")}`);
+  if (ctx.repos.length) parts.push(s.repo ? `has ${ctx.repos.map(repoLabel).join(",")}` : `no ${ctx.unmatched.map(repoLabel).join(",")}`);
   parts.push(s.idle === 0 ? "no idle session" : s.idle === 1 ? "1 idle session" : `${s.idle} idle sessions`);
   if (s.sessionLabels.length && ctx.bestName !== undefined) parts.push(`${ctx.bestName} labelled ${s.sessionLabels.join(",")}`);
   if (s.machineLabels.length) parts.push(`machine labels ${s.machineLabels.join(",")}`);

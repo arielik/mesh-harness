@@ -3,7 +3,7 @@
 import { diffPlans, levels, offerText, stageSummary, STEP_STAGES, stepStage } from "../core/index.ts";
 import type { GoalDetail, Step } from "../protocol/index.ts";
 
-const MARK: Record<Step["state"], string> = { done: "✓", claimed: "◐", paused: "◌", ready: "○", blocked: "·", failed: "✗", parked: "⏸", dropped: "–" };
+const MARK: Record<Step["state"], string> = { done: "✓", claimed: "◐", paused: "◌", ready: "○", blocked: "·", failed: "✗", parked: "⏸", dropped: "–", skipped: "↷" };
 
 function local(id: string): string {
   return id.slice(id.indexOf(".") + 1);
@@ -46,7 +46,7 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
     lines.push(paint("2", i === 0 ? "start" : `then (after ${[...new Set(level.flatMap((s) => s.deps.map(local)))].join(", ")})`));
     for (const s of level) {
       const mark = MARK[s.state];
-      const color = s.state === "done" ? "32" : s.state === "failed" || s.state === "parked" ? "31" : s.state === "claimed" ? "34" : s.state === "paused" ? "33" : "0";
+      const color = s.state === "done" ? "32" : s.state === "failed" || s.state === "parked" ? "31" : s.state === "claimed" ? "34" : s.state === "paused" ? "33" : s.state === "skipped" ? "2" : "0";
       const gate = s.kind === "gate" && s.state === "ready" ? `waits for a decision: mesh step approve ${s.id}` : "";
       const parked = s.state === "parked" ? `parked: ${s.parkedReason ?? ""} (mesh step resume ${s.id})` : "";
       const role = s.policy?.role ? `[${s.policy.role}]` : "";

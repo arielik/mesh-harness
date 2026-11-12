@@ -462,3 +462,25 @@ route. **Tests that involve sessions without a step must set the daemon's `share
   it); the record's zod limits bound its size.
 - 2026-11-12 **Near-match.** Computed and shown with the debrief (S4); S2 stores what it needs (rule,
   path, symbol per item).
+- 2026-11-12 **Implementation readings (developer).** Taken on the conservative reading, open for
+  review: (a) `materialize` also sends an existing `ready` step that has `when` and whose definition
+  changed to `blocked`, so the approve's `settle` decides it again (the spec names only skipped and
+  new steps); (b) `<run id>` in the problem `no item <fp> in the record of <run id>` is the full
+  step id, like `<id>` in the other problems; (c) `undeclaredRules` counts items whose `key.rule`
+  was mapped (one per item, duplicates of a fingerprint included); (d) `mesh items <step id>` for a
+  step the hub does not know prints `<step> has no review record` (exit 1), as for a step without a
+  record; (e) `core/suggest.ts`'s own `repoName` (a lowercased label) is renamed `repoLabel` so
+  `core` exports the spec's `repoName` without a clash.
+- 2026-11-12 **Fix readings (developer).** (f) `itemHistory(lineage, fp?)` returns plain
+  `ItemHistoryEntry` values with no `fp` key, also without `fp`; `ItemView.history` is read per item.
+  (g) `mesh_review` while the hub link is offline first checks the hub at once (one `/health` and a
+  flush, as a headless run's due retry does) instead of refusing until the probe backoff ends: a
+  record is never queued, so a hub that is back is used at once. Still offline → the documented error.
+- 2026-11-12 **Review-fix readings (developer).** (h) `subject.commit` is agent text: the machine
+  reads evidence with `git show --end-of-options <commit>:<path>`, and only when the commit is a
+  plain revision (`[A-Za-z0-9_]` first, then letters, digits and `_ . / ^ ~ @ { } + -`, at most 256
+  characters; no `:` or whitespace). A commit that fails this check reads as a failed read, so its
+  regions hash as `missing`; the record is still uploaded with the agent's `subject.commit` as is.
+  (i) The items of a lineage are in one order on both backends: the store lists them by `fp`, and
+  the raising step's `dispositions` input sorts them as `GET /v1/items` does (most severe first, then
+  first seen, then `fp`).

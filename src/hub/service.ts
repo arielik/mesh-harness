@@ -38,8 +38,19 @@ import {
   isOwnerOrAdmin,
   materialize,
   needsLabel,
-  recomputeReady,
   release,
+  settle,
+  fingerprint,
+  foldItems,
+  isRaising,
+  lineageOf,
+  local,
+  repoName,
+  runOf,
+  SEVERITY_RANK,
+  skipSummary,
+  uniqueFps,
+  whenHolds,
   reopen,
   repoMatches,
   takeOver,
@@ -99,6 +110,17 @@ import type {
   StoredArtifact,
   ArtifactKind,
   ArtifactMediaType,
+  Decider,
+  Fold,
+  ItemRow,
+  ItemState,
+  ItemView,
+  RecordDisposition,
+  ReviewResult,
+  ReviewUpload,
+  StoredRecord,
+  StoredReview,
+  StoredReviewItem,
 } from "../protocol/index.ts";
 import { ALL_TOPIC, HEADLESS_DEFAULTS, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
@@ -152,6 +174,11 @@ const LOGIN_TTL = 10 * 60_000;
 /** How long a CLI's one-time login code lives: long enough to copy it from a browser into a terminal. */
 const CLI_CODE_TTL = 5 * 60_000;
 const ONLINE_MS = 2 * 60_000;
+
+/** RL-2: the order of a lineage's items on every backend: most severe first, then first seen, then fp. */
+function byItemOrder(a: ItemRow, b: ItemRow): number {
+  return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || a.first.at - b.first.at || (a.fp < b.fp ? -1 : a.fp > b.fp ? 1 : 0);
+}
 
 export class HubService {
   readonly store: HubStore;
@@ -633,7 +660,8 @@ export class HubService {
       const { maxBytes, perRound } = this.config.artifacts;
       if (bytes > maxBytes) throw new HubError(413, `artifact is ${bytes} bytes; the limit is ${maxBytes}`);
       const round = (step.rounds?.length ?? 0) + 1;
-      if ((await this.store.listArtifacts({ step: step.id, round })).length >= perRound) throw new HubError(409, `${step.id} round ${round} already has ${perRound} artifacts`);
+      const recordArtifact = (await this.store.getReview(step.id, round))?.artifact;
+      if ((await this.store.listArtifacts({ step: step.id, round })).filter((x) => x.id !== recordArtifact).length >= perRound) throw new HubError(409, `${step.id} round ${round} already has ${perRound} artifacts`);
       const now = this.now();
       const content = Buffer.from(b.content, "utf8");
       const a: StoredArtifact = {
@@ -724,42 +752,386 @@ export class HubService {
   }
 
   /**
-   * What a step's `inputs` serve (inside a transaction): artifacts of the last round of the named
-   * steps (`artifacts`: of each dependency), never of a blind partner or an unread dependency.
+   * What a step's `inputs` serve (inside a transaction), in policy order: artifacts of the last round
+   * of the named steps (`artifacts`: of each dependency), never of a blind partner or an unread
+   * dependency; RL-2 `previous` (the fold base of a raising step's lineage) and `dispositions` (the
+   * items the step may act on now, or a raising step's open items).
    */
-  private async stepInputs(step: Step): Promise<StepInput[]> {
+  private async stepInputs(step: Step, goal: Goal): Promise<StepInput[]> {
     const p = step.policy;
     if (!p?.inputs?.length) return [];
     const steps = await this.store.listSteps({ goal: step.goal });
     const hidden = new Set(blindPartners(step, steps).map((o) => o.id));
     const reads = p.reads ? new Set(p.reads.map((r) => `${step.goal}.${r}`)) : undefined;
-    const sources: string[] = [];
-    for (const x of p.inputs) {
-      if (x === "artifacts") sources.push(...step.deps);
-      else if (!INPUT_KEYWORDS.has(x)) sources.push(`${step.goal}.${x}`);
-    }
     const out: StepInput[] = [];
+    const seen = new Set<string>();
     let served = 0;
     const MAX_ONE = 50_000;
     const MAX_ALL = 200_000;
-    for (const id of [...new Set(sources)]) {
-      const s = steps.find((x) => x.id === id) ?? (await this.store.getStep(id));
-      if (!s || hidden.has(s.id)) continue;
-      if (reads && step.deps.includes(s.id) && !reads.has(s.id)) continue;
-      const n = s.rounds?.at(-1)?.n;
-      if (n === undefined) continue;
-      for (const a of await this.store.listArtifacts({ step: s.id, round: n })) {
-        if (a.prunedAt !== undefined) continue;
-        if (served >= MAX_ALL) return out;
-        const got = await this.store.getArtifact(a.id);
-        if (!got?.content) continue;
-        const text = got.content.toString("utf8");
-        const content = text.slice(0, MAX_ONE);
-        served += content.length;
-        out.push({ from: s.id, artifact: a.id, kind: a.kind, ...(a.title ? { title: a.title } : {}), content, truncated: text.length > MAX_ONE });
+    const push = (input: Omit<StepInput, "content" | "truncated">, text: string): boolean => {
+      if (served >= MAX_ALL) return false;
+      const content = text.slice(0, MAX_ONE);
+      served += content.length;
+      out.push({ ...input, content, truncated: text.length > MAX_ONE });
+      return true;
+    };
+    const fromSteps = async (ids: readonly string[]): Promise<boolean> => {
+      for (const id of ids) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const s = steps.find((x) => x.id === id) ?? (await this.store.getStep(id));
+        if (!s || hidden.has(s.id)) continue;
+        if (reads && step.deps.includes(s.id) && !reads.has(s.id)) continue;
+        const n = s.rounds?.at(-1)?.n;
+        if (n === undefined) continue;
+        for (const a of await this.store.listArtifacts({ step: s.id, round: n })) {
+          if (a.prunedAt !== undefined) continue;
+          if (served >= MAX_ALL) return false;
+          const got = await this.store.getArtifact(a.id);
+          if (!got?.content) continue;
+          push({ from: s.id, artifact: a.id, kind: a.kind, ...(a.title ? { title: a.title } : {}) }, got.content.toString("utf8"));
+        }
+      }
+      return true;
+    };
+    for (const x of p.inputs) {
+      if (served >= MAX_ALL) break;
+      if (x === "artifacts") {
+        if (!(await fromSteps(step.deps))) break;
+      } else if (x === "previous") {
+        if (!isRaising(p)) continue;
+        const base = await this.foldBase(lineageOf(goal, step), step.id, (step.rounds?.length ?? 0) + 1);
+        if (base) push({ from: base.step, artifact: base.artifact, kind: "review", title: `previous review record (${base.goal} round ${base.round})` }, JSON.stringify(base.record));
+      } else if (x === "dispositions") {
+        const items = await this.dispositionsInput(step, goal, steps);
+        if (items) push({ from: items.from, artifact: "items", kind: "review", title: "items and dispositions" }, JSON.stringify({ lineage: items.lineage, items: items.items }));
+      } else if (!INPUT_KEYWORDS.has(x)) {
+        if (!(await fromSteps([`${step.goal}.${x}`]))) break;
       }
     }
     return out;
+  }
+
+  // ---------- review records and items (RL-2) ----------
+
+  /** The last complete raising record of a lineage, other than (step, round). */
+  private async foldBase(lineage: string, stepId: string, round: number): Promise<StoredReview | undefined> {
+    return (await this.store.listReviews({ lineage, raising: true, complete: true })).filter((r) => !(r.step === stepId && r.round === round)).at(-1);
+  }
+
+  /** The review record of a step with the highest round. */
+  private async latestReview(stepId: string): Promise<StoredReview | undefined> {
+    let best: StoredReview | undefined;
+    for (const r of await this.store.listReviews({ step: stepId })) if (!best || r.round > best.round) best = r;
+    return best;
+  }
+
+  /** The run of a consuming step and the run's record (undefined parts when there is none). */
+  private async runRecordOf(step: Step, steps: readonly Step[]): Promise<{ run?: Step; record?: StoredReview }> {
+    const run = runOf(step, steps, (s) => s.policy);
+    if (!run) return {};
+    const record = await this.latestReview(run.id);
+    return record ? { run, record } : { run };
+  }
+
+  /** The item rows of a record's unique fps. */
+  private async recordItems(rec: StoredReview): Promise<ItemRow[]> {
+    const rows: ItemRow[] = [];
+    for (const fp of uniqueFps(rec.record.items)) {
+      const row = await this.store.getItem(rec.lineage, fp);
+      if (row) rows.push(row);
+    }
+    return rows;
+  }
+
+  /** Item views (rows with their history) of a lineage, for the given rows. */
+  private async withHistory(lineage: string, rows: readonly ItemRow[]): Promise<ItemView[]> {
+    const out: ItemView[] = [];
+    for (const r of rows) out.push({ ...r, history: await this.store.itemHistory(lineage, r.fp) });
+    return out;
+  }
+
+  /** The `dispositions` input of a step, or undefined when there are no items for it. */
+  private async dispositionsInput(step: Step, goal: Goal, steps: readonly Step[]): Promise<{ from: string; lineage: string; items: ItemView[] } | undefined> {
+    const p = step.policy;
+    if (isRaising(p)) {
+      const lineage = lineageOf(goal, step);
+      const rows = (await this.store.listItems(lineage)).filter((r) => r.state !== "resolved").sort(byItemOrder);
+      return rows.length ? { from: step.id, lineage, items: await this.withHistory(lineage, rows) } : undefined;
+    }
+    if (!p?.consumes) return undefined;
+    const { run, record } = await this.runRecordOf(step, steps);
+    if (!run || !record) return undefined;
+    const consumes: readonly ItemState[] = p.consumes;
+    const rows = (await this.recordItems(record)).filter((r) => consumes.includes(r.state));
+    return rows.length ? { from: run.id, lineage: record.lineage, items: await this.withHistory(record.lineage, rows) } : undefined;
+  }
+
+  /** `holds` for `settle`: does each `when` step's run's record have an item it consumes? */
+  private async holdsFor(steps: readonly Step[]): Promise<(s: Step) => boolean> {
+    const map = new Map<string, boolean>();
+    for (const s of steps) {
+      const when = s.policy?.when;
+      if (!when) continue;
+      const { record } = await this.runRecordOf(s, steps);
+      map.set(s.id, record ? whenHolds(when, s.policy?.consumes ?? [], (await this.recordItems(record)).map((r) => ({ state: r.state, severity: r.severity }))) : false);
+    }
+    return (s) => map.get(s.id) ?? false;
+  }
+
+  /** `settle` with the hub's `holds`; skipped steps get their summary. */
+  private async settleSteps(steps: readonly Step[], now: number): Promise<{ changed: Step[]; skipped: string[] }> {
+    const r = settle(steps, now, await this.holdsFor(steps));
+    const skipped = new Set(r.skipped);
+    const changed = r.changed.map((s) => {
+      if (!skipped.has(s.id)) return s;
+      const run = runOf(s, steps, (x) => x.policy);
+      return { ...s, summary: skipSummary(run ? local(run) : local(s), s.policy?.when ?? {}, s.policy?.consumes ?? []) };
+    });
+    return { changed, skipped: r.skipped };
+  }
+
+  private async emitSkipped(goalId: string, ids: readonly string[], at?: number): Promise<void> {
+    for (const id of ids) await this.emit({ ...(at !== undefined ? { at } : {}), type: "step.skipped", goal: goalId, step: id, payload: { reason: "when" } });
+  }
+
+  /** A goal is done when every step is done, skipped or dropped and one is not the design step. */
+  private static goalComplete(steps: readonly Step[]): boolean {
+    return steps.length > 0 && steps.every((s) => s.state === "done" || s.state === "skipped" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
+  }
+
+  private deciderOf(step: Step, actor: Actor, agent: ReviewUpload["agent"]): Decider {
+    if (step.policy?.mode === "headless") return { kind: "agent", key: agent?.key ?? `${repoName(step.repo)}/${local(step)}`, ...(agent?.hash ? { hash: agent.hash } : {}) };
+    return { kind: "person", user: actor.userId };
+  }
+
+  /** `POST /v1/steps/:id/review`: the review record of the held step's current round. */
+  async submitReview(actor: Actor, id: string, b: ReviewUpload): Promise<ReviewResult> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      const p = step.policy;
+      if (!p?.output) throw new HubError(409, `${step.id} has no output: review-record`);
+      if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; only a held step takes a review record`);
+      if (step.holderUser !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      if (b.sid) this.refuseForeign(await this.callerMachine(actor, b.sid), b.sid);
+      const n = (step.rounds?.length ?? 0) + 1;
+      if (await this.store.getReview(step.id, n)) throw new HubError(409, `${step.id} round ${n} already has a review record`);
+
+      const goal = await this.goalOr404(step.goal);
+      const steps = await this.store.listSteps({ goal: goal.id });
+      const raising = isRaising(p);
+      const { run, record: runRecord } = raising ? { run: step, record: undefined } : await this.runRecordOf(step, steps);
+      const lineage = lineageOf(goal, run ?? step);
+      const now = this.now();
+      const decider = this.deciderOf(step, actor, b.agent);
+      const { undeclaredRules, redactions, agent, sid, ...fields } = b;
+      const items: StoredReviewItem[] = fields.items.map(({ eh, ...i }) => ({ ...i, fp: fingerprint(i.key), ...(eh ? { eh } : {}) }));
+      const fps = uniqueFps(items);
+      const first = new Map<string, StoredReviewItem>();
+      for (const it of items) if (!first.has(it.fp)) first.set(it.fp, it);
+
+      // Problems: the two record-level ones, then the first failing check of each disposition.
+      const problems: string[] = [];
+      const ignored: { fingerprint: string; reason: string }[] = [];
+      const toApply: RecordDisposition[] = [];
+      if (raising && fields.dispositions.length) problems.push(`dispositions need consumes; ${step.id} raises items`);
+      if (!raising && fields.items.length) problems.push(`${step.id} consumes items; its record may not raise new ones`);
+      if (!raising) {
+        const consumes: readonly ItemState[] = p.consumes ?? [];
+        const runFps = new Set(runRecord ? uniqueFps(runRecord.record.items) : []);
+        const given = new Set<string>();
+        for (const d of fields.dispositions) {
+          const fp = d.fingerprint;
+          let problem: string | undefined;
+          if (!p.may_set?.includes(d.disposition)) problem = `${step.id} may not set ${d.disposition} (may_set: ${p.may_set?.join(", ") ?? "none"})`;
+          else if (d.disposition === "deferred" && !d.until) problem = "deferred needs until (YYYY-MM-DD)";
+          else if (given.has(fp)) problem = "listed twice";
+          else if (!runFps.has(fp)) problem = `no item ${fp} in the record of ${run?.id ?? step.id}`;
+          else {
+            const last = decider.kind === "agent" ? (await this.store.listDispositions({ lineage, fp, goal: step.goal })).at(-1) : undefined;
+            if (last?.decider.kind === "person") ignored.push({ fingerprint: fp, reason: `decided by ${last.decider.user} in this goal` });
+            else {
+              const row = await this.store.getItem(lineage, fp);
+              if (!row || !consumes.includes(row.state)) problem = `item ${fp} is ${row?.state ?? "unknown"}; ${step.id} acts on ${consumes.join(", ")}`;
+              else toApply.push(d);
+            }
+          }
+          given.add(fp);
+          if (problem) problems.push(`disposition of ${fp}: ${problem}`);
+        }
+      }
+      if (problems.length) throw new HubError(422, `the review record has ${problems.length} problem(s): ${problems.join("; ")}`, problems);
+
+      const seenAt = { goal: goal.id, step: step.id, round: n, at: now };
+      const states = new Map<string, ItemState>();
+      let fold: Fold | undefined;
+      let resolved: string[] = [];
+      if (raising) {
+        // The fold against the lineage's last complete raising record.
+        const rows = new Map((await this.store.listItems(lineage)).map((r) => [r.fp, r] as const));
+        const base = await this.foldBase(lineage, step.id, n);
+        const f = foldItems({ items: [...first.values()], complete: fields.coverage === "complete", previous: base ? uniqueFps(base.record.items) : undefined, rows, today: new Date(now).toISOString().slice(0, 10) });
+        for (const it of items) {
+          const mark = f.marks.get(it.fp);
+          if (mark) it.mark = mark;
+        }
+        const carried = new Set(f.carried);
+        for (const fp of fps) {
+          const it = first.get(fp) as StoredReviewItem;
+          const row = rows.get(fp);
+          const state = f.states.get(fp) ?? "open";
+          const next: ItemRow = row
+            ? { ...row, state, title: it.title, severity: it.severity, category: it.category, last: seenAt }
+            : {
+                lineage,
+                fp,
+                state,
+                rule: it.key.rule,
+                ...(it.key.path !== undefined ? { path: it.key.path } : {}),
+                ...(it.key.symbol !== undefined ? { symbol: it.key.symbol } : {}),
+                title: it.title,
+                severity: it.severity,
+                category: it.category,
+                raisedBy: agent ? { key: agent.key, ...(agent.hash ? { hash: agent.hash } : {}) } : { key: `${repoName(step.repo)}/${local(step)}` },
+                first: seenAt,
+                last: seenAt,
+              };
+          if (it.eh) next.eh = it.eh;
+          else delete next.eh;
+          await this.store.saveItem(next);
+          states.set(fp, state);
+          await this.store.addItemHistory(lineage, fp, { ...seenAt, from: row?.state ?? null, to: state, kind: "fold", mark: f.marks.get(fp) ?? "new", ...(carried.has(fp) ? { carried: true as const } : {}) });
+        }
+        for (const fp of f.resolved) {
+          const row = rows.get(fp);
+          if (!row) continue;
+          await this.store.saveItem({ ...row, state: "resolved" });
+          await this.store.addItemHistory(lineage, fp, { ...seenAt, from: row.state, to: "resolved", kind: "fold", mark: "resolved" });
+        }
+        fold = f.fold;
+        resolved = f.resolved;
+      }
+
+      // Dispositions of a consuming record (only when the whole record has no problem).
+      const applied: { fp: string; disposition: string; from: ItemState }[] = [];
+      for (const d of toApply) {
+        const row = await this.store.getItem(lineage, d.fingerprint);
+        if (!row) continue;
+        const next: ItemRow = { ...row, state: d.disposition };
+        if (d.disposition === "dismissed") {
+          if (row.eh) next.dismissedEh = row.eh;
+          else delete next.dismissedEh;
+        }
+        if (d.disposition === "deferred" && d.until) next.until = d.until;
+        if (d.disposition === "accepted" && d.link) next.link = d.link;
+        await this.store.saveItem(next);
+        await this.store.addItemHistory(lineage, d.fingerprint, {
+          ...seenAt,
+          from: row.state,
+          to: d.disposition,
+          kind: "disposition",
+          disposition: d.disposition,
+          reason: d.reason,
+          decider,
+          via: "stage",
+          ...(d.link ? { link: d.link } : {}),
+          ...(d.until ? { until: d.until } : {}),
+        });
+        applied.push({ fp: d.fingerprint, disposition: d.disposition, from: row.state });
+      }
+
+      const record: StoredRecord = { ...fields, items };
+      const content = Buffer.from(JSON.stringify(record), "utf8");
+      const artifact: StoredArtifact = {
+        id: this.newArtifactId(now),
+        goal: goal.id,
+        step: step.id,
+        round: n,
+        kind: "review",
+        mediaType: "application/json",
+        bytes: content.length,
+        sha256: createHash("sha256").update(content).digest("hex"),
+        redactions,
+        title: "review record",
+        createdAt: now,
+        by: actor.userId,
+      };
+      await this.store.addArtifact(artifact, content);
+      const review: StoredReview = {
+        goal: goal.id,
+        step: step.id,
+        round: n,
+        lineage,
+        raising,
+        complete: fields.coverage === "complete",
+        record,
+        ...(fold ? { fold } : {}),
+        artifact: artifact.id,
+        undeclaredRules,
+        decider,
+        by: actor.userId,
+        ...(sid ? { sid } : {}),
+        at: now,
+      };
+      if (!(await this.store.addReview(review))) throw new HubError(409, `${step.id} round ${n} already has a review record`);
+      await this.emit({
+        at: now,
+        type: "review.recorded",
+        user: actor.userId,
+        sid,
+        goal: goal.id,
+        step: step.id,
+        payload: {
+          round: n,
+          lineage,
+          coverage: fields.coverage,
+          assessment: fields.assessment,
+          items: fps.length,
+          artifact: artifact.id,
+          ...(fold ? { fold } : {}),
+          dispositions: applied.length,
+          ignored: ignored.length,
+          undeclaredRules,
+        },
+      });
+      for (const a of applied) {
+        await this.emit({
+          at: now,
+          type: "item.disposed",
+          user: actor.userId,
+          goal: goal.id,
+          step: step.id,
+          payload: { lineage, fp: a.fp, disposition: a.disposition, from: a.from, decider: decider.kind, via: "stage", round: n },
+        });
+      }
+      return {
+        review,
+        items: fps.map((fp) => {
+          const mark = first.get(fp)?.mark;
+          return { fp, ...(mark ? { mark } : {}), state: states.get(fp) ?? "open", title: first.get(fp)?.title ?? "" };
+        }),
+        resolved,
+        applied: applied.length,
+        ignored,
+      };
+    });
+  }
+
+  /** `GET /v1/steps/:id/reviews`: a step's review records by round. */
+  async stepReviews(id: string): Promise<{ reviews: StoredReview[] }> {
+    return this.store.tx(async () => {
+      const step = await this.stepOr404(id);
+      return { reviews: (await this.store.listReviews({ step: step.id })).sort((a, b) => a.round - b.round) };
+    });
+  }
+
+  /** `GET /v1/items?lineage=`: the items of a lineage, most severe first, then first seen, then fp. */
+  async lineageItems(lineage: string): Promise<{ lineage: string; items: ItemView[] }> {
+    return this.store.tx(async () => {
+      const rows = await this.store.listItems(lineage);
+      const items = (await this.withHistory(lineage, rows)).sort(byItemOrder);
+      return { lineage, items };
+    });
   }
 
   // ---------- suggest (MM-4) ----------
@@ -1418,14 +1790,21 @@ export class HubService {
       const first = endOffersLeavingReady(existing, changes, now);
       await this.store.saveSteps(first.steps);
       const afterFirst = await this.store.listSteps({ goal: goal.id });
-      const second = endOffersLeavingReady(afterFirst, recomputeReady(afterFirst, now), now);
+      // RL-2: settle decides new, changed or reset steps with `when` (skipped or ready).
+      const settled = await this.settleSteps(afterFirst, now);
+      const second = endOffersLeavingReady(afterFirst, settled.changed, now);
       const ready = second.steps;
       await this.store.saveSteps(ready);
+      const finalSteps = afterFirst.map((s) => ready.find((x) => x.id === s.id) ?? s);
+      const complete = HubService.goalComplete(finalSteps);
       const fresh = await this.store.getGoal(goal.id);
-      await this.store.saveGoal({ ...(fresh ?? goal), state: "in_progress", updatedAt: now });
+      await this.store.saveGoal({ ...(fresh ?? goal), state: complete ? "done" : "in_progress", updatedAt: now });
       await this.emit({ type: "plan.approved", user: actor.userId, goal: goal.id, payload: { version: plan.version } });
       await this.emitOffersEnded(actor, [...first.ended, ...second.ended]);
-      for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready")) await this.emitReady(goal.id, s.id);
+      const finalState = new Map(finalSteps.map((s) => [s.id, s.state]));
+      for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready" && finalState.get(x.id) === "ready")) await this.emitReady(goal.id, s.id);
+      await this.emitSkipped(goal.id, settled.skipped);
+      if (complete && (fresh ?? goal).state !== "done") await this.emit({ type: "goal.done", goal: goal.id });
       for (const s of m.upserts.filter((x) => x.state === "dropped")) await this.emit({ type: "step.dropped", goal: goal.id, step: s.id });
       for (const s of m.changedForHolder) {
         await this.message(s.holderSid, actor.userId, "replan", `MESH: the brief of your step ${s.id} changed in plan v${plan.version}. Call mesh_context to read it.`);
@@ -1492,7 +1871,7 @@ export class HubService {
         openQuestions: (await this.store.openQuestions()).filter((q) => q.step === step.id),
         ...(acs ? { acs } : {}),
       };
-      const inputs = await this.stepInputs(step);
+      const inputs = await this.stepInputs(step, goal);
       if (inputs.length) ctx.inputs = inputs;
       return forAgent ? agentContext(ctx, await this.store.listSteps({ goal: goal.id })) : ctx;
     });
@@ -1577,6 +1956,8 @@ export class HubService {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
       if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it (mesh step approve ${step.id})`);
+      // RL-2: the record carries the findings of a step with output; it never reopens anything.
+      if (step.policy?.output && input.reopen.length) throw new HubError(400, "a step with output: review-record reopens nothing; its record carries the findings");
       const now = input.at !== undefined && input.at <= this.now() && input.at > this.now() - 30 * 86_400_000 ? input.at : this.now();
       const explicit = input.reopen.map((r) => (r.includes(".") ? r : `${step.goal}.${r}`));
       const all = await this.store.listSteps({ goal: step.goal });
@@ -1586,10 +1967,17 @@ export class HubService {
         if (s.state !== "done") throw new HubError(409, `cannot reopen ${id}: it is ${s.state}, not done`);
       }
       // A verdict decides the outcome when given (a review that requests changes failed).
-      const outcome = input.verdict ? (["changes_requested", "blocked", "fail"].includes(input.verdict) ? "fail" : "done") : input.outcome;
+      let outcome: "done" | "fail" = input.verdict ? (["changes_requested", "blocked", "fail"].includes(input.verdict) ? "fail" : "done") : input.outcome;
       if (outcome === "done" && explicit.length) throw new HubError(400, "reopen only makes sense with outcome fail");
       if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; claim it first`);
       if (step.holderUser !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      // RL-2 (REQ-5): a step with output closes done only with a review record, and always done with one.
+      const n = (step.rounds?.length ?? 0) + 1;
+      const rec = step.policy?.output ? await this.store.getReview(step.id, n) : undefined;
+      if (step.policy?.output && !rec && outcome === "done") {
+        throw new HubError(409, `${step.id} needs a review record for round ${n} (output: review-record); submit it with mesh_review, then call mesh_done`);
+      }
+      if (rec) outcome = "done";
       // Criteria exist only when the plan defines them: ids the plan doesn't know are dropped, and a
       // wrong id never fails the call.
       const plan = (await this.store.listPlans(step.goal)).find((p) => p.version === step.planVersion);
@@ -1602,7 +1990,7 @@ export class HubService {
         return ac && okAc(ac) ? f : rest;
       });
       const round: Round = {
-        n: (step.rounds?.length ?? 0) + 1,
+        n,
         user: actor.userId,
         ...(input.sid ? { sid: input.sid } : {}),
         ...(step.roundStartedAt ?? step.claimedAt ? { startedAt: (step.roundStartedAt ?? step.claimedAt) as number } : {}),
@@ -1623,7 +2011,9 @@ export class HubService {
       // RL-1: the round's hub-stored artifacts, in upload order.
       const artifactIds = (await this.store.listArtifacts({ step: step.id, round: round.n })).map((a) => a.id);
       if (artifactIds.length) round.artifactIds = artifactIds;
-      const decision = judgeDone(step, round, explicit, plan?.acs);
+      if (rec?.fold) round.fold = rec.fold;
+      // A recorded round is done: judgeDone's caps, parking and failure routing do not apply.
+      const decision = rec ? ({ action: "done" } as const) : judgeDone(step, round, explicit, plan?.acs);
 
       if (decision.action === "reject") {
         // Not accepted: the holder keeps the step, the attempt is a round (a second miss parks).
@@ -1657,7 +2047,8 @@ export class HubService {
       const wanted = new Set(toReopen.map((f) => f.toLowerCase()));
       const reopened = reopenChanges.filter((x) => wanted.has(x.id.toLowerCase()));
       steps = steps.map((s) => reopenChanges.find((x) => x.id === s.id) ?? s);
-      const ready = recomputeReady(steps, now);
+      const settled = await this.settleSteps(steps, now);
+      const ready = settled.changed;
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[r.step.id, r.step], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
       await this.saveStepFrom(r.step, step);
@@ -1686,7 +2077,8 @@ export class HubService {
       }
       const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
       for (const id of nowReady) await this.emitReady(step.goal, id);
-      const goalDone = steps.length > 0 && steps.every((s) => s.state === "done" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
+      await this.emitSkipped(step.goal, settled.skipped, now);
+      const goalDone = HubService.goalComplete(steps);
       let files: TrailFile[] | undefined;
       if (goalDone && goal.state !== "done") {
         const doneGoal: Goal = { ...goal, state: "done", updatedAt: now };
@@ -1726,7 +2118,8 @@ export class HubService {
       let steps = all.map((s) => (s.id === step.id ? decided : s));
       const reopenChanges = reopen(steps, explicit, now);
       steps = steps.map((s) => reopenChanges.find((x) => x.id === s.id) ?? s);
-      const ready = recomputeReady(steps, now);
+      const settled = await this.settleSteps(steps, now);
+      const ready = settled.changed;
       steps = steps.map((s) => ready.find((x) => x.id === s.id) ?? s);
       const changed = new Map<string, Step>([[decided.id, decided], ...reopenChanges.map((s) => [s.id, s] as const), ...ready.map((s) => [s.id, s] as const)]);
       await this.saveStepFrom(decided, step);
@@ -1740,7 +2133,8 @@ export class HubService {
       }
       const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
       for (const id of nowReady) await this.emitReady(step.goal, id);
-      const goalDone = steps.every((s) => s.state === "done" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
+      await this.emitSkipped(step.goal, settled.skipped);
+      const goalDone = HubService.goalComplete(steps);
       let files: TrailFile[] | undefined;
       if (goalDone && goal.state !== "done") {
         const doneGoal: Goal = { ...goal, state: "done", updatedAt: now };
@@ -1766,7 +2160,8 @@ export class HubService {
       delete next.outcome;
       const before = await this.store.listSteps({ goal: step.goal });
       const all = before.map((s) => (s.id === step.id ? next : s));
-      const ready = recomputeReady(all, now);
+      const settled = await this.settleSteps(all, now);
+      const ready = settled.changed;
       const final = ready.find((x) => x.id === step.id) ?? next;
       await this.saveStepFrom(final, step);
       const others = endOffersLeavingReady(before, ready.filter((x) => x.id !== step.id), now);
@@ -1775,6 +2170,12 @@ export class HubService {
       await this.store.addNote({ step: step.id, user: actor.userId, text: `Resumed by ${actor.userId}${comment ? `: ${comment}` : ""} (was: ${step.parkedReason ?? step.state})`, at: now });
       await this.emit({ type: "step.resumed", user: actor.userId, goal: step.goal, step: step.id, payload: { comment, was: step.parkedReason } });
       if (final.state === "ready") await this.emitReady(step.goal, step.id);
+      await this.emitSkipped(step.goal, settled.skipped);
+      const after = all.map((s) => ready.find((x) => x.id === s.id) ?? s);
+      if (HubService.goalComplete(after) && goal.state !== "done") {
+        await this.store.saveGoal({ ...goal, state: "done", updatedAt: now });
+        await this.emit({ type: "goal.done", goal: goal.id });
+      }
       return (await this.store.getStep(step.id)) ?? final;
     });
   }
@@ -2304,6 +2705,13 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `stored a ${String(payload.kind)} for ${s} (round ${String(payload.round)})`;
     case "profile.saved":
       return `saved profile ${String(payload.name)}`;
+    // RL-2: counts, states and fps only (never item titles, evidence, proposals or reasons).
+    case "review.recorded":
+      return `recorded a review record for ${s} (round ${String(payload.round)}, ${String(payload.items)} item(s))`;
+    case "item.disposed":
+      return `${String(payload.disposition)} item ${String(payload.fp)} of ${s}`;
+    case "step.skipped":
+      return `skipped ${s} (nothing to consume)`;
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }

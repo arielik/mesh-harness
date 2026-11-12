@@ -68,10 +68,10 @@ describe("probes", () => {
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
   });
 
-  // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moves it to 8.
-  it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08)", async () => {
+  // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9.
+  it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 8 } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 9 } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
@@ -235,5 +235,79 @@ describe.skipIf(!PG_URL)(`mesh hub migrate (SQLite to Postgres)${PG_URL ? "" : "
     const second = await run(process.execPath, [main, "hub", "migrate", "--from", file], { cwd: dir, env: { ...process.env, MESH_HUB_DB: url, MESH_HUB_CONFIG: "" } }).catch((e: { stderr: string; code: number }) => e);
     expect((second as { code: number }).code).toBe(1);
     expect((second as { stderr: string }).stderr).toMatch(/--force/);
+  });
+});
+
+// RL-2 AC-32: the three review tables go through `mesh hub migrate` (Postgres only). Written from the
+// spec's contracts only (docs/specs/RL-2.md); the new store methods are read loosely.
+describe.skipIf(!PG_URL)(`RL-2 tables${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+  const X = (s: HubStore): any => s;
+  const L = "-|example/app|auditor";
+  const review = (step: string, raising: boolean) => ({
+    goal: "G1",
+    step,
+    round: 1,
+    lineage: L,
+    raising,
+    complete: true,
+    record: {
+      subject: {},
+      coverage: "complete",
+      assessment: raising ? "issues" : "clean",
+      items: raising ? [{ key: { rule: "I-03", path: "a.ts" }, title: "T", severity: "S2", category: "c", evidence: [], fp: "abcdefghijklmnop", mark: "new" }] : [],
+      dispositions: [],
+      summary: "s",
+    },
+    ...(raising ? { fold: { new: 1, repeat: 0, regression: 0, resolved: 0, carried: 0 } } : {}),
+    artifact: `a-01J00000000000000000000${raising ? "RA" : "CO"}`,
+    undeclaredRules: 0,
+    decider: { kind: "agent", key: "app/audit" },
+    by: "alice",
+    at: clock,
+  });
+  const row = { lineage: L, fp: "abcdefghijklmnop", state: "dismissed", rule: "I-03", path: "a.ts", title: "T", severity: "S2", category: "c", raisedBy: { key: "app/audit" }, first: { goal: "G1", step: "G1.a", round: 1, at: clock }, last: { goal: "G1", step: "G1.a", round: 1, at: clock } };
+  const fold = (mark: string) => ({ at: clock, goal: "G1", step: "G1.a", round: 1, from: null, to: "open", kind: "fold", mark });
+  const disposed = { at: clock + 1, goal: "G1", step: "G1.b", round: 1, from: "open", to: "dismissed", kind: "disposition", disposition: "dismissed", reason: "r", decider: { kind: "agent", key: "app/b" }, via: "stage" };
+
+  it("test_AC32_copy", async () => {
+    const file = join(tmp(), "hub.db");
+    await seedSqliteHub(file);
+    const s = await HubStore.open(file);
+    await X(s).addReview(review("G1.a", true));
+    await X(s).addReview(review("G1.b", false));
+    await X(s).saveItem(row);
+    await X(s).addItemHistory(L, row.fp, fold("new"));
+    await X(s).addItemHistory(L, row.fp, disposed);
+    await X(s).addItemHistory(L, "qrstuvwxyz234567", fold("new"));
+    const before = { history: await X(s).itemHistory(L, row.fp), reviews: await X(s).listReviews({ lineage: L }) };
+    await s.close();
+    const url = await pgdb.fresh();
+    const report = await copyHubToPostgres(file, url);
+    const sq = await openSyncDb(file, HUB_MIGRATIONS);
+    const counts: Record<string, number> = {};
+    try {
+      for (const t of ["review_record", "review_item", "item_history"]) counts[t] = (sq.all(`SELECT * FROM "${t}"`) as unknown[]).length;
+    } finally {
+      sq.close();
+    }
+    expect(counts).toStrictEqual({ review_record: 2, review_item: 1, item_history: 3 });
+    for (const t of Object.keys(counts)) expect(report.tables.find((x) => x.name === t)?.rows, t).toBe(counts[t]);
+    const pgd = await openPgDb(url, HUB_MIGRATIONS_PG, { max: 1 });
+    try {
+      for (const t of Object.keys(counts)) expect((await pgd.all(`SELECT * FROM "${t}"`)).length, t).toBe(counts[t]);
+    } finally {
+      await pgd.close();
+    }
+    const p = await HubStore.open(url);
+    try {
+      expect(await X(p).itemHistory(L, row.fp)).toStrictEqual(before.history);
+      expect(await X(p).listReviews({ lineage: L })).toStrictEqual(before.reviews);
+      const later = fold("regression");
+      await X(p).addItemHistory(L, row.fp, later);
+      expect(await X(p).itemHistory(L, row.fp)).toStrictEqual([...before.history, later]);
+    } finally {
+      await p.close();
+    }
   });
 });

@@ -312,6 +312,14 @@ a {
 .dag .st-blocked text {
   opacity: 0.6;
 }
+/* RL-2: a conditional stage with nothing to consume. */
+.dag .st-skipped rect {
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+.dag .st-skipped text {
+  fill: var(--muted);
+}
 .dag text {
   fill: var(--fg);
   font-size: 12px;

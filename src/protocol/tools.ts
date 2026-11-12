@@ -1,8 +1,9 @@
-// The thirteen mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
+// The fourteen mesh MCP tools (plan §5.2): names, descriptions and input schemas, shared by the
 // stdio shim (`mesh mcp`) and the daemon that executes them.
 
 import { z } from "zod";
 import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanAc, PlanStep, Verdict } from "./goal.ts";
+import { ReviewRecord } from "./review.ts";
 
 export const TOOLS = {
   mesh_context: {
@@ -53,6 +54,11 @@ export const TOOLS = {
       media_type: ArtifactMediaType.optional().describe("text/markdown (default), application/json or text/plain"),
       content: z.string().min(1),
     },
+  },
+  mesh_review: {
+    description:
+      "Submit the review record of your step (a step with output: review-record), before mesh_done. Each item has key {rule, path?, symbol?}, title, severity S1-S4, category and evidence [{path, lines?: [start, end], note?}]. The hub fingerprints each item by its key and folds the record against the previous record of the same lineage (new, repeat, regression, resolved). key.rule should be one of the rules your agent declares (others are recorded as other:<slug>); reuse the keys of the previous record for the same finding. Line numbers never matter for identity. Dispositions (confirmed, dismissed, deferred with until, accepted) belong only in the record of a consuming step (one with consumes), each with a reason and the item's fingerprint. coverage: complete when you looked at everything in scope (only then are missing items resolved). The record never fails the step: finish with mesh_done.",
+    input: ReviewRecord.shape,
   },
   mesh_ask: {
     description: "Ask your person (and the goal owner) a question. After calling it, end your turn and wait: the answer arrives as a message.",

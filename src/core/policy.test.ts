@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Message, PlanAc, PlanStep, Round, Session, Step, StepContext, StepPolicy } from "../protocol/index.ts";
 import { materialize, reopen } from "./dag.ts";
-import { agentContext, blindConflict, blindSeparated, judgeDone, reopenText, staleRounds, validatePolicies } from "./policy.ts";
+import { agentContext, blindConflict, blindSeparated, judgeDone, policyOf, reopenText, staleRounds, validatePolicies } from "./policy.ts";
 import { BUILTIN_PRESETS, instantiate, parsePreset, presetText, presetWarnings } from "./presets.ts";
 import { MESSAGE_STAGES, messageStage, partition, SESSION_STAGES, sessionStage, stageSummary, STEP_STAGES, stepStage } from "./stages.ts";
 import { validatePlan } from "./dag.ts";
@@ -253,5 +253,81 @@ describe("headless policy", () => {
       ps("s", { mode: "headless", agent: "auditor", profile: "read-only", budget: { turns: 5, minutes: 10, usd: 1 }, inputs: ["develop", "artifacts"], deps: ["develop"] }),
     ];
     expect(validatePolicies(steps, undefined)).toStrictEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// RL-2 AC-02 (unit): plan validation of `output`, `when`, `consumes`, `may_set` and `policyOf`.
+// Written from the spec's contracts only (docs/specs/RL-2.md).
+
+describe("review policy", () => {
+  const ps = (id: string, over: Record<string, unknown> = {}): PlanStep =>
+    ({ id, repo: "r", kind: "implement", title: id, brief: "b", deps: [], ...over }) as unknown as PlanStep;
+  const audit = () => ps("a", { output: "review-record" });
+  const GATE = 'step "g": a gate step can\'t have output, consumes, may_set or when';
+  const NO_RAISER = 'step "s": consumes needs an earlier step with output: review-record that raises items (through deps)';
+
+  it.each([
+    ["output", { output: "review-record" }],
+    ["consumes", { consumes: ["open"] }],
+    ["may_set", { may_set: ["dismissed"] }],
+    ["when", { when: { open: true } }],
+  ])("test_AC02_gate_fields %s", (_k, field) => {
+    const errs = validatePolicies([audit(), ps("g", { kind: "gate", gate: "R1", deps: ["a"], ...field })], undefined);
+    expect(errs.filter((e) => e === GATE)).toHaveLength(1);
+    // Control: the same gate without the field is valid.
+    expect(validatePolicies([audit(), ps("g", { kind: "gate", gate: "R1", deps: ["a"] })], undefined)).toStrictEqual([]);
+  });
+
+  it("test_AC02_may_set_needs_consumes", () => {
+    expect(validatePolicies([audit(), ps("s", { deps: ["a"], may_set: ["dismissed"] })], undefined)).toStrictEqual(['step "s": may_set needs consumes']);
+  });
+
+  it("test_AC02_when_needs_consumes", () => {
+    expect(validatePolicies([audit(), ps("s", { deps: ["a"], when: { open: true } })], undefined)).toStrictEqual(['step "s": when needs consumes (the item states it looks at)']);
+  });
+
+  it("test_AC02_when_empty", () => {
+    expect(validatePolicies([audit(), ps("s", { deps: ["a"], when: {}, consumes: ["open"] })], undefined)).toStrictEqual(['step "s": when needs open: true or min_severity']);
+    // Control: min_severity alone is enough.
+    expect(validatePolicies([audit(), ps("s", { deps: ["a"], when: { min_severity: "S2" }, consumes: ["open"] })], undefined)).toStrictEqual([]);
+  });
+
+  it("test_AC02_consumes_no_raiser", () => {
+    expect(validatePolicies([ps("s", { consumes: ["open"] })], undefined)).toStrictEqual([NO_RAISER]);
+    // The only upstream review-record step itself consumes: it raises nothing.
+    const errs = validatePolicies([ps("x"), ps("v", { deps: ["x"], output: "review-record", consumes: ["open"] }), ps("s", { deps: ["v"], consumes: ["open"] })], undefined);
+    expect(errs).toContain(NO_RAISER);
+    // A raising step that is not upstream does not count.
+    expect(validatePolicies([audit(), ps("s", { consumes: ["open"] })], undefined)).toStrictEqual([NO_RAISER]);
+  });
+
+  it("test_AC02_relay_shape_valid", () => {
+    const steps = [
+      ps("audit", { mode: "headless", agent: "auditor", output: "review-record", inputs: ["previous"] }),
+      ps("validate", { deps: ["audit"], mode: "headless", agent: "validator", output: "review-record", when: { open: true }, consumes: ["open"], may_set: ["confirmed", "dismissed"], inputs: ["dispositions"] }),
+      ps("debrief", { deps: ["validate"], output: "review-record", when: { open: true, min_severity: "S2" }, consumes: ["open", "confirmed"], may_set: ["accepted", "dismissed", "deferred"] }),
+      ps("file", { deps: ["debrief"], output: "review-record", when: { open: true }, consumes: ["accepted"] }),
+    ];
+    expect(validatePolicies(steps, undefined)).toStrictEqual([]);
+  });
+
+  it("test_AC02_two_deps_away", () => {
+    expect(validatePolicies([audit(), ps("build", { deps: ["a"] }), ps("check", { deps: ["build"], consumes: ["open"] })], undefined)).toStrictEqual([]);
+  });
+
+  it("test_AC02_exact_set", () => {
+    const one = (steps: PlanStep[], text: string) => expect(validatePolicies(steps, undefined)).toStrictEqual([text]);
+    one([audit(), ps("g", { kind: "gate", gate: "R1", deps: ["a"], consumes: ["open"] })], GATE);
+    one([audit(), ps("s", { deps: ["a"], may_set: ["dismissed"] })], 'step "s": may_set needs consumes');
+    one([audit(), ps("s", { deps: ["a"], when: { open: true } })], 'step "s": when needs consumes (the item states it looks at)');
+    one([audit(), ps("s", { deps: ["a"], when: {}, consumes: ["open"] })], 'step "s": when needs open: true or min_severity');
+    one([ps("s", { consumes: ["open"] })], NO_RAISER);
+  });
+
+  it("test_AC02_policyOf_fields", () => {
+    const fields = { output: "review-record", when: { open: true, min_severity: "S2" }, consumes: ["open", "confirmed"], may_set: ["dismissed"] };
+    const pol = policyOf(ps("s", { deps: ["a"], ...fields })) as Record<string, unknown> | undefined;
+    for (const [k, v] of Object.entries(fields)) expect(pol?.[k], k).toStrictEqual(v);
   });
 });

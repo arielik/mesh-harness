@@ -7,8 +7,23 @@
 // shared work, proposing a plan) say "offline", at once.
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assignText, offerLine, pickNext, redactSecrets, renderFleet, repoMatches, stepFacts, stepRecord, type FactEvent } from "../core/index.ts";
+import {
+  assignText,
+  declaredRules,
+  evidenceHash,
+  mapRule,
+  normPath,
+  offerLine,
+  pickNext,
+  redactSecrets,
+  renderFleet,
+  repoMatches,
+  stepFacts,
+  stepRecord,
+  type FactEvent,
+} from "../core/index.ts";
 import {
   PlanStep,
   TOOLS,
@@ -19,6 +34,8 @@ import {
   type FleetView,
   type GoalAssignResult,
   type OfferView,
+  type ReviewRecord,
+  type ReviewResult,
   type Session,
   type Step,
   type StepContext,
@@ -54,6 +71,12 @@ export interface ToolHost {
   secrets?(): string[];
   /** RL-1: a session stored an artifact (a headless run counts its redactions). */
   artifactStored?(sid: string, id: string, redactions: number): void;
+  /** RL-2: run git in a folder (through the process adapter). */
+  git?(cwd: string, args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }>;
+  /** RL-2: the running headless run a session belongs to (its worktree and agent). */
+  runOf?(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined } | undefined;
+  /** RL-2: a session's review record was stored (a headless run counts its undeclared rules). */
+  reviewStored?(sid: string, undeclaredRules: number): void;
 }
 
 const ok = (text: string): ToolResult => ({ text });
@@ -319,6 +342,28 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
       host.artifactStored?.(s.sid, a.id, r.count);
       return ok(`Stored ${a.id} (${a.kind}, ${a.bytes} bytes, ${r.count} redaction(s)).`);
     }
+    case "mesh_review": {
+      if (!s.step) return fail("this session holds no step");
+      // A review record is never queued, so while the link is offline the hub is checked at once
+      // (one /health) instead of refusing until the probe backoff ends.
+      if (host.link.offline) await host.link.flush({ probeNow: true });
+      const { body, undeclared } = await reviewUpload(host, s, s.step, args as unknown as ReviewRecord);
+      let r: ReviewResult;
+      try {
+        r = await host.link.rpc<ReviewResult>("POST", `/v1/steps/${encodeURIComponent(s.step)}/review`, body, key);
+      } catch (e) {
+        // Never queued: a mesh_done replayed without its record would be refused.
+        if (isOffline(e)) return fail(`the hub is offline; the review record was not stored. ${OFFLINE_TAIL}`);
+        throw e;
+      }
+      host.reviewStored?.(s.sid, undeclared);
+      let text = `Recorded the review record of ${r.review.step} round ${r.review.round} (${r.items.length} item(s), ${r.applied} disposition(s)).`;
+      const f = r.review.fold;
+      if (f) text += ` Fold: ${f.new} new, ${f.repeat} repeat, ${f.regression} regression, ${f.resolved} resolved, ${f.carried} carried.`;
+      if (r.ignored.length) text += ` Ignored ${r.ignored.length} disposition(s): a person decided those items in this goal.`;
+      if (undeclared > 0) text += ` ${undeclared} rule(s) are not declared by the agent and were recorded as other:<slug>.`;
+      return ok(`${text} Finish with mesh_done.`);
+    }
     case "mesh_ask": {
       const r = await orQueue(host, "/v1/questions", { text: args.question, sid: s.sid, ...(s.step ? { step: s.step } : {}) }, key, "mesh_ask", s.cwd);
       host.update(s.sid, { asked: true });
@@ -339,6 +384,111 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
       );
     }
   }
+}
+
+/** A file's text, or undefined when it cannot be read. */
+function readText(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/** A revision `git show` may read: no leading `-`, no `:`, whitespace or control characters. */
+const SAFE_REV = /^[A-Za-z0-9_][A-Za-z0-9_./^~@{}+-]{0,255}$/;
+
+/**
+ * RL-2: the body of `POST /v1/steps/:id/review` from a `mesh_review` call: rules mapped to the
+ * agent's declared ones, paths relative to the root, evidence hashes from the regions at
+ * `subject.commit`, free text redacted.
+ */
+async function reviewUpload(host: ToolHost, s: Session, step: string, rec: ReviewRecord): Promise<{ body: Record<string, unknown>; undeclared: number }> {
+  const run = host.runOf?.(s.sid);
+  const root = run?.worktree ?? findRepoRoot(s.cwd);
+  const git = async (args: string[]) => {
+    if (!root || !host.git) return undefined;
+    try {
+      const r = await host.git(root, args);
+      return r.code === 0 ? r.stdout : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const commit = rec.subject.commit ?? (await git(["rev-parse", "HEAD"]))?.trim() ?? undefined;
+
+  // Declared rules of the run's agent (or the step's policy.agent).
+  let agent = run?.agent?.name;
+  if (!agent) {
+    try {
+      agent = (await contextOf(host, step)).ctx.step.policy?.agent;
+    } catch {
+      agent = undefined;
+    }
+  }
+  const agentText = agent && root ? readText(join(root, ".claude", "agents", `${agent}.md`)) : undefined;
+  const declared = agentText !== undefined ? declaredRules(agentText, (root && agent ? readText(join(root, ".claude", "agents", `${agent}.rules.yaml`)) : undefined)) : new Set<string>();
+
+  const secrets = host.secrets?.() ?? [];
+  let redactions = 0;
+  const redact = (t: string): string => {
+    const r = redactSecrets(t, secrets);
+    redactions += r.count;
+    return r.text;
+  };
+  const files = new Map<string, string[] | null>();
+  const fileLines = async (path: string): Promise<string[] | null> => {
+    const known = files.get(path);
+    if (known !== undefined) return known;
+    // Agent text never becomes a git option: a commit that is not a plain revision reads as missing,
+    // and --end-of-options keeps git from parsing the argument as an option in any case.
+    const text = commit && SAFE_REV.test(commit) ? await git(["show", "--end-of-options", `${commit}:${path}`]) : undefined;
+    let lines: string[] | null = null;
+    if (text !== undefined) {
+      lines = text.split("\n");
+      if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    }
+    files.set(path, lines);
+    return lines;
+  };
+  const norm = (p: string) => (root ? normPath(p, root) : normPath(p));
+
+  let undeclared = 0;
+  const items = [];
+  for (const it of rec.items) {
+    const m = mapRule(it.key.rule, declared);
+    if (m.undeclared) undeclared++;
+    const evidence = it.evidence.map((e) => ({ ...e, path: norm(e.path), ...(e.note !== undefined ? { note: redact(e.note) } : {}) }));
+    const regions: (string | null)[] = [];
+    for (const e of evidence) {
+      if (!e.lines) continue;
+      const lines = await fileLines(e.path);
+      const [a, b] = e.lines;
+      regions.push(!lines || a > lines.length ? null : lines.slice(a - 1, Math.min(b, lines.length)).join("\n"));
+    }
+    const eh = evidenceHash(regions);
+    items.push({
+      ...it,
+      key: { ...it.key, rule: m.rule, ...(it.key.path !== undefined ? { path: norm(it.key.path) } : {}) },
+      title: redact(it.title),
+      category: redact(it.category),
+      ...(it.proposal !== undefined ? { proposal: redact(it.proposal) } : {}),
+      evidence,
+      ...(eh ? { eh } : {}),
+    });
+  }
+  const body: Record<string, unknown> = {
+    ...rec,
+    subject: { ...rec.subject, ...(commit ? { commit } : {}) },
+    items,
+    dispositions: rec.dispositions.map((d) => ({ ...d, reason: redact(d.reason) })),
+    summary: redact(rec.summary),
+    undeclaredRules: undeclared,
+    redactions,
+    ...(run?.agent ? { agent: { key: run.agent.key, hash: run.agent.hash } } : {}),
+    sid: s.sid,
+  };
+  return { body, undeclared };
 }
 
 /** mesh_done while the hub is offline: record locally from local facts, send later (M4, 4.0.4). */

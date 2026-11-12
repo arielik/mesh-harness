@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { claudeVersion, computeHarness, readAgentFiles, scanWorkflowRuns, type HeadlessRunner } from "../claude/index.ts";
+import { claudeVersion, computeHarness, readAgentFiles, run as runCommand, scanWorkflowRuns, type HeadlessRunner } from "../claude/index.ts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   applyHook,
@@ -910,6 +910,9 @@ export class Daemon {
       autopilotOf: (s) => this.autopilotOf(s),
       secrets: () => [this.config.key, this.link?.credentials()?.token].filter((x): x is string => typeof x === "string" && x.length > 0),
       artifactStored: (sid, id, redactions) => this.runs?.artifactStored(sid, id, redactions),
+      git: (cwd, args) => (this.deps.headless ? this.deps.headless.git(cwd, args) : runCommand("git", args, { cwd, timeoutMs: 30_000 })),
+      runOf: (sid) => this.runs?.runForSid(sid),
+      reviewStored: (sid, n) => this.runs?.reviewStored(sid, n),
     };
   }
 

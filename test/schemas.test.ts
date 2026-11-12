@@ -357,9 +357,7 @@ describe("RL-1 AC-34 checks, schema, boundaries", () => {
     { method: "POST", path: "/v1/steps/:id/run", scope: undefined, tag: "steps" },
   ];
 
-  it("test_AC34_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.15");
-  });
+  // The RL-1 version pin (test_AC34_version, 0.1.15) is superseded by RL-2 AC-31 (test_AC31_version below).
 
   it("test_AC34_seven_routes", () => {
     for (const want of ROUTES) {
@@ -414,5 +412,67 @@ describe("RL-1 AC-35 docs and skill", () => {
     expect(MESH_SKILL).toContain("mesh_artifact");
     expect(MESH_SKILL).toContain("headless");
     expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+  });
+});
+
+// RL-2 AC-31 (version, OpenAPI, routes, boundaries) and AC-30 (docs and skill). Written from the
+// spec's contracts only (docs/specs/RL-2.md).
+describe("RL-2 AC-31 checks, schema, boundaries", () => {
+  const ROUTES = [
+    { method: "POST", path: "/v1/steps/:id/review", scope: undefined, tag: "steps" },
+    { method: "GET", path: "/v1/steps/:id/reviews", scope: "goals:read", tag: "steps" },
+    { method: "GET", path: "/v1/items", scope: "goals:read", tag: "goals" },
+  ];
+
+  it("test_AC31_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.16");
+  });
+
+  it("test_AC31_openapi_routes", () => {
+    for (const want of ROUTES) {
+      const row = HUB_API.find((x) => x.method === want.method && x.path === want.path);
+      expect(row, `${want.method} ${want.path}`).toBeDefined();
+      expect(row?.rule, want.path).toBe("member");
+      expect(row?.scope, want.path).toBe(want.scope);
+      expect(row?.tag, want.path).toBe(want.tag);
+    }
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, unknown>> };
+    for (const want of ROUTES) {
+      const p = want.path.replace(/:(\w+)/g, "{$1}");
+      expect(doc.paths[p]?.[want.method.toLowerCase()], `${want.method} ${p} in the OpenAPI document`).toBeDefined();
+    }
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+  });
+
+  it("test_AC31_core_boundaries", async () => {
+    const core = (await import("../src/core/index.ts")) as Record<string, unknown>;
+    for (const name of ["fingerprint", "foldItems", "evidenceHash", "whenHolds", "settle", "normPath", "mapRule", "declaredRules", "normalizeRegion", "lineageKey", "ruleSlug"]) expect(typeof core[name], name).toBe("function");
+    // The pure functions live in src/core/review.ts and src/core/dag.ts (no hub or store imports there:
+    // that is `pnpm boundaries`).
+    const review = (await import("../src/core/review.ts" as string)) as Record<string, unknown>;
+    for (const name of ["fingerprint", "foldItems", "evidenceHash", "whenHolds"]) expect(typeof review[name], name).toBe("function");
+    const dag = (await import("../src/core/dag.ts")) as Record<string, unknown>;
+    expect(typeof dag.settle).toBe("function");
+  });
+});
+
+describe("RL-2 AC-30 docs and skill", () => {
+  it("test_AC30_skill_mentions", () => {
+    expect(MESH_SKILL).toContain("mesh_review");
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+  });
+
+  it("test_AC30_docs_present", () => {
+    const concepts = read("docs/guide/concepts.md");
+    expect(concepts).toMatch(/^#+ .*Review records/m);
+    for (const t of ["output: review-record", "mesh-rules", "rules.yaml", "other:", "fingerprint", "lineage", "skipped", "consumes", "may_set", "when"]) expect(concepts, t).toContain(t);
+    const howto = read("docs/guide/howto.md");
+    expect(howto).toMatch(/^#+ .*Review an agent's findings/m);
+    for (const t of ["mesh items", "consumes", "may_set"]) expect(howto, t).toContain(t);
+    const events = read("docs/events.md");
+    for (const t of ["review.recorded", "item.disposed", "step.skipped"]) expect(events, t).toContain(t);
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    for (const t of ["/v1/steps/:id/review", "/v1/steps/:id/reviews", "/v1/items", "v0.1.16"]) expect(s56, t).toContain(t);
   });
 });

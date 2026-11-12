@@ -409,3 +409,41 @@ test("test_AC16_empty_list_and_cancel", async ({ page, request }) => {
   await expect(picker).toBeHidden();
   expect((await hubStep(request, bob, `${G}.a`)).offer).toBeUndefined();
 });
+
+// ---------------------------------------------------------------------------------------------
+// RL-2 AC-28: a goal with a `skipped` step renders. Made through the API: a raising `audit` with a
+// clean review record, and `validate` (when: open) after it. Steps are found by `data-step`.
+
+test("AC-28 skipped step", async ({ page, request }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  const auth = await bobApi(request);
+  const repo = `rl2-${runId()}`;
+  const goal = await (await request.post("/v1/goals", { headers: auth, data: { title: "Skipped stage", primaryRepo: repo } })).json();
+  const G = goal.id as string;
+  const plan = await request.post(`/v1/goals/${G}/plan`, {
+    headers: auth,
+    data: {
+      approve: true,
+      steps: [
+        { id: "audit", repo, kind: "implement", title: "audit", brief: "a", output: "review-record" },
+        { id: "validate", repo, kind: "implement", title: "validate", brief: "v", deps: ["audit"], output: "review-record", when: { open: true }, consumes: ["open"] },
+      ],
+    },
+  });
+  expect(plan.ok(), await plan.text()).toBeTruthy();
+  expect((await request.post(`/v1/steps/${G}.audit/claim`, { headers: auth, data: {} })).ok()).toBeTruthy();
+  const rv = await request.post(`/v1/steps/${G}.audit/review`, { headers: auth, data: { coverage: "complete", assessment: "clean", items: [], summary: "nothing found" } });
+  expect(rv.status(), await rv.text()).toBe(201);
+  const done = await request.post(`/v1/steps/${G}.audit/done`, { headers: auth, data: { summary: "ok" } });
+  expect(done.ok(), await done.text()).toBeTruthy();
+  await signIn(page);
+  await page.goto(`/#/goal/${G}`);
+  const node = page.locator(`g.node[data-step="${G}.validate"]`);
+  await expect(node).toHaveClass(/\bst-skipped\b/);
+  await expect(node).toContainText("skipped");
+  await node.click();
+  const panel = page.getByLabel("step details");
+  await expect(panel).toContainText(new RegExp(`implement · ${repo}[^\\n]*· skipped`));
+  expect(errors).toStrictEqual([]);
+});

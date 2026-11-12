@@ -5,6 +5,7 @@ import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, S
 import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
+import { ReviewItem, ReviewRecord, type FoldMark, type ItemState, type StoredReview } from "./review.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
 export const SESSION_COOKIE = "mesh_session";
@@ -186,6 +187,29 @@ export const ArtifactUpload = z.object({
   redactions: z.number().int().min(0).default(0),
   sid: z.string().optional(),
 });
+/** RL-2: body of `POST /v1/steps/:id/review` (the daemon adds `eh`, the counts, `agent` and `sid`). */
+export const ReviewUpload = ReviewRecord.extend({
+  items: z.array(ReviewItem.extend({ eh: z.string().regex(/^[0-9a-f]{64}$/).optional() })).max(500),
+  undeclaredRules: z.number().int().min(0).default(0),
+  redactions: z.number().int().min(0).default(0),
+  agent: z.object({ key: z.string().max(200), hash: z.string().max(64).optional() }).optional(),
+  sid: z.string().optional(),
+});
+export type ReviewUpload = z.infer<typeof ReviewUpload>;
+
+/** RL-2: reply of `POST /v1/steps/:id/review`. */
+export interface ReviewResult {
+  review: StoredReview;
+  /** This record's items: unique fps in record order. */
+  items: { fp: string; mark?: FoldMark; state: ItemState; title: string }[];
+  /** Fps the fold resolved. */
+  resolved: string[];
+  /** Dispositions applied. */
+  applied: number;
+  /** Dispositions not applied (a person decided those items in this goal). */
+  ignored: { fingerprint: string; reason: string }[];
+}
+
 /** RL-1: body of `POST /v1/steps/:id/run`. */
 export const RunReport = z.object({
   state: z.enum(["started", "finished"]),

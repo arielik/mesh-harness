@@ -3,13 +3,14 @@
 // as before (outcome done/fail + explicit reopen).
 
 import type { PlanAc, PlanStep, Round, Step, StepContext, StepPolicy } from "../protocol/index.ts";
+import { runOf } from "./review.ts";
 
 export const local = (s: Step) => s.id.slice(s.goal.length + 1);
 const full = (goal: string, id: string) => (id.includes(".") ? id : `${goal}.${id}`);
 
 /** The policy fields of a plan step, without the undefined ones. */
 export function policyOf(p: PlanStep): StepPolicy | undefined {
-  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate", "mode", "agent", "profile", "budget", "inputs"] as const;
+  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate", "mode", "agent", "profile", "budget", "inputs", "output", "when", "consumes", "may_set"] as const;
   const out: Record<string, unknown> = {};
   for (const k of keys) if (p[k] !== undefined) out[k] = p[k];
   return Object.keys(out).length ? (out as StepPolicy) : undefined;
@@ -51,6 +52,15 @@ export function validatePolicies(steps: readonly PlanStep[], acs: readonly PlanA
       if (!ids.has(x)) errors.push(`step "${s.id}": inputs names "${x}", which is not a step of this plan`);
       else if (s.blind?.includes(x) || byId.get(x)?.blind?.includes(s.id)) errors.push(`step "${s.id}": inputs names "${x}", which it is blind to`);
     }
+    // RL-2: review records and conditional stages.
+    if (s.kind === "gate" && (s.output !== undefined || s.consumes !== undefined || s.may_set !== undefined || s.when !== undefined)) {
+      errors.push(`step "${s.id}": a gate step can't have output, consumes, may_set or when`);
+      continue;
+    }
+    if (s.may_set && !s.consumes) errors.push(`step "${s.id}": may_set needs consumes`);
+    if (s.when && !s.consumes) errors.push(`step "${s.id}": when needs consumes (the item states it looks at)`);
+    if (s.when && !s.when.open && !s.when.min_severity) errors.push(`step "${s.id}": when needs open: true or min_severity`);
+    if (s.consumes && !runOf(s, steps, (x) => x)) errors.push(`step "${s.id}": consumes needs an earlier step with output: review-record that raises items (through deps)`);
   }
   return errors;
 }

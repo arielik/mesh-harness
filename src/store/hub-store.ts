@@ -1,7 +1,20 @@
 // Hub persistence (plan §3.2, §8). Rows keep a few indexed columns plus the JSON value.
 
 import { randomUUID } from "node:crypto";
-import { Goal, Plan, Question, ServiceScope, Session, Step, StoredArtifact, Topic, type Note, type ProfileBase, type ProfileSettings, type Repo, type ShareLevel } from "../protocol/index.ts";
+import {
+  DispositionRow,
+  Goal,
+  ItemHistoryEntry,
+  ItemRow,
+  Plan,
+  Question,
+  ServiceScope,
+  Session,
+  Step,
+  StoredArtifact,
+  StoredReview,
+  Topic,
+  type Note, type ProfileBase, type ProfileSettings, type Repo, type ShareLevel } from "../protocol/index.ts";
 import { openDb, SOLE_LEADER, type Channel, type Db, type Leader, type SqlValue } from "./db.ts";
 import { isPostgresUrl, type LockKey } from "./dialect.ts";
 import { openPgDb } from "./pg.ts";
@@ -64,6 +77,13 @@ export const HUB_MIGRATIONS: readonly string[] = [
    CREATE INDEX artifact_goal ON artifact (goal);
    CREATE INDEX artifact_step_round ON artifact (step, round);
    CREATE TABLE profile (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);`,
+  // v0.1.16 (RL-2): review records, item rows and their history (never pruned).
+  `CREATE TABLE review_record (step TEXT NOT NULL, round INTEGER NOT NULL, goal TEXT NOT NULL, lineage TEXT NOT NULL,
+     raising INTEGER NOT NULL, complete INTEGER NOT NULL, value TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (step, round));
+   CREATE INDEX review_record_lineage ON review_record (lineage, raising, complete);
+   CREATE TABLE review_item (lineage TEXT NOT NULL, fp TEXT NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (lineage, fp));
+   CREATE TABLE item_history (seq INTEGER PRIMARY KEY AUTOINCREMENT, lineage TEXT NOT NULL, fp TEXT NOT NULL, step TEXT NOT NULL, value TEXT NOT NULL);
+   CREATE INDEX item_history_fp ON item_history (lineage, fp, seq);`,
 ];
 
 /**
@@ -122,6 +142,13 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    CREATE INDEX artifact_goal ON artifact (goal);
    CREATE INDEX artifact_step_round ON artifact (step, round);
    CREATE TABLE profile (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at BIGINT NOT NULL);`,
+  `CREATE TABLE review_record (step TEXT NOT NULL, round INTEGER NOT NULL, goal TEXT NOT NULL, lineage TEXT NOT NULL,
+     raising INTEGER NOT NULL, complete INTEGER NOT NULL, value TEXT NOT NULL, created_at BIGINT NOT NULL,
+     ord BIGINT GENERATED ALWAYS AS IDENTITY, PRIMARY KEY (step, round));
+   CREATE INDEX review_record_lineage ON review_record (lineage, raising, complete);
+   CREATE TABLE review_item (lineage TEXT NOT NULL, fp TEXT NOT NULL, value TEXT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (lineage, fp));
+   CREATE TABLE item_history (seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, lineage TEXT NOT NULL, fp TEXT NOT NULL, step TEXT NOT NULL, value TEXT NOT NULL);
+   CREATE INDEX item_history_fp ON item_history (lineage, fp, seq);`,
 ];
 
 /** RL-1: a registered permission profile as the hub stores it. */
@@ -825,6 +852,129 @@ export class HubStore {
   /** Registered profiles by name. */
   async listProfiles(): Promise<StoredProfile[]> {
     return (await this.db.all<{ value: string }>("SELECT value FROM profile ORDER BY name")).map((r) => JSON.parse(r.value) as StoredProfile);
+  }
+
+  // ---------- review records and items (RL-2) ----------
+
+  /** Store a review record; false (nothing written) when (step, round) already has one. */
+  async addReview(r: StoredReview): Promise<boolean> {
+    const v = StoredReview.parse(r);
+    const res = await this.db.run(
+      "INSERT INTO review_record (step, round, goal, lineage, raising, complete, value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (step, round) DO NOTHING",
+      v.step,
+      v.round,
+      v.goal,
+      v.lineage,
+      v.raising ? 1 : 0,
+      v.complete ? 1 : 0,
+      json(v),
+      v.at,
+    );
+    return res.changes === 1;
+  }
+
+  async getReview(step: string, round: number): Promise<StoredReview | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM review_record WHERE step = ? AND round = ?", step, round);
+    return r ? StoredReview.parse(JSON.parse(r.value)) : undefined;
+  }
+
+  /** Review records in insertion order (never by `at`). */
+  async listReviews(f: { step?: string | undefined; lineage?: string | undefined; raising?: boolean | undefined; complete?: boolean | undefined }): Promise<StoredReview[]> {
+    const where: string[] = [];
+    const args: SqlValue[] = [];
+    if (f.step !== undefined) {
+      where.push("step = ?");
+      args.push(f.step);
+    }
+    if (f.lineage !== undefined) {
+      where.push("lineage = ?");
+      args.push(f.lineage);
+    }
+    if (f.raising !== undefined) {
+      where.push("raising = ?");
+      args.push(f.raising ? 1 : 0);
+    }
+    if (f.complete !== undefined) {
+      where.push("complete = ?");
+      args.push(f.complete ? 1 : 0);
+    }
+    const sql = `SELECT value FROM review_record ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${this.db.dialect.stepOrder}`;
+    return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => StoredReview.parse(JSON.parse(r.value)));
+  }
+
+  async getItem(lineage: string, fp: string): Promise<ItemRow | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM review_item WHERE lineage = ? AND fp = ?", lineage, fp);
+    return r ? ItemRow.parse(JSON.parse(r.value)) : undefined;
+  }
+
+  /** The item rows of a lineage, ordered by fingerprint. */
+  async listItems(lineage: string): Promise<ItemRow[]> {
+    return (await this.db.all<{ value: string }>(`SELECT value FROM review_item WHERE lineage = ? ORDER BY fp`, lineage)).map((r) =>
+      ItemRow.parse(JSON.parse(r.value)),
+    );
+  }
+
+  /** Insert or replace an item row. */
+  async saveItem(row: ItemRow): Promise<void> {
+    const v = ItemRow.parse(row);
+    await this.db.run(
+      "INSERT INTO review_item (lineage, fp, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (lineage, fp) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      v.lineage,
+      v.fp,
+      json(v),
+      v.last.at,
+    );
+  }
+
+  async addItemHistory(lineage: string, fp: string, e: ItemHistoryEntry): Promise<void> {
+    const v = ItemHistoryEntry.parse(e);
+    await this.db.run("INSERT INTO item_history (lineage, fp, step, value) VALUES (?, ?, ?, ?)", lineage, fp, v.step, json(v));
+  }
+
+  /** History entries of a lineage (or one item of it), in insertion order. */
+  async itemHistory(lineage: string, fp?: string): Promise<ItemHistoryEntry[]> {
+    const rows =
+      fp === undefined
+        ? await this.db.all<{ value: string }>("SELECT value FROM item_history WHERE lineage = ? ORDER BY seq", lineage)
+        : await this.db.all<{ value: string }>("SELECT value FROM item_history WHERE lineage = ? AND fp = ? ORDER BY seq", lineage, fp);
+    return rows.map((r) => ItemHistoryEntry.parse(JSON.parse(r.value)));
+  }
+
+  /** The disposition entries of the item history, in insertion order. */
+  async listDispositions(f: { step?: string | undefined; lineage?: string | undefined; fp?: string | undefined; goal?: string | undefined }): Promise<DispositionRow[]> {
+    const where: string[] = [];
+    const args: SqlValue[] = [];
+    for (const k of ["step", "lineage", "fp"] as const) {
+      const v = f[k];
+      if (v !== undefined) {
+        where.push(`${k} = ?`);
+        args.push(v);
+      }
+    }
+    const sql = `SELECT lineage, fp, value FROM item_history ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY seq`;
+    const out: DispositionRow[] = [];
+    for (const r of await this.db.all<{ lineage: string; fp: string; value: string }>(sql, ...args)) {
+      const e = ItemHistoryEntry.parse(JSON.parse(r.value));
+      if (e.kind !== "disposition" || (f.goal !== undefined && e.goal !== f.goal)) continue;
+      out.push(
+        DispositionRow.parse({
+          lineage: r.lineage,
+          fp: r.fp,
+          goal: e.goal,
+          step: e.step,
+          round: e.round,
+          disposition: e.disposition,
+          from: e.from,
+          reason: e.reason,
+          decider: e.decider,
+          via: e.via,
+          ...(e.link !== undefined ? { link: e.link } : {}),
+          ...(e.until !== undefined ? { until: e.until } : {}),
+          at: e.at,
+        }),
+      );
+    }
+    return out;
   }
 
   // ---------- notes and questions ----------

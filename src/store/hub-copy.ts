@@ -29,6 +29,10 @@ const TABLES: readonly { name: string; identity?: string }[] = [
   // RL-1
   { name: "artifact" },
   { name: "profile" },
+  // RL-2: `review_record.ord` is left to Postgres (rows go in in rowid order), as for `step`.
+  { name: "review_record" },
+  { name: "review_item" },
+  { name: "item_history", identity: "seq" },
 ];
 
 /** BLOB columns (RL-1 artifact content) go to Postgres bytea as Buffers. */
