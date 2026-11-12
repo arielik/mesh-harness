@@ -117,15 +117,20 @@ code 128 → `fatal: '/x/worktree' already exists`.
 
 ### Run sessions end with the run (src/daemon/runs.ts, src/daemon/daemon.ts)
 
-Extends RL-7 rule 4. **Leftover run session** = a session with `state` other than `ended`,
-`kind: "print"` and `pid` equal to the `pid` of a run file whose `state` is `finished`.
+Extends RL-7 rule 4. **Leftover run session** of a finished run file F (`state: "finished"`) = a
+session with all of: `state` other than `ended`; `kind: "print"`; `pid` equal to F's `pid`;
+`claudeSessionIds` containing F's `sessionId`; and not a session of a run whose file is `running`
+(RL-7 "the run's sessions" of any running run). The pid alone never makes a session leftover: pids
+are reused, and a new run's process may get the pid of an old finished run.
 
 - When the daemon sets a run file `finished`, every live session of the run (RL-7 "the run's
   sessions") whose `kind` is `print` is ended in the same step, if rule 4 has not ended it already.
 - At daemon start (after the run files are loaded) and on every reconcile pass, every leftover run
   session is ended (`state: "ended"`). This also ends sessions left by v0.1.21.
-- A session of another `kind`, or with another pid (a person who resumed a finished run's Claude
-  session with `claude --resume` gets a new process), is not touched by these rules.
+- A session of another `kind`, with another pid (a person who resumed a finished run's Claude
+  session with `claude --resume` gets a new process), or without F's run session id, is not touched
+  by these rules. A running run's sessions are never touched by the sweep, even when their pid equals
+  the pid of an older finished run file.
 - The ended reason text is not part of the contract.
 
 ### Session kind (src/core/session-state.ts `applyObservation`)
@@ -142,20 +147,24 @@ today). So a run's session shows `print` in `GET /local/sessions`, in the machin
 
 | Interface | Type | Change |
 |---|---|---|
-| `PulseView.warnings` | field | New, optional `string[]`. Present (possibly empty) in the replies of `POST /v1/pulses` and `POST /v1/pulses/:id/update`; absent from `GET /v1/pulses` and from `GET /v1/pulses/:id`. Not stored. |
+| `PulseView.warnings` | field | New, optional `string[]`. Present (possibly empty) in the replies of `POST /v1/pulses` and `POST /v1/pulses/:id/update`; absent from `GET /v1/pulses` and from `GET /v1/pulses/:id`. Not stored on the pulse. A request replayed under the same `Idempotency-Key` gets the stored first reply, so its `warnings` are those computed at the first call (not recomputed). |
 | `POST /v1/pulses`, `POST /v1/pulses/:id/update` | route | Status codes and checks unchanged: an invalid agent never makes them fail. They compute `warnings` from the plan the pulse's current preset snapshot and params instantiate (after the update is applied; on every update, whatever fields it changes). |
 
 Warnings, one per step of the instantiated plan whose `agent` is set, in plan step order, at most one
 per step:
-- **Roster key** (`agent` contains `/`): the pinned catalog definition (the pulse's `agents` entry for
-  that key) has `invalid` →
+- **Roster key** (`agent` contains `/`): take the pulse's pin for that key (its `agents` entry:
+  `source`, `name`, `hash`) and the stored catalog definition with repo = the pin's `source`, name =
+  the pin's `name` and hash = the pin's `hash` (the catalog defs listed for that repo and name, filtered
+  by hash). When that definition has `invalid` →
   `step "<id>": roster agent <def key> has invalid front matter: <invalid>`.
 - **Repo agent** (a plain name): take the roster as the caller sees it (`GET /v1/agents?name=<agent>`
   for that caller), its versions in that order; the first version that has `invalid` and a copy with
   `origin: "repo"`, `kind: "claude"` and a repo that the step's `repo` names (`repoMatches`: full id,
   path suffix or name) →
   `step "<id>": agent <agent> in <copy repo name> has invalid front matter: <invalid>`.
-- No match → no warning for that step. An agent no machine reports is not a warning.
+- No match → no warning for that step. An agent no machine reports is not a warning. A catalog
+  definition with no `invalid` value (also one stored before RL-7, which keeps its first front matter
+  on re-push) gives no warning.
 
 `mesh pulse add` / `mesh pulse update` (`src/cli/pulse-commands.ts`): after the success line
 (`Created pulse …` / `Updated pulse …` on stdout, unchanged), one line per warning on **stderr**:
@@ -170,7 +179,7 @@ YAML: Nested mappings are not allowed in compact mappings at line 2, column 14`,
 
 | File | Change |
 |---|---|
-| `docs/guide/concepts.md` | "Headless step": a run is started once; a run being started counts toward `maxSessions`; a run that did not start stores no transcript and has no session; failure texts carry git's last error line; a run's session keeps kind `print`. "Close-as-fail": the transcript is for runs that started. "Pulse" (or the roster section): `mesh pulse add`/`update` warn about agents flagged invalid. |
+| `docs/guide/concepts.md` | "Headless step": a run is started once; a run being started counts toward `maxSessions`; a run that did not start stores no transcript and has no session; failure texts carry git's last error line; a daemon stopped in the middle of a start may leave a partial worktree, so the run's next start fails with `could not make a worktree: fatal: … already exists`; a run's session keeps kind `print`. "Close-as-fail": the transcript is for runs that started. "Pulse" (or the roster section): `mesh pulse add`/`update` warn about agents flagged invalid. |
 | `docs/guide/howto.md` | The `audit-relay` pulse section: a sample of the `warning: step "<id>": agent … has invalid front matter: …` line, saying the pulse is still created and the run would fail at start. |
 | `src/protocol/skill.ts` `MESH_SKILL` + generated `skills/mesh/SKILL.md` | The `mesh pulse add` row: it warns when a named agent is flagged invalid in the roster. |
 | `docs/plan/implementation-plan.md` API table | Rows `POST /v1/pulses` and `POST /v1/pulses/:id/{update,…}`: `(v0.1.22: the reply carries \`warnings\` for agents flagged invalid)`. |
@@ -189,7 +198,9 @@ Surfaces: unit tests (`src/core`), CLI tests, World tests (`test/helpers/world.t
 `test/helpers/relay-kit.ts`) with the fake `claude` (`test/fixtures/claude/fake-claude`; never the
 real binary) and, where a slow or failing git step is needed, a `HeadlessOptions.runner` that wraps
 `processRunner` and holds or answers `git` calls whose args start with `["worktree", "add"]` (or
-`["push"]`). Runs are found by `step`, never by `runId`. Fixture rules as in RL-7 (remote-backed
+`["push"]`). A holding wrapper records every call, holds only the **first** `worktree add` (so a
+second one, as on today's code, passes through at once and is counted, never hangs), and the test
+waits until that first call is recorded before it calls `reconcile()` or sends more offers. Runs are found by `step`, never by `runId`. Fixture rules as in RL-7 (remote-backed
 repos, `shareSessions` `me`/`all`).
 
 | Id | Criterion | Surface | What exact state makes it FAIL? |
@@ -199,7 +210,7 @@ repos, `shareSessions` `me`/`all`).
 | AC-03 | Git error text: the wrapped runner answers the run's `worktree add` with `{code: 128, stdout: "", stderr: "Preparing worktree (detached HEAD 1a2b3c4)\nfatal: 'x' already exists\n"}` → the step is `failed` with summary `headless run of <step> did not start: could not make a worktree: fatal: 'x' already exists`; with `stderr: "\n  \n"` → `… could not make a worktree: git exited with code 128`. A `propose-via-branch` run whose push the wrapped runner fails with stderr `remote: x\nerror: failed to push some refs\n` → the step's note is `headless run: could not push mesh/<slug>: error: failed to push some refs`. | World + fake claude + wrapped runner | The first line (`Preparing worktree …`, `remote: x`), an empty reason, or another text. |
 | AC-04 | Never-started run, no transcript and no session: (a) worktree failure as AC-03; (b) a repo agent with invalid front matter (RL-7 AC-10); (c) a missing repo agent. In each case after the run ends: the step is `failed` with the documented summary; `GET /v1/goals/<goal>/artifacts` has no `transcript` for the step and the closing round has no artifact id; `run.finished` telemetry has `exit: "crashed"`; the run file is `finished` and has no `startedAt`/`pid`; `GET /local/sessions` has no session whose `claudeSessionIds` contains the run's `sessionId`; `p.requests` has no request with key `bind:<…>:<step>`. | World + fake claude | A transcript artifact, a session, a bind claim, or another summary. |
 | AC-05 | Started runs keep their transcript: a run that starts and exits 0 with no output and no `mesh_done` still stores a `transcript` artifact (title `run transcript (no_result)`) and the step is `failed` with `headless run ended without mesh_done (exit no_result)` (RL-1 AC-25 unchanged). | World + fake claude | No transcript for a started run. |
-| AC-06 | Leftover sessions end: (a) after any finished run (AC-01, AC-05), no session with `kind: "print"` and `pid` = the run's pid is live. (b) Sweep: a daemon whose store holds (written before a restart) a live session `{kind: "print", state: "working", step: <step>, pid: <pid of a finished run file in runsDir>}` → after start-up and one `reconcile()`, that session is `ended`, and after a flush `GET /v1/fleet` (what `mesh machines` shows) no longer lists it as working. (c) Control: a live `interactive` session with the run's Claude session id and another pid (a resumed session) stays live. | World | The phantom stays live, or the resumed session is ended. |
+| AC-06 | Leftover sessions end. (a) Regression guard (passes today too; (b) carries the AC): after any finished run (AC-01, AC-05), no session with `kind: "print"` and `pid` = the run's pid is live. (b) Sweep: a daemon whose store holds (written before a restart) a live session `{kind: "print", state: "working", step: <step>, pid: <P>, claudeSessionIds: [<S>]}` with `seenByReconciler` absent, where `runsDir` holds a `finished` run file with `pid` P and `sessionId` S, and the World's `p.agents` is `null` or a list without P → after start-up and one `reconcile()`, that session is `ended`, and after a flush `GET /v1/fleet` (what `mesh machines` shows) no longer lists it as working. (c) Control: a live `interactive` session with the run's Claude session id and another pid (a resumed session) stays live. (d) Control, pid reuse: a run that is `running` (fake still alive) whose session's pid P equals the `pid` of an older `finished` run file written by the test into `runsDir` (another `runId` and `sessionId`) → after `reconcile()` the running run's session is still live and holds its step. | World | The phantom stays live, the resumed session is ended, or the running run's session is ended. |
 | AC-07 | Kind stays `print` (unit): a session `{kind: "print", pid: 500}` and `applyObservation` with entry `{kind: "interactive", pid: 500, sessionId: <its id>, status: "busy"}` → `kind: "print"`, other fields as for any session (`seenByReconciler: true`, observed status); an ended `print` session matched by Claude session id from an entry with pid 600 and `kind: "interactive"` → `kind: "interactive"`; a non-print session takes the entry's kind as before. (World) a running run whose fake pid the World's agents listing (`p.agents`) reports as `interactive`: after `reconcile()` its session is `kind: "print"`, and still `print` after the run finished. | unit + World + fake claude | `interactive` on the run's session, or the resume case kept `print`. |
 | AC-08 | Pulse warnings, repo agent: a runner (share `me`) reports repo `alpha` with invalid `.claude/agents/bad.md` and valid `good.md`. `POST /v1/pulses` of `audit-relay` with `agent=bad,validator=good,filer=good` → 201, `warnings` = exactly `[ 'step "audit": agent bad in alpha has invalid front matter: <invalid>' ]`; with all `good` → `warnings: []`; `GET /v1/pulses` and `GET /v1/pulses/:id` have no `warnings`. `POST /v1/pulses/:id/update` with only `{window}` on the first pulse → 200 with the same warning; with params `agent=good` → `[]`. A caller who cannot see the reporting machine (share `me`, another user) gets `[]`. | World | A refusal, a missing/extra/different warning, or `warnings` on GET replies. |
 | AC-09 | Pulse warnings, roster key: a catalog source pushes an invalid `bad` definition; a pulse whose preset step has `agent: <source>/bad` → 201 with `step "<id>": roster agent <def key> has invalid front matter: <invalid>`; a valid key → none. | World | A refusal or another text. |
@@ -213,12 +224,14 @@ repos, `shareSessions` `me`/`all`).
   capacity reservation; `RunFile.state` keeps its four values so `GET /local/runs` and run files stay
   compatible. A daemon killed during `git worktree add` leaves the run `queued` with a partial
   worktree; after a restart the queue pass starts it again and it may fail as "could not make a
-  worktree" (now with the real git error). Cleaning a stale worktree before the add is left out.
+  worktree" (now with the real git error). Cleaning a stale worktree before the add
+  (`git worktree remove --force` or `prune`) is left out; concepts documents the failure text.
 - 2026-11-12 **Transcripts of short started runs.** Only never-started runs skip the transcript. A run
   that started and produced nothing keeps its `Run ended: <exit>` transcript (it tells the reader the
   process ran), as RL-1 AC-25 requires.
 - 2026-11-12 **Sweep scope.** The sweep ends only live `print` sessions whose pid is a finished run's
-  pid. A person's resumed session (new pid; kind from the reconciler or `unknown` from hooks) is never
+  pid **and** whose Claude session ids hold that run's session id, and never a running run's session
+  (review r1 B1: the pid alone would end a live run whose process reused an old pid). A person's resumed session (new pid; kind from the reconciler or `unknown` from hooks) is never
   ended by it. `released` runs never had a process and are not matched.
 - 2026-11-12 **Kind rule keyed on the pid.** `print` is kept only for the same process. If the
   reconciler is not available (`claude agents` missing), kind stays whatever registration set.
