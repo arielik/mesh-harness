@@ -520,6 +520,20 @@ undeclared rules.
 - **OQ-4** Calibrator default when an agent comes from a catalog source nobody on the pulse owns.
 - **OQ-5** Spike outcome: `claude -p` process management vs `claude --bg` sessions.
 
+**Defaults taken for implementation (2026-11-12):** OQ-1 lineage `(preset, repo, agent)`; ingested goals
+add `refs.subject` (e.g. a PR id) to the lineage when given. OQ-2 the one-key revert is enough;
+`via: debrief-session` dispositions count for calibration. OQ-3 artifacts are team-visible with
+redaction; no ACLs. OQ-4 the calibrator is the catalog source's `calibrator`, else the owner of the most
+recent pulse that ran the agent. OQ-5 decided by the spike
+([`2026-11-12-claude-cli-spike.md`](2026-11-12-claude-cli-spike.md)).
+
+**End-to-end acceptance (whole programme):** a World test (fake `claude` executable) where a pulse
+fires the built-in `audit-relay` on a repo; the run step executes headless on a runner machine,
+submits a report and a review record; the validator dismisses one item and confirms one; the debrief
+(assignee) accepts it; the filer step runs; the goal is done; a second slot carries the dismissal
+forward and shows the accepted item with its link without re-filing; telemetry and `/stats` reflect
+both runs; reaching the dismissal threshold opens a calibration goal.
+
 ## 11. Review r1: disposition of findings
 
 | Finding | Change |
