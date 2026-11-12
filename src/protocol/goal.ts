@@ -73,6 +73,26 @@ export interface ProfileSettings {
 export const ProfileSnapshot = z.object({ name: ProfileName, base: ProfileBase, sha256: z.string(), settings: ProfileSettings });
 export type ProfileSnapshot = z.infer<typeof ProfileSnapshot>;
 
+/** RL-6: one counted dismissal, as its item history entry names it. */
+export const DismissalRef = z.object({
+  lineage: z.string(),
+  fp: z.string(),
+  goal: z.string(),
+  step: z.string(),
+  round: z.number().int(),
+  at: z.number(),
+});
+export type DismissalRef = z.infer<typeof DismissalRef>;
+
+/** RL-6: what a calibration goal calibrates: the agent key and hash, the threshold, the dismissals it lists. */
+export const GoalCalibration = z.object({
+  key: z.string(),
+  hash: z.string(),
+  threshold: z.number().int().min(1),
+  dismissals: z.array(DismissalRef),
+});
+export type GoalCalibration = z.infer<typeof GoalCalibration>;
+
 export const Goal = z.object({
   id: z.string(),
   title: z.string(),
@@ -97,6 +117,8 @@ export const Goal = z.object({
   profiles: z.record(z.string(), ProfileSnapshot).optional(),
   /** RL-5: roster keys of its steps pinned to catalog definitions, keyed by the policy string. */
   agents: z.record(z.string(), AgentDef).optional(),
+  /** RL-6: set only on calibration goals (opened by the hub when an agent hash reaches the threshold). */
+  calibration: GoalCalibration.optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -373,7 +395,7 @@ export const StepPolicy = z.object({
   budget: StepBudget.optional(),
   /** RL-1: what mesh_context serves as untrusted input (artifacts of the named steps). */
   inputs: z
-    .array(z.union([z.enum(["previous", "dispositions", "artifacts"]), localId]))
+    .array(z.union([z.enum(["previous", "dispositions", "artifacts", "calibration"]), localId]))
     .max(20)
     .optional(),
   /** RL-2: the step closes done only with a review record (`mesh_review`). */

@@ -347,6 +347,21 @@ describe("AC-19 mesh preset ls", { timeout: 30_000 }, () => {
   });
 });
 
+// RL-6 AC-03 (CLI): `mesh preset ls` lists the built-in `calibrate` right after `audit-relay`
+// (docs/specs/RL-6.md).
+describe("RL-6 AC-03 mesh preset ls", { timeout: 30_000 }, () => {
+  it("test_AC03_cli_preset_ls", async () => {
+    const c = await cast();
+    const res = await cli(c.ann, ["preset", "ls"]);
+    expect(res.code, res.err).toBe(0);
+    const lines = res.out.split("\n");
+    const relay = lines.findIndex((l) => /\baudit-relay\b/.test(l));
+    expect(relay, "audit-relay line").toBeGreaterThanOrEqual(0);
+    expect(lines[relay + 1] ?? "", "the line after audit-relay").toMatch(/\bcalibrate\b/);
+    expect(lines[relay + 1] ?? "").toContain("Calibrate an agent");
+  });
+});
+
 describe("AC-29 mesh pulse fire, error", { timeout: 30_000 }, () => {
   it("test_AC29_cli_manual_error", async () => {
     const c = await cast();

@@ -266,6 +266,18 @@ state the step does not consume) is refused whole with 422. **Person precedence:
 decided an item in the same goal, a later agent disposition of it is ignored (listed as ignored, the
 record is still accepted). Across goals the latest disposition applies; the history keeps all.
 
+**Agreeing agent dispositions (v0.1.20).** Precedence compares an agent disposition with the
+person's **latest** disposition of the item in the goal (an agent's entry after it never counts).
+An agent disposition with the same value is applied (history entry with the agent decider, `link`
+or `until` set) while the item's state is in the stage's `consumes`, so a filer can record its link
+after a person's debrief accepted the item; a different value, or the same value while the state is
+not consumed, is still listed as ignored (`decided by <user> in this goal`), never refused.
+
+**Filed items (v0.1.20).** An `accepted` item with a `link` is **filed**: it no longer counts as
+consumed for `when` (the step is skipped when nothing else is consumed) nor for the `dispositions`
+input, so a filer that consumes `accepted` never files it again. The disposition checks of a record
+and of `mesh_dispose` are unchanged.
+
 **Conditional stages.** `when: {open: true}` or `when: {min_severity: S2}` (with `consumes`) makes a
 step run only when its run's record has an item in a consumed state (at or above that severity).
 Otherwise the step becomes **`skipped`** (summary `skipped: no item of <run> is …`, event
@@ -374,7 +386,7 @@ remote's default branch (`refs/remotes/<remote>/HEAD`, else `HEAD`), with their 
 working tree, never untracked files. Pushes only move forward (the new commit must descend from the
 stored one) and happen when the folder's digest (`<path>\t<hash>` lines) changed. The hub keeps
 every text it was sent; the definitions of the latest push are **current**. A source's `calibrator`
-is stored and shown only.
+owns the calibration goals of its agents (see Calibration).
 
 **Flags.** A group (one agent name) is `diverged` when it has more than one version (hash). A repo
 copy is `pinned` when its lock names a catalog definition, `modified` when its hash differs from the
@@ -455,6 +467,70 @@ goes back to the state it had before; the history keeps a `revert` entry (`via: 
 note. A revert does not re-run later stages. Person precedence applies to debrief decisions as to
 any person's: a later agent disposition of the item in the same goal is ignored. Events never
 carry answers, reasons or titles; notes and the item history do (team-visible).
+
+## Calibration
+
+**Counted dismissal.** Each dismissal of an item counts against the agent that raised it: the
+agent of the newest raising record of the item's lineage in that goal (the run's record). Both
+deciders count, an agent stage's (`via: stage`) and a person's (`via: stage` or
+`debrief-session`), but only once per goal and item: the earliest dismissal of the item in the
+goal is the counted one, and it says whether an agent or a person dismissed it. A dismissal that
+was reverted, or that the same person replaced in the same debrief round, is not counted. Items
+raised by a person's step (an interactive raising step) never count. Carried dismissals (the fold
+keeps an item `dismissed`) are not new dismissals.
+
+**Reinstatements.** When a person's next decision on an item an agent dismissed is something else
+than `dismissed` (in any goal), that counts as `reinstated` against the **dismissing** agent (for
+example a validator). It does not remove the dismissal from the raising agent's count and never
+opens a calibration.
+
+**Threshold.** `calibration.threshold` in `mesh-hub.yaml` (default 5, a whole number ≥ 1). After
+each recorded dismissal the hub counts the raising agent hash's **uncalibrated** dismissals (not
+listed by an open or a done calibration goal); when they reach the threshold and no calibration
+goal of that agent hash is open, it opens one. An agent with no hash is never calibrated (its stats
+still count). At most one calibration goal per agent hash is open.
+
+**Calibrator.** The calibration goal is owned by the first of: the `calibrator` of the catalog
+source that has the agent's definition with that hash; the owner of the newest pulse goal that ran
+the agent key; the owner of the goal of the newest uncalibrated dismissal. Its repo is the catalog
+source's repo, else the repo of the dismissed items' lineage.
+
+**The calibration goal.** Made from the built-in `calibrate` preset with the plan approved (no
+design step), title `Calibrate <key>@<hash12>`, shown in goal lists, event `calibration.opened`. Its
+one step, `calibrate`, is an interactive review step for the calibrator: its input `calibration`
+lists the dismissed findings (reason, decider, item, evidence of the raising record) and the
+agent's definition when the hub has it. The calibrator changes the definition on the step's branch
+so such findings are no longer raised, or decides no change is needed, and submits a record with no
+items: `assessment: "issues"` (a change) or `"clean"` with a summary starting `no change:`. When the
+goal is done (any path, also after a replan) its listed dismissals are **calibrated**, the hub emits
+`calibration.done` (`outcome` `change`, `no-change` or `none`) and counts again, so a goal done while
+enough new dismissals wait opens the next one. A dropped calibration goal releases its dismissals
+(uncalibrated again, picked up at the next dismissal). A listed dismissal reverted later leaves the
+goal and its list unchanged and counts in no bucket.
+
+## Agent statistics
+
+`GET /v1/agents/:key/stats?days=30` (scope `goals:read`; the key `<repo>/<name>` with `/` encoded as
+`%2F`; `days` 1-365, default 30) sums, per agent hash, everything since `now − days`: the window is
+read from round `finishedAt`, review record `at` and disposition `at` (events are not used). The web
+Roster shows the same numbers per group (**Stats**).
+
+| Field | Meaning |
+|---|---|
+| `runs`, `failures` | rounds of headless steps whose telemetry names the key and hash; those that failed |
+| `meanCostUsd`, `meanDurationMs` | mean cost (runs that report one) and duration of those runs; `null` without any |
+| `raised` | distinct fingerprints of the agent's raising records |
+| `new`, `regressions`, `carried` | the folds of those records |
+| `undeclaredRules` | keys outside the agent's declared rules in those records |
+| `accepted` | items it raised that were accepted (once per goal and item; reverts excluded) |
+| `dismissedByAgents`, `dismissedByPeople` | its counted dismissals, by who dismissed |
+| `reinstated` | its own dismissals that a person then decided otherwise |
+| `uncalibrated`, `calibrating`, `calibrated` | all its counted dismissals (no window) by calibration status |
+| `calibration` | the open calibration goal, if any |
+| `lastAt` | its newest activity in the window (else its newest dismissal, else its calibration goal) |
+
+Hashes with nothing to show are left out; the newest activity comes first. Goals are team-visible,
+so the statistics count every goal.
 
 ## Offers and accept policy
 

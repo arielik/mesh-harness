@@ -3,7 +3,8 @@
 // hint (`hint` changes).
 
 import { useCallback, useEffect, useState } from "react";
-import type { AgentCopy, AgentGroup, AgentsView, AgentVersion } from "../../src/protocol/roster.ts";
+import type { ReactNode } from "react";
+import type { AgentCopy, AgentGroup, AgentHashStats, AgentStats, AgentsView, AgentVersion } from "../../src/protocol/roster.ts";
 import { api } from "./api.ts";
 
 const FLAGS = ["diverged", "pinned", "behind", "modified"] as const;
@@ -43,7 +44,94 @@ function Version({ v }: { v: AgentVersion }) {
   );
 }
 
+const STATS_DAYS = 30;
+
+/** RL-6: the distinct copy keys of a group: versions in reply order, then copies in order. */
+function groupKeys(g: AgentGroup): string[] {
+  const keys: string[] = [];
+  for (const v of g.versions) for (const c of v.copies) if (!keys.includes(c.key)) keys.push(c.key);
+  return keys;
+}
+
+const num = (n: number) => String(n);
+
+function StatsRow({ k, h }: { k: string; h: AgentHashStats }) {
+  const cells: [string, ReactNode][] = [
+    ["hash", h.hash ? h.hash.slice(0, 12) : "-"],
+    ["runs", num(h.runs)],
+    ["failures", num(h.failures)],
+    ["cost", h.meanCostUsd === null ? "-" : `$${h.meanCostUsd.toFixed(2)}`],
+    ["duration", h.meanDurationMs === null ? "-" : `${(h.meanDurationMs / 1000).toFixed(1)}s`],
+    ["raised", num(h.raised)],
+    ["accepted", num(h.accepted)],
+    ["dismissed-agents", num(h.dismissedByAgents)],
+    ["dismissed-people", num(h.dismissedByPeople)],
+    ["reinstated", num(h.reinstated)],
+    ["carried", num(h.carried)],
+    ["regressions", num(h.regressions)],
+    ["undeclared", num(h.undeclaredRules)],
+    ["uncalibrated", num(h.uncalibrated)],
+    ["calibration", h.calibration ? <a href={`#/goal/${h.calibration}`}>{h.calibration}</a> : "-"],
+  ];
+  return (
+    <tr data-key={k} data-hash={h.hash}>
+      {cells.map(([col, v]) => (
+        <td key={col} data-col={col}>
+          {v}
+        </td>
+      ))}
+    </tr>
+  );
+}
+
+const HEADS = ["hash", "runs", "fail", "cost", "time", "raised", "accepted", "dism. agents", "dism. people", "reinstated", "carried", "regr.", "undeclared", "uncalibrated", "calibration"];
+
+/** RL-6: the statistics table of a group (one row per key and hash). */
+function Stats({ stats }: { stats: { key: string; s: AgentStats }[] }) {
+  const rows = stats.flatMap(({ key, s }) => s.hashes.map((h) => ({ key, h })));
+  if (rows.length === 0) return <p className="empty">No runs or findings in the last {STATS_DAYS} days.</p>;
+  return (
+    <div className="roster-stats-wrap">
+      <table className="roster-stats">
+        <thead>
+          <tr>
+            {HEADS.map((x) => (
+              <th key={x}>{x}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ key, h }) => (
+            <StatsRow key={`${key}\n${h.hash}`} k={key} h={h} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Group({ g }: { g: AgentGroup }) {
+  const [open, setOpen] = useState(false);
+  const [stats, setStats] = useState<{ key: string; s: AgentStats }[]>();
+  const [error, setError] = useState<string>();
+
+  const toggle = async () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    setStats(undefined);
+    setError(undefined);
+    try {
+      const keys = groupKeys(g);
+      const got = await Promise.all(keys.map(async (key) => ({ key, s: await api.agentStats(key, STATS_DAYS) })));
+      setStats(got);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   return (
     <section className="roster-group card" data-name={g.name}>
       <h3>
@@ -54,6 +142,11 @@ function Group({ g }: { g: AgentGroup }) {
           </span>
         ))}
       </h3>
+      <button type="button" className="roster-stats-toggle" aria-expanded={open} onClick={() => void toggle()}>
+        Stats
+      </button>
+      {open && error && <p className="error">{error}</p>}
+      {open && stats && <Stats stats={stats} />}
       {g.versions.map((v) => (
         <Version key={v.hash} v={v} />
       ))}

@@ -626,9 +626,7 @@ describe("RL-5 AC-24 checks, schema, routes", () => {
     { method: "GET", path: "/v1/agents/resolve", rule: "member", scope: "goals:read", tag: "goals" },
   ];
 
-  it("test_AC24_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.19");
-  });
+  // The RL-5 version pin (test_AC24_version, 0.1.19) is superseded by RL-6 AC-16 (test_AC16_version below).
 
   it("test_AC24_openapi_routes", () => {
     for (const want of ROUTES) {
@@ -675,5 +673,63 @@ describe("RL-5 AC-23 docs and skill", () => {
     for (const t of ["/v1/catalog-sources", "/v1/catalog-sources/push", "/v1/agents", "/v1/agents/resolve", "v0.1.19"]) expect(s56, t).toContain(t);
     const events = read("docs/events.md");
     for (const t of ["catalog.saved", "catalog.pushed", "agents.reported"]) expect(events, t).toContain(t);
+  });
+});
+
+// RL-6 AC-07 (route table), AC-15 (docs and skill), AC-16 (version, OpenAPI). Written from the spec's
+// contracts only (docs/specs/RL-6.md).
+describe("RL-6 AC-16 checks, schema, routes", () => {
+  const STATS = { method: "GET", path: "/v1/agents/:key/stats", rule: "member", scope: "goals:read", tag: "goals" };
+
+  it("test_AC16_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.20");
+  });
+
+  it("test_AC07_route_table", () => {
+    const row = HUB_API.find((x) => x.method === STATS.method && x.path === STATS.path) as { rule: string; scope?: string; tag: string } | undefined;
+    expect(row, "stats route in HUB_API").toBeDefined();
+    expect(row?.rule).toBe(STATS.rule);
+    expect(row?.scope).toBe(STATS.scope);
+    expect(row?.tag).toBe(STATS.tag);
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule}`);
+    expect(served).toContain(`${STATS.method} ${STATS.path} ${STATS.rule}`);
+    // Control: the RL-5 roster route is still there.
+    expect(served).toContain("GET /v1/agents member");
+  });
+
+  it("test_AC16_openapi_route", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, unknown>> };
+    const op = doc.paths["/v1/agents/{key}/stats"]?.get;
+    expect(op, "GET /v1/agents/{key}/stats in the OpenAPI document").toBeDefined();
+    const text = JSON.stringify(op);
+    expect(text).toContain("goals:read");
+    expect(text).toContain("days");
+  });
+});
+
+describe("RL-6 AC-15 docs and skill", () => {
+  it("test_AC15_skill", () => {
+    expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
+    for (const t of ["calibration", "mesh_review", "issues", "clean", "no change:"]) expect(MESH_SKILL, t).toContain(t);
+  });
+
+  it("test_AC15_docs", () => {
+    const concepts = read("docs/guide/concepts.md");
+    expect(concepts).toMatch(/^#+ .*Calibration/m);
+    expect(concepts).toMatch(/^#+ .*Agent statistics/m);
+    for (const t of ["calibration.threshold", "reinstated", "calibrate", "/v1/agents/:key/stats"]) expect(concepts, t).toContain(t);
+    const howto = read("docs/guide/howto.md");
+    expect(howto).toContain("Calibrate an agent");
+    for (const t of ["calibration", "no change:", "threshold"]) expect(howto, t).toContain(t);
+    const install = read("docs/guide/install.md");
+    expect(install).toContain("calibration:");
+    expect(install).toContain("threshold: 5");
+    const plan = read("docs/plan/implementation-plan.md");
+    const s56 = plan.slice(plan.indexOf("### 5.6"), plan.indexOf("\n### ", plan.indexOf("### 5.6") + 1));
+    for (const t of ["/v1/agents/:key/stats", "v0.1.20"]) expect(s56, t).toContain(t);
+    const events = read("docs/events.md");
+    for (const t of ["calibration.opened", "calibration.done", "opened calibration of", "done: "]) expect(events, t).toContain(t);
   });
 });

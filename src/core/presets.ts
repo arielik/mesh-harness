@@ -111,7 +111,26 @@ const AUDIT_RELAY: Preset = {
   },
 };
 
-export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDIT_RELAY];
+/** RL-6: the calibration of an agent hash, opened by the hub (a person's interactive step). */
+export const CALIBRATE_PRESET: Preset = {
+  name: "calibrate",
+  description: "Calibrate an agent from the dismissals of its findings (opened by the hub when an agent reaches the dismissal threshold).",
+  plan: {
+    steps: [
+      s({
+        id: "calibrate",
+        kind: "review",
+        output: "review-record",
+        inputs: ["calibration"],
+        title: "Calibrate {agent}@{hash}",
+        brief:
+          'Read the input "calibration" from mesh_context: the dismissed findings of {agent}@{hash} with their evidence and reasons, and the agent\'s definition when the hub has it. Either change the agent\'s definition on this step\'s branch so such findings are no longer raised, or decide that no change is needed. Then submit a review record with no items (mesh_review): assessment "issues" with a summary of the change, or assessment "clean" with a summary starting "no change:" and the reason; then mesh_done.',
+      }),
+    ],
+  },
+};
+
+export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDIT_RELAY, CALIBRATE_PRESET];
 
 /** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, steps}. */
 export function parsePreset(name: string, text: string): Preset {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Message, PlanAc, PlanStep, Round, Session, Step, StepContext, StepPolicy } from "../protocol/index.ts";
 import { materialize, reopen } from "./dag.ts";
+import * as policyModule from "./policy.ts";
 import { agentContext, blindConflict, blindSeparated, judgeDone, policyOf, reopenText, staleRounds, validatePolicies } from "./policy.ts";
 import { BUILTIN_PRESETS, instantiate, parsePreset, presetText, presetWarnings } from "./presets.ts";
 import { MESSAGE_STAGES, messageStage, partition, SESSION_STAGES, sessionStage, stageSummary, STEP_STAGES, stepStage } from "./stages.ts";
@@ -147,8 +148,9 @@ describe("plan rules", () => {
 
 describe("templates", () => {
   it("instantiate into valid plans, with or without criteria", () => {
-    // RL-3: `audit-relay` needs params (agent, validator, filer); its own tests are in presets.test.ts.
-    for (const p of BUILTIN_PRESETS.filter((x) => x.name !== "audit-relay")) {
+    // RL-3: `audit-relay` needs params (agent, validator, filer); RL-6: `calibrate` needs params (agent,
+    // hash); their own tests are in presets.test.ts.
+    for (const p of BUILTIN_PRESETS.filter((x) => x.name !== "audit-relay" && x.name !== "calibrate")) {
       const withAcs = instantiate(p, { repo: "frr", goal: "G7", acs: ACS });
       expect(validatePlan(withAcs.steps), p.name).toEqual([]);
       expect(validatePolicies(withAcs.steps, withAcs.acs), p.name).toEqual([]);
@@ -402,5 +404,24 @@ describe("RL-4 AC-02 debrief policies", () => {
     expect(debriefAssignee({ mode: "debrief" } as unknown as StepPolicy, "alice")).toBe("alice");
     expect(debriefAssignee({ mode: "debrief", assignee: "@owner" } as unknown as StepPolicy, "alice")).toBe("alice");
     expect(debriefAssignee({ mode: "debrief", assignee: "bob" } as unknown as StepPolicy, "alice")).toBe("bob");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// RL-6 AC-01 (unit): the `calibration` input keyword. Written from the spec's contracts only
+// (docs/specs/RL-6.md).
+describe("RL-6 calibration input", () => {
+  const ps = (id: string, over: Record<string, unknown> = {}): PlanStep =>
+    ({ id, repo: "r", kind: "implement", title: id, brief: "b", deps: [], ...over }) as unknown as PlanStep;
+
+  it("test_AC01_input_keywords", () => {
+    const kw = (policyModule as unknown as { INPUT_KEYWORDS: ReadonlySet<string> }).INPUT_KEYWORDS;
+    expect(kw.has("calibration")).toBe(true);
+    // The RL-1/RL-2 keywords stay.
+    for (const k of ["previous", "dispositions", "artifacts"]) expect(kw.has(k), k).toBe(true);
+    // A plan with inputs [calibration] and no step of that id passes.
+    expect(validatePolicies([ps("calibrate", { kind: "review", inputs: ["calibration"], output: "review-record" })], undefined)).toStrictEqual([]);
+    // Control: an unknown input name is still reported.
+    expect(validatePolicies([ps("calibrate", { kind: "review", inputs: ["nosuch"], output: "review-record" })], undefined)).toStrictEqual(['step "calibrate": inputs names "nosuch", which is not a step of this plan']);
   });
 });

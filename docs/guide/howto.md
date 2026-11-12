@@ -493,6 +493,37 @@ message is in `mesh pulse show --json`). A missed slot's goal is dropped. `mesh 
 `mesh pulse resume p-1`, `mesh pulse update p-1 --window 2h` and `mesh pulse rm p-1` change it; a new
 `--preset` or `--params` is a new version, and nothing else changes what a slot runs.
 
+### Calibrate an agent
+
+Every dismissal of a finding counts against the agent that raised it. On the web **Roster** page,
+**Stats** on an agent's group shows, per copy key and hash, the last 30 days: runs, failures, mean
+cost and duration, findings raised, accepted, dismissed by agents and by people, reinstated,
+carried, regressions, undeclared rules, the uncalibrated dismissals and the open calibration goal
+(the same numbers as `GET /v1/agents/<repo>%2F<name>/stats?days=30`).
+
+When an agent hash's uncalibrated dismissals reach the threshold, the hub opens a goal
+`Calibrate <key>@<hash12>` for its calibrator (the catalog source's `calibrator`, else the owner of
+the latest pulse that ran the agent, else the owner of the goal of the latest dismissal) and emits
+`calibration.opened`. Run its one step:
+
+```sh
+mesh run alpha --step G21.calibrate
+```
+
+The session reads the input `calibration` from `mesh_context`: each dismissed finding with its
+reason, who dismissed it, the item and its evidence, and the agent's definition when the hub has it.
+Then either change the agent's definition on the step's branch so such findings are no longer raised
+(record `assessment: "issues"` with a summary of the change), or decide that no change is needed
+(`assessment: "clean"`, summary `no change: <why>`). The record has no items; then `mesh_done`. The
+goal is done, its dismissals are calibrated and `calibration.done` says `change` or `no-change`.
+
+The threshold is set in `mesh-hub.yaml`:
+
+```yaml
+calibration:
+  threshold: 5     # default
+```
+
 ## 4. A goal from design to done
 
 ```bash

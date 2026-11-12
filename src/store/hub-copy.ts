@@ -26,6 +26,8 @@ export const TABLES: readonly { name: string; identity?: string }[] = [
   { name: "message", identity: "id" },
   { name: "event", identity: "seq" },
   { name: "idem" },
+  // v0.1.8: topics (missed until v0.1.20)
+  { name: "topic" },
   // RL-1
   { name: "artifact" },
   { name: "profile" },

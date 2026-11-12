@@ -49,6 +49,8 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `item.disposed` | a consuming step's record set an item's disposition (one per applied disposition), or a debrief recorded a person's decision (`mesh_dispose`) | `lineage`, `fp`, `disposition`, `from`, `decider` (`agent` or `person`), `via` (`stage` or `debrief-session`), `round` (never the reason or the person's answer) |
 | `item.reverted` | a debrief decision was reverted (Revert, TUI `u`); `user` | `lineage`, `fp`, `from` (the reverted state), `to` (the restored state), `round`, `via` (`ui`) (never a reason or title) |
 | `step.read` | the assignee marked a debrief's pre-read as read; `user` | `round` |
+| `calibration.opened` | the hub opened a calibration goal for an agent hash (its uncalibrated dismissals reached the threshold); `goal` = the new goal, `user` = the calibrator. Activity: `opened calibration of <key>@<hash12> (<n> dismissals)` | `key`, `hash`, `dismissals` (listed), `threshold`, `calibrator` |
+| `calibration.done` | a calibration goal became done (its listed dismissals are calibrated); `goal`. Activity: `calibration of <key>@<hash12> done: <outcome>` | `key`, `hash`, `dismissals` (listed), `outcome` (`change`: the `calibrate` record's assessment is `issues`; `no-change`: `clean`; else `none`) |
 | `step.skipped` | a conditional step (`when`) had nothing to consume when its dependencies were done | `reason` (`when`) |
 | `step.dropped` | a new plan dropped the step, or a pulse dropped its goal | — (a new plan); `reason` (`missed`, `abandoned`) when a pulse dropped the goal |
 | `pulse.created` | a pulse was saved | `pulse`, `title`, `preset` (name), `sha256`, `schedule` |

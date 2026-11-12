@@ -281,6 +281,22 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/catalog-sources/push", "member", async (c, a) => c.json(await svc.pushCatalog(a, await body(c, CatalogPush)))),
     r("GET", "/v1/agents", "member", async (c, a) => c.json(await svc.agentsView(a, c.req.query("name") || undefined)), "goals:read"),
     r("GET", "/v1/agents/resolve", "member", async (c) => c.json(await svc.resolveAgent(c.req.query("key"))), "goals:read"),
+    // RL-6: an agent key's statistics per hash (the key's / percent-encoded).
+    r(
+      "GET",
+      "/v1/agents/:key/stats",
+      "member",
+      async (c) => {
+        let key = "";
+        try {
+          key = param(c, "key");
+        } catch {
+          // A malformed escape: the service answers the key error.
+        }
+        return c.json(await svc.agentStats(key, c.req.query("days")));
+      },
+      "goals:read",
+    ),
 
     // ---------- steps ----------
     r("GET", "/v1/steps", "member", async (c, a) =>

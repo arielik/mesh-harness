@@ -143,6 +143,13 @@ artifacts:
 The daemon accepts local request bodies up to 4 MiB, so a `max_bytes` above about 4 MiB is limited
 by the daemon, not the hub.
 
+`calibration` sets when the hub opens a calibration goal for an agent (v0.1.20):
+
+```yaml
+calibration:
+  threshold: 5           # uncalibrated dismissals of one agent hash that open a calibration goal (whole number ≥ 1)
+```
+
 ## Hooks
 
 | Hook | Kind | Why |

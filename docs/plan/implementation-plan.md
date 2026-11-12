@@ -405,6 +405,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/catalog-sources/push` | Roster (v0.1.19): a daemon pushes the committed definitions of a source it reports at one commit (device token) |
 | `GET /v1/agents?name=` | Roster (v0.1.19): repo copies the caller sees and current catalog definitions, grouped by name, with `diverged`/`pinned`/`behind`/`modified` (scope `goals:read`) |
 | `GET /v1/agents/resolve?key=` | Roster (v0.1.19): one catalog definition with its text for `<source>/<name>[@<ref>]` (scope `goals:read`) |
+| `GET /v1/agents/:key/stats?days=` | Calibration (v0.1.20): an agent key's statistics per hash over the last `days` (1-365, default 30): runs, cost, findings, dispositions and calibration (key with `/` encoded; scope `goals:read`) |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

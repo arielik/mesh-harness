@@ -73,6 +73,16 @@ the session then follows the \`mesh-debrief\` skill: it goes through the items w
 at a time and records each decision with \`mesh_dispose\`, then submits the review record with
 \`mesh_review\` and finishes with \`mesh_done\`.
 
+## Calibration steps
+
+When an agent's findings are dismissed often enough, the hub opens a calibration goal for its
+calibrator with one step, \`calibrate\`. If you hold it: read the input \`calibration\` from
+\`mesh_context\` (the dismissed findings with their reasons and evidence, and the agent's
+definition when the hub has it). Either change the agent's definition on the step's branch so such
+findings are no longer raised, or decide that no change is needed. Then call \`mesh_review\` with no
+items: \`assessment: "issues"\` with a summary of the change, or \`assessment: "clean"\` with a
+summary starting \`no change:\` and the reason; then \`mesh_done\`.
+
 ## Headless runs
 
 A step can run headless: a machine starts \`claude -p\` for it, with no person watching. Your
@@ -142,6 +152,7 @@ your person.
 | \`mesh goal approve <goal>\` | approve a proposed plan |
 | \`mesh next\` | steps that are ready |
 | \`mesh run <repo> --step <step>\` | start a session that holds a step |
+| \`mesh run <repo> --step <goal>.calibrate\` | run a calibration step: read input \`calibration\`, change the agent on the branch or decide no change, \`mesh_review\` with no items (\`assessment\` \`issues\`/\`clean\`), then \`mesh_done\` |
 | \`mesh debrief <step>\` | take a debrief assigned to you and go through its items in a session (the \`mesh-debrief\` skill) |
 | \`mesh say <session> "<text>"\` | send a message to a session |
 | \`mesh say <machine>/<session> "<text>"\` | send a message to a session on another machine |

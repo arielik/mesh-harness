@@ -99,6 +99,10 @@ export const HubConfigFile = z.object({
       retention_days: z.number().int().min(0).default(365),
     })
     .default({ max_bytes: 1_048_576, per_round: 10, retention_days: 365 }),
+  /** RL-6: dismissals of an agent hash that open a calibration goal. */
+  calibration: z
+    .object({ threshold: z.number().int().min(1).default(5) })
+    .default({ threshold: 5 }),
 });
 
 export interface HubConfig {
@@ -115,6 +119,8 @@ export interface HubConfig {
   blindGuard: "person" | "session";
   /** RL-1: artifact limits and retention. */
   artifacts: { maxBytes: number; perRound: number; retentionDays: number };
+  /** RL-6: uncalibrated dismissals of an agent hash that open a calibration goal. */
+  calibration: { threshold: number };
 }
 
 export function isLoopback(host: string): boolean {
@@ -183,6 +189,7 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     eventsRetentionDays: file.events_retention_days,
     blindGuard: file.blind_guard,
     artifacts: { maxBytes: file.artifacts.max_bytes, perRound: file.artifacts.per_round, retentionDays: file.artifacts.retention_days },
+    calibration: { threshold: file.calibration.threshold },
   };
 }
 

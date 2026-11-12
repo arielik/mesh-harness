@@ -35,7 +35,7 @@ export function debriefAssignee(policy: StepPolicy | undefined, ownerId: string)
 }
 
 /** RL-1: words of `inputs` that are never step ids (the keyword wins over a step of that id). */
-export const INPUT_KEYWORDS: ReadonlySet<string> = new Set(["previous", "dispositions", "artifacts"]);
+export const INPUT_KEYWORDS: ReadonlySet<string> = new Set(["previous", "dispositions", "artifacts", "calibration"]);
 
 /** Plan checks for the optional rules; phrased so an agent can fix them. */
 export function validatePolicies(planSteps: readonly PlanStep[], acs: readonly PlanAc[] | undefined): string[] {

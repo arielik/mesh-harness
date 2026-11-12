@@ -13,4 +13,6 @@ auth:
         - { name: dave, token_sha256: 66e12a32c35f532d01db549d3ed1ee4eaf5560c9de6d5e15ac8dcad5930a5718 }
         # erin: the RL-5 roster spec only; no other spec asserts on her machines or agents.
         - { name: erin, token_sha256: eca88da20b78923c3caeea329be08f4f6fd975116615c295e87e8ceaf259499b }
+        # frank: the RL-6 calibration spec only; no other spec asserts on his machines, goals or agents.
+        - { name: frank, token_sha256: 30857e3bf06ec1d5cef258fe4225e6e8f541ef344e6fd5289f7ef2b4fec23dd7 }
   bootstrap_admins: [team:alice]

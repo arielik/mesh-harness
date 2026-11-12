@@ -168,6 +168,15 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/catalog-sources/push", rule: "member", tag: "daemon", body: CatalogPush, summary: "A daemon pushes the committed agent definitions of a catalog source at one commit." },
   { method: "GET", path: "/v1/agents", rule: "member", scope: "goals:read", tag: "goals", query: { name: "exact agent name" }, summary: "The roster: agents of the repos the caller sees and of catalog sources, grouped by name." },
   { method: "GET", path: "/v1/agents/resolve", rule: "member", scope: "goals:read", tag: "goals", query: { key: "<source>/<name>[@<ref>]" }, summary: "Resolve a roster key to one catalog definition with its text." },
+  {
+    method: "GET",
+    path: "/v1/agents/:key/stats",
+    rule: "member",
+    scope: "goals:read",
+    tag: "goals",
+    query: { days: "1-365, default 30" },
+    summary: "Statistics of an agent key per hash: runs, cost, findings, dispositions and calibration (key with / encoded).",
+  },
 
   {
     method: "GET",

@@ -59,6 +59,7 @@ import {
   skipSummary,
   uniqueFps,
   whenHolds,
+  consumedNow,
   reopen,
   repoMatches,
   takeOver,
@@ -75,12 +76,27 @@ import {
   pulseCandidates,
   scheduleText,
   validTimeZone,
+  agentStats as computeAgentStats,
+  calibrationStatus,
+  countedDismissals,
+  CALIBRATE_PRESET,
+  flagEntries,
+  openCalibration,
+  presetText,
+  raisingAgents,
+  uncalibrated,
+  type AgentRef,
+  type Counted,
+  type Entry,
   type Materialized,
   type Principal,
   type Role,
 } from "../core/index.ts";
 import type {
   AcState,
+  AgentStats,
+  GoalCalibration,
+  ItemHistoryEntry,
   AgentCopy,
   AgentDef,
   AgentFront,
@@ -885,6 +901,10 @@ export class HubService {
       } else if (x === "dispositions") {
         const items = await this.dispositionsInput(step, goal, steps);
         if (items) push({ from: items.from, artifact: "items", kind: "review", title: "items and dispositions" }, JSON.stringify({ lineage: items.lineage, items: items.items }));
+      } else if (x === "calibration") {
+        // RL-6: the dismissals a calibration goal lists.
+        const input = await this.calibrationInput(goal);
+        if (input) push({ from: goal.id, artifact: "calibration", kind: "review", title: input.title }, input.content);
       } else if (!INPUT_KEYWORDS.has(x)) {
         if (!(await fromSteps([`${step.goal}.${x}`]))) break;
       }
@@ -943,7 +963,7 @@ export class HubService {
     const { run, record } = await this.runRecordOf(step, steps);
     if (!run || !record) return undefined;
     const consumes: readonly ItemState[] = p.consumes;
-    const rows = (await this.recordItems(record)).filter((r) => consumes.includes(r.state));
+    const rows = (await this.recordItems(record)).filter((r) => consumedNow(r, consumes));
     return rows.length ? { from: run.id, lineage: record.lineage, items: await this.withHistory(record.lineage, rows) } : undefined;
   }
 
@@ -954,7 +974,7 @@ export class HubService {
       const when = s.policy?.when;
       if (!when) continue;
       const { record } = await this.runRecordOf(s, steps);
-      map.set(s.id, record ? whenHolds(when, s.policy?.consumes ?? [], (await this.recordItems(record)).map((r) => ({ state: r.state, severity: r.severity }))) : false);
+      map.set(s.id, record ? whenHolds(when, s.policy?.consumes ?? [], (await this.recordItems(record)).map((r) => ({ state: r.state, severity: r.severity, link: r.link }))) : false);
     }
     return (s) => map.get(s.id) ?? false;
   }
@@ -1033,12 +1053,20 @@ export class HubService {
           else {
             // RL-4: an fp this debrief decided with mesh_dispose is never applied again by its record.
             const session = debrief ? await this.sessionDecision(lineage, fp, step.id, n) : undefined;
-            const last = !session && decider.kind === "agent" ? (await this.store.listDispositions({ lineage, fp, goal: step.goal })).at(-1) : undefined;
+            // RL-6: precedence looks at the latest person entry in the goal (an agent's entry after it never counts).
+            const person =
+              !session && decider.kind === "agent"
+                ? (await this.store.listDispositions({ lineage, fp, goal: step.goal })).filter((x) => x.decider.kind === "person").at(-1)
+                : undefined;
             if (session) {
               if (session.disposition === d.disposition) already.push(fp);
               else problem = `${fp} was decided in this debrief as ${session.disposition}; list that decision or leave it out`;
-            } else if (last?.decider.kind === "person") ignored.push({ fingerprint: fp, reason: `decided by ${last.decider.user} in this goal` });
-            else {
+            } else if (person?.decider.kind === "person") {
+              // RL-6: an agent disposition agreeing with the person is applied while the item's state is consumed.
+              const row = await this.store.getItem(lineage, fp);
+              if (person.disposition === d.disposition && row && consumes.includes(row.state)) toApply.push(d);
+              else ignored.push({ fingerprint: fp, reason: `decided by ${person.decider.user} in this goal` });
+            } else {
               const row = await this.store.getItem(lineage, fp);
               if (!row || !consumes.includes(row.state)) problem = `item ${fp} is ${row?.state ?? "unknown"}; ${step.id} acts on ${consumes.join(", ")}`;
               else toApply.push(d);
@@ -1176,6 +1204,8 @@ export class HubService {
           payload: { lineage, fp: a.fp, disposition: a.disposition, from: a.from, decider: decider.kind, via, round: n },
         });
       }
+      // RL-6: a recorded dismissal may open a calibration goal for the agent that raised the item.
+      if (applied.some((a) => a.disposition === "dismissed")) await this.calibrationAfterDismissal(lineage, goal.id, now);
       return {
         review,
         items: fps.map((fp) => {
@@ -1484,6 +1514,7 @@ export class HubService {
         step: step.id,
         payload: { lineage, fp, disposition: b.disposition, from: row.state, decider: "person", via: "debrief-session", round: n },
       });
+      if (b.disposition === "dismissed") await this.calibrationAfterDismissal(lineage, goal.id, now);
       await this.saveStepFrom({ ...step, updatedAt: now }, step);
       const after = await this.debriefData(step, goal, steps);
       const saved = (await this.store.getItem(lineage, fp)) as ItemRow;
@@ -2235,7 +2266,7 @@ export class HubService {
     const finalState = new Map(finalSteps.map((s) => [s.id, s.state]));
     for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready" && finalState.get(x.id) === "ready")) await this.emitReady(goal.id, s.id);
     await this.emitSkipped(goal.id, settled.skipped);
-    if (complete && (fresh ?? goal).state !== "done") await this.emit({ type: "goal.done", goal: goal.id });
+    if (complete && (fresh ?? goal).state !== "done") await this.markGoalDone(fresh ?? goal);
     for (const s of m.upserts.filter((x) => x.state === "dropped")) await this.emit({ type: "step.dropped", goal: goal.id, step: s.id });
     for (const s of m.changedForHolder) {
       await this.message(s.holderSid, by.userId, "replan", `MESH: the brief of your step ${s.id} changed in plan v${plan.version}. Call mesh_context to read it.`);
@@ -2517,7 +2548,7 @@ export class HubService {
       if (goalDone && goal.state !== "done") {
         const doneGoal: Goal = { ...goal, state: "done", updatedAt: now };
         await this.store.saveGoal(doneGoal);
-        await this.emit({ at: now, type: "goal.done", goal: goal.id });
+        await this.markGoalDone(doneGoal, now);
         files = [await this.goalYaml(doneGoal)];
       }
       const record = await this.recordOf(r.step, steps);
@@ -2573,7 +2604,7 @@ export class HubService {
       if (goalDone && goal.state !== "done") {
         const doneGoal: Goal = { ...goal, state: "done", updatedAt: now };
         await this.store.saveGoal(doneGoal);
-        await this.emit({ type: "goal.done", goal: goal.id });
+        await this.markGoalDone(doneGoal);
         files = [await this.goalYaml(doneGoal)];
       }
       return { step: decided, reopened: explicit, nowReady, goalDone, record: await this.recordOf(decided, steps), ...(files ? { files } : {}) };
@@ -2608,7 +2639,7 @@ export class HubService {
       const after = all.map((s) => ready.find((x) => x.id === s.id) ?? s);
       if (HubService.goalComplete(after) && goal.state !== "done") {
         await this.store.saveGoal({ ...goal, state: "done", updatedAt: now });
-        await this.emit({ type: "goal.done", goal: goal.id });
+        await this.markGoalDone(goal);
       }
       return (await this.store.getStep(step.id)) ?? final;
     });
@@ -3263,6 +3294,8 @@ export class HubService {
       refs?: Record<string, string> | undefined;
       comment: string;
       extra: Record<string, unknown>;
+      /** RL-6: set on calibration goals only. */
+      calibration?: GoalCalibration | undefined;
     },
     now: number,
   ): Promise<Goal> {
@@ -3278,6 +3311,7 @@ export class HubService {
       priority: o.priority,
       profiles: o.profiles,
       ...(Object.keys(o.agents).length ? { agents: o.agents } : {}),
+      ...(o.calibration ? { calibration: o.calibration } : {}),
       createdAt: now,
       updatedAt: now,
     });
@@ -3299,6 +3333,198 @@ export class HubService {
     const m = materialize(goal.id, 1, plan.steps, [], now);
     await this.applyApproved({ userId: o.owner }, goal, plan, [], [...m.upserts], m, now);
     return (await this.store.getGoal(goal.id)) ?? goal;
+  }
+
+  // ---------- calibration and agent statistics (RL-6) ----------
+
+  /** Everything counting needs (inside the caller's transaction), with the existing unfiltered reads. */
+  private async calibrationScan(): Promise<{
+    steps: Step[];
+    reviews: StoredReview[];
+    entries: Entry[];
+    raising: Map<string, AgentRef | null>;
+    counted: Counted[];
+    status: ReturnType<typeof calibrationStatus>;
+    goals: Goal[];
+  }> {
+    const steps = await this.store.listSteps({});
+    const reviews = await this.store.listReviews({ raising: true });
+    const rows = await this.store.listDispositions({});
+    // One ordered read of the whole item history, grouped per item (not one read per item).
+    const history = new Map<string, ItemHistoryEntry[]>();
+    for (const h of await this.store.listItemHistory()) {
+      const k = `${h.lineage}\n${h.fp}`;
+      const list = history.get(k);
+      if (list) list.push(h.entry);
+      else history.set(k, [h.entry]);
+    }
+    const entries = flagEntries(rows, (lineage, fp) => history.get(`${lineage}\n${fp}`) ?? []);
+    const raising = raisingAgents(reviews);
+    const counted = countedDismissals(entries, raising);
+    const goals = await this.store.listGoals();
+    return { steps, reviews, entries, raising, counted, status: calibrationStatus(goals), goals };
+  }
+
+  /** The catalog definition of an agent hash: the first source by repo id with a matching definition (any commit). */
+  private async catalogDefOf(agent: AgentRef): Promise<{ source: { repo: string; calibrator?: string | undefined }; def: CatalogDefView } | undefined> {
+    if (!agent.hash) return undefined;
+    for (const source of await this.store.listCatalogSources()) {
+      const def = (await this.store.listCatalogDefs({ repo: source.repo })).find((d) => canonicalKey(source.repo, d.name) === agent.key && d.hash === agent.hash);
+      if (def) return { source, def };
+    }
+    return undefined;
+  }
+
+  /** The raising agent of a lineage in a goal: the decider of its newest raising record when an agent. */
+  private async raisingAgentOf(lineage: string, goalId: string): Promise<AgentRef | undefined> {
+    const rec = (await this.store.listReviews({ lineage, raising: true })).filter((r) => r.goal === goalId).at(-1);
+    return rec?.decider.kind === "agent" ? { key: rec.decider.key, hash: rec.decider.hash ?? "" } : undefined;
+  }
+
+  /** After a recorded dismissal (inside its transaction): the trigger for the agent that raised the item. */
+  private async calibrationAfterDismissal(lineage: string, goalId: string, now: number): Promise<void> {
+    const agent = await this.raisingAgentOf(lineage, goalId);
+    if (agent) await this.calibrationTrigger(agent, now);
+  }
+
+  /** Who calibrates an agent hash, and the repo of its calibration goal. */
+  private async calibratorFor(
+    agent: AgentRef,
+    list: readonly Counted[],
+    scan: { steps: readonly Step[]; goals: readonly Goal[] },
+  ): Promise<{ user: string; repo: string } | undefined> {
+    const newest = list.at(-1);
+    if (!newest) return undefined;
+    const found = await this.catalogDefOf(agent);
+    const lineage = newest.ref.lineage;
+    const repo = found ? found.source.repo : lineage.slice(lineage.indexOf("|") + 1, lineage.lastIndexOf("|"));
+    const exists = async (u: string | undefined) => (u ? (await this.store.getUser(u)) !== undefined : false);
+    // 1. The catalog source's calibrator.
+    if (found?.source.calibrator && (await exists(found.source.calibrator))) return { user: found.source.calibrator, repo };
+    // 2. The owner of the newest pulse goal that ran the agent key (any hash).
+    const pulseGoals = new Map(scan.goals.filter((g) => g.refs?.pulse !== undefined).map((g) => [g.id, g] as const));
+    let best: { at: number; owner: string } | undefined;
+    for (const s of scan.steps) {
+      const g = pulseGoals.get(s.goal);
+      if (!g) continue;
+      for (const r of s.rounds ?? []) {
+        if (r.telemetry?.agentKey !== agent.key) continue;
+        if (!best || r.finishedAt > best.at) best = { at: r.finishedAt, owner: g.ownerId };
+      }
+    }
+    if (best && (await exists(best.owner))) return { user: best.owner, repo };
+    // 3. The owner of the goal of the newest uncalibrated dismissal.
+    const owner = scan.goals.find((g) => g.id === newest.ref.goal)?.ownerId;
+    if (await exists(owner)) return { user: owner as string, repo };
+    return undefined;
+  }
+
+  /**
+   * The calibration trigger (inside the transaction that recorded a dismissal or finished a
+   * calibration goal): opens one calibration goal for an agent hash with no open one whose
+   * uncalibrated dismissals reach the threshold.
+   */
+  private async calibrationTrigger(agent: AgentRef, now: number): Promise<void> {
+    if (!agent.hash) return;
+    const scan = await this.calibrationScan();
+    if (openCalibration(scan.goals, agent)) return;
+    const list = uncalibrated(scan.counted, scan.status, agent);
+    const t = this.config.calibration.threshold;
+    if (list.length < t) return;
+    const who = await this.calibratorFor(agent, list, scan);
+    if (!who) return;
+    const hash12 = agent.hash.slice(0, 12);
+    const text = presetText(CALIBRATE_PRESET);
+    const goal = await this.createWithPlan(
+      {
+        owner: who.user,
+        title: `Calibrate ${agent.key}@${hash12}`,
+        preset: { name: CALIBRATE_PRESET.name, text, sha256: createHash("sha256").update(text, "utf8").digest("hex") },
+        params: { repo: who.repo, agent: agent.key, hash: hash12 },
+        profiles: {},
+        agents: {},
+        topics: [],
+        priority: 3,
+        comment: `calibration of ${agent.key}@${hash12} (${list.length} dismissals, threshold ${t})`,
+        extra: {},
+        calibration: { key: agent.key, hash: agent.hash, threshold: t, dismissals: list.map((c) => c.ref) },
+      },
+      now,
+    );
+    await this.emit({
+      at: now,
+      type: "calibration.opened",
+      user: who.user,
+      goal: goal.id,
+      payload: { key: agent.key, hash: agent.hash, dismissals: list.length, threshold: t, calibrator: who.user },
+    });
+  }
+
+  /** Emit `goal.done` (the goal is already saved done); a calibration goal also finishes its calibration. */
+  private async markGoalDone(goal: Goal, at?: number): Promise<void> {
+    await this.emit({ ...(at !== undefined ? { at } : {}), type: "goal.done", goal: goal.id });
+    const c = goal.calibration;
+    if (!c) return;
+    const assessment = (await this.latestReview(`${goal.id}.calibrate`))?.record.assessment;
+    const outcome = assessment === "issues" ? "change" : assessment === "clean" ? "no-change" : "none";
+    await this.emit({
+      ...(at !== undefined ? { at } : {}),
+      type: "calibration.done",
+      goal: goal.id,
+      payload: { key: c.key, hash: c.hash, dismissals: c.dismissals.length, outcome },
+    });
+    await this.calibrationTrigger({ key: c.key, hash: c.hash }, at ?? this.now());
+  }
+
+  /** `GET /v1/agents/:key/stats`: an agent key's statistics per hash. */
+  async agentStats(key: string, daysRaw: string | undefined): Promise<AgentStats> {
+    let days = 30;
+    if (daysRaw !== undefined) {
+      days = /^\d+$/.test(daysRaw) ? Number(daysRaw) : NaN;
+      if (!Number.isInteger(days) || days < 1 || days > 365) throw new HubError(400, "days must be a whole number from 1 to 365");
+    }
+    if (!key || key.length > 330 || !key.includes("/")) throw new HubError(400, "an agent key is <repo>/<name>");
+    return await this.store.tx(async () => {
+      const scan = await this.calibrationScan();
+      const since = this.now() - days * 86_400_000;
+      return computeAgentStats({ key, days, since, threshold: this.config.calibration.threshold, ...scan });
+    });
+  }
+
+  /** The `calibration` input of a calibration goal's step: the listed dismissals with their items and evidence. */
+  private async calibrationInput(goal: Goal): Promise<{ title: string; content: string } | undefined> {
+    const c = goal.calibration;
+    if (!c) return undefined;
+    const found = await this.catalogDefOf({ key: c.key, hash: c.hash });
+    const dismissals: Record<string, unknown>[] = [];
+    for (const ref of c.dismissals) {
+      const entry = (await this.store.listDispositions({ lineage: ref.lineage, fp: ref.fp, goal: ref.goal })).find(
+        (d) => d.step === ref.step && d.round === ref.round && d.at === ref.at,
+      );
+      const item = await this.store.getItem(ref.lineage, ref.fp);
+      const rec = (await this.store.listReviews({ lineage: ref.lineage, raising: true })).filter((r) => r.goal === ref.goal).at(-1);
+      const evidence = rec?.record.items.find((i) => i.fp === ref.fp)?.evidence ?? [];
+      dismissals.push({
+        lineage: ref.lineage,
+        fp: ref.fp,
+        goal: ref.goal,
+        step: ref.step,
+        round: ref.round,
+        at: ref.at,
+        reason: entry?.reason ?? "",
+        ...(entry ? { decider: entry.decider, via: entry.via } : {}),
+        ...(entry?.answer !== undefined ? { answer: entry.answer } : {}),
+        title: item?.title ?? "",
+        severity: item?.severity,
+        category: item?.category,
+        rule: item?.rule,
+        ...(item?.path !== undefined ? { path: item.path } : {}),
+        ...(item?.symbol !== undefined ? { symbol: item.symbol } : {}),
+        evidence,
+      });
+    }
+    const agent = { key: c.key, hash: c.hash, ...(found ? { text: found.def.text } : {}) };
+    return { title: `dismissals of ${c.key}@${c.hash.slice(0, 12)} (${c.dismissals.length})`, content: JSON.stringify({ agent, dismissals }) };
   }
 
   /** The run step of a pulse goal: plan v1's step without deps. */
@@ -4124,6 +4350,11 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `reverted item ${String(payload.fp)} of ${s}`;
     case "step.read":
       return `read the pre-read of ${s}`;
+    // RL-6: calibration (key, hash12 and counts only).
+    case "calibration.opened":
+      return `opened calibration of ${String(payload.key)}@${String(payload.hash ?? "").slice(0, 12)} (${String(payload.dismissals)} dismissals)`;
+    case "calibration.done":
+      return `calibration of ${String(payload.key)}@${String(payload.hash ?? "").slice(0, 12)} done: ${String(payload.outcome)}`;
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }

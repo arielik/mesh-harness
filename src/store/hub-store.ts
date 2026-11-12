@@ -987,6 +987,12 @@ export class HubStore {
     return rows.map((r) => ItemHistoryEntry.parse(JSON.parse(r.value)));
   }
 
+  /** RL-6: the whole item history (every lineage and item) in one ordered read, insertion order. */
+  async listItemHistory(): Promise<{ lineage: string; fp: string; entry: ItemHistoryEntry }[]> {
+    const rows = await this.db.all<{ lineage: string; fp: string; value: string }>("SELECT lineage, fp, value FROM item_history ORDER BY seq");
+    return rows.map((r) => ({ lineage: r.lineage, fp: r.fp, entry: ItemHistoryEntry.parse(JSON.parse(r.value)) }));
+  }
+
   /** The disposition entries of the item history, in insertion order. */
   async listDispositions(f: {
     step?: string | undefined;

@@ -166,3 +166,37 @@ export interface AgentsView {
   agents: AgentGroup[];
   sources: CatalogSourceView[];
 }
+
+/** RL-6: statistics of one hash of an agent key (`GET /v1/agents/:key/stats`). */
+export interface AgentHashStats {
+  /** The agent hash; `""` for runs and records without one. */
+  hash: string;
+  runs: number;
+  failures: number;
+  meanCostUsd: number | null;
+  meanDurationMs: number | null;
+  raised: number;
+  new: number;
+  regressions: number;
+  carried: number;
+  undeclaredRules: number;
+  accepted: number;
+  dismissedByAgents: number;
+  dismissedByPeople: number;
+  reinstated: number;
+  uncalibrated: number;
+  calibrating: number;
+  calibrated: number;
+  /** The id of the open calibration goal of this hash. */
+  calibration?: string | undefined;
+  lastAt: number;
+}
+
+/** RL-6: statistics of an agent key over the last `days` days. */
+export interface AgentStats {
+  key: string;
+  days: number;
+  since: number;
+  threshold: number;
+  hashes: AgentHashStats[];
+}

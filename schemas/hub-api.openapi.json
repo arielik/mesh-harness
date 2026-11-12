@@ -2693,7 +2693,8 @@
                                 "enum": [
                                   "previous",
                                   "dispositions",
-                                  "artifacts"
+                                  "artifacts",
+                                  "calibration"
                                 ]
                               },
                               {
@@ -3960,6 +3961,53 @@
             "in": "query",
             "required": false,
             "description": "<source>/<name>[@<ref>]",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/agents/{key}/stats": {
+      "get": {
+        "operationId": "getVAgentsKeyStats",
+        "summary": "Statistics of an agent key per hash: runs, cost, findings, dispositions and calibration (key with / encoded).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "1-365, default 30",
             "schema": {
               "type": "string"
             }

@@ -89,7 +89,8 @@ describe("AC-03 presets with placeholders", () => {
   it("test_AC03_builtins_unchanged", () => {
     // The built-ins instantiate as before: no throw, no headless field appears, every placeholder filled.
     // RL-3: `audit-relay` needs params and is headless by design (its own tests below).
-    for (const p of BUILTIN_PRESETS.filter((x) => x.name !== "audit-relay")) {
+    // RL-6: `calibrate` needs params (agent, hash) and has `inputs` (its own tests below).
+    for (const p of BUILTIN_PRESETS.filter((x) => x.name !== "audit-relay" && x.name !== "calibrate")) {
       const a = instantiate(p, { repo: "frr", goal: "G7" });
       const b = inst(p, { repo: "frr", goal: "G7", params: { unused: "z" } });
       expect(b, p.name).toStrictEqual(a);
@@ -143,5 +144,45 @@ describe("AC-19 audit-relay", () => {
     expect(() => inst(relay(), { repo: "/src/alpha", goal: "G", params: noValidator })).toThrow(new Error("preset audit-relay: unknown parameter {validator} in step validate"));
     // Positive control: with all three it instantiates.
     expect(() => inst(relay(), { repo: "/src/alpha", goal: "G", params: PARAMS })).not.toThrow();
+  });
+});
+
+// RL-6 AC-03: the built-in `calibrate` preset (docs/specs/RL-6.md, Built-in `calibrate` preset).
+describe("RL-6 AC-03 calibrate", () => {
+  const cal = () => {
+    const p = BUILTIN_PRESETS.find((x) => x.name === "calibrate");
+    if (!p) throw new Error("calibrate missing");
+    return p;
+  };
+  const PARAMS = { agent: "alpha/auditor", hash: "0123456789ab" };
+  const DESCRIPTION = "Calibrate an agent from the dismissals of its findings (opened by the hub when an agent reaches the dismissal threshold).";
+  const BRIEF =
+    'Read the input "calibration" from mesh_context: the dismissed findings of alpha/auditor@0123456789ab with their evidence and reasons, and the agent\'s definition when the hub has it. Either change the agent\'s definition on this step\'s branch so such findings are no longer raised, or decide that no change is needed. Then submit a review record with no items (mesh_review): assessment "issues" with a summary of the change, or assessment "clean" with a summary starting "no change:" and the reason; then mesh_done.';
+
+  it("test_AC03_builtin_order", () => {
+    const names = BUILTIN_PRESETS.map((p) => p.name);
+    // The RL-5 list with `calibrate` inserted right after `audit-relay`.
+    expect(names).toStrictEqual(["sdd-split", "sdd-collapse", "audit-relay", "calibrate"]);
+    expect(cal().description).toBe(DESCRIPTION);
+  });
+
+  it("test_AC03_instantiate", () => {
+    const plan = inst(cal(), { repo: "alpha", params: PARAMS });
+    expect(plan.steps).toHaveLength(1);
+    const s = stepOf(plan, "calibrate");
+    expect(s).toMatchObject({ id: "calibrate", kind: "review", repo: "alpha", output: "review-record", inputs: ["calibration"], title: "Calibrate alpha/auditor@0123456789ab" });
+    expect(s.brief).toBe(BRIEF);
+    expect(s.deps ?? []).toStrictEqual([]);
+    for (const k of ["mode", "agent", "profile", "consumes", "may_set", "when", "assignee", "budget"]) expect(Object.hasOwn(s, k), `calibrate.${k}`).toBe(false);
+  });
+
+  it("test_AC03_validate_and_relay_unchanged", () => {
+    const plan = inst(cal(), { repo: "alpha", params: PARAMS });
+    expect(validatePlan(plan.steps)).toStrictEqual([]);
+    expect(validatePolicies(plan.steps, plan.acs)).toStrictEqual([]);
+    // audit-relay keeps its RL-3 shape (the RL-3 AC-19 tests above assert its fields).
+    const relay = BUILTIN_PRESETS.find((x) => x.name === "audit-relay");
+    expect(relay?.description).toBe("Audit by an agent, validated by an agent, filed by an agent (agent-only; a person's debrief comes with S4).");
+    expect(relay?.plan.steps.map((x) => x.id)).toStrictEqual(["audit", "validate", "file"]);
   });
 });

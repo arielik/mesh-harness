@@ -33,3 +33,18 @@ describe("artifacts", () => {
     expect(artifacts(partial)).toStrictEqual({ maxBytes: 1_048_576, perRound: 10, retentionDays: 30 });
   });
 });
+
+// RL-6 AC-01 (config): hub YAML `calibration: { threshold: <int ≥ 1> }` gives
+// `HubConfig.calibration.threshold` (default 5). Written from the spec's contracts only (docs/specs/RL-6.md).
+describe("RL-6 calibration threshold", () => {
+  const raw = { auth: { providers: [{ kind: "none" }] } };
+  const threshold = (c: ReturnType<typeof buildHubConfig>) => (c as unknown as { calibration?: { threshold?: number } }).calibration?.threshold;
+  const build = (calibration: unknown) => buildHubConfig({ ...raw, calibration }, { baseDir: "/srv", env: {} });
+
+  it("test_AC01_config_threshold", () => {
+    expect(threshold(buildHubConfig(raw, { baseDir: "/srv", env: {} }))).toBe(5);
+    expect(threshold(build({ threshold: 2 }))).toBe(2);
+    expect(threshold(build({ threshold: 1 }))).toBe(1);
+    for (const bad of [0, -1, 1.5, "3"]) expect(() => build({ threshold: bad }), String(bad)).toThrow();
+  });
+});

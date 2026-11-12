@@ -643,3 +643,32 @@ p.assigned {
 .roster .roster-mark {
   color: var(--accent);
 }
+
+/* RL-6: the Roster statistics of a group. */
+.roster .roster-stats-toggle {
+  font-size: 0.85em;
+  margin: 0.25rem 0;
+}
+.roster .roster-stats-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 0.25rem 0 0.5rem;
+}
+.roster table.roster-stats {
+  border-collapse: collapse;
+  font-size: 0.85em;
+}
+.roster table.roster-stats th,
+.roster table.roster-stats td {
+  padding: 0.15rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.roster table.roster-stats td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.roster table.roster-stats td[data-col="hash"],
+.roster table.roster-stats td[data-col="calibration"] {
+  text-align: left;
+}

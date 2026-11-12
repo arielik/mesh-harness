@@ -195,9 +195,18 @@ export function foldItems(o: {
   return { marks, states, resolved, carried, fold: { new: n("new"), repeat: n("repeat"), regression: n("regression"), resolved: resolved.length, carried: carried.length } };
 }
 
+/** RL-6: an item in a consumed state; an `accepted` item with a `link` is filed and never consumed. */
+export function consumedNow(item: { state: ItemState; link?: string | undefined }, consumes: readonly ItemState[]): boolean {
+  return consumes.includes(item.state) && !(item.state === "accepted" && item.link !== undefined);
+}
+
 /** True when an item is in a consumed state (and at or above `min_severity`). `when: {}` is true. */
-export function whenHolds(when: StepWhen, consumes: readonly ItemState[], items: readonly { state: ItemState; severity: Severity }[]): boolean {
+export function whenHolds(
+  when: StepWhen,
+  consumes: readonly ItemState[],
+  items: readonly { state: ItemState; severity: Severity; link?: string | undefined }[],
+): boolean {
   if (!when.open && !when.min_severity) return true;
   const min = when.min_severity;
-  return items.some((i) => consumes.includes(i.state) && (!min || SEVERITY_RANK[i.severity] <= SEVERITY_RANK[min]));
+  return items.some((i) => consumedNow(i, consumes) && (!min || SEVERITY_RANK[i.severity] <= SEVERITY_RANK[min]));
 }

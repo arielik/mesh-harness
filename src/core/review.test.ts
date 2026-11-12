@@ -316,3 +316,27 @@ describe("AC-07 whenHolds", () => {
     expect(C.whenHolds({ open: true }, ["accepted"], [{ state: "open", severity: "S1" }, { state: "accepted", severity: "S4" }])).toBe(true);
   });
 });
+
+// RL-6 AC-02 (unit): `whenHolds` treats an `accepted` item with a `link` (filed) as not in a consumed
+// state. Written from the spec's contracts only (docs/specs/RL-6.md).
+describe("RL-6 filed items", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the RL-6 item shape (link), passed loosely
+  const W = (when: unknown, consumes: string[], items: unknown[]) => (core as any).whenHolds(when, consumes, items) as boolean;
+
+  it("test_AC02_filed_not_consumed", () => {
+    expect(W({ open: true }, ["accepted"], [{ state: "accepted", severity: "S2" }])).toBe(true);
+    expect(W({ open: true }, ["accepted"], [{ state: "accepted", severity: "S2", link: "x" }])).toBe(false);
+  });
+
+  it("test_AC02_mixed", () => {
+    expect(W({ open: true }, ["accepted", "confirmed"], [{ state: "accepted", severity: "S2", link: "x" }, { state: "confirmed", severity: "S3" }])).toBe(true);
+    expect(W({ open: true }, ["accepted", "confirmed"], [{ state: "accepted", severity: "S2", link: "x" }, { state: "accepted", severity: "S3", link: "y" }])).toBe(false);
+    // An unfiled accepted item next to a filed one still matches.
+    expect(W({ open: true, min_severity: "S3" }, ["accepted"], [{ state: "accepted", severity: "S1", link: "x" }, { state: "accepted", severity: "S3" }])).toBe(true);
+  });
+
+  it("test_AC02_empty_when", () => {
+    expect(W({}, ["accepted"], [{ state: "accepted", severity: "S2", link: "x" }])).toBe(true);
+    expect(W({}, ["accepted"], [])).toBe(true);
+  });
+});

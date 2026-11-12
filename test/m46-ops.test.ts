@@ -443,3 +443,48 @@ describe("RL-5 tables: SQLite side of mesh hub migrate", () => {
     for (const t of added) expect(copied, t).toContain(t);
   });
 });
+
+// RL-6 AC-04: hub-copy TABLES equals the set of tables a fresh SQLite hub has after HUB_MIGRATIONS
+// (so `topic` is copied by `mesh hub migrate`); the Postgres leg copies two topics. Written from the
+// spec's contracts only (docs/specs/RL-6.md, Hub copy).
+describe("RL-6 hub copy tables", () => {
+  it("test_AC04_tables_equal_migrated", async () => {
+    const db = await openSyncDb(join(tmp(), "fresh.db"), HUB_MIGRATIONS);
+    let migrated: string[];
+    try {
+      migrated = db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'schema_version' ORDER BY name").map((t) => t.name);
+    } finally {
+      db.close();
+    }
+    // Control: the migrated set is the real one.
+    expect(migrated).toContain("goal");
+    expect(migrated).toContain("topic");
+    const names = COPY_TABLES.map((t) => t.name);
+    expect(new Set(names).size, "no duplicates in TABLES").toBe(names.length);
+    expect([...names].sort()).toStrictEqual(migrated);
+    expect(names[names.indexOf("idem") + 1]).toBe("topic");
+  });
+});
+
+describe.skipIf(!PG_URL)(`RL-6 topics through mesh hub migrate${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => {
+  it("test_AC04_migrate_copies_topics", async () => {
+    const file = join(tmp(), "hub.db");
+    await seedSqliteHub(file);
+    const s = await HubStore.open(file);
+    const t1 = { name: "perf", createdBy: "alice", createdAt: clock };
+    const t2 = { name: "dataplane", description: "packets", createdBy: "alice", createdAt: clock + 1 };
+    expect(await s.createTopic(t1)).toBe(true);
+    expect(await s.createTopic(t2)).toBe(true);
+    const before = await s.listTopics();
+    await s.close();
+    expect(before).toHaveLength(2);
+    const url = await pgdb.fresh();
+    await copyHubToPostgres(file, url);
+    const p = await HubStore.open(url);
+    try {
+      expect(await p.listTopics()).toStrictEqual(before);
+    } finally {
+      await p.close();
+    }
+  });
+});
