@@ -4,7 +4,7 @@
 // AC-20, AC-21 and AC-26 (daemon). Written from the spec's contracts only (docs/specs/RL-2.md).
 // Steps by id, items by fp, events by type + step. No test runs the real `claude`.
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -97,6 +97,39 @@ describe("AC-19 mesh_review", { timeout: 40_000 }, () => {
     expect(es[0].payload.undeclaredRules).toBe(1);
     // subject.repo is left as given (absent here).
     expect(rv.record.subject).not.toHaveProperty("repo");
+  });
+
+  it("test_AC19_root_through_symlink", async () => {
+    // A checkout reached through a symlink (macOS's /var → /private/var, a linked folder): paths
+    // under it are made relative whichever side (session cwd or agent path) is the real one.
+    const k = await cast();
+    const links = mkdtempSync(join(tmpdir(), "rl2-link-"));
+    try {
+      const link = join(links, "svc");
+      symlinkSync(k.root, link);
+      const G = await goal(k.self, [
+        { id: "a1", output: "review-record" },
+        { id: "a2", output: "review-record" },
+      ]);
+      // Session cwd through the link, agent paths real.
+      await r.w.hook(k.ann, "SessionStart", 1, { cwd: link });
+      await sessionClaims(k, 1, `${G}.a1`);
+      await toolOk(k, 1, recArgs({ items: [it1("I-03", { key: { rule: "I-03", path: join(k.root, "src", "a.ts") }, evidence: [{ path: join(k.root, "src", "a.ts"), lines: [1, 1] }] })] }));
+      const [rv1] = await stored(k, `${G}.a1`);
+      expect(rv1.record.items[0].key.path).toBe("src/a.ts");
+      expect(rv1.record.items[0].evidence[0].path).toBe("src/a.ts");
+      expect(rv1.record.items[0].eh).toBe(evidenceHashOf(["line one"]));
+      expect(rv1.record.items[0].fp).toBe(ofp("I-03"));
+      // Session cwd real, agent paths through the link.
+      await sessionClaims(k, 2, `${G}.a2`);
+      await toolOk(k, 2, recArgs({ items: [it1("I-03", { key: { rule: "I-03", path: join(link, "src", "a.ts") }, evidence: [{ path: join(link, "src", "a.ts") }] })] }));
+      const [rv2] = await stored(k, `${G}.a2`);
+      expect(rv2.record.items[0].key.path).toBe("src/a.ts");
+      expect(rv2.record.items[0].evidence[0].path).toBe("src/a.ts");
+      expect(rv2.record.items[0].fp).toBe(ofp("I-03"));
+    } finally {
+      rmSync(links, { recursive: true, force: true });
+    }
   });
 
   it("test_AC19_subject_given", async () => {
@@ -272,7 +305,8 @@ describe("AC-20 evidence", { timeout: 40_000 }, () => {
     // Review RL-2 diff r1 B1: agent-written subject.commit never reaches git as an option; a commit
     // that starts with "-" is a failed read, so its regions hash as missing (spec: unreadable → missing).
     const k = await cast();
-    const out = mkdtempSync(join(tmpdir(), "rl2-"));
+    // /tmp, not tmpdir(): subject.commit is at most 64 characters and macOS's tmpdir alone is ~50.
+    const out = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "rl2-"));
     try {
       const c1 = git(k.root, ["rev-parse", "HEAD"]);
       // Control: a valid commit reads the region.

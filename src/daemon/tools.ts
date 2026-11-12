@@ -7,8 +7,8 @@
 // shared work, proposing a plan) say "offline", at once.
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   assignText,
   declaredRules,
@@ -443,6 +443,36 @@ function readText(path: string): string | undefined {
   }
 }
 
+/** `p` with its real path resolved as far as it exists (the rest appended), or `p` itself. */
+function realish(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    const parent = dirname(p);
+    return parent === p ? p : join(realish(parent), basename(p));
+  }
+}
+
+/**
+ * RL-2: `p` relative to `root` (normPath), also when one side is reached through a symlink (macOS's
+ * /var → /private/var, a checkout under a linked folder): the real paths of both are compared too.
+ */
+export function relToRoot(p: string, root: string): string {
+  const direct = normPath(p, root);
+  if (!isAbsolute(p) || direct !== normPath(p)) return direct;
+  const realRoot = realish(root);
+  const realP = realish(p);
+  for (const [a, b] of [
+    [p, realRoot],
+    [realP, root],
+    [realP, realRoot],
+  ] as const) {
+    const rel = normPath(a, b);
+    if (rel !== normPath(a)) return rel;
+  }
+  return direct;
+}
+
 /** A revision `git show` may read: no leading `-`, no `:`, whitespace or control characters. */
 const SAFE_REV = /^[A-Za-z0-9_][A-Za-z0-9_./^~@{}+-]{0,255}$/;
 
@@ -508,7 +538,7 @@ async function reviewUpload(host: ToolHost, s: Session, step: string, rec: Revie
     files.set(path, lines);
     return lines;
   };
-  const norm = (p: string) => (root ? normPath(p, root) : normPath(p));
+  const norm = (p: string) => (root ? relToRoot(p, root) : normPath(p));
 
   let undeclared = 0;
   const items = [];
