@@ -360,7 +360,7 @@ so no secret-looking literal is committed.
 | `test_AC13_assignments` | `password = "hunter2hunter2"`, `api_key: abcdef123`, `API-KEY=abcdef`, `Token: 'abcdefgh'` | `password = "[REDACTED]"`, `api_key: [REDACTED]`, `API-KEY=[REDACTED]`, `Token: '[REDACTED]'`; `count: 1` each | key/quotes/separator lost, case-sensitive |
 | `test_AC13_short_value` | `token: abc` and plain prose (`"the password policy is strict"`) | unchanged, `count: 0` | changed |
 | `test_AC13_literals` | text containing the literal `L = "k".repeat(32)` twice; literals `[L, "", "short"]` | both occurrences `[REDACTED]`, `count: 2`; `"short"` (under 8) and `""` replace nothing | literal survives, short literal applied |
-| `test_AC13_order_and_count` | (a) one text with a PEM block, two tokens, one assignment `password=hunter2hunter2` and one literal; (b) `token=ghp_<36>` alone | (a) the exact expected string, `count: 5`; (b) `token=[REDACTED]`, `count: 2` (token pass, then the assignment pass matches the 10-character value `[REDACTED]`; see A1) | a pass out of order, a match not counted, or one counted twice |
+| `test_AC13_order_and_count` | (a) one text with a PEM block, two tokens, one assignment `password=hunter2hunter2` and one literal; (b) `token=ghp_<36>` alone | (a) the exact expected string, `count: 5`; (b) `token=[REDACTED]`, `count: 1` (each secret counts once: the assignment pass leaves a value that is wholly a mark; see A1) | a pass out of order, a match not counted, or one counted twice |
 | `test_AC13_identity` | 10 kB of prose with code | `text` is identical (`===`), `count: 0` | any change |
 
 Mutation: drop the `i` flag → `API-KEY`/`Token` cases red; apply literals of length < 8 →
@@ -842,9 +842,9 @@ skipped → `test_AC39_kept_in_inbox` red.
 
 ## Assumptions (conservative readings; the spec is not changed by this plan)
 
-- A1 (AC-13): passes run in the documented order and each replacement counts once, so a token that is
-  also an assignment value counts twice and reads `token=[REDACTED]`. If the implementer disputes this,
-  the test is adjusted to the spec author's ruling, not to the implementation.
+- A1 (AC-13): superseded by the spec's amended redactSecrets contract (diff round 2 B2, 2026-11-12): each
+  secret counts once, so a token that is also an assignment value reads `token=[REDACTED]` with count 1;
+  `password=<literal>tail` is redacted whole.
 - A2 (AC-04, AC-03): the step id in the `instantiate` error is the id `instantiate` sees; the CLI test
   accepts the local or the goal-qualified id, the unit test pins the local id of the preset.
 - A3 (AC-18): a `start` with a missing executable may report `{ok: false}` or a non-zero `exit` file;
