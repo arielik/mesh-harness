@@ -58,7 +58,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.23](operations.md#upgrading-to-0123).
+  describes; see [Upgrading to 0.1.24](operations.md#upgrading-to-0124).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else

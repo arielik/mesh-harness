@@ -94,9 +94,9 @@ On Postgres: roll the replicas one at a time. A release only adds to the schema 
 
 A hub never opens a database migrated by a newer one: it stops with `database … has schema version <n>, newer than this mesh (<m>)`. Going back to an older hub means restoring the backup taken before the upgrade.
 
-## Upgrading to 0.1.23
+## Upgrading to 0.1.24
 
-0.1.15 to 0.1.22 add headless steps, review records, pulses, debriefs, the roster and calibration ([scheduled reviews](scheduled-reviews.md)); 0.1.23 makes `--help` print help for every command instead of running it (`mesh setup --help` used to run setup). From 0.1.14 or earlier, in this order:
+0.1.15 to 0.1.22 add headless steps, review records, pulses, debriefs, the roster and calibration ([scheduled reviews](scheduled-reviews.md)); 0.1.23 makes `--help` print help for every command instead of running it (`mesh setup --help` used to run setup); 0.1.24 fixes review paths in a checkout reached through a symlink and a run killed for its budget being reported as crashed. Install 0.1.24 (0.1.23 has no release package). From 0.1.14 or earlier, in this order:
 
 1. **Back up the hub** (`mesh hub backup …` on SQLite, `pg_dump` on Postgres).
 2. **Upgrade the hub first**, every replica. At start it migrates the schema from 7 (0.1.10 to 0.1.14) to 11, the current `SCHEMA_VERSION`:
@@ -125,7 +125,7 @@ Why the hub first: a newer CLI sends what an older hub refuses. A 0.1.21 or late
 | before 0.1.19 | Sends no roster reports and cannot run a step whose `agent` is a roster key. |
 | 0.1.21 | A run can be started twice; the step then fails with `could not make a worktree: Preparing worktree …`. A run that never started leaves a transcript and a session shown `working` long after. A 0.1.22 daemon ends such leftover sessions at start. |
 
-Upgrade every runner to 0.1.22 or later (0.1.23 is current) before you schedule work on it.
+Upgrade every runner to 0.1.24 before you schedule work on it.
 
 ## Runner machines
 

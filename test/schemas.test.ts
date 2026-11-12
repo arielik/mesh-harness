@@ -683,7 +683,7 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
 
   it("test_AC16_version", () => {
     // RL-8 AC-12: the release is v0.1.22 (was RL-7 AC-17, v0.1.21).
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.23");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.24");
   });
 
   it("test_AC07_route_table", () => {
