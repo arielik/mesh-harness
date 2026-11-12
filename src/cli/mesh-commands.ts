@@ -722,8 +722,30 @@ export function statusCommand(c: CliEnv): Command {
   };
 }
 
+/**
+ * Commands that do not print their own usage for --help (they would run instead, and some change
+ * things: setup rewrites the Claude Code setup, logout logs out, take takes a step over). For them
+ * dispatch prints this text for --help or -h.
+ */
+const HELP_TEXT: Record<string, string> = {
+  setup: "usage: mesh setup [--port N] [--notify desktop|terminal|both|off] [--share-sessions steps|me|all] [--accept rules|off] [--assignments deliver|launch|off] [--max-sessions N|off] [--agent claude|opencode|all] [--no-mcp] [--uninstall]",
+  doctor: "usage: mesh doctor     check the installation (config, Claude Code, hooks, MCP, skill, daemon)",
+  skill: "usage: mesh skill      print the mesh skill for Claude Code (mesh setup installs it)",
+  status: "usage: mesh status     the daemon and hub: team, Solo, or offline and working locally",
+  ls: "usage: mesh ls [--json]     list your agent sessions; [oc] marks OpenCode",
+  jump: "usage: mesh jump <session>     switch to a session's tmux pane, or attach a background session",
+  logout: "usage: mesh logout     log out of the hub",
+  whoami: "usage: mesh whoami     show who you are on the hub",
+  show: "usage: mesh show <goal>     a goal and its step DAG",
+  next: "usage: mesh next [--repo R]     list ready steps",
+  take: "usage: mesh take <step>     take over a paused or stalled step",
+  machines: "usage: mesh machines [--label L] [--json]     your machines and their sessions (also: mesh fleet)",
+  fleet: "usage: mesh fleet [--label L] [--json]     your machines and their sessions (also: mesh machines)",
+  offers: "usage: mesh offers [--json]     offers to your machines",
+};
+
 export function meshCommands(c: CliEnv): Command[] {
-  return [
+  return withHelp([
     setupCommand(c),
     doctorCommand(c),
     skillCommand(c),
@@ -742,5 +764,12 @@ export function meshCommands(c: CliEnv): Command[] {
     agentCommand(c),
     ...offerCommands(c, (args) => runCommand(c).run(args)),
     debriefCommand(c, (args) => runCommand(c).run(args)),
-  ];
+  ]);
+}
+
+function withHelp(commands: Command[]): Command[] {
+  return commands.map((cmd) => {
+    const help = HELP_TEXT[cmd.name];
+    return cmd.help === undefined && help !== undefined ? { ...cmd, help } : cmd;
+  });
 }
