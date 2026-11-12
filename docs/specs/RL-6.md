@@ -31,7 +31,8 @@ In:
 - Web Roster: per-group statistics table.
 - Fixes exposed by the end-to-end test (impl-bug in RL-2/RL-4): agent dispositions that agree with a
   person's decision in the same goal; filed (`accepted` with a `link`) items no longer consumed.
-- Fix (older bug): `topic` in `TABLES`, with a test that every hub table is in `TABLES`.
+- Fix (older bug): `topic` in `TABLES`, with a test that every hub table is in `TABLES`; shipped as
+  its own commit with its own changelog line, so it can be picked or reverted alone.
 - The whole-programme World test (design §10) and any further gap in RL-1..RL-5 it exposes, fixed in
   the module that owns it (impl-bug).
 - Docs: concepts, how-to, install (hub config), the mesh skill, the plan API table, the events list.
@@ -56,10 +57,15 @@ Names used below.
   the disposition's lineage whose `goal` is the disposition's goal. Its **raising agent** is that
   record's decider when `decider.kind = "agent"` (`(decider.key, decider.hash ?? "")`). A disposition
   whose raising record is missing or has a person decider has no raising agent and is never counted.
-- **Counted dismissal**: an item history entry `kind: "disposition"`, `disposition: "dismissed"`
-  (any decider, any `via`) that has a raising agent and that was not reverted (the fp's next history
-  entry is not a `revert` entry). Identified by **`DismissalRef`**
-  `{ lineage, fp, goal, step, round, at }` (fields of the history entry).
+- **Reverted entry**: a disposition history entry whose next history entry of the same `(lineage, fp)`
+  is a `revert` entry. Reverted entries count toward nothing below.
+- **Counted dismissal**: per `(goal, lineage, fp)`, the **earliest** item history entry
+  `kind: "disposition"`, `disposition: "dismissed"` (any decider, any `via`) of that goal that has a
+  raising agent and is not reverted. At most one counted dismissal exists per `(goal, lineage, fp)`: a
+  second dismissal of the same fp in the same goal (a person's after an agent's, or an agreeing agent's
+  after a person's) adds nothing. Its decider (agent or person) and `at` are those of that earliest
+  entry. A dismissal of the same fp in another goal is another counted dismissal. Identified by
+  **`DismissalRef`** `{ lineage, fp, goal, step, round, at }` (fields of the history entry).
 - **Calibration goal** of `(key, hash)`: a goal whose `calibration.key`/`calibration.hash` are those.
   It is **open** while the goal is not `done` or `dropped`. A counted dismissal is **calibrating** when
   an open calibration goal lists it, **calibrated** when a `done` one lists it, else **uncalibrated**.
@@ -89,12 +95,21 @@ Names used below.
    consumed state by `when` evaluation (settle: plan approve, step done, gate decide, reopen) and by
    the `dispositions` input of a consuming step (it is left out). The disposition checks of a record
    and of `mesh_dispose` are unchanged.
-2. **Agent dispositions that agree with a person.** In a consuming stage's record (agent decider), a
-   disposition of an fp whose latest **person** disposition in the same goal has the same
-   `disposition` value is applied (history entry with the agent decider; `link`/`until` set on the
-   row as RL-2), not ignored; a different value is ignored with the RL-2 reason `decided by <user> in
-   this goal`. Precedence looks at the latest person disposition in the goal, so an agent entry after
-   a person's never lets a later agent stage override the person.
+2. **Agent dispositions that agree with a person.** The order of the record checks stays as RL-2:
+   `may_set`, `until`, listed twice, not in the run's record, then person precedence, then the state
+   check against `consumes` (422). Only the precedence step changes. In a consuming stage's record
+   (agent decider), for a disposition of an fp that has a person disposition in the same goal, the hub
+   looks at the latest **person** disposition of that fp in the goal (`<user>` its decider):
+   - same `disposition` value **and** the item's current state is in the stage's `consumes` →
+     applied (history entry with the agent decider; `link`/`until` set on the row as RL-2);
+   - otherwise (a different value, or the same value while the item's state is not in `consumes`) →
+     put in `ignored` with the RL-2 reason `decided by <user> in this goal`; the item is unchanged and
+     the record gets no 422 for it (as RL-2).
+
+   So a record RL-2 accepted is never refused under RL-6: every disposition RL-2 ignored is either
+   still ignored or applied. Precedence looks at the latest person disposition in the goal, not the
+   latest entry, so an agent entry after a person's never lets a later agent stage override the
+   person. Dispositions of an fp with no person disposition in the goal behave as RL-2.
 3. Any other gap the whole-programme test (AC-17) exposes is fixed where it lives and listed in the
    implementation notes of the change; no contract above changes for it.
 
@@ -121,14 +136,21 @@ e.g. `/v1/agents/alpha%2Fauditor/stats`). Query `days` (optional, default 30).
 | `raised` | Over the raising review records with decider `{kind: agent, key, hash: h}` (hash absent = `""`) and `at` in the window: the sum of their distinct fingerprints. |
 | `new`, `regressions`, `carried` | Sum of `fold.new`, `fold.regression`, `fold.carried` of those records (a record without `fold` adds 0). |
 | `undeclaredRules` | Sum of `StoredReview.undeclaredRules` of those records. |
-| `accepted` | Distinct `(goal, fp)` with an `accepted` disposition entry at in the window whose raising agent is `(key, h)`. |
-| `dismissedByAgents` / `dismissedByPeople` | Counted dismissals in the window whose raising agent is `(key, h)`, with an `agent` / `person` decider. |
-| `reinstated` | Dismissal entries whose **decider** is `{kind: agent, key, hash: h}` and whose fp's next disposition entry (any goal) has a `person` decider and a disposition other than `dismissed`, with that person's entry in the window. |
+| `accepted` | Distinct `(goal, lineage, fp)` with a non-reverted `accepted` disposition entry with `at` in the window whose raising agent is `(key, h)`. |
+| `dismissedByAgents` / `dismissedByPeople` | Counted dismissals with `at` in the window whose raising agent is `(key, h)`, by the decider of the counted entry (`agent` / `person`). |
+| `reinstated` | Non-reverted dismissal entries whose **decider** is `{kind: agent, key, hash: h}` and whose next disposition entry of the same `(lineage, fp)` (any goal) is non-reverted, has a `person` decider and a disposition other than `dismissed`, with that person's entry `at` in the window. |
 | `uncalibrated`, `calibrating`, `calibrated` | All counted dismissals (no window) whose raising agent is `(key, h)`, by calibration status. |
 | `calibration` | The id of the open calibration goal of `(key, h)`, when there is one. |
-| `lastAt` | The newest time among the entries counted above (run `finishedAt`, record `at`, disposition `at`); the calibration goal's `createdAt` when only that is present. |
+| `lastAt` | The newest of: run `finishedAt` (counted runs), raising record `at` (counted records), `accepted` entry `at`, counted dismissal `at` (in-window ones, for `dismissedBy*`), and the **person's** entry `at` for `reinstated`. When none of these is in the window: the newest `at` of the hash's counted dismissals (any time), else the calibration goal's `createdAt`. |
 
 Stats count every goal (goals are team-visible); no share level applies.
+
+**Reads.** No new `HubStore` method: the route and the trigger use the existing reads
+`listSteps({})` (rounds and their telemetry), `listReviews({ raising: true })` (raising records),
+`listDispositions({})` (disposition entries, in history order), `itemHistory(lineage)` per lineage that
+has a disposition (to find reverts and next entries), `listGoals()` (calibration goals, pulse goals)
+and `listCatalogSources()`/`listCatalogDefs({})` (calibrator rule 1). The trigger runs them inside the
+goal transaction of the request that recorded the dismissal.
 
 ### Calibration trigger (src/hub/service.ts)
 
@@ -144,6 +166,9 @@ Stats count every goal (goals are team-visible); no share level applies.
      one holding the headless round with `telemetry.agentKey = key` and the largest `finishedAt` (a
      pulse goal's owner is its pulse's owner);
   3. the owner of the goal of the newest uncalibrated dismissal.
+
+  Users are never removed today, so rule 3 always resolves. Should none resolve, the trigger opens no
+  goal and emits no event; the next trigger for `(key, hash)` tries again.
 - **Repo** of the goal: the catalog source's repo id when step 1 found a definition (also when that
   source has no calibrator), else the repo part of the lineage of the newest uncalibrated dismissal
   (the step repo of its raising record).
@@ -157,10 +182,17 @@ Stats count every goal (goals are team-visible); no share level applies.
   `calibration.opened` (user = calibrator, goal = the new goal) with payload
   `{key, hash, dismissals: n, threshold: t, calibrator}`. At most one open calibration goal per
   `(key, hash)`.
-- **Done.** When a calibration goal becomes `done`, its listed dismissals become calibrated (no
-  write to the items) and the hub emits `calibration.done` (goal) with payload
-  `{key, hash, dismissals: n, outcome}`, `outcome` = `change` when the newest review record of the
-  goal's `calibrate` step has `assessment: "issues"`, `no-change` for `"clean"`, else `none`.
+- **Done.** One hook covers every path that sets a goal `done` (step done, gate decide, resume, plan
+  approve/replan): wherever the hub emits `goal.done` for a goal with `calibration`, in the same
+  transaction its listed dismissals become calibrated (no write to the items), the hub emits
+  `calibration.done` (goal) with payload `{key, hash, dismissals: n, outcome}`, and the trigger runs
+  for `(key, hash)`. `outcome` = `change` when the newest review record of the goal's `calibrate` step
+  has `assessment: "issues"`, `no-change` for `"clean"`, else `none` (also when a replan dropped the
+  step). A dropped calibration goal is not open and lists nothing calibrated; dropping it triggers
+  nothing (its dismissals wait for the next trigger).
+- **Activity texts** (`describe()`, shown in goal timelines and the overview activity):
+  `calibration.opened` → `opened calibration of <key>@<hash12> (<n> dismissals)`;
+  `calibration.done` → `calibration of <key>@<hash12> done: <outcome>`.
 
 ### Built-in `calibrate` preset (src/core/presets.ts)
 
@@ -191,8 +223,10 @@ no entry.
 ### Web (web/src/roster.tsx, web/src/api.ts)
 
 - Each `section.roster-group` gains a `button.roster-stats-toggle` with text `Stats`. A click loads
-  `GET /v1/agents/<encoded key>/stats?days=30` for each distinct copy `key` of the group (copy order)
-  and shows one `table.roster-stats` in the group; a second click hides it (no reload while hidden).
+  `GET /v1/agents/<encoded key>/stats?days=30` for each distinct copy `key` of the group (copy order:
+  the group's `versions` in reply order, then each version's `copies` in order; a key's first
+  occurrence fixes its place) and shows one `table.roster-stats` in the group; a second click hides it
+  (no reload while hidden).
 - One `tr` per `(key, hash)` with `data-key` and `data-hash` (full hash; `""` for no hash), keys in
   copy order, hashes in reply order, with one `td[data-col=…]` per column:
   `hash` (hash12, or `-`), `runs`, `failures`, `cost` (`$<meanCostUsd.toFixed(2)>`, or `-`),
@@ -212,12 +246,12 @@ set of tables a fresh SQLite database has after `HUB_MIGRATIONS` (excluding `sql
 
 | File | Change |
 |---|---|
-| `docs/guide/concepts.md` | "Calibration": what a counted dismissal is (raising agent = the agent of the run's record in that goal; both deciders; reverts excluded; person-raised items not counted), reinstatements counted against the dismissing agent, the threshold (`calibration.threshold`, default 5), one open goal per agent hash, the calibrator order (catalog source `calibrator`, owner of the latest pulse that ran the agent, owner of the goal of the latest dismissal), the `calibrate` preset and its record, calibrated on done. "Agent statistics": the route, the window, every field. The two RL-6 rules on filed items and agreeing agent dispositions under "Review records". |
+| `docs/guide/concepts.md` | "Calibration": what a counted dismissal is (raising agent = the agent of the run's record in that goal; both deciders; once per goal and item; reverts excluded; person-raised items not counted), reinstatements counted against the dismissing agent, the threshold (`calibration.threshold`, default 5), one open goal per agent hash, the calibrator order (catalog source `calibrator`, owner of the latest pulse that ran the agent, owner of the goal of the latest dismissal), the `calibrate` preset and its record, calibrated on done. "Agent statistics": the route, the window, every field. The two RL-6 rules on filed items and agreeing agent dispositions under "Review records". |
 | `docs/guide/howto.md` | "Calibrate an agent": reading the Roster statistics, what the calibrator gets, running the step (`mesh run --step`, the `calibration` input, a change on the branch or `no change:`), setting the threshold. |
 | `docs/guide/install.md` (hub config) | `calibration: { threshold: 5 }`. |
 | `src/protocol/skill.ts` `MESH_SKILL` + `skills/mesh/SKILL.md` | A row for a calibration step: read the `calibration` input, change the agent on the branch or decide no change, `mesh_review` with no items and `assessment` `issues`/`clean`, then `mesh_done`. |
 | `docs/plan/implementation-plan.md` §5.6 | Row for `GET /v1/agents/:key/stats?days=` (v0.1.20). |
-| `docs/events.md` | `calibration.opened`, `calibration.done` with their payloads. |
+| `docs/events.md` | `calibration.opened`, `calibration.done` with their payloads and activity texts. |
 
 ### Compatibility
 
@@ -225,6 +259,9 @@ set of tables a fresh SQLite database has after `HUB_MIGRATIONS` (excluding `sql
   before v0.1.20 count as uncalibrated; they open a goal only at the next dismissal of that agent hash
   (or the next calibration goal done).
 - Hub config files without `calibration` get threshold 5.
+- Review records: every agent disposition RL-2 put in `ignored` for person precedence is still
+  ignored, except one that agrees with the person's latest decision in the goal while the item's state
+  is in the stage's `consumes`, which is now applied. No record RL-2 accepted gets a 422.
 - Existing tests that list `BUILTIN_PRESETS`, `mesh preset ls`, the route list, `INPUT_KEYWORDS`,
   `TABLES` or `package.json` version are updated by the test-writer.
 
@@ -246,14 +283,14 @@ through `POST /v1/goals` gets a ready design step (pulse, ingest and calibration
 | AC-03 | Built-in `calibrate`: listed by `mesh preset ls` after `audit-relay`; `instantiate` with `{repo: "alpha", agent: "alpha/auditor", hash: "0123456789ab"}` gives exactly one step with the documented fields, title `Calibrate alpha/auditor@0123456789ab` and the documented brief; `validatePolicies` reports nothing; `audit-relay` is unchanged. | unit + CLI | A field, text or list order differs. |
 | AC-04 | Hub copy: the names of `TABLES` equal (as a set, no duplicates) the tables of a fresh SQLite file migrated with `HUB_MIGRATIONS` (excluding `sqlite_%`, `schema_version`), so `topic` is in it; with Postgres set, `mesh hub migrate` of a SQLite hub with two topics copies both. | unit (SQLite file) + contract (Postgres leg) | A migrated table missing from `TABLES`, a name not a table, a duplicate, or (Postgres) topics not copied. |
 | AC-05 | Filed items (fix 1): a goal whose filer step `consumes: [accepted]`, `when: {open: true}`: after its run's record leaves item A `accepted` without link the filer becomes `ready` and its `dispositions` input lists A; in a later goal of the lineage where A repeats `accepted` with a link and no other item is accepted, the filer is `skipped` (event `step.skipped`) and has no `dispositions` input entry for A. | World (hub API) | The filer runs for a filed item, is skipped while an unfiled accepted item exists, or the input lists a filed item. |
-| AC-06 | Agreeing agent dispositions (fix 2): a person's debrief accepts A; the filer's record (agent) with A `accepted` + `link` → applied (`applied: 1`, no `ignored`), item `link` set, history entry with the agent decider, event `item.disposed`; the same record with A `dismissed` → `ignored` `[{fingerprint: A, reason: "decided by <user> in this goal"}]` and A unchanged; after the agent's agreeing entry, a later agent stage in the goal that dismisses A is still ignored. | World (hub API) | An agreeing disposition ignored, a disagreeing one applied, or the person's decision overridden after an agent entry. |
+| AC-06 | Agreeing agent dispositions (fix 2), filer policy `consumes: [accepted]`, `may_set: [accepted, dismissed]`: a person's debrief accepts A; the filer's record (agent) with A `accepted` + `link` → applied (`applied: 1`, no `ignored`), item `link` set, history entry with the agent decider, event `item.disposed`; the same record with A `dismissed` → `ignored` `[{fingerprint: A, reason: "decided by <user> in this goal"}]` and A unchanged; after the agent's agreeing entry, a later agent stage in the goal (same policy) that dismisses A is still ignored. State check kept: in another goal a person's debrief dismisses A, and a later agent stage with `consumes: [open]`, `may_set: [dismissed]` restates A `dismissed` → 200, `ignored` `[{fingerprint: A, reason: "decided by <user> in this goal"}]`, no 422, A still `dismissed` with no new history entry, and the step can be done. | World (hub API) | An agreeing disposition ignored while its state is consumed, a disagreeing one applied, the person's decision overridden after an agent entry, or a 422 / a history entry for the agreeing restatement whose state is not consumed. |
 | AC-07 | Stats route: `days=0`, `days=366`, `days=x` → 400 `days must be a whole number from 1 to 365`; key `nokey` (no `/`) → 400 `an agent key is <repo>/<name>`; unknown key → 200 `hashes: []`, `days: 30`, `since` = now − 30 days, `threshold` = config; no token → 401; a service token with `goals:read` → 200; the route is in `HUB_API` with rule `member`, scope `goals:read`, tag `goals`. | World (hub API) | Another status, text, field or route entry. |
-| AC-08 | Stats values: for agent `alpha/auditor` with two hashes H1, H2: runs (incl. one `fail` and one without `costUsdEstimate`), raising records with folds and undeclared rules, dispositions by agent and person, one reverted dismissal and one dismissal outside the window, each field of `AgentHashStats` equals the documented value; `days=1` excludes the older entries but keeps `uncalibrated`; hashes ordered by `lastAt`; `meanCostUsd`/`meanDurationMs` `null` for a hash without runs. | World (hub API) | Any count, mean, null, order or window differs. |
-| AC-09 | Reinstated: validator `alpha/checker` (hash V) dismisses item A in goal G1; in G2 a person's debrief (consumes `dismissed`) accepts A → `alpha/checker` V has `reinstated: 1`; the raising auditor's `dismissedByAgents` still counts the G1 dismissal; a person dismissing after the agent dismissal adds no reinstatement. | World (hub API) | A reinstatement missing, extra or counted against the wrong agent. |
-| AC-10 | Trigger: threshold 3; dismissals of items raised by `alpha/auditor`@H: after the 2nd no calibration goal; the 3rd (stage record) opens exactly one goal with the documented owner, title, comment, `primaryRepo`, `preset.name`, `calibration` (3 refs, oldest first, `threshold: 3`), state `in_progress`, no design step, `<G>.calibrate` `ready`, no `refs.pulse`, shown in `GET /v1/goals`; event `calibration.opened` with exactly the documented payload; stats `calibrating: 3`, `uncalibrated: 0`, `calibration` = its id. A 4th and 5th dismissal open no second goal (`uncalibrated: 2`). A `mesh_dispose` dismissal counts like a stage one. A reverted dismissal is not counted (two dismissals + one reverted → no goal). Items raised by a person's interactive step and dismissed 3 times → no goal. | World (hub API) | A goal opened early, late, twice or for a person-raised item, or a field, payload or count differs. |
+| AC-08 | Stats values: for agent `alpha/auditor` with two hashes H1, H2: runs (incl. one `fail` and one without `costUsdEstimate`), raising records with folds and undeclared rules, dispositions by agent and person, one reverted dismissal, one reverted `accepted` entry and one dismissal outside the window, each field of `AgentHashStats` equals the documented value (the reverted entries count toward nothing); `days=1` excludes the older entries but keeps `uncalibrated`; hashes ordered by `lastAt` as documented (H2's only activity is an old dismissal, so its `lastAt` is that dismissal's `at` and it sorts after H1); `meanCostUsd`/`meanDurationMs` `null` for a hash without runs. | World (hub API) | Any count, mean, null, order, `lastAt` or window differs, or a reverted entry is counted. |
+| AC-09 | Reinstated and once per goal: in goal G1 the auditor raises A and B; validator `alpha/checker` (hash V) dismisses both; the person's debrief in G1 (consumes `dismissed`, may_set `[accepted, dismissed]`) dismisses B again and leaves A → the auditor has `dismissedByAgents: 2`, `dismissedByPeople: 0`, `uncalibrated: 2` (B once), and `alpha/checker` V `reinstated: 0`. In G2 (A carried `dismissed`) a person's debrief (consumes `dismissed`) accepts A → `alpha/checker` V `reinstated: 1`; the auditor's `dismissedByAgents` stays 2. That G2 acceptance reverted (RL-4 revert) → `reinstated: 0`. | World (hub API) | A dismissal counted twice in one goal, a reinstatement missing, extra, counted after a revert or against the wrong agent. |
+| AC-10 | Trigger: threshold 3; dismissals of distinct items raised by `alpha/auditor`@H: after the 2nd no calibration goal; the 3rd (stage record) opens exactly one goal with the documented owner, title, comment, `primaryRepo`, `preset.name`, `calibration` (3 refs, oldest first, `threshold: 3`), state `in_progress`, no design step, `<G>.calibrate` `ready`, no `refs.pulse`, shown in `GET /v1/goals`; event `calibration.opened` with exactly the documented payload, and the goal timeline text `opened calibration of alpha/auditor@<hash12> (3 dismissals)`; stats `calibrating: 3`, `uncalibrated: 0`, `calibration` = its id. A 4th and 5th dismissal open no second goal (`uncalibrated: 2`). A `mesh_dispose` dismissal counts like a stage one. A reverted dismissal is not counted, and the revert itself opens nothing (threshold 3, three dismissals with the 3rd reverted → no goal, no `calibration.opened`). Items raised by a person's interactive step and dismissed 3 times → no goal. A hash-less agent (its records' decider has no `hash`) whose items are dismissed 3 times → no goal, and its stats show one entry `hash: ""` with `uncalibrated: 3`. | World (hub API) | A goal opened early, late, twice, on a revert, for a hash-less agent or for a person-raised item, or a field, payload, text or count differs. |
 | AC-11 | Calibrator order: a catalog definition `agents/rev`@H with source `calibrator: carol` → owner `carol` and repo = the source repo id; the same with `calibrator` naming no user → the pulse rule; a repo agent run by pulses of `ann` (older) and `bob` (newer) → `bob`; runs only in goals without `refs.pulse` → the owner of the goal of the newest dismissal. | World (hub API) | Another owner or repo. |
-| AC-12 | Calibration input: `GET /v1/steps/<G>.calibrate/context` (and mesh_context in the step's session) has one input `artifact: "calibration"` with the documented title and content (agent key/hash, `text` = the catalog text for a catalog agent and absent for a repo agent, each dismissal with reason, decider, via, item fields and evidence from its raising record) in order; a step with `inputs: [calibration]` in a goal without `calibration` gets no such input. | World (hub API) | A missing, extra or different field or order. |
-| AC-13 | Done: the calibrator claims `<G>.calibrate`, submits a record with no items and `assessment: "clean"`, summary `no change: …`, then done → goal `done`; event `calibration.done` `{key, hash, dismissals: 3, outcome: "no-change"}`; stats `calibrated: 3`, `calibrating: 0`, no `calibration`. With 2 more uncalibrated dismissals and threshold 3, the next dismissal opens a new goal listing those 3; a goal done while `uncalibrated` ≥ threshold opens the next one at once. `assessment: "issues"` → `outcome: "change"`. | World (hub API) | A missing or wrong event, count, or a next goal opened at the wrong time. |
+| AC-12 | Calibration input: `GET /v1/steps/<G>.calibrate/context` has one input `artifact: "calibration"` with the documented title and content (agent key/hash, `text` = the catalog text for a catalog agent and absent for a repo agent, each dismissal with reason, decider, via, item fields and evidence from its raising record) in order; a step with `inputs: [calibration]` in a goal without `calibration` gets no such input. | World (hub API) | A missing, extra or different field or order. |
+| AC-13 | Done: the calibrator claims `<G>.calibrate`, submits a record with no items and `assessment: "clean"`, summary `no change: …`, then done → goal `done`; event `calibration.done` `{key, hash, dismissals: 3, outcome: "no-change"}`; stats `calibrated: 3`, `calibrating: 0`, no `calibration`. Goal timeline text `calibration of alpha/auditor@<hash12> done: no-change`. With 2 more uncalibrated dismissals and threshold 3, the next dismissal opens a new goal listing those 3; a goal done while `uncalibrated` ≥ threshold opens the next one at once. `assessment: "issues"` → `outcome: "change"`. Replan path: the calibrator proposes and approves a plan for an open calibration goal that drops the `calibrate` step → goal `done`, `calibration.done` with `outcome: "none"`, its dismissals `calibrated`. | World (hub API) | A missing or wrong event, text, count or outcome, a done path that does not mark the dismissals calibrated, or a next goal opened at the wrong time. |
 | AC-14 | Web Roster metrics (as `frank`, after seeding through the hub API a reported repo copy `<repo>/scout` and one done headless round with telemetry `agentKey` `<repo>/scout` and a raising record): the group's `Stats` button shows `table.roster-stats` with a `tr[data-key][data-hash]` whose `td[data-col]` texts follow the documented formats (`runs` `1`, `cost` `$0.12` for 0.1234, `duration` `65.0s` for 65 000); a second click hides it; a group without activity shows `No runs or findings in the last 30 days.` | Playwright | A selector, text or format differs, or the table does not toggle. |
 | AC-15 | Docs: concepts, how-to, install, mesh skill, plan API table and events list cover the Docs table; `MESH_SKILL` equals `skills/mesh/SKILL.md` and names the calibration step; no team-, company- or person-specific name is added to code or docs. | review + skill test | A missing section, row or mention, a mismatch, or a specific name. |
 | AC-16 | `package.json` version `0.1.20`; `pnpm check` passes (lint, typecheck, boundaries, test, build); `pnpm test:web` passes after `pnpm build`; `schemas/hub-api.openapi.json` matches `pnpm schemas` and lists the stats route with its rule, scope and tag. | CI | Any check fails or the document differs. |
@@ -273,9 +310,13 @@ through `POST /v1/goals` gets a ready design step (pulse, ingest and calibration
 - 2026-11-12 **Agreeing agent dispositions (fix 2).** RL-2 ignored every agent disposition of an fp a
   person decided in the goal, so the filer could not record its link after a debrief accepted the
   item. Assumed: an agent disposition with the same value as the person's latest decision in the goal
-  is applied; precedence compares with the latest person entry, not the latest entry.
+  is applied when the item's state is in the stage's `consumes`, else ignored as RL-2 (no 422), so the
+  RL-2 check order and every record RL-2 accepted stay valid (revised after review round 1, B1);
+  precedence compares with the latest person entry, not the latest entry.
 - 2026-11-12 **What counts toward calibration.** Assumed: every non-reverted dismissal, by an agent or
-  a person, counts against the agent of the raising record of that goal; dismissals of items raised
+  a person, counts against the agent of the raising record of that goal, once per
+  `(goal, lineage, fp)` (the earliest such entry decides agent/person and time; added after review
+  round 1); reverted `accepted` and person entries count toward nothing either; dismissals of items raised
   by a person's step never count; a person reinstating an agent's dismissal adds to the dismissing
   agent's `reinstated` but does not remove the dismissal from the raiser's count, and `reinstated` does
   not trigger calibration of the dismissing agent. Carried dismissals (fold) are not new dismissals.
@@ -287,7 +328,15 @@ through `POST /v1/goals` gets a ready design step (pulse, ingest and calibration
   record has no items (outcome from `assessment`); a change is the step's branch. The record folds into
   lineage `calibrate|<repo>|calibrate`, which nothing counts (person decider).
 - 2026-11-12 **Calibrated means listed in a done goal.** No item or history row is written; a dropped
-  calibration goal would release its dismissals, but no route drops a goal today.
+  calibration goal releases its dismissals (they count as uncalibrated again) but triggers nothing; the
+  next dismissal or calibration done of that agent hash opens a new goal. Every `goal.done` path runs
+  the done handling (a replan that drops the step gives `outcome: "none"`).
+- 2026-11-12 **No calibrator.** Users are never removed today, so calibrator rule 3 always resolves.
+  If none resolves, no goal and no event; the next trigger retries. No criterion (not reachable).
+- 2026-11-12 **Reads for stats and the trigger.** No new `HubStore` methods (so no new store contract
+  criterion): both scan with the existing reads, which are unfiltered across lineages. That is linear
+  in the hub's review history per dismissal; acceptable at the current scale. Indexed queries by
+  decider or telemetry key are left for a later row if it gets slow.
 - 2026-11-12 **Threshold.** `calibration.threshold` ≥ 1, default 5; no way to switch calibration off
   (design: counting is always on, a pulse never needs a policy enabled). Agents above the threshold
   before v0.1.20 get a goal at their next dismissal.
