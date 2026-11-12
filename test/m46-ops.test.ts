@@ -338,7 +338,8 @@ describe.skipIf(!PG_URL)(`RL-3 tables${PG_URL ? "" : " (skipped: set MESH_TEST_P
     updatedAt: clock,
     ...over,
   });
-  const slot = (p: string, id: string, at: number, over: Record<string, unknown> = {}) => ({ pulse: p, slot: id, at, state: "fired", tried: [], decidedAt: at, ...over });
+  /** A scheduled slot: its id is the ISO of `at` (the spec's slot id). */
+  const slot = (p: string, at: number, over: Record<string, unknown> = {}) => ({ pulse: p, slot: new Date(at).toISOString(), at, state: "fired", tried: [], decidedAt: at, ...over });
 
   it("test_AC25_copy", async () => {
     const file = join(tmp(), "hub.db");
@@ -349,11 +350,11 @@ describe.skipIf(!PG_URL)(`RL-3 tables${PG_URL ? "" : " (skipped: set MESH_TEST_P
     expect(p2.id).toBe("p-2");
     const { nextAt: _n, ...rest } = p2;
     await X(s).savePulse({ ...rest, enabled: false, deletedAt: clock + 1 });
-    await X(s).addSlot(slot("p-1", "a", clock, { goal: "G1" }));
-    await X(s).addSlot(slot("p-1", "b", clock + 1, { goal: "G1", startedAt: clock + 2 }));
-    await X(s).addSlot(slot("p-2", "c", clock + 2, { state: "missed", reason: "no_machine" }));
+    await X(s).addSlot(slot("p-1", clock, { goal: "G1" }));
+    await X(s).addSlot(slot("p-1", clock + 1, { goal: "G1", startedAt: clock + 2 }));
+    await X(s).addSlot(slot("p-2", clock + 2, { state: "missed", reason: "no_machine" }));
     const pending = await X(s).listSlots({ pending: true });
-    expect(pending.map((x: { slot: string }) => x.slot)).toStrictEqual(["a"]);
+    expect(pending.map((x: { slot: string }) => x.slot)).toStrictEqual([new Date(clock).toISOString()]);
     await s.close();
     const url = await pgdb.fresh();
     const report = await copyHubToPostgres(file, url);
