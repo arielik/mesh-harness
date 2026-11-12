@@ -28,6 +28,8 @@ export interface Person {
   repo: string;
   /** Simulate this person's network to the hub being down. */
   offline: boolean;
+  /** Requests of this daemon sent to the hub (past the `offline` check) whose reply has not come back yet. */
+  inflight: number;
   credentialsPath: string;
   /** This machine's folder: credentials.json and daemon.json (MESH_CONFIG_DIR for a CLI run). */
   dir: string;
@@ -202,6 +204,7 @@ export class World {
       repo,
       daemon: undefined as unknown as Daemon,
       offline: false,
+      inflight: 0,
       credentialsPath,
       dir,
       configPath: join(dir, "daemon.json"),
@@ -277,6 +280,31 @@ export class World {
         return p.launchResult ?? { ok: true };
       },
     };
+    // The hub as this daemon reaches it (after the offline check): records, holds, fails and drops.
+    const send = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (init?.method === "POST" && String(url).endsWith("/v1/sync") && typeof init.body === "string") p.syncs.push(JSON.parse(init.body));
+      const path = new URL(String(url)).pathname;
+      const method = init?.method ?? "GET";
+      p.requests.push({ method, path, key: new Headers(init?.headers).get("idempotency-key") });
+      const ack = /^\/v1\/inbox\/(\d+)\/ack$/.exec(path);
+      if (ack && method === "POST" && typeof init?.body === "string") {
+        const b = JSON.parse(init.body) as { state: string; method?: string };
+        p.acks.push({ id: Number(ack[1]), state: b.state, ...(b.method !== undefined ? { method: b.method } : {}) });
+      }
+      if (p.hold && p.hold.path.test(path)) await p.hold.until;
+      const f = fails.findIndex((x) => x.path.test(path));
+      if (f >= 0) {
+        const status = fails.splice(f, 1)[0]?.status ?? 500;
+        return new Response(JSON.stringify({ error: "simulated" }), { status, headers: { "content-type": "application/json" } });
+      }
+      const res = await fetch(url, init);
+      const i = drops.findIndex((re) => re.test(path));
+      if (i >= 0) {
+        drops.splice(i, 1);
+        throw new TypeError("fetch failed (simulated lost reply)");
+      }
+      return res;
+    };
     return new Daemon({
       config: p.config,
       store: p.store,
@@ -305,28 +333,12 @@ export class World {
         hubTimeoutMs: 500,
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           if (p.offline) throw new TypeError("fetch failed (simulated network loss)");
-          if (init?.method === "POST" && String(url).endsWith("/v1/sync") && typeof init.body === "string") p.syncs.push(JSON.parse(init.body));
-          const path = new URL(String(url)).pathname;
-          const method = init?.method ?? "GET";
-          p.requests.push({ method, path, key: new Headers(init?.headers).get("idempotency-key") });
-          const ack = /^\/v1\/inbox\/(\d+)\/ack$/.exec(path);
-          if (ack && method === "POST" && typeof init?.body === "string") {
-            const b = JSON.parse(init.body) as { state: string; method?: string };
-            p.acks.push({ id: Number(ack[1]), state: b.state, ...(b.method !== undefined ? { method: b.method } : {}) });
+          p.inflight++;
+          try {
+            return await send(url, init);
+          } finally {
+            p.inflight--;
           }
-          if (p.hold && p.hold.path.test(path)) await p.hold.until;
-          const f = fails.findIndex((x) => x.path.test(path));
-          if (f >= 0) {
-            const status = fails.splice(f, 1)[0]?.status ?? 500;
-            return new Response(JSON.stringify({ error: "simulated" }), { status, headers: { "content-type": "application/json" } });
-          }
-          const res = await fetch(url, init);
-          const i = drops.findIndex((re) => re.test(path));
-          if (i >= 0) {
-            drops.splice(i, 1);
-            throw new TypeError("fetch failed (simulated lost reply)");
-          }
-          return res;
         }) as typeof fetch,
         ...launch,
         ...(headlessDeps as Partial<Parameters<typeof defaultDeps>[0]>),
@@ -368,6 +380,19 @@ export class World {
   /** MM-3: the hub's tick once, at `w.clock` (offer expiry, pauses). */
   async tick(): Promise<void> {
     await this.hub.svc.tick();
+  }
+
+  /**
+   * Take `p`'s network down and wait for its requests already on the way to the hub: once this
+   * returns, nothing of `p` reaches the hub (so a later clock jump sees its last contact as is).
+   */
+  async goOffline(p: Person, ms = 5_000): Promise<void> {
+    p.offline = true;
+    const end = Date.now() + ms;
+    while (p.inflight > 0) {
+      if (Date.now() > end) throw new Error(`${p.name}: ${p.inflight} request(s) still in flight after ${ms} ms`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
   }
 
   async flush(): Promise<void> {

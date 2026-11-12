@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AUDITOR, git, GHP, MESH_TOOL_RULES, PROMPT, Relay, sleep, until, alivePid, type PlanIn } from "./helpers/relay-kit.ts";
 import type { Json, Person } from "./helpers/world.ts";
+import { processRunner, type HeadlessRunner } from "../src/claude/index.ts";
 
 let r: Relay;
 afterEach(async () => {
@@ -28,9 +29,9 @@ interface DCast {
   self: string;
 }
 
-async function dcast(o: { maxSessions?: number; assignments?: "deliver" | "launch" | "off"; hubYaml?: Record<string, unknown>; share?: "steps" | "me" | "all" } = {}): Promise<DCast> {
+async function dcast(o: { maxSessions?: number; assignments?: "deliver" | "launch" | "off"; hubYaml?: Record<string, unknown>; share?: "steps" | "me" | "all"; runner?: HeadlessRunner } = {}): Promise<DCast> {
   r = await Relay.start(["ann", "bob", "root"], { admins: ["root"], ...(o.hubYaml ? { hubYaml: o.hubYaml } : {}) });
-  const ann = await r.headlessPerson("ann", { nick: "hl", agents: { lister: LISTER }, ...(o.share ? { person: { shareSessions: o.share } } : {}) });
+  const ann = await r.headlessPerson("ann", { nick: "hl", agents: { lister: LISTER }, ...(o.share ? { person: { shareSessions: o.share } } : {}), ...(o.runner ? { headless: { runner: o.runner } } : {}) });
   if (o.maxSessions !== undefined || o.assignments) await r.w.restart(ann, { ...(o.maxSessions !== undefined ? { maxSessions: o.maxSessions } : {}), ...(o.assignments ? { assignments: o.assignments } : {}) });
   const bob = await r.w.person("bob", "svc");
   await r.nick(bob, "bm");
@@ -633,6 +634,41 @@ describe("AC-27 budget", { timeout: 40_000 }, () => {
     expect((await transcripts(goalOf(id))).map((t) => t.title)).toStrictEqual(["run transcript (killed_budget)"]);
   });
 
+  it("test_AC27_killed_dies_at_once", async () => {
+    // A run that is gone by the time the same reconcile looks for its end (a slow alive() check, a
+    // fast exit on SIGTERM) still ends as killed_budget, not crashed.
+    const killed = new Set<number>();
+    const runner: HeadlessRunner = {
+      ...processRunner,
+      alive: (pid, startId) => !killed.has(pid) && processRunner.alive(pid, startId),
+      kill: async (pid) => {
+        killed.add(pid);
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // gone meanwhile
+        }
+      },
+    };
+    const k = await dcast({ runner });
+    const id = await headlessStep(k, { id: "b", mode: "headless", budget: { minutes: 1 } }, [{ waitFor: "never" }]);
+    await offerAndPull(k, id);
+    const call = await r.started(id);
+    const run = await r.runOf(k.ann, id);
+    r.w.clock = run.startedAt + 60_000;
+    await r.reconcile(k.ann);
+    expect(killed.has(run.pid)).toBe(true);
+    expect(await until(() => !alivePid(call.pid), 7_000)).toBe(true);
+    const finished = async () => {
+      if ((await r.runOf(k.ann, id)).state === "finished") return true;
+      await r.reconcile(k.ann);
+      return false;
+    };
+    expect(await until(finished, 7_000)).toBe(true);
+    expect(await r.runOf(k.ann, id)).toMatchObject({ state: "finished", killedForBudget: true, exit: "killed_budget" });
+    expect((await r.stepOf(id)).rounds.at(-1).telemetry.exit).toBe("killed_budget");
+  });
+
   it("test_AC27_crashed", async () => {
     const k = await dcast();
     const id = await headlessStep(k, { id: "c", mode: "headless" }, [{ stderr: ["boom-stderr-line"] }, { exit: 3 }]);
@@ -1030,7 +1066,9 @@ describe("AC-38 taken over", { timeout: 40_000 }, () => {
     const id = await headlessStep(k, { id: "t", mode: "headless", profile: "propose-via-branch" }, [{ commit: true }, { waitFor: "end" }, { exit: 0 }]);
     await offerAndPull(k, id);
     await r.started(id);
-    k.ann.offline = true;
+    // The run's own hub calls (its start report, its session's sync) may still be on the way; one
+    // that lands after the clock jump would count as the machine's last contact.
+    await r.w.goOffline(k.ann);
     r.w.clock += r.w.hubConfig.thresholds.machineOfflineMs + 1;
     await r.w.tick();
     expect((await r.stepOf(id)).state).toBe("paused");
@@ -1141,7 +1179,10 @@ describe("AC-39 run inbox", { timeout: 40_000 }, () => {
     // Share level `me`: the hub lists ann's session without a step (pid 8), so a say from ann's
     // other login can reach it (under the default `steps` the hub knows step holders only).
     const k = await dcast({ share: "me" });
-    const id = await headlessStep(k, { id: "i", mode: "headless" }, [{ waitFor: "end" }]);
+    // A 6-hour budget: the clock moves on 5 h 10 min below, and the run must still be running then
+    // (under the default 30 minutes it is stopped on the way, and whether its end is seen at 70 min
+    // or at 5 h 10 min decides whether the held message has outlived its hour).
+    const id = await headlessStep(k, { id: "i", mode: "headless", budget: { minutes: 360 } }, [{ waitFor: "end" }]);
     await offerAndPull(k, id);
     await r.started(id);
     const run = await r.runSession(k.ann, id, 7);

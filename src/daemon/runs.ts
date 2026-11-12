@@ -664,7 +664,9 @@ export class HeadlessRuns {
         if (cur.endedAt === undefined) {
           if (!this.end(cur).startedDone) await this.reportStarted(cur);
           this.checkBudget(cur);
-          await this.detectEnd(cur);
+          // The run as checkBudget left it (killedForBudget): a run that dies at once from the signal
+          // ends as killed_budget, not crashed.
+          await this.detectEnd(this.runs.get(run.runId) as RunFile);
         }
         const now = this.runs.get(run.runId) as RunFile;
         if (now.endedAt !== undefined && now.state === "running") {
@@ -732,7 +734,9 @@ export class HeadlessRuns {
     if (this.deps.runner.reapGroup) void this.deps.runner.reapGroup(pid, run.runId).catch((e) => this.deps.log(`run ${run.runId}: group cleanup failed: ${String(e)}`));
   }
 
-  private markEnded(run: RunFile): void {
+  private markEnded(ended: RunFile): void {
+    // The latest run file: what changed while detectEnd waited for the exit file is kept.
+    const run = this.runs.get(ended.runId) ?? ended;
     const exitCode = this.exitCode(run);
     this.save({ ...run, endedAt: run.endedAt ?? this.deps.now(), ...(exitCode !== undefined ? { exitCode } : {}) });
     // RL-7: the run's sessions end with it, before the end-of-run hub calls.
