@@ -264,8 +264,11 @@ export class HubService {
     );
     const bySid = all.find((hs) => hs.session.sid === ref);
     if (bySid) return bySid;
+    // A session's own name first, then the name it is shown under (`sessionName`: an unnamed session
+    // shows as its repo, as in "accepted by m2/demo"), then a sid prefix of at least 4.
     const byName = all.filter((hs) => hs.session.name === ref);
-    const hits = byName.length ? byName : ref.length >= 4 ? all.filter((hs) => hs.session.sid.startsWith(ref)) : [];
+    const byShown = byName.length ? byName : all.filter((hs) => sessionName(hs.session) === ref);
+    const hits = byShown.length ? byShown : ref.length >= 4 ? all.filter((hs) => hs.session.sid.startsWith(ref)) : [];
     if (hits.length === 0) throw new HubError(404, `no session ${ref} on ${machineName(m)}`);
     if (hits.length > 1) throw new HubError(409, `"${ref}" matches several sessions on ${machineName(m)}`);
     return hits[0] as HubSession;

@@ -1277,6 +1277,29 @@ describe("AC-11 POST /v1/messages with to", () => {
     expect(r.json.to).toBe("alice-plain/perf");
   });
 
+  it("unnamed session: addressed by the repo name it is shown under; two of them are ambiguous", async () => {
+    await world();
+    const A1 = await w.person("alice", "svc", { shareSessions: "me", hostname: "alice-plain" });
+    await w.hook(A1, "SessionStart", 101);
+    await w.flush();
+    await w.flush();
+    const s = w.session(A1, 101);
+    expect(s.name).toBeUndefined();
+    const shown = s.repo?.name as string;
+    expect(shown).toBeTruthy();
+    const r = await say(A1, { to: `${w.machineOf(A1)}/${shown}`, text: "x" });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    expect(r.json.toSid).toBe(s.sid);
+    expect(r.json.to).toBe(`alice-plain/${shown}`);
+    await w.hook(A1, "SessionStart", 102);
+    await w.flush();
+    await w.flush();
+    expect(await say(A1, { to: `${w.machineOf(A1)}/${shown}`, text: "x" })).toEqual({
+      status: 409,
+      json: { error: `"${shown}" matches several sessions on alice-plain` },
+    });
+  });
+
   it("test_AC11_no_machine", async () => {
     const k = await cast();
     expect(await say(k.A1, { to: "x/perf", text: "x" })).toEqual({ status: 404, json: { error: "no machine x/perf" } });

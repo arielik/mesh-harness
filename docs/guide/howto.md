@@ -208,6 +208,10 @@ In the TUI the header counts the offers to this machine and `o` opens them: ⏎ 
 session, `d` declines. The web's **Mine** page lists them under **Assigned to you** with a
 **Decline** button and the `mesh accept` command (the web cannot accept: it has no session).
 
+The `<session>` of a `<machine>/<session>` target (and of `mesh say`) is the session's name, else
+the name it is shown under (an unnamed session shows as its repo, as in `accepted by m2/demo`),
+else a sid prefix of at least 4 characters. When several sessions match, use a sid prefix.
+
 Under `shareSessions: steps` the hub does not know an idle session, so a `<machine>/<session>`
 target answers 404 until that session holds a step; offer to the machine alone instead.
 

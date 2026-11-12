@@ -2,9 +2,9 @@
 import pkg from "../package.json" with { type: "json" };
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { listAgents, wakeBackground } from "./claude/index.ts";
-import { dispatch, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
+import { dispatch, webRootFor, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
 import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } from "./hub/index.ts";
 import { runShim } from "./mcp/index.ts";
 import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./store/index.ts";
@@ -33,6 +33,12 @@ const env: CliEnv = { io: stdio, paths: p, env: process.env, cwd: process.cwd(),
 const up: Command = {
   name: "up",
   summary: "run the local daemon (--install: as a user service)",
+  help: [
+    "usage: mesh up [--no-solo]     run the local daemon in the foreground",
+    "       mesh up --install       write a user service for it (systemd or launchd) and print how to enable it",
+    "",
+    "--no-solo: do not start the Solo hub (the local hub used while no team hub is configured).",
+  ].join("\n"),
   async run(args) {
     const a = parseArgs(args);
     const config = loadConfig(p);
@@ -107,8 +113,7 @@ async function startSolo(): Promise<{ hub: RunningHub; creds: Credentials }> {
     { listen: "127.0.0.1:0", db: p.soloHubDb, auth: { providers: [{ id: "local", kind: "none", user }], bootstrap_admins: [`local:${user}`] } },
     { baseDir: p.stateDir, env: {} },
   );
-  const webRoot = join(dirname(self[1] as string), "web");
-  const hub = await startHub(config, { webRoot: existsSync(webRoot) ? webRoot : undefined });
+  const hub = await startHub(config, { webRoot: webRootFor(self[1] as string) });
   const login = await hub.svc.loginDirect("local", { client: "cli", hostname: hostname() });
   const creds: Credentials = { hub: hub.url, token: login.token, user: login.user, ...(login.machine ? { machine: login.machine } : {}) };
   writeFileAtomic(p.soloCredentials, `${JSON.stringify(creds, null, 2)}\n`, { mode: 0o600 });
@@ -124,6 +129,16 @@ const hubConfigPath = (a: ReturnType<typeof parseArgs>) => {
 const hub: Command = {
   name: "hub",
   summary: "run the shared hub (init | token | revoke | backup <file> | migrate): mesh hub [--config mesh-hub.yaml]",
+  help: [
+    "usage: mesh hub [--config mesh-hub.yaml]                 run the hub",
+    "       mesh hub init [--users a,b] [--listen HOST:PORT] [--config FILE]   write a config with one token per person",
+    "       mesh hub token --service <name> [--scope s1,s2]   mint a service token",
+    "       mesh hub revoke --user <id> | --machine <m-…>     revoke device and web tokens",
+    "       mesh hub backup <file>                            copy the database",
+    "       mesh hub migrate --from <sqlite file> --to postgres://…   move a SQLite hub to Postgres",
+    "",
+    "Without --config, ./mesh-hub.yaml is used when present. See docs/guide/auth.md and operations.md.",
+  ].join("\n"),
   async run(args) {
     const sub = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
     const rest = sub ? args.slice(1) : args;
@@ -188,8 +203,7 @@ const hub: Command = {
       return 0;
     }
     if (sub !== undefined) throw new Error(`unknown hub subcommand "${sub}" (use: init, token, revoke, backup, migrate)`);
-    const webRoot = join(dirname(self[1] as string), "web");
-    const running = await startHub(config, { webRoot: existsSync(webRoot) ? webRoot : undefined });
+    const running = await startHub(config, { webRoot: webRootFor(self[1] as string) });
     stdio.out(`mesh hub on ${running.url} (providers: ${config.providers.map((x) => `${x.id}/${x.kind}`).join(", ")}; db ${describeDbTarget(config.db)})`);
     await new Promise<void>((done) => {
       for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => done());
@@ -202,6 +216,7 @@ const hub: Command = {
 const mcp: Command = {
   name: "mcp",
   summary: "stdio MCP server for Claude Code (started by Claude, not by you)",
+  help: "usage: mesh mcp     the stdio MCP server; Claude Code starts it (mesh setup registers it), not you.",
   async run() {
     await runShim({ daemonConfigPath: p.daemonConfig, claudePid: process.ppid, version: pkg.version });
     await new Promise<void>((done) => process.stdin.once("close", () => done()));
