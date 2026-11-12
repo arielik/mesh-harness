@@ -404,7 +404,15 @@ describe("mesh doctor", () => {
 
   it("passes with hooks installed and the daemon running", async () => {
     const t = env(tmp(), runner);
-    await t.cmd("setup").run([]);
+    // A port the OS just handed out, not setup's random pick: parallel test files collided on it.
+    const port = await new Promise<number>((done) => {
+      const srv = createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close(() => done(p));
+      });
+    });
+    await t.cmd("setup").run(["--port", String(port)]);
     const config = JSON.parse(readFileSync(t.paths.daemonConfig, "utf8"));
     const store = await DaemonStore.open(":memory:");
     const daemon = new Daemon({
