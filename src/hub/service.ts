@@ -2177,7 +2177,7 @@ export class HubService {
     return await this.goalDetail(goalId);
   }
 
-  async proposePlan(actor: Actor, goalId: string, input: PlanInput & { approve: boolean }): Promise<{ plan: Plan; detail?: GoalDetail; warnings?: string[] }> {
+  async proposePlan(actor: Actor, goalId: string, input: PlanInput & { approve: boolean; preset?: { name: string; text: string } | undefined }): Promise<{ plan: Plan; detail?: GoalDetail; warnings?: string[] }> {
     const result = await this.goalTx(async () => {
       const goal = await this.goalOr404(goalId);
       if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
@@ -2202,7 +2202,10 @@ export class HubService {
       // so design rounds count only "revised" (M4, R4).
       for (const p of plans) if (p.decision === "pending") await this.store.savePlan({ ...p, decision: "superseded", decidedAt: now });
       await this.store.savePlan(plan);
-      if (goal.state !== "in_progress") await this.store.saveGoal({ ...goal, state: "awaiting_approval", updatedAt: now });
+      // A plan made from a template (`mesh goal plan --preset`): the goal records it, so its review
+      // lineages carry the preset name like a pulse's goals (RL-3), not "-".
+      const preset = input.preset && (goal.preset?.name !== input.preset.name || goal.preset.text !== input.preset.text) ? { preset: input.preset } : {};
+      if (goal.state !== "in_progress" || "preset" in preset) await this.store.saveGoal({ ...goal, ...preset, ...(goal.state !== "in_progress" ? { state: "awaiting_approval" as const } : {}), updatedAt: now });
       await this.emit({ type: "plan.proposed", user: actor.userId, goal: goal.id, payload: { version: plan.version, steps: plan.steps.length } });
       return plan;
     });

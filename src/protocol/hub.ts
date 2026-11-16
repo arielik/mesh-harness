@@ -164,7 +164,15 @@ export interface TopicView {
   goals: number;
 }
 
-export const ProposePlan = PlanInput.extend({ approve: z.boolean().default(false) });
+export const ProposePlan = PlanInput.extend({
+  approve: z.boolean().default(false),
+  /**
+   * The plan template the plan was made from (`mesh goal plan --preset`). The goal records it, so
+   * its review lineages are `<preset>|<repo>|<agent>` like those of a pulse's goals from the same
+   * preset, not `-|<repo>|<agent>`.
+   */
+  preset: NewGoal.shape.preset,
+});
 export const Replan = z.object({ comment: z.string().max(4000).optional() });
 export const Decide = z.object({ comment: z.string().max(4000).optional() });
 export const Approve = Decide.extend({ version: z.number().int().positive().optional() });

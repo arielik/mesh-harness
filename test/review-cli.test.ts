@@ -99,3 +99,31 @@ describe("AC-23 mesh items", { timeout: 30_000 }, () => {
     expect(res.out).toMatch(/\bitems\b/);
   });
 });
+
+// A goal planned with `mesh goal plan <G> --preset <name>` is in the same lineage as a pulse's goal
+// from that preset (`<preset>|<repo>|<agent>`), so a repeat finding is a repeat, not new.
+describe("goal plan --preset lineage", { timeout: 30_000 }, () => {
+  const relayArgs = ["--preset", "audit-relay", "--repo", ALPHA, "--params", "agent=auditor,validator=checker,filer=filer"];
+
+  it("records the preset name in the lineage, like a pulse", async () => {
+    ({ k, c } = await Rk.start());
+    const lineage = `audit-relay|${ALPHA}|auditor`;
+    const goals: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const g = await k.r.call(c.ann, "POST", "/v1/goals", { title: `Audit ${i}`, primaryRepo: "svc" });
+      expect(g.status, JSON.stringify(g.json)).toBe(201);
+      const G = g.json.id as string;
+      const res = await k.r.cli(c.ann, ["goal", "plan", G, ...relayArgs]);
+      expect(res.code, res.err).toBe(0);
+      goals.push(G);
+    }
+    const [G1, G2] = goals as [string, string];
+    const goal = (await k.r.call(c.ann, "GET", `/v1/goals/${G1}`)).json.goal;
+    expect(goal.preset.name).toBe("audit-relay");
+    const first = await k.submit(c.ann, `${G1}.audit`, rec({ items: [item("A")] }));
+    expect(first.review.lineage).toBe(lineage);
+    const second = await k.submit(c.ann, `${G2}.audit`, rec({ items: [item("A")] }));
+    expect(second.review.lineage).toBe(lineage);
+    expect(second.items).toStrictEqual([expect.objectContaining({ fp: A, mark: "repeat" })]);
+  });
+});

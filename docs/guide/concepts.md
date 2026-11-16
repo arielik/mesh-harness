@@ -310,7 +310,8 @@ and hashes it with whitespace collapsed: `eh`. A region that cannot be read hash
 Agent-written text never enters it; a moved region keeps its hash, an edit inside it changes it.
 
 **Lineage.** Records of the same reviewer on the same repo form a lineage `<preset>|<repo>|<agent>`
-(the goal's preset name or `-`; the step's repo; the step's `agent`, else its local id). A
+(the goal's preset name, from `mesh goal new --preset`, `mesh goal plan --preset` or a pulse, else
+`-`; the step's repo; the step's `agent`, else its local id). A
 consuming step belongs to the lineage of its run (the first raising step up its deps).
 
 **Fold.** The hub folds each raising record (a step with `output` and no `consumes`) against the

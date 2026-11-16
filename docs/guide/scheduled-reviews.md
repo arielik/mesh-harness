@@ -700,7 +700,8 @@ it); `sha256` is the hex SHA-256 of exactly the text you send. The goal is owned
 pinned as for a pulse. It is not offered by itself: offer its first step (`mesh assign`, or
 `POST /v1/steps/:id/assign`). `refs` are your own ids (`pulse` and `slot` are reserved); they do not
 enter the lineage, so an ingest goal of the same preset, repo and agent is folded together with the
-pulse's goals. Use another preset name (or agent) when its findings should be compared separately.
+pulse's goals, as is a goal planned with `mesh goal plan <G> --preset <name>` (the goal records the
+preset). Use another preset name (or agent) when its findings should be compared separately.
 Pull-request intake will build on this route.
 
 ## Troubleshooting

@@ -266,6 +266,7 @@ export function goalCommand(c: CliEnv): Command {
             return 2;
           }
           let plan: PlanInput;
+          let preset: { name: string; text: string } | undefined;
           if (file) plan = readPlan(file);
           else {
             const params = parseParams(a.has("params") ? (a.str("params") ?? "") : undefined);
@@ -274,7 +275,10 @@ export function goalCommand(c: CliEnv): Command {
               return 2;
             }
             try {
-              plan = instantiate(findPreset(c.cwd, presetName as string), { repo: a.str("repo") as string, goal: id, acs: readAcs(a.str("acs")), params: params.params });
+              const found = findPreset(c.cwd, presetName as string);
+              plan = instantiate(found, { repo: a.str("repo") as string, goal: id, acs: readAcs(a.str("acs")), params: params.params });
+              // The goal records the template, so its review lineages are `<preset>|…` like a pulse's.
+              preset = { name: presetName as string, text: presetText(found) };
             } catch (e) {
               // RL-1: a placeholder left in `agent` or `profile` (nothing is sent).
               if (e instanceof Error && e.message.startsWith("preset ")) {
@@ -284,7 +288,7 @@ export function goalCommand(c: CliEnv): Command {
               throw e;
             }
           }
-          const r = await hub().post<{ plan: { version: number }; detail?: GoalDetail }>(`/v1/goals/${encodeURIComponent(id)}/plan`, { ...plan, approve: !a.has("no-approve") });
+          const r = await hub().post<{ plan: { version: number }; detail?: GoalDetail }>(`/v1/goals/${encodeURIComponent(id)}/plan`, { ...plan, approve: !a.has("no-approve"), ...(preset ? { preset } : {}) });
           c.io.out(r.detail ? `Plan v${r.plan.version} approved; ${r.detail.steps.filter((s) => s.state === "ready").length} step(s) ready.` : `Plan v${r.plan.version} proposed; waiting for approval.`);
           return 0;
         }

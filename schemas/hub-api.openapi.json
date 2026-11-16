@@ -2817,6 +2817,25 @@
                   "approve": {
                     "default": false,
                     "type": "boolean"
+                  },
+                  "preset": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 60
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "text"
+                    ]
                   }
                 },
                 "required": [
