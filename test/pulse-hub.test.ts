@@ -36,6 +36,7 @@ import {
   type Bare,
   type Json,
 } from "./helpers/pulse-kit.ts";
+import { item, rec } from "./helpers/review-kit.ts";
 
 let k: Pk;
 afterEach(async () => {
@@ -580,6 +581,77 @@ describe("AC-10 overlap and abandon", () => {
     await k.tickAt(Sk(0) + 4 * HOUR - 1);
     expect((await k.slotOf("p-1", iso(Sk(0)))).state).toBe("fired");
     expect(await k.goalState(G1)).toBe("in_progress");
+  });
+
+  // Overlap counts machine work only: a goal whose remaining work waits on its owner (a debrief,
+  // an interactive step) does not block the next slot; maxGoalAge still abandons it.
+  const RUN_THEN = (next: string, run = "") => `description: Run, then next
+steps:
+  - id: run
+    kind: review
+    repo: "{repo}"${run}
+    title: "Run {repo}"
+    brief: "Run {repo}."
+  - id: next
+    kind: review
+    repo: "{repo}"
+    deps: [run]
+${next}
+    title: "Next {repo}"
+    brief: "Next {repo}."
+`;
+  const DEBRIEF_NEXT = RUN_THEN(`    mode: debrief
+    assignee: "@owner"
+    output: review-record
+    may_set: [accepted, dismissed]`,
+    "\n    output: review-record",
+  );
+  const OWNER_NEXT = RUN_THEN(`    mode: interactive`);
+  const HEADLESS_NEXT = RUN_THEN(`    mode: headless
+    agent: auditor`);
+  /** p-1 with `text`; M claims and finishes the run step of S0; returns G1 with `next` ready. */
+  async function runDone(text: string, record?: unknown): Promise<{ M: Bare; G1: string }> {
+    await start();
+    const M = await k.bare("ann", "box-m", { headless: true });
+    await k.pulseOk("ann", body({ maxGoalAge: "3d" }, "run-then", text));
+    const G1 = await claimed(M);
+    await k.tickAt(Sk(0) + MIN, M);
+    if (record !== undefined) {
+      const r = await k.stepAct(M.token, `${G1}.run`, "review", record as Record<string, unknown>);
+      expect(r.status, JSON.stringify(r.json)).toBe(201);
+    }
+    const d = await k.stepAct(M.token, `${G1}.run`, "done", { outcome: "done", summary: "ok" });
+    expect(d.status, JSON.stringify(d.json)).toBe(200);
+    expect((await k.step(`${G1}.next`)).state).toBe("ready");
+    expect(await k.goalState(G1)).toBe("in_progress");
+    return { M, G1 };
+  }
+
+  for (const [name, text, record] of [
+    ["debrief", DEBRIEF_NEXT, rec({ items: [item("r1", { severity: "S2" })] })],
+    ["interactive", OWNER_NEXT, undefined],
+  ] as const) {
+    it(`test_AC10_owner_step_never_blocks_${name}`, async () => {
+      const { M, G1 } = await runDone(text, record);
+      await k.tickAt(Sk(1), M);
+      const G2 = await firedGoal("p-1", iso(Sk(1)));
+      expect(G2).not.toBe(G1);
+      expect(await k.pulseEvents("pulse.skipped", "p-1")).toStrictEqual([]);
+      expect(await k.goalState(G1)).toBe("in_progress");
+      // maxGoalAge still abandons the parked goal.
+      for (const t of [Sk(1) + 4 * HOUR, Sk(2), Sk(2) + 4 * HOUR, Sk(3)]) await k.tickAt(t, M);
+      expect(await k.goalState(G1)).toBe("dropped");
+      expect(await k.slotOf("p-1", iso(Sk(0)))).toMatchObject({ state: "abandoned", reason: "max_goal_age", goal: G1 });
+      expect(await k.pulseEvents("pulse.skipped", "p-1")).toStrictEqual([]);
+    });
+  }
+
+  it("test_AC10_headless_step_blocks", async () => {
+    const { M, G1 } = await runDone(HEADLESS_NEXT);
+    await k.tickAt(Sk(1), M);
+    expect(await k.slotOf("p-1", iso(Sk(1)))).toMatchObject({ state: "skipped", reason: "overlap" });
+    const ev = await k.pulseEvents("pulse.skipped", "p-1");
+    expect(ev.map((e) => e.payload)).toStrictEqual([{ pulse: "p-1", slot: iso(Sk(1)), reason: "overlap", running: G1 }]);
   });
 });
 

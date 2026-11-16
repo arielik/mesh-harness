@@ -387,7 +387,7 @@ Flags of `mesh pulse add` (and `update`, except `--paused`):
 | `--cron "<5 fields>" --tz <zone>` | standard cron in an IANA time zone (default: your CLI's), e.g. `--cron "0 9 * * 1" --tz Europe/Berlin` for Mondays 09:00; at most every 5 minutes |
 | `--labels a,b` / `--machines a,b` | only machines with every label / only these machines |
 | `--window <dur>` | how long after the slot's time the run may start (default the smaller of 4h and the period; 1m to 30d). A slot whose run has not started by then is `missed` and its goal dropped. |
-| `--overlap skip\|allow` | `skip` (default): no new goal while one of an earlier slot is unfinished |
+| `--overlap skip\|allow` | `skip` (default): no new goal while one of an earlier slot still has machine work (see **Overlap** below) |
 | `--max-goal-age <dur>` | a started goal older than this is dropped at the next slot, recorded `abandoned` (default twice the period; 1h to 366d) |
 | `--missed record\|catch-up-once` | slots that passed while the hub was down: only recorded (default), or the latest one still fires |
 | `--title`, `--topics`, `--paused` | the goals' title, topics; create it paused |
@@ -418,6 +418,16 @@ mesh goal ls --pulses             # pulse goals are left out of goal lists other
 `pause`, `resume`, `update` and `rm` are for the owner or an admin. A `mesh pulse fire` while a goal
 of an earlier slot runs prints `Pulse p-2 skipped slot …: G7 is still running (overlap: skip).`
 
+**Overlap.** With `--overlap skip` a goal of an earlier slot counts as running only while it has
+machine work in flight or about to start: a headless step that is ready (waiting to be offered, or
+offered), claimed (accepted, running) or paused, or the slot's own first step while it is ready,
+claimed or paused. A goal whose remaining work waits on a person does not block the next slot: a
+debrief step for the owner, any other non-headless step, a failed or parked step waiting for
+`mesh step resume`, or headless steps blocked behind one of those. So a weekly audit with one S2
+finding keeps its schedule while the owner has not debriefed yet; each week's goal waits for its own
+debrief. A goal that really is stuck is still dropped at the next slot once it is older than
+`--max-goal-age` (recorded `abandoned`). `--overlap allow` fires whatever earlier goals are doing.
+
 **Which machine.** At a slot the hub offers the first step, as you, to the first machine in
 `mesh assign --suggest` order that is online, has the repo, auto-accepts your offers, carries every
 `--labels` label, can run headless steps, and is in `--machines` when given. An offer not accepted
@@ -429,7 +439,7 @@ The goal then sticks to that machine, so its later steps go there too.
 | State | Reason | Meaning |
 |---|---|---|
 | `fired` | | a goal was created (its run started, or is about to) |
-| `skipped` | `overlap` | a goal of an earlier slot was still unfinished |
+| `skipped` | `overlap` | a goal of an earlier slot still had machine work (a headless step ready, offered or running) |
 | `missed` | `no_machine` | no candidate: nothing online with the repo, the labels and an accept policy that takes your offer |
 | | `not_accepted` | every candidate declined or did not answer in time |
 | | `capacity` | the runner's queue was full until the deadline |
@@ -699,10 +709,11 @@ run g1-audit-mwdr1wev: headless run of G1.audit did not start: could not make a 
 | `could not make a worktree: fatal: …` | git's own error. Usually the daemon cannot write the checkout's `.git` (permissions, a sandbox). `… already exists` means a daemon stopped in the middle of a start left the run's worktree folder: remove `<run dir>/worktree` and run `git worktree prune` in the checkout. |
 | agent missing, roster definition not available, missing profile | the agent file is not in the runner's checkout at `HEAD`; the catalog definition was never pushed; the profile was removed. |
 
-A failed step leaves its goal open, and with `--overlap skip` the next slots are skipped until the
-goal is older than `--max-goal-age` and abandoned. After fixing the cause, either resume the step
-(`mesh step resume G2.audit`, or **Resume** on its panel; it is offered to the machine the goal
-sticks to) or fire a fresh slot once the old goal is out of the way.
+A failed step leaves its goal open until it is older than `--max-goal-age` and abandoned. It waits
+on you, so it does not block the next slots (overlap counts machine work only): the next slot fires
+a fresh goal, which fails the same way until the cause is fixed. After fixing the cause, either
+resume the step (`mesh step resume G2.audit`, or **Resume** on its panel; it is offered to the
+machine the goal sticks to) or let the next slot run.
 
 `mesh pulse add` and `mesh pulse update` already warn about agents the roster flags invalid; the
 pulse is still saved:

@@ -1,9 +1,10 @@
 // RL-3 AC-04: machine candidates of a pulse offer (`pulseCandidates`) and manual slot ids
 // (`manualSlot`) (docs/specs/RL-3.md, Core). The expected order is `suggest`'s, computed here.
+// Overlap: which step keeps a pulse goal running (`overlapBusy`).
 
 import { describe, expect, it } from "vitest";
 import type { Session } from "../protocol/index.ts";
-import { manualSlot, pulseCandidates } from "./pulse.ts";
+import { manualSlot, overlapBusy, pulseCandidates, type OverlapStep } from "./pulse.ts";
 import { suggest, type SuggestMachine, type SuggestSession } from "./suggest.ts";
 
 const MIN = 60_000;
@@ -141,5 +142,43 @@ describe("AC-04 manualSlot", () => {
     expect(time(c) > time(a)).toBe(true);
     expect(b.slice("manual:".length + 10)).toBe("0000000000000000");
     expect(manualSlot(T0)).not.toBe(manualSlot(T0));
+  });
+});
+
+// RL-3 overlap: only machine work keeps a pulse goal running; a goal parked on its owner does not.
+describe("overlapBusy", () => {
+  const st = (id: string, state: string, mode?: string): OverlapStep => ({ id: `G1.${id}`, state, ...(mode ? { policy: { mode } } : {}) });
+  const RUN = "G1.audit";
+
+  it("a headless step that is ready, claimed or paused keeps the goal running", () => {
+    for (const state of ["ready", "claimed", "paused"]) {
+      expect(overlapBusy([st("audit", "done", "headless"), st("validate", state, "headless")], RUN)).toBe("G1.validate");
+    }
+  });
+
+  it("a goal parked on a debrief does not block", () => {
+    for (const state of ["ready", "claimed", "paused"]) {
+      expect(overlapBusy([st("audit", "done", "headless"), st("validate", "done", "headless"), st("debrief", state, "debrief"), st("file", "blocked", "headless")], RUN)).toBeUndefined();
+    }
+  });
+
+  it("a ready or held interactive step other than the run step does not block", () => {
+    for (const state of ["ready", "claimed", "paused"]) {
+      expect(overlapBusy([st("audit", "done", "headless"), st("fix", state), st("check", state, "interactive")], RUN)).toBeUndefined();
+    }
+  });
+
+  it("the run step blocks while ready, claimed or paused, whatever its mode", () => {
+    for (const state of ["ready", "claimed", "paused"]) {
+      expect(overlapBusy([st("audit", state)], RUN)).toBe(RUN);
+      expect(overlapBusy([st("audit", state, "interactive")], RUN)).toBe(RUN);
+    }
+  });
+
+  it("blocked, ended and parked steps never block", () => {
+    for (const state of ["blocked", "done", "failed", "parked", "dropped", "skipped"]) {
+      expect(overlapBusy([st("audit", state, "headless"), st("next", state, "headless")], RUN)).toBeUndefined();
+    }
+    expect(overlapBusy([], undefined)).toBeUndefined();
   });
 });

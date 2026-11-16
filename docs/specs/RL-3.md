@@ -291,8 +291,10 @@ failed`) and the pulse is tried again at the next tick.
    has `now − createdAt >= maxGoalAgeMs` is dropped (below, reason `abandoned`) and that slot becomes
    `abandoned`, reason `max_goal_age` (event `pulse.abandoned`). A goal that never started is ended by
    its window (`missed`), never abandoned;
-4. **overlap**: when `overlap: "skip"` and an unfinished goal of the pulse remains, the slot is
-   `skipped`, reason `overlap` (event `pulse.skipped`), and nothing fires;
+4. **overlap**: when `overlap: "skip"` and an unfinished goal of the pulse has machine work
+   (`overlapBusy`: a step in `ready`, `claimed` or `paused` that is headless, or is the goal's run
+   step; never a debrief), the slot is `skipped`, reason `overlap` (event `pulse.skipped`), and
+   nothing fires. A goal whose remaining steps wait on a person does not block;
 5. else create-with-plan, the slot is `fired` with `goal`, `firedAt` = now and `until` (event
    `pulse.fired`), and one **attempt** (Advance step 3) runs in the same transaction.
 
@@ -541,3 +543,7 @@ slots and goals by id, events by `type` + `pulse`/`slot`, never by list position
   the goal owner (or an approver or admin) as usual. The goal keeps its `profiles` snapshot, so a step
   of that plan whose profile is not in it is never offered: `POST /v1/steps/:id/assign` → 409
   `<step>: profile <p> is not in the goal's snapshot`.
+- 2026-11-16 **Overlap counts machine work only.** An unfinished goal used to block every later
+  slot, so a goal parked on its owner's debrief stopped a weekly schedule until `maxGoalAge`. Now
+  only a step in `ready`, `claimed` or `paused` that is headless (or the run step itself) blocks;
+  debriefs, other interactive steps, failed and parked steps do not. `maxGoalAge` is unchanged.

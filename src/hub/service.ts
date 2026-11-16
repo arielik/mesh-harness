@@ -73,6 +73,7 @@ import {
   parseDurationSpec,
   periodMs,
   profileNames,
+  overlapBusy,
   pulseCandidates,
   scheduleText,
   validTimeZone,
@@ -3760,7 +3761,9 @@ export class HubService {
       for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
         if (s.slot === slotId || s.goal === undefined) continue;
         const g = await this.store.getGoal(s.goal);
-        if (g && g.state !== "done" && g.state !== "dropped") {
+        if (!g || g.state === "done" || g.state === "dropped") continue;
+        // Only machine work blocks: a goal parked on its owner (a debrief, an interactive step) does not.
+        if (overlapBusy(await this.store.listSteps({ goal: g.id }), await this.runStepOf(g)) !== undefined) {
           running = g.id;
           break;
         }

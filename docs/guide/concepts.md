@@ -392,7 +392,10 @@ due time: a slot whose run has not started when it ends is `missed` and its goal
 a person made meanwhile (`mesh assign`) is left alone until it ends.
 
 **Overlap and `maxGoalAge`.** With `--overlap skip` (the default) a slot is `skipped` while a goal of
-an earlier slot is unfinished; `allow` fires anyway. A started goal older than `--max-goal-age`
+an earlier slot has machine work in flight or about to start (a headless step ready, offered,
+claimed or paused, or the slot's first step while ready, claimed or paused); a goal that only waits
+on a person (a debrief, an interactive step, a failed or parked step) does not block. `allow` fires
+anyway. A started goal older than `--max-goal-age`
 (default twice the period) is dropped at the next slot, which is recorded `abandoned`; a goal that
 never started is ended by its window instead.
 

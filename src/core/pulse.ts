@@ -87,3 +87,28 @@ export function pulseCandidates(o: PulseCandidatesInput): Suggestion[] {
     return names.some((n) => n === m.id || (m.nickname !== undefined && (n === `${m.userId}/${m.nickname}` || (m.userId === o.owner && n === m.nickname))));
   });
 }
+
+/** The step fields `overlapBusy` reads. */
+export interface OverlapStep {
+  id: string;
+  state: string;
+  policy?: { mode?: string | undefined } | undefined;
+}
+
+/**
+ * RL-3 overlap: the step that keeps a pulse goal running, or undefined when the goal only waits on
+ * a person. Machine work in flight or about to start counts: a headless step that is ready (to be
+ * offered, or offered), claimed (accepted, running) or paused, and the slot's own run step while it
+ * is ready, claimed or paused (whatever its mode: the pulse dispatches it). A debrief, and any other
+ * non-headless step, waits for its person and never blocks the next slot; neither do blocked steps
+ * (their deps decide) or ended ones.
+ */
+export function overlapBusy(steps: readonly OverlapStep[], runStep: string | undefined): string | undefined {
+  for (const s of steps) {
+    if (s.state !== "ready" && s.state !== "claimed" && s.state !== "paused") continue;
+    const mode = s.policy?.mode;
+    if (mode === "debrief") continue;
+    if (mode === "headless" || s.id === runStep) return s.id;
+  }
+  return undefined;
+}
