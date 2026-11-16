@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { resolve } from "node:path";
 import { listAgents, processRunner, wakeBackground } from "./claude/index.ts";
-import { dispatch, webRootFor, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
+import { dispatch, exitQuietlyOnClosedPipe, webRootFor, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
 import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } from "./hub/index.ts";
 import { runShim } from "./mcp/index.ts";
 import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./store/index.ts";
@@ -14,6 +14,9 @@ import { DaemonStore } from "./store/index.ts";
 import { notifyChannels, SERVICE_SCOPES, trustSystemCertificates, writeFileAtomic, type Credentials, type ServiceScope } from "./protocol/index.ts";
 import * as tls from "node:tls";
 
+
+// `mesh … | head -1`: the reader closing the pipe early ends mesh quietly, not with a stack trace.
+exitQuietlyOnClosedPipe(process);
 
 // node:sqlite is still flagged experimental; keep that one warning out of the user's terminal.
 const emit = process.emitWarning.bind(process);
