@@ -30,6 +30,7 @@ async function orFail(c: CliEnv, fn: () => Promise<number>): Promise<number> {
 export function assignCommand(c: CliEnv): Command {
   return {
     name: "assign",
+    help: ASSIGN_USAGE,
     summary: `offer a goal or step to another machine or session: mesh assign <goal|step> --to <machine>[/<session>] [--stick] [--note "…"]; ranked machines: mesh assign <goal|step> --suggest [--team] [--any] [--json]`,
     async run(args) {
       const a = parseArgs(args, ["to", "note"]);
@@ -114,6 +115,7 @@ export function offersCommand(c: CliEnv): Command {
 export function acceptCommand(c: CliEnv, launch: (args: string[]) => Promise<number>): Command {
   return {
     name: "accept",
+    help: ACCEPT_USAGE,
     summary: "take a step offered to this machine: mesh accept <step> [--session <s> | --launch]",
     async run(args) {
       const a = parseArgs(args, ["session"]);
@@ -149,6 +151,7 @@ export function acceptCommand(c: CliEnv, launch: (args: string[]) => Promise<num
 export function declineCommand(c: CliEnv): Command {
   return {
     name: "decline",
+    help: DECLINE_USAGE,
     summary: 'decline a step offered to your machine: mesh decline <step> [--note "…"]',
     async run(args) {
       const a = parseArgs(args, ["note"]);
@@ -170,6 +173,7 @@ export function declineCommand(c: CliEnv): Command {
 export function withdrawCommand(c: CliEnv): Command {
   return {
     name: "withdraw",
+    help: WITHDRAW_USAGE,
     summary: "withdraw your offer of a step, or end a goal's stick and its offers: mesh withdraw <goal|step>",
     async run(args) {
       const [target] = parseArgs(args).positional;
@@ -195,6 +199,7 @@ export function withdrawCommand(c: CliEnv): Command {
 export function sessionCommand(c: CliEnv): Command {
   return {
     name: "session",
+    help: SESSION_USAGE,
     summary: "whose offers a session accepts automatically: mesh session accept <session> --from <rule,…> | --off | --clear",
     async run(args) {
       const a = parseArgs(args, ["from"]);

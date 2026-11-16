@@ -37,6 +37,7 @@ export function profileCommand(c: CliEnv): Command {
   ].join("\n");
   return {
     name: "profile",
+    help: usage,
     summary: "permission profiles for headless steps: ls | show <name> | add <name> --file F",
     async run(args) {
       const [sub, ...rest] = args;
@@ -94,6 +95,7 @@ export function artifactCommand(c: CliEnv): Command {
   const usage = ["usage:", "  mesh artifact ls <G> [--json]", "  mesh artifact show <id>"].join("\n");
   return {
     name: "artifact",
+    help: usage,
     summary: "hub-stored step output: ls <G> | show <id>",
     async run(args) {
       const [sub, ...rest] = args;

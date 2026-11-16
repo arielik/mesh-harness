@@ -148,9 +148,12 @@ function splitBatch(out: string): (string | undefined)[] {
   return texts;
 }
 
+const LEDGER_USAGE = "usage: mesh ledger stage <key>… | --all\n       mesh ledger export [--repo DIR]… [--ref REF] [--out FILE] [--events [--hub URL --token T]]";
+
 export function ledgerCommand(c: CliEnv): Command {
   return {
     name: "ledger",
+    help: LEDGER_USAGE,
     summary: "the ledger: mesh ledger stage <key> | export [--repo DIR]… [--ref REF] [--out FILE] [--events]",
     async run(args) {
       const [sub, ...rest] = args;
@@ -192,7 +195,7 @@ export function ledgerCommand(c: CliEnv): Command {
         c.io.err(`${r.records} record(s)${a.has("events") ? `, ${events} event(s)` : ""}${r.skipped ? `, ${r.skipped} file(s) not in ${LEDGER_SCHEMA} skipped` : ""}${r.invalid.length ? `, ${r.invalid.length} invalid` : ""}${out ? ` → ${out}` : ""}`);
         return r.invalid.length ? 1 : 0;
       }
-      c.io.err("usage: mesh ledger stage <key>… | --all\n       mesh ledger export [--repo DIR]… [--ref REF] [--out FILE] [--events [--hub URL --token T]]");
+      c.io.err(LEDGER_USAGE);
       return 2;
     },
   };

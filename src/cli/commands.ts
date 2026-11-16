@@ -5,9 +5,9 @@ export interface Command {
   name: string;
   summary: string;
   /**
-   * Printed for `mesh <name> --help` (or `-h`) instead of running the command. Commands that start
-   * something long-running (the daemon, a hub, the MCP server) set it, so asking for help never
-   * starts a hub or writes a config file.
+   * Printed for `mesh <name> --help` (or `-h`, anywhere after the name) instead of running the
+   * command, exit 0. Every command sets it (test/cli-help.test.ts), so asking for help never starts a
+   * hub, writes a config file or sends anything, and never ends in a usage error.
    */
   help?: string;
   run(args: string[]): Promise<number>;

@@ -115,6 +115,7 @@ function showText(d: PulseDetail): string[] {
 export function pulseCommand(c: CliEnv): Command {
   return {
     name: "pulse",
+    help: USAGE,
     summary: "schedules that create goals from a preset: add, ls, show, update, pause, resume, fire, rm",
     async run(args) {
       const [sub, ...rest] = args;

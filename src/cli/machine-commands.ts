@@ -121,6 +121,7 @@ async function labelMachine(c: CliEnv, a: ReturnType<typeof parseArgs>): Promise
 export function machineCommand(c: CliEnv): Command {
   return {
     name: "machine",
+    help: MACHINE_USAGE,
     summary: "name or label one of your machines: mesh machine name <nickname> | label <label,…> [--add|--rm] | --clear [--machine <id|nickname|hostname>]",
     async run(args) {
       const a = parseArgs(args, ["machine"]);

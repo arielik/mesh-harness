@@ -42,15 +42,18 @@ export function debriefPrompt(step: string): string {
  * start, then runs `mesh run <repo> --step <step> --prompt <prompt>` (which claims it and opens
  * the interactive session in tmux).
  */
+const DEBRIEF_USAGE = "usage: mesh debrief <step> [--session NAME] [--no-tui]";
+
 export function debriefCommand(c: CliEnv, run: (args: string[]) => Promise<number>): Command {
   return {
     name: "debrief",
+    help: DEBRIEF_USAGE,
     summary: "take a debrief assigned to you and go through its items in a session: mesh debrief <step> [--session NAME] [--no-tui]",
     async run(args) {
       const a = parseArgs(args, ["session", "socket-name"]);
       const step = a.positional[0];
       if (!step) {
-        c.io.err("usage: mesh debrief <step>");
+        c.io.err(DEBRIEF_USAGE);
         return 2;
       }
       let view: DebriefView;
@@ -96,6 +99,7 @@ export function itemsCommand(c: CliEnv): Command {
   const usage = "usage: mesh items <lineage key | step id> [--all] [--json]";
   return {
     name: "items",
+    help: usage,
     summary: "items of a review lineage: <lineage key | step id> [--all] [--json]",
     async run(args) {
       const a = parseArgs(args);

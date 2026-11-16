@@ -23,15 +23,18 @@ import { writeTrailHere } from "./trail-files.ts";
 
 const stepLine = (s: Step) => `${s.id.padEnd(20)} ${s.state.padEnd(8)} ${s.kind.padEnd(9)} ${(s.repo || "-").padEnd(18)} ${s.holderUser ? `@${s.holderUser} ` : ""}${s.title}`;
 
+const LOGIN_USAGE = "usage: mesh login --hub https://mesh.example [--provider ID] [--token T] [--device] [--no-browser | --local]";
+
 export function loginCommand(c: CliEnv): Command {
   return {
     name: "login",
+    help: LOGIN_USAGE,
     summary: "log in to a mesh hub: mesh login --hub URL [--provider ID] [--token T] [--device] [--no-browser | --local]",
     async run(args) {
       const a = parseArgs(args, ["hub", "provider", "token"]);
       const hub = a.str("hub") ?? loadCredentials(c.paths)?.hub ?? c.env.MESH_HUB;
       if (!hub) {
-        c.io.err("usage: mesh login --hub https://mesh.example [--provider ID] [--token T] [--device] [--no-browser | --local]");
+        c.io.err(LOGIN_USAGE);
         return 2;
       }
       const ask = async (q: string) => {
@@ -204,6 +207,7 @@ export function goalCommand(c: CliEnv): Command {
   ].join("\n");
   return {
     name: "goal",
+    help: usage,
     summary: "goals and plans: new, ls, show, tag, plan, approve, revise",
     async run(args) {
       const [sub, ...rest] = args;
@@ -331,6 +335,7 @@ export function topicCommand(c: CliEnv): Command {
   const usage = ["usage:", "  mesh topic ls", '  mesh topic add <name> ["<description>"]', "  mesh topic rm <name>      # its creator or an admin; untags its goals", "Every goal is in the topic all."].join("\n");
   return {
     name: "topic",
+    help: usage,
     summary: "topics that label goals: ls, add, rm",
     async run(args) {
       const [sub, name, ...words] = args;
@@ -413,14 +418,17 @@ export function takeCommand(c: CliEnv): Command {
   };
 }
 
+const ANSWER_USAGE = "usage: mesh answer <question id> <text>";
+
 export function answerCommand(c: CliEnv): Command {
   return {
     name: "answer",
+    help: ANSWER_USAGE,
     summary: "answer an agent's question: mesh answer <id> <text>",
     async run(args) {
       const [id, ...words] = args;
       if (!id || words.length === 0) {
-        c.io.err("usage: mesh answer <question id> <text>");
+        c.io.err(ANSWER_USAGE);
         return 2;
       }
       await HubClient.from(c.paths).post(`/v1/questions/${encodeURIComponent(id)}/answer`, { text: words.join(" ") });
@@ -430,14 +438,17 @@ export function answerCommand(c: CliEnv): Command {
   };
 }
 
+const AUTOPILOT_USAGE = "usage: mesh autopilot <session> off|nudge|chain";
+
 export function autopilotCommand(c: CliEnv): Command {
   return {
     name: "autopilot",
+    help: AUTOPILOT_USAGE,
     summary: "set a session's autopilot: mesh autopilot <session> off|nudge|chain",
     async run(args) {
       const [target, level] = args;
       if (!target || (level !== "off" && level !== "nudge" && level !== "chain")) {
-        c.io.err("usage: mesh autopilot <session> off|nudge|chain");
+        c.io.err(AUTOPILOT_USAGE);
         return 2;
       }
       const s = await new DaemonClient(loadConfig(c.paths)).autopilot(target, level);
@@ -495,6 +506,7 @@ export function stepCommand(c: CliEnv): Command {
   ].join("\n");
   return {
     name: "step",
+    help: usage,
     summary: "decide gates and resume parked steps: mesh step approve|reject|resume <step>",
     async run(args) {
       const [sub, id, ...rest] = args;
@@ -526,9 +538,12 @@ export function stepCommand(c: CliEnv): Command {
   };
 }
 
+const PRESET_USAGE = "usage: mesh preset ls | show <name>";
+
 export function presetCommand(c: CliEnv): Command {
   return {
     name: "preset",
+    help: PRESET_USAGE,
     summary: "plan templates: mesh preset ls | show <name>",
     async run(args) {
       const [sub, name] = args;
@@ -555,7 +570,7 @@ export function presetCommand(c: CliEnv): Command {
         c.io.out(presetText(findPreset(c.cwd, name)).trimEnd());
         return 0;
       }
-      c.io.err("usage: mesh preset ls | show <name>");
+      c.io.err(PRESET_USAGE);
       return 2;
     },
   };

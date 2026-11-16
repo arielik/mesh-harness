@@ -50,9 +50,12 @@ export function installAssets(kitDir: string, target: string, force: boolean): {
   return { copied, skipped };
 }
 
+const ASSETS_USAGE = "usage: mesh assets ls | install [--target DIR] [--force] [--kit sdd]";
+
 export function assetsCommand(c: CliEnv): Command {
   return {
     name: "assets",
+    help: ASSETS_USAGE,
     summary: "the example SDD kit (agents, programme workflow, spec template): mesh assets ls | install [--target DIR] [--force]",
     async run(args) {
       const [sub, ...rest] = args;
@@ -77,7 +80,7 @@ export function assetsCommand(c: CliEnv): Command {
         );
         return 0;
       }
-      c.io.err("usage: mesh assets ls | install [--target DIR] [--force] [--kit sdd]");
+      c.io.err(ASSETS_USAGE);
       return 2;
     },
   };

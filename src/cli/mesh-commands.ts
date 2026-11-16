@@ -393,14 +393,17 @@ export function lsCommand(c: CliEnv): Command {
   };
 }
 
+const SAY_USAGE = "usage: mesh say <session> <text>\n       mesh say <machine>/<session> <text>";
+
 export function sayCommand(c: CliEnv): Command {
   return {
     name: "say",
+    help: SAY_USAGE,
     summary: "send a message to a session: mesh say <session> <text>, or <machine>/<session> for another machine",
     async run(args) {
       const [target, ...words] = args;
       if (!target || words.length === 0) {
-        c.io.err("usage: mesh say <session> <text>\n       mesh say <machine>/<session> <text>");
+        c.io.err(SAY_USAGE);
         return 2;
       }
       if (target.includes("/")) {
@@ -427,6 +430,7 @@ const LABEL_USAGE = "usage: mesh label <session> <label,…> [--add|--rm]\n     
 export function labelCommand(c: CliEnv): Command {
   return {
     name: "label",
+    help: LABEL_USAGE,
     summary: "say what a session is for: mesh label <session> <label,…> [--add|--rm] | --clear",
     async run(args) {
       const a = parseArgs(args);
@@ -482,6 +486,7 @@ export function jumpCommand(c: CliEnv): Command {
 export function tuiCommand(c: CliEnv): Command {
   return {
     name: "tui",
+    help: "usage: mesh tui     the live session list (plain `mesh` opens it too)",
     summary: "the live session list (also: plain `mesh`)",
     async run() {
       const config = loadConfig(c.paths);
@@ -490,9 +495,19 @@ export function tuiCommand(c: CliEnv): Command {
   };
 }
 
+const RUN_USAGE = [
+  "usage: mesh run <repo…> [--agent claude|opencode] [--model M] [--prompt P] [--label a,b] [--session NAME] [--no-tui] [--no-bind]",
+  "       mesh run <repo> --step <step> [--worktree] [--base REF] [--auto off|nudge|chain]   hold a step",
+  "       mesh run --design <G>                                                            design a goal's plan",
+  "       mesh run <repo…> --bg --prompt P                                                 a Claude Code background session",
+  "",
+  "One tmux window per repo in tmux session \"mesh\" (--session NAME), window 0 the live list.",
+].join("\n");
+
 export function runCommand(c: CliEnv): Command {
   return {
     name: "run",
+    help: RUN_USAGE,
     summary: "start claude (or opencode: --agent opencode) in tmux, one window per repo: mesh run <repo…> [--step S [--worktree] [--base REF] | --design G] [--auto L] [--label a,b] [--bg --prompt P]",
     async run(args) {
       const a = parseArgs(args, ["model", "prompt", "session", "socket-name", "step", "auto", "design", "base", "agent", "label"]);
