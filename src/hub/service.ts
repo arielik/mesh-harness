@@ -2414,6 +2414,7 @@ export class HubService {
       failures?: Failure[] | undefined;
       acs?: Record<string, AcState> | undefined;
       acs_addressed?: string[] | undefined;
+      closeAsFail?: true | undefined;
     },
   ): Promise<DoneResult> {
     return await this.goalTx(async () => {
@@ -2441,7 +2442,11 @@ export class HubService {
       if (step.policy?.output && !rec && outcome === "done") {
         throw new HubError(409, `${step.id} needs a review record for round ${n} (output: review-record); submit it with mesh_review, then call mesh_done`);
       }
-      if (rec) outcome = "done";
+      // RL-1: the daemon's close-as-fail (a run that ended without mesh_done) fails the step even
+      // with a record in the round: the run never said it was done.
+      const closing = input.closeAsFail === true;
+      if (closing) outcome = "fail";
+      else if (rec) outcome = "done";
       // Criteria exist only when the plan defines them: ids the plan doesn't know are dropped, and a
       // wrong id never fails the call.
       const plan = (await this.store.listPlans(step.goal)).find((p) => p.version === step.planVersion);
@@ -2479,7 +2484,7 @@ export class HubService {
       // RL-4: the pre-read of a debrief in this round.
       if (step.read && step.read.round === n) round.read = { user: step.read.user, at: step.read.at };
       // A recorded round is done: judgeDone's caps, parking and failure routing do not apply.
-      const decision = rec ? ({ action: "done" } as const) : judgeDone(step, round, explicit, plan?.acs);
+      const decision = rec && !closing ? ({ action: "done" } as const) : judgeDone(step, round, explicit, plan?.acs);
 
       if (decision.action === "reject") {
         // Not accepted: the holder keeps the step, the attempt is a round (a second miss parks).

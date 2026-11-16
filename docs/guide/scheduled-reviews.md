@@ -726,7 +726,8 @@ warning: step "audit": agent broken in demo has invalid front matter: front matt
 
 ### A run ended without `mesh_done`
 
-The run started but ended (exit, crash, budget) without an accepted `mesh_done`: the step fails with
+The run started but ended (exit, crash, budget, turn limit) without an accepted `mesh_done`, also
+after it stored its review record: the step fails with
 `headless run ended without mesh_done (exit <exit>)` and a `transcript` artifact holds the tail of
 the run (last assistant texts and errors, secrets redacted). Read it with `mesh artifact ls <G>` and
 `mesh artifact show <id>`. Usual causes: the budget was too small (`turns`, `minutes`), the agent

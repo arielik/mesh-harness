@@ -258,7 +258,9 @@ and `profileHash`, `sessionId`, `turns`, `tokensIn`, `tokensOut`, `cacheRead`, `
 structured data with `mesh_review`, then calls `mesh_done`. The step closes `done` only with a
 record for its current round (REQ-5: `mesh_done` without one is refused with 409); with a record it
 closes `done` whatever its outcome or verdict says. The record's `assessment` never fails the step,
-and a step with `output` never reopens other steps: its record carries the findings.
+and a step with `output` never reopens other steps: its record carries the findings. A headless run
+that stored its record but ended without `mesh_done` (for example at its turn limit) is closed as
+failed all the same (see *Close-as-fail*); the stored record stays applied.
 
 A record has `subject` (`repo`, `commit`, `artifact`; `commit` defaults to `HEAD` of the step's
 worktree), `coverage` (`complete` or `partial`), `scope` (paths looked at), `assessment` (`clean`,

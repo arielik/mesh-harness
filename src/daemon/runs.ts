@@ -872,7 +872,8 @@ export class HeadlessRuns {
       if (!e.doneDone) {
         const summary = meta.notStarted ? `headless run of ${run.step} did not start: ${meta.notStarted}` : `headless run ended without mesh_done (exit ${exit})`;
         const sid = [...sids].find((x) => x !== run.sessionId && this.deps.sessions().some((s) => s.sid === x));
-        const done = await this.call<DoneResult>(run, "done", "POST", this.stepPath(run.step, "/done"), { outcome: "fail", summary, reopen: [], ...(sid ? { sid } : {}) });
+        // RL-1: closeAsFail, so a review record stored by the run does not close the step done.
+        const done = await this.call<DoneResult>(run, "done", "POST", this.stepPath(run.step, "/done"), { outcome: "fail", summary, reopen: [], closeAsFail: true, ...(sid ? { sid } : {}) });
         if (!done.ok && done.retry) return;
         const n = done.ok ? done.value.step.rounds?.at(-1)?.n : undefined;
         // A refused done (the step was released or taken meanwhile) closed nothing: no round, no push.

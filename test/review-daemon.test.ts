@@ -452,6 +452,27 @@ describe("AC-21 headless review", { timeout: 60_000 }, () => {
     expect(tel.agentKey).toBe("svc/validator");
   });
 
+  it("test_AC21_review_then_max_turns_fails", async () => {
+    // The run stores its record, then ends at its turn limit without mesh_done: the step fails.
+    const k = await hcast();
+    const G = await r.goal(k.self, [{ id: "audit", mode: "headless", agent: "ruled", output: "review-record" }]);
+    const id = `${G}.audit`;
+    const maxTurns = JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true, num_turns: 31, duration_ms: 9, usage: {}, permission_denials: [] });
+    r.script(id, [{ waitFor: "end-7" }, { stdout: [maxTurns] }, { exit: 1 }]);
+    await r.autoOffer(k.ann, id, k.self);
+    await r.pull(k.ann);
+    await r.started(id);
+    await r.runSession(k.ann, id, 7);
+    const t = await r.w.tool(k.ann, 7, "mesh_review" as never, recArgs({ items: [it1("I-03")] }));
+    expect(t.isError, t.text).toBeFalsy();
+    r.go("end-7");
+    await r.endRun(k.ann, id);
+    const st = await r.stepOf(id);
+    expect(st.state).toBe("failed");
+    expect(st.rounds.at(-1)).toMatchObject({ outcome: "fail", summary: "headless run ended without mesh_done (exit error_max_turns)" });
+    expect(await r.events("step.done", id)).toStrictEqual([]);
+  });
+
   it("test_AC21_done_without_review", async () => {
     const k = await hcast();
     const G = await r.goal(k.self, [{ id: "audit", mode: "headless", agent: "ruled", output: "review-record" }]);

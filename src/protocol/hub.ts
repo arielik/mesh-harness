@@ -201,6 +201,11 @@ export const DoneRequest = z.object({
   failures: z.array(Failure).max(100).optional(),
   acs: z.record(z.string(), AcState).optional(),
   acs_addressed: z.array(z.string().max(40)).max(100).optional(),
+  /**
+   * RL-1: the daemon's close-as-fail of a headless run that ended without mesh_done. The step fails
+   * (as an outcome `fail` without a record) even when a review record was stored in the round.
+   */
+  closeAsFail: z.literal(true).optional(),
 });
 /** RL-1: body of `POST /v1/profiles`. */
 export const ProfileSave = z.object({ name: ProfileName, text: z.string().min(1).max(20000) });

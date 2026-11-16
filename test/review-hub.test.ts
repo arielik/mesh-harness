@@ -453,6 +453,23 @@ describe("AC-12 done", () => {
     expect(await k.state(`${G}.fix`)).toBe("done");
   });
 
+  it("test_AC12_close_as_fail_with_record_fails", async () => {
+    // RL-1 close-as-fail: the daemon closes a headless run that ended without mesh_done; a record
+    // stored in the round does not turn that into done.
+    await start();
+    const G = await k.goal(c.ann, [S.audit()]);
+    await k.claim(c.ann, `${G}.audit`);
+    await k.reviewOk(c.ann, `${G}.audit`, rec({ items: [item("A")] }));
+    const d = await k.close(c.ann, `${G}.audit`, { outcome: "fail", summary: "headless run ended without mesh_done (exit error_max_turns)", closeAsFail: true });
+    expect(d.status, JSON.stringify(d.json)).toBe(200);
+    expect(await k.state(`${G}.audit`)).toBe("failed");
+    const rs = await rounds(`${G}.audit`);
+    expect(rs).toHaveLength(1);
+    expect(rs[0]).toMatchObject({ n: 1, outcome: "fail", summary: "headless run ended without mesh_done (exit error_max_turns)" });
+    expect(await ev("step.failed", `${G}.audit`)).toHaveLength(1);
+    expect(await ev("step.done", `${G}.audit`)).toStrictEqual([]);
+  });
+
   it("test_AC12_findings_sent", async () => {
     const G = await routed();
     const res = await k.reviewOk(c.ann, `${G}.audit`, rec({ items: [item("A")] }));

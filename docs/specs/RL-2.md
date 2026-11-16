@@ -423,6 +423,11 @@ route. **Tests that involve sessions without a step must set the daemon's `share
   and failure routing does not apply. Without one, outcome done is refused with 409 (no round is
   added, so artifact rounds stay aligned), outcome fail fails as today. A step with `output` never
   sends `reopen` (400, checked before the reopen ids, review F8), with or without a record.
+- 2026-11-16 **Close-as-fail wins over a record.** The daemon's close-as-fail now sends
+  `closeAsFail: true` with its outcome `fail`: the step fails (as outcome fail without a record)
+  even with a record in the round, because the run never said it was done (a run that stored its
+  record and then hit its turn limit showed as done). The record stays applied. Supersedes the
+  close-as-fail part of the entry above.
 - 2026-11-12 **No record queued offline.** `mesh_review` is never queued while the hub is offline (a
   queued `mesh_done` replayed without its record would get 409). A headless run then ends as RL-1's
   close-as-fail.
