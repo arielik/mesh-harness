@@ -132,6 +132,21 @@ describe("AC-19 mesh_review", { timeout: 40_000 }, () => {
     }
   });
 
+  it("test_AC19_url_paths_unchanged", async () => {
+    // A URL used as an evidence or key path (a pipeline link) keeps its `//`.
+    const k = await cast();
+    const G = await goal(k.self, [{ id: "audit", output: "review-record" }]);
+    await sessionClaims(k, 1, `${G}.audit`);
+    const url = "https://ci.example.com/group/proj/-/pipelines/42";
+    await toolOk(k, 1, recArgs({ items: [it1("I-03", { key: { rule: "I-03", path: url }, evidence: [{ path: url, note: "failed job" }, { path: join(k.root, "src", "a.ts") }] })] }));
+    const [rv] = await stored(k, `${G}.audit`);
+    expect(rv.record.items[0].key.path).toBe(url);
+    expect(rv.record.items[0].evidence[0].path).toBe(url);
+    expect(rv.record.items[0].fp).toBe(ofp("I-03", url));
+    // Control: a file path in the same record is still made relative.
+    expect(rv.record.items[0].evidence[1].path).toBe("src/a.ts");
+  });
+
   it("test_AC19_subject_given", async () => {
     const k = await cast();
     const G = await goal(k.self, [{ id: "audit", output: "review-record" }]);

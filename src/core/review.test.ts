@@ -55,6 +55,16 @@ describe("AC-03 identity", () => {
     expect(C.normPath("/r/a", "/r")).toBe("a");
   });
 
+  it("test_AC03_normPath_url_unchanged", () => {
+    for (const u of ["https://ci.example.com/group/proj/-/pipelines/42", "http://h//a/b/", "git+ssh://git@h/x.git", "HTTPS://Host/a\\b"]) {
+      expect(C.normPath(u), u).toBe(u);
+      expect(C.normPath(u, "/r"), u).toBe(u);
+    }
+    // Control: a file path with the same shape after the scheme is still normalised.
+    expect(C.normPath("ci.example.com//group/")).toBe("ci.example.com/group");
+    expect(C.normPath("https:/x//y")).toBe("https:/x/y");
+  });
+
   it("test_AC03_fp_vector", () => {
     expect(formula("I-03", "src/a.ts", "f")).toBe(VECTOR);
     expect(C.fingerprint({ rule: "I-03", path: "src/a.ts", symbol: "f" })).toBe(VECTOR);

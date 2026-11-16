@@ -6,8 +6,15 @@ import { parse } from "yaml";
 import type { Fold, ItemState, Severity, StepWhen } from "../protocol/index.ts";
 import { frontMatter, listField } from "./headless.ts";
 
-/** `\` → `/`, the `root` prefix removed, leading `./` removed, runs of `/` collapsed, trailing `/` removed. */
+/** A URL (`scheme://…`): an evidence or key path that names a pipeline, a ticket or a page, not a file. */
+const URL_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * `\` → `/`, the `root` prefix removed, leading `./` removed, runs of `/` collapsed, trailing `/` removed.
+ * A URL (`scheme://…`) is returned unchanged: collapsing its `//` would make `https:/host/…`.
+ */
 export function normPath(p: string, root?: string): string {
+  if (URL_RE.test(p)) return p;
   let s = p.replace(/\\/g, "/");
   if (root !== undefined) {
     let r = root.replace(/\\/g, "/");

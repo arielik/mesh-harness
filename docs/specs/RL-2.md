@@ -105,7 +105,8 @@ export function normPath(p: string, root?: string): string
 ```
 `\` → `/`; when `root` is given and `p` equals `root` or starts with `root + "/"`, that prefix (and the
 `/`) is removed; then leading `./` removed repeatedly, runs of `/` collapsed to one, a trailing `/`
-removed. Otherwise unchanged (an absolute path outside `root` stays absolute).
+removed. Otherwise unchanged (an absolute path outside `root` stays absolute). A URL (`scheme://…`,
+e.g. a pipeline link used as evidence) is returned unchanged.
 
 ```ts
 export function fingerprint(key: { rule: string; path?: string; symbol?: string }): string
