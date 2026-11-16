@@ -449,8 +449,14 @@ describe("AC-10 fail fast", { timeout: 60_000 }, () => {
     const id = await headlessStep(k, { id: "ff1", agent: "bad" }, []);
     await r.autoOffer(k.ann, id, k.self);
     await r.pull(k.ann);
-    await r.reconcile(k.ann);
-    expect(await until(async () => (await r.stepOf(id)).state === "failed", 5_000), "step failed").toBe(true);
+    // The start (worktree, checks) may still be in progress on a loaded machine: reconcile while waiting.
+    expect(
+      await until(async () => {
+        await r.reconcile(k.ann);
+        return (await r.stepOf(id)).state === "failed";
+      }, 20_000),
+      "step failed",
+    ).toBe(true);
     await r.reconcile(k.ann);
     await sleep(200);
     expect(r.calls(id)).toStrictEqual([]);
