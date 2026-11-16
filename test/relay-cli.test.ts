@@ -112,6 +112,13 @@ describe("AC-07 profile", { timeout: 20_000 }, () => {
     const envy = await r.cli(ann, ["profile", "show", "envy"]);
     expect(envy.code, envy.err).toBe(0);
     expect(JSON.parse(envy.out).env).toStrictEqual({ CI: "1" });
+    // RL-1: `mesh profile --help` prints the file's keys and their limits, and calls no hub.
+    const help = await r.cli(ann, ["profile", "--help"]);
+    expect(help.code, help.err).toBe(0);
+    expect(help.out).toContain("usage:\n  mesh profile ls [--json]");
+    expect(help.out).toContain("at most 50, each at most 1000 characters");
+    expect(help.out).toContain("env: {NAME: \"value\", ...}");
+    expect(help.requests).toStrictEqual([]);
     // test_AC07_show_unknown
     const bad = await r.cli(ann, ["profile", "show", "x"]);
     expect(bad.code).toBe(1);

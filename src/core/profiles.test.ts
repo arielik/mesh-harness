@@ -171,6 +171,16 @@ describe("AC-05 parseProfile", () => {
     expect(C.profileRunEnv({ permissions: { allow: [], deny: [] }, env: { CI: "1", PATH: "/tmp" } })).toStrictEqual({ error: "profiles may not set PATH" });
   });
 
+  // RL-1: a check is at most 1000 characters, and the parse error says so.
+  it("test_RL1_check_length", () => {
+    const long = `pnpm vitest run ${"x".repeat(1000 - 16)}`;
+    expect(long).toHaveLength(1000);
+    expect(C.parseProfile(`checks: ["${long}"]\n`).file).toStrictEqual({ extends: "read-only", checks: [long] });
+    expect(C.parseProfile(`checks: ["ok", "${long}x"]\n`)).toStrictEqual({ error: "checks.1: a check is at most 1000 characters" });
+    expect(C.parseProfile(`allow: ["${"x".repeat(301)}"]\n`)).toStrictEqual({ error: "allow.0: a rule is at most 300 characters" });
+    expect(C.parseProfile(`description: ${"d".repeat(201)}\n`)).toStrictEqual({ error: "description: a description is at most 200 characters" });
+  });
+
   it("test_AC05_parse_ok", () => {
     const ok = C.parseProfile('allow: ["Bash(pnpm lint)", "mcp__mesh__mesh_done"]\nchecks: ["pnpm test"]\n');
     expect(ok.error).toBeUndefined();

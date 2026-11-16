@@ -2,7 +2,8 @@
 // of step rounds).
 
 import { readFileSync } from "node:fs";
-import type { ProfileView, StoredArtifact } from "../protocol/index.ts";
+import { PROFILE_ENV_MAX, PROFILE_ENV_VALUE_MAX } from "../core/index.ts";
+import { PROFILE_LIMITS, type ProfileView, type StoredArtifact } from "../protocol/index.ts";
 import type { Command } from "./commands.ts";
 import { parseArgs, type CliEnv } from "./context.ts";
 import { HubCallError, HubClient } from "./hub-client.ts";
@@ -19,12 +20,30 @@ async function orRefused(c: CliEnv, fn: () => Promise<number>): Promise<number> 
 }
 
 export function profileCommand(c: CliEnv): Command {
-  const usage = ["usage:", "  mesh profile ls [--json]", "  mesh profile show <name>", "  mesh profile add <name> --file <profile.yaml>"].join("\n");
+  const L = PROFILE_LIMITS;
+  const usage = [
+    "usage:",
+    "  mesh profile ls [--json]",
+    "  mesh profile show <name>",
+    "  mesh profile add <name> --file <profile.yaml>",
+    "",
+    "profile.yaml keys (all optional):",
+    "  extends: read-only | read-only+checks | propose-via-branch   (default read-only)",
+    `  description: text                 at most ${L.description} characters`,
+    `  checks: [command, ...]            each allowed as Bash(<command>); at most ${L.checks}, each at most ${L.check} characters`,
+    `  allow: [rule, ...], deny: [...]   Claude Code permission rules; at most ${L.rules} each, each at most ${L.rule} characters`,
+    `  env: {NAME: "value", ...}         variables for the run's process; at most ${PROFILE_ENV_MAX}, values at most ${PROFILE_ENV_VALUE_MAX} characters`,
+    "                                    (MESH_*, CLAUDE_*, ANTHROPIC_*, GIT_*, PATH and loader variables are refused)",
+  ].join("\n");
   return {
     name: "profile",
     summary: "permission profiles for headless steps: ls | show <name> | add <name> --file F",
     async run(args) {
       const [sub, ...rest] = args;
+      if (sub === "--help" || sub === "-h" || sub === "help") {
+        c.io.out(usage);
+        return 0;
+      }
       const a = parseArgs(rest, ["file"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {

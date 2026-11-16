@@ -184,6 +184,9 @@ A registered profile (`mesh profile add <name> --file profile.yaml`) is YAML: `e
 the three, default `read-only`), `checks` (commands, each allowed as `Bash(<command>)`), `allow`,
 `deny`, `env`, `description`. Its settings are the base's, then the checks, then `allow`; denies are
 the base's, then `deny`.
+Limits (`mesh profile --help` lists them, and a parse error names the one hit): at most 50 checks
+of at most 1000 characters each, at most 100 `allow` and 100 `deny` rules of at most 300 characters
+each, a `description` of at most 200 characters, and the whole file at most 20000 characters.
 
 `env` maps variable names to string values (quote numbers and booleans: `CI: "1"`) that the run's
 process gets; they also go into the settings Claude Code reads, so they count in the profile's

@@ -199,14 +199,26 @@ export const RunTelemetry = z.object({
 });
 export type RunTelemetry = z.infer<typeof RunTelemetry>;
 
+/** RL-1: the limits of a registered profile's YAML (`mesh profile --help` and the guide list them). */
+export const PROFILE_LIMITS = { description: 200, checks: 50, check: 1000, rules: 100, rule: 300 } as const;
+
 /** RL-1: the YAML text of a registered profile. */
 export const ProfileFile = z
   .object({
-    description: z.string().max(200).optional(),
+    description: z.string().max(PROFILE_LIMITS.description, `a description is at most ${PROFILE_LIMITS.description} characters`).optional(),
     extends: ProfileBase.default("read-only"),
-    checks: z.array(z.string().min(1).max(200)).max(50).optional(),
-    allow: z.array(z.string().min(1).max(300)).max(100).optional(),
-    deny: z.array(z.string().min(1).max(300)).max(100).optional(),
+    checks: z
+      .array(z.string().min(1, "a check is a command, not empty").max(PROFILE_LIMITS.check, `a check is at most ${PROFILE_LIMITS.check} characters`))
+      .max(PROFILE_LIMITS.checks, `a profile has at most ${PROFILE_LIMITS.checks} checks`)
+      .optional(),
+    allow: z
+      .array(z.string().min(1, "a rule is not empty").max(PROFILE_LIMITS.rule, `a rule is at most ${PROFILE_LIMITS.rule} characters`))
+      .max(PROFILE_LIMITS.rules, `allow has at most ${PROFILE_LIMITS.rules} rules`)
+      .optional(),
+    deny: z
+      .array(z.string().min(1, "a rule is not empty").max(PROFILE_LIMITS.rule, `a rule is at most ${PROFILE_LIMITS.rule} characters`))
+      .max(PROFILE_LIMITS.rules, `deny has at most ${PROFILE_LIMITS.rules} rules`)
+      .optional(),
     /** Environment variables for the run's process; names and values are checked by `parseProfile`. */
     env: z.record(z.string(), z.string({ error: "an env value is a string (quote numbers and booleans)" })).optional(),
   })
