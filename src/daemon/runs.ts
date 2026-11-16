@@ -418,13 +418,15 @@ export class HeadlessRuns {
   }
 
   /** RL-2: the running run a daemon session belongs to (its worktree and agent), if any. */
-  runForSid(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined; agentFile?: string | undefined } | undefined {
+  runForSid(sid: string): { worktree?: string | undefined; agent?: { name: string; key: string; hash: string } | undefined; agentFile?: string | undefined; agentRulesFile?: string | undefined } | undefined {
     for (const run of this.runs.values()) {
       if (run.state !== "running" || run.endedAt !== undefined) continue;
       if (!this.runSids(run).has(sid)) continue;
-      // RL-5: a roster run's definition is `<runDir>/agent.md`.
+      // RL-5: a roster run's definition is `<runDir>/agent.md`; RL-2: a repo agent's is snapshotted
+      // there at start too, with its `agent.rules.yaml` (a run started by an older daemon has neither).
       const agentFile = this.file(run, "agent.md");
-      return { worktree: run.worktree, agent: run.agent, ...(existsSync(agentFile) ? { agentFile } : {}) };
+      const agentRulesFile = this.file(run, "agent.rules.yaml");
+      return { worktree: run.worktree, agent: run.agent, ...(existsSync(agentFile) ? { agentFile } : {}), ...(existsSync(agentRulesFile) ? { agentRulesFile } : {}) };
     }
     return undefined;
   }
@@ -609,6 +611,16 @@ export class HeadlessRuns {
       const invalid = parseAgentFile(text).invalid;
       if (invalid !== undefined) return this.notStarted(next, `agent ${meta.agent} has invalid front matter: ${invalid}`);
       writeFileAtomic(this.file(run, "agents.json"), JSON.stringify({ [meta.agent]: agentsJsonEntry(text) }));
+      // RL-2: the definition the run started with declares its rules at mesh_review, whatever the run
+      // checks out in its worktree later (`<runDir>/agent.md` plus `agent.rules.yaml` when present).
+      writeFileAtomic(this.file(run, "agent.md"), text);
+      let rulesYaml: string | undefined;
+      try {
+        rulesYaml = readFileSync(join(worktree, ".claude", "agents", `${meta.agent}.rules.yaml`), "utf8");
+      } catch {
+        rulesYaml = undefined;
+      }
+      if (rulesYaml !== undefined) writeFileAtomic(this.file(run, "agent.rules.yaml"), rulesYaml);
       next = { ...next, agent: { name: meta.agent, key: `${this.repoName(run)}/${meta.agent}`, hash: agentFileHash(text) } };
       this.save(next);
     }

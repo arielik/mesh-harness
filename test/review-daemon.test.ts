@@ -401,6 +401,30 @@ describe("AC-21 headless review", { timeout: 60_000 }, () => {
     expect(rv.undeclaredRules).toBe(0);
   });
 
+  it("test_AC21_rules_from_start_snapshot", async () => {
+    // The run checks out another commit in its worktree (no agent file, no rules file there): the
+    // rules are still the ones of the definition the run started with.
+    const k = await hcast();
+    writeFileSync(join(k.ann.repoDir, ".claude", "agents", "ruled.rules.yaml"), "- x\n");
+    git(k.ann.repoDir, ["add", "-A"]);
+    git(k.ann.repoDir, ["commit", "-qm", "rules"]);
+    const G = await r.goal(k.self, [{ id: "audit", mode: "headless", agent: "ruled", output: "review-record" }]);
+    const id = `${G}.audit`;
+    await run(k, id, 7);
+    const wt = String((await r.runOf(k.ann, id)).worktree);
+    expect(existsSync(join(wt, ".claude", "agents", "ruled.md"))).toBe(true);
+    git(wt, ["rm", "-q", "-r", ".claude/agents"]);
+    git(wt, ["commit", "-qm", "elsewhere"]);
+    expect(existsSync(join(wt, ".claude", "agents", "ruled.md"))).toBe(false);
+    const t = await r.w.tool(k.ann, 7, "mesh_review" as never, recArgs({ items: [it1("I-03"), it1("x"), it1("y")] }));
+    expect(t.isError, t.text).toBeFalsy();
+    const [rv] = (await r.call(k.ann, "GET", `/v1/steps/${id}/reviews`)).json.reviews as Json[];
+    expect((rv.record.items as Json[]).map((x) => x.key.rule)).toStrictEqual(["I-03", "x", "other:y"]);
+    expect(rv.undeclaredRules).toBe(1);
+    r.go("end-7");
+    await r.endRun(k.ann, id);
+  });
+
   it("test_AC21_consuming_decider", async () => {
     const k = await hcast({ validator: "---\nname: validator\ndescription: Validates\n---\nYou validate.\n" });
     const G = await r.goal(k.self, [

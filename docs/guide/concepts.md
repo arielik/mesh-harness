@@ -269,7 +269,8 @@ round too (it does not count against `per_round`).
 secrets]`, or a comma-separated string) or in a sibling `<name>.rules.yaml` (a list, or a mapping
 whose keys are rule ids). A `key.rule` the agent does not declare is recorded as `other:<slug>` and
 counted (`undeclaredRules`, also in a headless run's telemetry). With no agent, every rule is
-`other:<slug>`.
+`other:<slug>`. A headless run uses the definition (and rules file) it started with, kept in its run
+directory, so a run that checks out another commit in its worktree keeps its declared rules.
 
 **Fingerprint.** An item's identity: the first 16 characters of the lowercased base32 SHA-256 of
 `rule`, the normalised `path` (relative to the repo root, `/` separators) and `symbol`. Line
