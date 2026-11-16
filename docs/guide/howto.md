@@ -111,6 +111,11 @@ Each mesh installation has its own id (`install-id` in its config folder), so on
 from two OS users or two containers on one host shows as two machines. From an older CLI (before
 0.1.5) both would share one; log in again from each after updating.
 
+**Switching hubs** (`mesh login --hub <other url>`, or a hub that was reset) needs no cleanup: the
+daemon tells messages and offers apart by the hub they came from, so the new hub's message 1 is never
+taken for the old hub's. A message the hub lists again that the daemon already queued is skipped,
+and the daemon log says so once (`hub message 1 from <url> already queued; skipped`).
+
 The web dashboard is at the hub's URL. It has a Live page (who is working on what, and what needs whom), a Goals board, a page per goal with the step graph, and **Mine** (your own machines).
 
 ### See all your machines

@@ -44,7 +44,26 @@ export const DAEMON_MIGRATIONS: readonly string[] = [
    CREATE TABLE agent_run (agent_id TEXT PRIMARY KEY, record_key TEXT, cwd TEXT NOT NULL, value TEXT NOT NULL, at INTEGER NOT NULL);
    CREATE INDEX agent_run_key ON agent_run (record_key);
    CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);`,
+  // Hub message ids are per hub: a seen id is namespaced by the hub it came from (its URL). Rows
+  // from before keep a NULL hub; `hubMessageSeen` attributes one to the hub that lists the same
+  // message again (same id, session and text) and never lets it hide another hub's message.
+  `ALTER TABLE message ADD COLUMN hub TEXT;
+   DROP INDEX message_hub;
+   CREATE UNIQUE INDEX message_hub ON message (hub, hub_id) WHERE hub_id IS NOT NULL;`,
 ];
+
+/** Where a hub inbox message came from: the hub (its URL) and its id there. */
+export interface HubMessageRef {
+  hub: string;
+  id: number;
+}
+
+/**
+ * What the store knows of a hub inbox message: `seen` (already queued: skip it), `new`, or
+ * `replaced` (this hub once sent another message with this id, e.g. the hub was reset: the old
+ * row lets go of the id and the message is new).
+ */
+export type HubMessageSeen = "seen" | "new" | "replaced";
 
 export interface PendingCall {
   key: string;
@@ -68,6 +87,7 @@ interface MessageRow {
   created_at: number;
   delivered_at: number | null;
   hub_id: number | null;
+  hub: string | null;
 }
 
 function toMessage(r: MessageRow): Message {
@@ -81,6 +101,7 @@ function toMessage(r: MessageRow): Message {
     ...(r.error !== null ? { error: r.error } : {}),
     ...(r.delivered_at !== null ? { deliveredAt: r.delivered_at } : {}),
     ...(r.hub_id !== null ? { hubId: r.hub_id } : {}),
+    ...(r.hub_id !== null && r.hub !== null ? { hub: r.hub } : {}),
   });
 }
 
@@ -145,19 +166,36 @@ export class DaemonStore {
       .map((r) => JSON.parse(r.value) as HookEvent);
   }
 
-  queueMessage(sid: string, text: string, now: number, hubId?: number): Message {
+  queueMessage(sid: string, text: string, now: number, from?: HubMessageRef): Message {
     const { lastId } = this.db.run(
-      "INSERT INTO message (sid, text, state, created_at, hub_id) VALUES (?, ?, 'pending', ?, ?)",
+      "INSERT INTO message (sid, text, state, created_at, hub_id, hub) VALUES (?, ?, 'pending', ?, ?, ?)",
       sid,
       text,
       now,
-      hubId ?? null,
+      from?.id ?? null,
+      from?.hub ?? null,
     );
     return this.message(lastId) as Message;
   }
 
-  hasHubMessage(hubId: number): boolean {
-    return this.db.get("SELECT 1 FROM message WHERE hub_id = ?", hubId) !== undefined;
+  /**
+   * Whether hub message `m` (id, session, text) from `hub` was already queued. Ids are per hub, so
+   * only the same hub's same message counts. A row from before ids were namespaced (no hub) counts
+   * only when it is the same message (same id, session and text); it is then attributed to `hub`.
+   */
+  hubMessageSeen(hub: string, m: { id: number; toSid: string; text: string }): HubMessageSeen {
+    return this.db.transaction(() => {
+      const own = this.db.get<{ id: number; sid: string; text: string }>("SELECT id, sid, text FROM message WHERE hub = ? AND hub_id = ?", hub, m.id);
+      if (own) {
+        if (own.sid === m.toSid && own.text === m.text) return "seen";
+        this.db.run("UPDATE message SET hub_id = NULL, hub = NULL WHERE id = ?", own.id);
+        return "replaced";
+      }
+      const legacy = this.db.get<{ id: number }>("SELECT id FROM message WHERE hub IS NULL AND hub_id = ? AND sid = ? AND text = ? ORDER BY id LIMIT 1", m.id, m.toSid, m.text);
+      if (!legacy) return "new";
+      this.db.run("UPDATE message SET hub = ? WHERE id = ?", hub, legacy.id);
+      return "seen";
+    });
   }
 
   // ---------- outbox (observations spooled for the hub, plan §5.3) ----------

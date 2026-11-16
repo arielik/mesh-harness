@@ -337,7 +337,8 @@ export class Daemon {
         machineRepos: () => this.machineRepos(),
         machineAgents: () => this.machineAgents(),
         afterSync: () => this.catalogPass(),
-        onMessage: (m) => this.receive(m),
+        onMessage: (m, hub) => this.receive(m, hub),
+        onHubChanged: () => this.forgetOffersOfOtherHub(),
         onPulled: (ids) => this.forgetOffers(ids),
         retryDue: () => this.offersAwaitingRetry.size > 0,
         log: (l) => this.deps.log(l),
@@ -749,7 +750,7 @@ export class Daemon {
   }
 
   /** A message from the hub inbox: queue it for local delivery. */
-  private receive(m: InboxMessage): "queued" | "unknown" | "handling" {
+  private receive(m: InboxMessage, hub: string): "queued" | "unknown" | "handling" {
     // MM-3: a machine-wide message (no session) is an offer the daemon handles itself.
     if (m.toSid === "") {
       if (m.kind !== "offer") return "unknown";
@@ -766,7 +767,7 @@ export class Daemon {
         .then(({ files }) => writeTrail(s.cwd, files.filter((f) => f.path.endsWith(`plan.v${String(m.data?.version)}.yaml`) || f.path.endsWith("/steps/design.md"))))
         .catch((e) => this.deps.log(`could not write the approved plan for ${goal}: ${String(e)}`));
     }
-    this.store.queueMessage(s.sid, m.text, this.deps.now(), m.id);
+    this.store.queueMessage(s.sid, m.text, this.deps.now(), { hub, id: m.id });
     void this.deliverPending(s.sid).catch(() => undefined);
     return "queued";
   }
@@ -786,6 +787,12 @@ export class Daemon {
     if (now) now.acked = now.acked || ok;
     if (ok) this.offersAwaitingRetry.delete(id);
     else this.offersAwaitingRetry.add(id);
+  }
+
+  /** The inbox now comes from another hub: offer ids handled before name other messages there. */
+  private forgetOffersOfOtherHub(): void {
+    this.offersHandled.clear();
+    this.offersAwaitingRetry.clear();
   }
 
   /** After a pull: forget handled offers the hub took the ack of and no longer lists. */
@@ -1063,7 +1070,7 @@ export class Daemon {
   private settle(m: Message, state: "delivered" | "failed", detail: string): void {
     if (state === "delivered") this.store.markDelivered(m.id, detail, this.deps.now());
     else this.store.markFailed(m.id, detail);
-    if (m.hubId !== undefined) void this.link?.ack(m.hubId, state, state === "delivered" ? detail : undefined);
+    if (m.hubId !== undefined) void this.link?.ack(m.hubId, state, state === "delivered" ? detail : undefined, m.hub);
     if (m.hubId !== undefined || state === "delivered") {
       const s = this.sessions.find((x) => x.sid === m.sid);
       if (s?.step) this.link?.enqueue({ id: randomUUID(), at: this.deps.now(), type: "message.delivered", sid: s.sid, step: s.step, payload: { state, method: detail } });

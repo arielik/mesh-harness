@@ -134,6 +134,8 @@ export const Message = z.object({
   error: z.string().optional(),
   /** Id of the hub message this came from (plan §5.4). */
   hubId: z.number().int().optional(),
+  /** The hub (its URL) that `hubId` is an id of; absent on rows from before ids were namespaced. */
+  hub: z.string().optional(),
 });
 export type Message = z.infer<typeof Message>;
 

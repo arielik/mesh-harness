@@ -47,7 +47,9 @@ export interface HubLinkDeps {
    * A message from the hub inbox. `unknown`: acked as failed; `handling`: the daemon handles it
    * itself and acks it when done (MM-3 machine-wide offers).
    */
-  onMessage(m: InboxMessage): "queued" | "unknown" | "handling";
+  onMessage(m: InboxMessage, hub: string): "queued" | "unknown" | "handling";
+  /** The inbox is now pulled from another hub than before: message ids name other messages. */
+  onHubChanged?(): void;
   /** The ids of every message a pull listed (after `onMessage` saw them), so handled ones can be forgotten. */
   onPulled?(ids: readonly number[]): void;
   /**
@@ -65,6 +67,11 @@ export interface HubLinkDeps {
   onRejected?(call: PendingCall, error: HubRpcError): void;
   /** Call timeout; a blackholed hub costs at most this once, then the link is offline. */
   timeoutMs?: number;
+}
+
+/** A hub's identity for its message ids: its URL without a trailing slash. */
+export function hubKey(url: string): string {
+  return url.replace(/\/+$/, "");
 }
 
 /** Most session records one sync may carry (SyncRequest allows 200). */
@@ -141,6 +148,10 @@ export class HubLink {
   private sentAgents: string | undefined;
   private warnedUnconfirmed = false;
   private probeBackoff = PROBE_MIN_MS;
+  /** The hub the inbox was last pulled from (hub message ids are per hub). */
+  private inboxHub: string | undefined;
+  /** Messages logged as skipped (already queued), so a message listed on every pull is logged once. */
+  private loggedSkips = new Set<string>();
 
   constructor(deps: HubLinkDeps) {
     this.deps = deps;
@@ -388,19 +399,42 @@ export class HubLink {
     const wasOffline = this.status === "offline";
     if (wasOffline && !(await this.probe(c, this.deps.retryDue?.() ?? false))) return;
     try {
+      const hub = hubKey(c.hub);
       const { messages } = await this.rpc<{ messages: InboxMessage[] }>("GET", "/v1/inbox", undefined, undefined, { force: wasOffline });
+      if (this.inboxHub !== undefined && this.inboxHub !== hub) this.deps.onHubChanged?.();
+      this.inboxHub = hub;
       for (const m of messages) {
-        if (this.deps.store.hasHubMessage(m.id)) continue;
-        if (this.deps.onMessage(m) === "unknown") await this.ack(m.id, "failed", "unknown session");
+        // Message ids are per hub: one seen from another hub (or before a reset) hides nothing.
+        // Machine-wide offers are never queued locally; the daemon tracks those itself.
+        const seen = m.toSid === "" ? "new" : this.deps.store.hubMessageSeen(hub, m);
+        if (seen === "seen") {
+          const key = `${hub}#${m.id}`;
+          if (!this.loggedSkips.has(key)) this.deps.log(`hub message ${m.id} from ${hub} already queued; skipped`);
+          this.loggedSkips.add(key);
+          continue;
+        }
+        if (seen === "replaced") this.deps.log(`hub message ${m.id} from ${hub} differs from the one queued under that id before (hub reset?); taking the new one`);
+        if (this.deps.onMessage(m, hub) === "unknown") await this.ack(m.id, "failed", "unknown session");
       }
+      const listed = new Set(messages.map((m) => `${hub}#${m.id}`));
+      for (const k of this.loggedSkips) if (!listed.has(k)) this.loggedSkips.delete(k);
       this.deps.onPulled?.(messages.map((m) => m.id));
     } catch {
       // offline: the next pull retries
     }
   }
 
-  /** Ack an inbox message; false when the hub did not take it (it stays pending there). */
-  async ack(hubId: number, state: "delivered" | "failed", method: string | undefined): Promise<boolean> {
+  /**
+   * Ack an inbox message; false when the hub did not take it (it stays pending there). With `hub`
+   * (the hub the id is from), nothing is sent once the link points at another hub: there the id
+   * names another message.
+   */
+  async ack(hubId: number, state: "delivered" | "failed", method: string | undefined, hub?: string): Promise<boolean> {
+    const c = this.credentials();
+    if (hub !== undefined && c && hubKey(c.hub) !== hub) {
+      this.deps.log(`not acking message ${hubId} of ${hub}: the link now points at ${hubKey(c.hub)}`);
+      return false;
+    }
     try {
       await this.rpc("POST", `/v1/inbox/${hubId}/ack`, { state, method });
       return true;

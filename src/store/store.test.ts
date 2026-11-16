@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Session } from "../protocol/index.ts";
-import { DaemonStore } from "./daemon-store.ts";
+import { DAEMON_MIGRATIONS, DaemonStore } from "./daemon-store.ts";
 import { openDb, openSyncDb } from "./db.ts";
 
 const dirs: string[] = [];
@@ -167,6 +167,39 @@ describe("DaemonStore", () => {
     expect(st.message(m1.id)).toMatchObject({ state: "delivered", method: "stop", deliveredAt: 7 });
     expect(st.message(m2.id)).toMatchObject({ state: "failed", error: "gone" });
     expect(st.pendingMessages()).toEqual([]);
+    st.close();
+  });
+
+  it("namespaces hub message ids by hub", async () => {
+    const st = await DaemonStore.open(":memory:");
+    const a = { id: 1, toSid: "s1", text: "from a" };
+    expect(st.hubMessageSeen("http://a", a)).toBe("new");
+    st.queueMessage("s1", "from a", 5, { hub: "http://a", id: 1 });
+    expect(st.hubMessageSeen("http://a", a)).toBe("seen");
+    // Another hub's message 1 is another message; it queues beside the first.
+    expect(st.hubMessageSeen("http://b", { id: 1, toSid: "s1", text: "from b" })).toBe("new");
+    expect(st.queueMessage("s1", "from b", 6, { hub: "http://b", id: 1 })).toMatchObject({ hub: "http://b", hubId: 1 });
+    expect(st.hubMessageSeen("http://b", { id: 1, toSid: "s1", text: "from b" })).toBe("seen");
+    st.close();
+  });
+
+  it("migrates seen hub message ids from before they were namespaced", async () => {
+    const path = join(tmp(), "daemon.db");
+    // A store at the schema before the hub column, holding two messages of the hub of that time.
+    const old = await openSyncDb(path, DAEMON_MIGRATIONS.slice(0, 3));
+    old.run("INSERT INTO message (sid, text, state, created_at, hub_id) VALUES ('s1', 'kept', 'pending', 1, 1)");
+    old.run("INSERT INTO message (sid, text, state, created_at, hub_id) VALUES ('s1', 'other', 'delivered', 2, 2)");
+    old.close();
+    const st = await DaemonStore.open(path);
+    const [kept] = st.pendingMessages("s1");
+    expect(kept).toMatchObject({ text: "kept", hubId: 1 });
+    expect(kept?.hub).toBeUndefined();
+    // The same message listed again is recognised and attributed to the hub that lists it.
+    expect(st.hubMessageSeen("http://a", { id: 1, toSid: "s1", text: "kept" })).toBe("seen");
+    expect(st.pendingMessages("s1")[0]).toMatchObject({ hub: "http://a", hubId: 1 });
+    // An old id no longer hides another message: here another hub's message 2.
+    expect(st.hubMessageSeen("http://b", { id: 2, toSid: "s9", text: "for s9" })).toBe("new");
+    expect(st.queueMessage("s9", "for s9", 3, { hub: "http://b", id: 2 })).toMatchObject({ hub: "http://b", hubId: 2 });
     st.close();
   });
 

@@ -3,7 +3,7 @@ export { openDb, openSyncDb, SOLE_LEADER, SqliteDb, SyncDb, type Channel, type D
 export { describeDbTarget, isPostgresUrl, LOCKS, POSTGRES, SQLITE, toPgPlaceholders, type Dialect, type DialectName, type LockKey } from "./dialect.ts";
 export { openPgDb, PgDb } from "./pg.ts";
 export { copyHubToPostgres, type HubCopyReport } from "./hub-copy.ts";
-export { DAEMON_MIGRATIONS, DaemonStore, type PendingCall } from "./daemon-store.ts";
+export { DAEMON_MIGRATIONS, DaemonStore, type HubMessageRef, type HubMessageSeen, type PendingCall } from "./daemon-store.ts";
 export {
   HUB_MIGRATIONS,
   HUB_MIGRATIONS_PG,

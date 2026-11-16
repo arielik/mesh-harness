@@ -6,7 +6,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Repo, Session, ShareLevel } from "../protocol/index.ts";
+import type { InboxMessage, Repo, Session, ShareLevel } from "../protocol/index.ts";
 import { DaemonStore } from "../store/index.ts";
 import { HubLink, HubRpcError, sessionMetadata, syncedSessions } from "./hub-link.ts";
 
@@ -587,5 +587,116 @@ describe("MM-3 offline pull: a waiting offer retry checks the hub at once", () =
     await t.link.pullInbox();
     expect(t.calls).toEqual(["GET /health"]);
     expect(t.link.offline).toBe(true);
+  });
+});
+
+describe("hub inbox ids are per hub", () => {
+  const msg = (id: number, toSid: string, text: string, kind = "note"): InboxMessage => ({ id, toSid, kind, text, fromUser: "carol", createdAt: 1 });
+
+  // Two fake hubs behind one fetch, each with its own inbox; onMessage queues like the daemon does.
+  async function twoHubs() {
+    const dir = mkdtempSync(join(tmpdir(), "mesh-link-inbox-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const credentialsPath = join(dir, "credentials.json");
+    let mtime = 1_700_000_000;
+    const useHub = (hub: string) => {
+      writeFileSync(credentialsPath, JSON.stringify({ hub, token: "t", user: { id: "bob", name: "bob", roles: ["member"] } }));
+      mtime += 10;
+      utimesSync(credentialsPath, mtime, mtime);
+    };
+    useHub("http://hub-a.test");
+    const store = await DaemonStore.open(":memory:");
+    cleanups.push(() => store.close());
+    const inbox: Record<string, InboxMessage[]> = { "hub-a.test": [], "hub-b.test": [] };
+    const received: { hub: string; id: number; text: string }[] = [];
+    const logs: string[] = [];
+    const acks: string[] = [];
+    let hubChanges = 0;
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const link = new HubLink({
+      credentialsPath,
+      store,
+      sessions: () => [],
+      onMessage: (m, hub) => {
+        received.push({ hub, id: m.id, text: m.text });
+        if (m.toSid !== "") store.queueMessage(m.toSid, m.text, 5, { hub, id: m.id });
+        return m.toSid === "" ? "handling" : "queued";
+      },
+      onHubChanged: () => void hubChanges++,
+      log: (l) => void logs.push(l),
+      now: () => 1_000_000,
+      timeoutMs: 1_000,
+      fetch: (async (url: string | URL | Request) => {
+        const u = new URL(String(url));
+        if (u.pathname === "/v1/inbox") return json({ messages: inbox[u.host] ?? [] });
+        if (u.pathname.endsWith("/ack")) acks.push(`${u.host} ${u.pathname}`);
+        return json({ ok: true });
+      }) as typeof fetch,
+    });
+    return { link, store, inbox, received, logs, acks, useHub, hubChanges: () => hubChanges };
+  }
+
+  it("delivers a message from another hub that reuses an id the store already holds", async () => {
+    const t = await twoHubs();
+    t.inbox["hub-a.test"] = [msg(1, "s1", "from a")];
+    await t.link.pullInbox();
+    t.useHub("http://hub-b.test");
+    t.inbox["hub-b.test"] = [msg(1, "s1", "from b")];
+    await t.link.pullInbox();
+    expect(t.received).toEqual([
+      { hub: "http://hub-a.test", id: 1, text: "from a" },
+      { hub: "http://hub-b.test", id: 1, text: "from b" },
+    ]);
+    expect(t.store.pendingMessages("s1").map((m) => [m.hub, m.hubId, m.text])).toEqual([
+      ["http://hub-a.test", 1, "from a"],
+      ["http://hub-b.test", 1, "from b"],
+    ]);
+    expect(t.hubChanges()).toBe(1);
+  });
+
+  it("delivers an offer even when a session message of another hub had its id", async () => {
+    const t = await twoHubs();
+    t.inbox["hub-a.test"] = [msg(1, "s1", "from a")];
+    await t.link.pullInbox();
+    t.useHub("http://hub-b.test");
+    t.inbox["hub-b.test"] = [msg(1, "", "offer", "offer")];
+    await t.link.pullInbox();
+    expect(t.received.map((r) => `${r.hub} ${r.id}`)).toEqual(["http://hub-a.test 1", "http://hub-b.test 1"]);
+  });
+
+  it("skips the same hub's message listed again, and logs that once", async () => {
+    const t = await twoHubs();
+    t.inbox["hub-a.test"] = [msg(1, "s1", "hello")];
+    await t.link.pullInbox();
+    await t.link.pullInbox();
+    await t.link.pullInbox();
+    expect(t.received).toHaveLength(1);
+    expect(t.store.pendingMessages("s1")).toHaveLength(1);
+    expect(t.logs.filter((l) => l === "hub message 1 from http://hub-a.test already queued; skipped")).toHaveLength(1);
+    expect(t.hubChanges()).toBe(0);
+  });
+
+  it("takes a new message under a reused id of the same hub (a reset); the old row lets go of the id", async () => {
+    const t = await twoHubs();
+    t.inbox["hub-a.test"] = [msg(1, "s1", "before the reset")];
+    await t.link.pullInbox();
+    t.inbox["hub-a.test"] = [msg(1, "s1", "after the reset")];
+    await t.link.pullInbox();
+    expect(t.received.map((r) => r.text)).toEqual(["before the reset", "after the reset"]);
+    expect(t.store.pendingMessages("s1").map((m) => [m.text, m.hubId])).toEqual([
+      ["before the reset", undefined],
+      ["after the reset", 1],
+    ]);
+    expect(t.logs.some((l) => l.includes("differs from the one queued under that id before"))).toBe(true);
+  });
+
+  it("does not ack a message of one hub once the link points at another", async () => {
+    const t = await twoHubs();
+    t.useHub("http://hub-b.test");
+    expect(await t.link.ack(1, "delivered", "stop", "http://hub-a.test")).toBe(false);
+    expect(t.acks).toEqual([]);
+    expect(await t.link.ack(1, "delivered", "stop", "http://hub-b.test")).toBe(true);
+    expect(await t.link.ack(2, "delivered", "stop")).toBe(true);
+    expect(t.acks).toEqual(["hub-b.test /v1/inbox/1/ack", "hub-b.test /v1/inbox/2/ack"]);
   });
 });
