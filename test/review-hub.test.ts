@@ -1045,6 +1045,37 @@ describe("AC-22 inputs", () => {
     expect((content.items[0].history as Json[]).length).toBeGreaterThan(0);
   });
 
+  it("test_AC22_dispositions_evidence_and_proposal", async () => {
+    // A filer consuming confirmed items gets the evidence (path, lines, note) and proposal the
+    // producing review recorded, so it can cite them.
+    await start();
+    const G = await k.goal(c.ann, [
+      S.audit(),
+      S.validate({ id: "v", may_set: ["confirmed"] }),
+      S.step("file", { deps: ["v"], mode: "headless", agent: "filer", output: "review-record", consumes: ["confirmed", "accepted"], may_set: ["accepted"], inputs: ["dispositions"] }),
+    ]);
+    const url = "https://ci.example.com/group/proj/-/pipelines/42";
+    const evA = [
+      { path: url, note: "job 7 failed on main" },
+      { path: "src/a.ts", lines: [3, 4], note: "the call" },
+    ];
+    await k.submit(c.ann, `${G}.audit`, rec({ items: [item("A", { evidence: evA, proposal: "pin the image" }), item("B")] }));
+    await k.submit(c.ann, `${G}.v`, rec({ dispositions: [disp(A, "confirmed"), disp(B, "confirmed")] }));
+    await k.claim(c.ann, `${G}.file`);
+    const [i] = (await k.ctx(c.ann, `${G}.file`)).inputs as Json[];
+    expect(i).toMatchObject({ from: `${G}.audit`, artifact: "items", title: "items and dispositions" });
+    const items = JSON.parse(i.content).items as Json[];
+    const a = items.find((x) => x.fp === A) as Json;
+    const b = items.find((x) => x.fp === B) as Json;
+    expect(a.evidence).toStrictEqual(evA);
+    expect(a.proposal).toBe("pin the image");
+    expect((a.history as Json[]).length).toBeGreaterThan(0);
+    expect(a.state).toBe("confirmed");
+    // An item recorded without evidence or proposal: an empty list, no proposal.
+    expect(b.evidence).toStrictEqual([]);
+    expect(b).not.toHaveProperty("proposal");
+  });
+
   it("test_AC22_dispositions_paged_whole_items", async () => {
     // A consuming step with more items than fit in one input: whole items only, a page that says
     // which, and `items_from` serves the rest (no item cut, none lost, none twice).

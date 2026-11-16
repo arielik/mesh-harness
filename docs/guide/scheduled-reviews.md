@@ -261,6 +261,10 @@ and a disposition for each confirmed item: disposition accepted, reason "recorde
 link "https://tracker.example.com/demo/<fingerprint>". Then call mesh_done.
 ```
 
+In a consuming step the input "dispositions" gives each item with its history and the evidence
+(path, lines, note) and proposal the audit recorded, so a filer can cite them (a pipeline link the
+auditor gave as an evidence path, for one).
+
 When a run raises more items than fit in one input, the input "dispositions" holds whole items only
 and a line after it says how many were left out; the agent calls `mesh_context` with `items_from`
 for the next ones (the mesh skill tells it to). Nothing is cut in the middle of an item.

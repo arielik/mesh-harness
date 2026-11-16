@@ -158,6 +158,7 @@ import type {
   ArtifactKind,
   ArtifactMediaType,
   Decider,
+  ConsumedItem,
   DebriefItem,
   DebriefList,
   DebriefSummary,
@@ -969,8 +970,11 @@ export class HubService {
     return out;
   }
 
-  /** The `dispositions` input of a step, or undefined when there are no items for it. */
-  private async dispositionsInput(step: Step, goal: Goal, steps: readonly Step[]): Promise<{ from: string; lineage: string; items: ItemView[] } | undefined> {
+  /**
+   * The `dispositions` input of a step, or undefined when there are no items for it. A consuming
+   * step's items carry the evidence and proposal of its run's latest record (`ConsumedItem`).
+   */
+  private async dispositionsInput(step: Step, goal: Goal, steps: readonly Step[]): Promise<{ from: string; lineage: string; items: (ItemView | ConsumedItem)[] } | undefined> {
     const p = step.policy;
     if (isRaising(p)) {
       const lineage = lineageOf(goal, step);
@@ -982,7 +986,12 @@ export class HubService {
     if (!run || !record) return undefined;
     const consumes: readonly ItemState[] = p.consumes;
     const rows = (await this.recordItems(record)).filter((r) => consumedNow(r, consumes));
-    return rows.length ? { from: run.id, lineage: record.lineage, items: await this.withHistory(record.lineage, rows) } : undefined;
+    if (!rows.length) return undefined;
+    const items: ConsumedItem[] = (await this.withHistory(record.lineage, rows)).map((v) => {
+      const first = record.record.items.find((i) => i.fp === v.fp);
+      return { ...v, evidence: first?.evidence ?? [], ...(first?.proposal !== undefined ? { proposal: first.proposal } : {}) };
+    });
+    return { from: run.id, lineage: record.lineage, items };
   }
 
   /** `holds` for `settle`: does each `when` step's run's record have an item it consumes? */

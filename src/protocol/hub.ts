@@ -15,6 +15,7 @@ import {
   type FoldMark,
   type ItemState,
   type ItemView,
+  type ReviewEvidence,
   type StoredReview,
 } from "./review.ts";
 
@@ -281,6 +282,13 @@ export interface RevertResult {
 
 /** RL-4: a debrief disposition as the lists show it. */
 export type DecidedView = DispositionRow & { title: string; revertable: boolean };
+
+/**
+ * RL-2: an item a consuming step gets in its `dispositions` input: the row with its history, plus the
+ * evidence (path, lines, note) and proposal of the item in its run's latest record, so the step can
+ * cite them (a filer links the pipeline the auditor named).
+ */
+export type ConsumedItem = ItemView & { evidence: ReviewEvidence[]; proposal?: string };
 
 /** RL-4: an item of a debrief: evidence locations (never the agent's note) and possible repeats. */
 export type DebriefItem = ItemView & {
