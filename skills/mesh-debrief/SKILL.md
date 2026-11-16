@@ -14,7 +14,8 @@ items; the person decides. You never decide for the person.
 
 1. Call `mesh_context` first. Its input `debrief items` lists the items in order (most severe
    first) with their fingerprints, history, evidence locations and near-matches; another input
-   may hold the run's report.
+   may hold the run's report. When a line after the items says some were left out, call
+   `mesh_context` with the `items_from` it gives for the next ones before you finish.
 2. Go through the items in that order, **one at a time**. For each item show:
    - its title, severity and current state;
    - the evidence, read from the repo files at the given paths and lines (never the agent's quoted

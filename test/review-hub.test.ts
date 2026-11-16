@@ -1045,6 +1045,59 @@ describe("AC-22 inputs", () => {
     expect((content.items[0].history as Json[]).length).toBeGreaterThan(0);
   });
 
+  it("test_AC22_dispositions_paged_whole_items", async () => {
+    // A consuming step with more items than fit in one input: whole items only, a page that says
+    // which, and `items_from` serves the rest (no item cut, none lost, none twice).
+    await start();
+    const G = await k.goal(c.ann, [S.audit(), S.validate({ id: "v", inputs: ["audit", "dispositions"] })]);
+    const long = "x".repeat(190);
+    const rules = Array.from({ length: 300 }, (_, i) => `R${String(i).padStart(3, "0")}`);
+    await k.submit(c.ann, `${G}.audit`, rec({ items: rules.map((r) => item(r, { title: `${r} ${long}` })) }));
+    await k.claim(c.ann, `${G}.v`);
+    const first = ((await k.ctx(c.ann, `${G}.v`)).inputs as Json[]).find((i) => i.artifact === "items") as Json;
+    expect(first).toMatchObject({ from: `${G}.audit`, artifact: "items", truncated: false });
+    expect(first.content.length).toBeLessThanOrEqual(50_000);
+    const c0 = JSON.parse(first.content);
+    const n0 = (c0.items as Json[]).length;
+    expect(n0).toBeGreaterThan(0);
+    expect(n0).toBeLessThan(300);
+    expect(first.page).toStrictEqual({ from: 0, count: n0, total: 300 });
+    expect(c0.page).toStrictEqual(first.page);
+    const seen: string[] = (c0.items as Json[]).map((x) => x.fp);
+    let from = n0;
+    let guard = 0;
+    while (from < 300 && guard++ < 20) {
+      const res = await k.r.call(c.ann, "GET", `/v1/steps/${G}.v/context?agent=1&items_from=${from}`);
+      expect(res.status, JSON.stringify(res.json)).toBe(200);
+      const ins = (res.json.context ?? res.json).inputs as Json[];
+      // Only the item list: the audit's artifacts are not served again.
+      expect(ins.map((i) => i.artifact)).toStrictEqual(["items"]);
+      const part = JSON.parse(ins[0].content);
+      expect(ins[0].page).toMatchObject({ from, total: 300 });
+      expect(ins[0].page.count).toBe((part.items as Json[]).length);
+      seen.push(...(part.items as Json[]).map((x) => x.fp));
+      from += ins[0].page.count;
+    }
+    expect(seen).toHaveLength(300);
+    expect(new Set(seen).size).toBe(300);
+    expect([...seen].sort()).toStrictEqual(rules.map((r) => fpOf(r)).sort());
+    // Past the end: an empty page; a bad value is refused.
+    const past = await k.r.call(c.ann, "GET", `/v1/steps/${G}.v/context?agent=1&items_from=300`);
+    expect(((past.json.context ?? past.json).inputs as Json[])[0].page).toStrictEqual({ from: 300, count: 0, total: 300 });
+    expect((await k.r.call(c.ann, "GET", `/v1/steps/${G}.v/context?agent=1&items_from=-1`)).status).toBe(400);
+  });
+
+  it("test_AC22_dispositions_small_unpaged", async () => {
+    await start();
+    const G = await k.goal(c.ann, [S.audit(), S.validate({ id: "v", inputs: ["dispositions"] })]);
+    await k.submit(c.ann, `${G}.audit`, rec({ items: [item("A"), item("B")] }));
+    await k.claim(c.ann, `${G}.v`);
+    const [i] = (await k.ctx(c.ann, `${G}.v`)).inputs as Json[];
+    expect(i).not.toHaveProperty("page");
+    expect(JSON.parse(i.content)).not.toHaveProperty("page");
+    expect((JSON.parse(i.content).items as Json[]).map((x) => x.fp).sort()).toStrictEqual([A, B].sort());
+  });
+
   it("test_AC22_dispositions_raising", async () => {
     await start();
     await cycle([item("A"), item("B"), item("C")], { dispositions: [disp(B, "dismissed")] });

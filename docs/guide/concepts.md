@@ -367,7 +367,9 @@ dependency is reopened or a new plan changes it; a later disposition does not un
 **Inputs.** `inputs: [previous]` serves a raising step the fold base of its lineage;
 `inputs: [dispositions]` serves a consuming step the items it may act on now (a raising step: its
 lineage's items that are not resolved), with their history. Both arrive fenced as untrusted input,
-like artifacts.
+like artifacts. An item list is never cut inside an item: when it is larger than an input may be,
+the input holds the whole items that fit and a line after it says how many were left out;
+`mesh_context` with `items_from` set to the number that line gives serves the next ones.
 
 ## Pulses
 

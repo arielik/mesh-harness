@@ -404,6 +404,18 @@ export interface StepInput {
   title?: string | undefined;
   content: string;
   truncated: boolean;
+  /**
+   * RL-2: set when an item list (`dispositions`, the debrief items) is served in part: whole items
+   * `from` .. `from + count - 1` of `total`. `mesh_context` with `items_from` serves the next ones.
+   */
+  page?: StepInputPage | undefined;
+}
+
+/** RL-2: which items of an item list an input holds (0-based `from`). */
+export interface StepInputPage {
+  from: number;
+  count: number;
+  total: number;
 }
 
 export interface DoneResult {

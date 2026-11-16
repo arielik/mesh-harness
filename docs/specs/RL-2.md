@@ -279,7 +279,12 @@ is `done`, `skipped` or `dropped` and one is not the design step; this is checke
 **`GET /v1/steps/:id/context`**: `inputs` keywords now serve, in policy order and under RL-1's caps:
 - `previous` (raising step): the fold base of its lineage (as above, for the step's current round):
   `{from: <its step>, artifact: <its artifact id>, kind: "review", title: "previous review record (<goal> round <n>)", content: JSON.stringify(record), truncated}`; none → nothing.
-- `dispositions`: `{from: <run id, or the step's own id when raising>, artifact: "items", kind: "review", title: "items and dispositions", content: JSON.stringify({lineage, items}), truncated}` where `items` = for a consuming step the items it may act on now, for a raising step every item of its lineage not `resolved` (`ItemView`, with history); no lineage items → nothing.
+- `dispositions`: `{from: <run id, or the step's own id when raising>, artifact: "items", kind: "review", title: "items and dispositions", content: JSON.stringify({lineage, items}), truncated}` where `items` = for a consuming step the items it may act on now, for a raising step every item of its lineage not `resolved` (`ItemView`, with history); no lineage items → nothing. An item list is never cut inside an item: when the whole list does not fit in the input's
+  size (50 000 characters, or what is left of the 200 000 for all inputs) it holds the whole items
+  that fit, and both the entry and the content carry `page: {from, count, total}` (0-based); the
+  agent brief says after the fence how many were left out and to call `mesh_context` with
+  `items_from: <from + count>`. `GET /v1/steps/:id/context?items_from=<n>` (and `mesh_context` with
+  `items_from`) serves only the item lists (`dispositions`, the debrief items) from item `n` on.
 
 **Events** (`docs/events.md`), payloads never carry item titles, evidence, proposals or reasons:
 - `review.recorded` (user, sid, goal, step): `round: number`, `lineage: string`, `coverage: string`,

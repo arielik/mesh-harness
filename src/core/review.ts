@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { parse } from "yaml";
-import type { Fold, ItemState, Severity, StepWhen } from "../protocol/index.ts";
+import type { Fold, ItemState, Severity, StepInputPage, StepWhen } from "../protocol/index.ts";
 import { frontMatter, listField } from "./headless.ts";
 
 /** A URL (`scheme://…`): an evidence or key path that names a pipeline, a ticket or a page, not a file. */
@@ -115,6 +115,36 @@ const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex
 export function evidenceHash(regions: readonly (string | null)[]): string | undefined {
   if (!regions.length) return undefined;
   return sha256(regions.map((r) => (r === null ? "missing" : sha256(normalizeRegion(r)))).join("\n"));
+}
+
+/**
+ * RL-2: an item list served as a step input, never cut inside an item: the items from index `from`
+ * that fit, whole, in `max` characters of `JSON.stringify({...head, items, page?})`. `page` is
+ * present (in the content and the result) when the list is served in part. When not even the first
+ * item fits and `atLeastOne`, that one item is served whole anyway (an item larger than an input).
+ */
+export function pageItems(
+  head: Record<string, unknown>,
+  items: readonly unknown[],
+  from: number,
+  max: number,
+  atLeastOne: boolean,
+): { content: string; page?: StepInputPage } {
+  const total = items.length;
+  const start = Math.max(0, Math.min(from, total));
+  // An upper bound of the frame: `count` never has more digits than `total`.
+  let size = JSON.stringify({ ...head, items: [], page: { from: start, count: total, total } }).length;
+  let count = 0;
+  for (let i = start; i < total; i++) {
+    const add = JSON.stringify(items[i]).length + (count > 0 ? 1 : 0);
+    if (size + add > max && !(count === 0 && atLeastOne)) break;
+    size += add;
+    count++;
+    if (size > max) break;
+  }
+  const whole = from === 0 && count === total;
+  const page = whole ? undefined : { from, count, total };
+  return { content: JSON.stringify({ ...head, items: items.slice(start, start + count), ...(page ? { page } : {}) }), ...(page ? { page } : {}) };
 }
 
 export const SEVERITY_RANK: Readonly<Record<Severity, number>> = { S1: 1, S2: 2, S3: 3, S4: 4 };

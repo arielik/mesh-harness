@@ -310,7 +310,12 @@ export function buildRoutes(svc: HubService): Route[] {
       }),
       "goals:read",
     ),
-    r("GET", "/v1/steps/:id/context", "member", async (c) => c.json(await svc.context(param(c, "id"), c.req.query("agent") === "1"))),
+    r("GET", "/v1/steps/:id/context", "member", async (c) => {
+      // RL-2: `items_from` serves only the item lists of the inputs, from that index on.
+      const from = c.req.query("items_from");
+      if (from !== undefined && !/^\d{1,6}$/.test(from)) throw new HubError(400, "items_from must be a whole number (0 or more)");
+      return c.json(await svc.context(param(c, "id"), c.req.query("agent") === "1", from === undefined ? undefined : Number(from)));
+    }),
     r("GET", "/v1/steps/:id", "member", async (c) => c.json(await svc.stepView(param(c, "id"))), "goals:read"),
     r("POST", "/v1/steps/:id/claim", "member", async (c, a) => c.json(await svc.claimStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     r("POST", "/v1/steps/:id/release", "member", async (c, a) => c.json(await svc.releaseStep(a, param(c, "id"), (await body(c, ReleaseRequest)).note))),

@@ -4128,6 +4128,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "items_from",
+            "in": "query",
+            "required": false,
+            "description": "only the item lists of the inputs (dispositions, debrief items), from this 0-based index",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

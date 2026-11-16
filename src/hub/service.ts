@@ -53,6 +53,7 @@ import {
   isRaising,
   lineageOf,
   local,
+  pageItems,
   repoName,
   runOf,
   SEVERITY_RANK,
@@ -847,8 +848,12 @@ export class HubService {
    * of the named steps (`artifacts`: of each dependency), never of a blind partner or an unread
    * dependency; RL-2 `previous` (the fold base of a raising step's lineage) and `dispositions` (the
    * items the step may act on now, or a raising step's open items).
+   *
+   * An item list (`dispositions`, the debrief items) is never cut inside an item: it serves whole
+   * items up to the size limits and says in `page` which ones; `itemsFrom` (mesh_context's
+   * `items_from`) serves only the item lists, from that index on.
    */
-  private async stepInputs(step: Step, goal: Goal): Promise<StepInput[]> {
+  private async stepInputs(step: Step, goal: Goal, itemsFrom?: number): Promise<StepInput[]> {
     const p = step.policy;
     if (!p?.inputs?.length && !isDebrief(p)) return [];
     const steps = await this.store.listSteps({ goal: step.goal });
@@ -859,12 +864,21 @@ export class HubService {
     let served = 0;
     const MAX_ONE = 50_000;
     const MAX_ALL = 200_000;
+    const paging = itemsFrom !== undefined;
     const push = (input: Omit<StepInput, "content" | "truncated">, text: string): boolean => {
       if (served >= MAX_ALL) return false;
       const content = text.slice(0, MAX_ONE);
       served += content.length;
       out.push({ ...input, content, truncated: text.length > MAX_ONE });
       return true;
+    };
+    // Served even when the other inputs used the room up: then with no items and a page that says
+    // where the rest is.
+    const pushItems = (input: Omit<StepInput, "content" | "truncated" | "page">, head: Record<string, unknown>, items: readonly unknown[]): void => {
+      const room = Math.max(0, Math.min(MAX_ONE, MAX_ALL - served));
+      const { content, page } = pageItems(head, items, itemsFrom ?? 0, room, room === MAX_ONE);
+      served += content.length;
+      out.push({ ...input, content, truncated: false, ...(page ? { page } : {}) });
     };
     const fromSteps = async (ids: readonly string[]): Promise<boolean> => {
       for (const id of ids) {
@@ -888,26 +902,29 @@ export class HubService {
     // RL-4: a debrief starts with its items and the run's report.
     if (isDebrief(p)) {
       const d = await this.debriefData(step, goal, steps);
-      if (d.run && d.items.length) push({ from: d.run.id, artifact: "debrief", kind: "review", title: `debrief items (${d.items.length})` }, JSON.stringify({ lineage: d.lineage, items: d.items }));
-      if (d.run && d.report?.content) push({ from: d.run.id, artifact: d.report.artifact.id, kind: "report", title: d.report.artifact.title ?? "report" }, d.report.content);
+      if (d.run && d.items.length) pushItems({ from: d.run.id, artifact: "debrief", kind: "review", title: `debrief items (${d.items.length})` }, { lineage: d.lineage }, d.items);
+      if (!paging && d.run && d.report?.content) push({ from: d.run.id, artifact: d.report.artifact.id, kind: "report", title: d.report.artifact.title ?? "report" }, d.report.content);
     }
+    let full = false;
     for (const x of p?.inputs ?? []) {
-      if (served >= MAX_ALL) break;
+      if (x === "dispositions") {
+        const items = await this.dispositionsInput(step, goal, steps);
+        if (items) pushItems({ from: items.from, artifact: "items", kind: "review", title: "items and dispositions" }, { lineage: items.lineage }, items.items);
+        continue;
+      }
+      if (paging || full || served >= MAX_ALL) continue;
       if (x === "artifacts") {
-        if (!(await fromSteps(step.deps))) break;
+        full = !(await fromSteps(step.deps));
       } else if (x === "previous") {
         if (!isRaising(p)) continue;
         const base = await this.foldBase(lineageOf(goal, step), step.id, (step.rounds?.length ?? 0) + 1);
         if (base) push({ from: base.step, artifact: base.artifact, kind: "review", title: `previous review record (${base.goal} round ${base.round})` }, JSON.stringify(base.record));
-      } else if (x === "dispositions") {
-        const items = await this.dispositionsInput(step, goal, steps);
-        if (items) push({ from: items.from, artifact: "items", kind: "review", title: "items and dispositions" }, JSON.stringify({ lineage: items.lineage, items: items.items }));
       } else if (x === "calibration") {
         // RL-6: the dismissals a calibration goal lists.
         const input = await this.calibrationInput(goal);
         if (input) push({ from: goal.id, artifact: "calibration", kind: "review", title: input.title }, input.content);
       } else if (!INPUT_KEYWORDS.has(x)) {
-        if (!(await fromSteps([`${step.goal}.${x}`]))) break;
+        full = !(await fromSteps([`${step.goal}.${x}`]));
       }
     }
     return out;
@@ -2314,7 +2331,7 @@ export class HubService {
   }
 
   /** A step's context. `forAgent`: what the agent holding it may see (blind and reads rules, M4.5). */
-  async context(stepId: string, forAgent = false): Promise<StepContext> {
+  async context(stepId: string, forAgent = false, itemsFrom?: number): Promise<StepContext> {
     return this.store.tx(async () => {
       const step = await this.stepOr404(stepId);
       const goal = await this.goalOr404(step.goal);
@@ -2334,7 +2351,7 @@ export class HubService {
         openQuestions: (await this.store.openQuestions()).filter((q) => q.step === step.id),
         ...(acs ? { acs } : {}),
       };
-      const inputs = await this.stepInputs(step, goal);
+      const inputs = await this.stepInputs(step, goal, itemsFrom);
       if (inputs.length) ctx.inputs = inputs;
       return forAgent ? agentContext(ctx, await this.store.listSteps({ goal: goal.id })) : ctx;
     });

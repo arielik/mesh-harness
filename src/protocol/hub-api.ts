@@ -187,7 +187,7 @@ export const HUB_API: readonly HubApiRoute[] = [
     query: { goal: "goal id", ready: "1: only ready steps", repo: "repo name or id", mine: "1: only steps the caller holds" },
     summary: "Steps, filtered.",
   },
-  { method: "GET", path: "/v1/steps/:id/context", rule: "member", tag: "steps", query: { agent: "1: the brief as an agent reads it" }, summary: "A step's brief: design, dependencies, notes." },
+  { method: "GET", path: "/v1/steps/:id/context", rule: "member", tag: "steps", query: { agent: "1: the brief as an agent reads it", items_from: "only the item lists of the inputs (dispositions, debrief items), from this 0-based index" }, summary: "A step's brief: design, dependencies, notes." },
   { method: "GET", path: "/v1/steps/:id", rule: "member", scope: "goals:read", tag: "steps", summary: "One step." },
   { method: "POST", path: "/v1/steps/:id/claim", rule: "member", tag: "steps", body: ClaimRequest, summary: "Claim a ready step (exactly one caller wins)." },
   { method: "POST", path: "/v1/steps/:id/release", rule: "member", tag: "steps", body: ReleaseRequest, summary: "Give a step back with a handoff note." },

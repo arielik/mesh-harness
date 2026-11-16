@@ -249,6 +249,45 @@ describe("AC-19 mesh_review", { timeout: 40_000 }, () => {
 
 // ---------------------------------------------------------------------------------------------
 
+describe("AC-22 mesh_context item pages", { timeout: 60_000 }, () => {
+  it("test_AC22_items_from_pages", async () => {
+    // A consuming step with more items than fit in one input: the brief says how many were left out
+    // and mesh_context with items_from serves the rest, whole items only.
+    const k = await cast();
+    const G = await goal(k.self, [
+      { id: "audit", output: "review-record" },
+      { id: "v", deps: ["audit"], output: "review-record", consumes: ["open"], may_set: ["confirmed"], inputs: ["dispositions"] },
+    ]);
+    await sessionClaims(k, 1, `${G}.audit`);
+    const rules = Array.from({ length: 300 }, (_, i) => `R${String(i).padStart(3, "0")}`);
+    await toolOk(k, 1, recArgs({ items: rules.map((x) => it1(x, { title: `${x} ${"y".repeat(190)}` })) }));
+    await doneOk(k, 1);
+    await sessionClaims(k, 2, `${G}.v`);
+    const fpsIn = (text: string): string[] => [...text.matchAll(/"fp":"([a-z2-7]{16})"/g)].map((m) => m[1] as string);
+    const nextOf = (text: string): number | undefined => {
+      const m = /call mesh_context with items_from (\d+) for the next ones/.exec(text);
+      return m ? Number(m[1]) : undefined;
+    };
+    const first = await r.w.tool(k.ann, 2, "mesh_context");
+    expect(first.isError, first.text).toBeFalsy();
+    const seen = fpsIn(first.text);
+    expect(first.text).toMatch(new RegExp(`\\(mesh: input items holds items 1-${seen.length} of 300\\. ${300 - seen.length} more item\\(s\\) were left out by the size limit`));
+    let from = nextOf(first.text);
+    expect(from).toBe(seen.length);
+    let guard = 0;
+    while (from !== undefined && guard++ < 20) {
+      const t = await r.w.tool(k.ann, 2, "mesh_context", { items_from: from });
+      expect(t.isError, t.text).toBeFalsy();
+      expect(t.text.startsWith(`Items of mesh step ${G}.v from item ${from + 1} on.`), t.text.slice(0, 200)).toBe(true);
+      seen.push(...fpsIn(t.text));
+      from = nextOf(t.text);
+      if (from === undefined) expect(t.text).toContain("This is the last part.");
+    }
+    expect(seen).toHaveLength(300);
+    expect([...new Set(seen)].sort()).toStrictEqual(rules.map((x) => ofp(x)).sort());
+  });
+});
+
 describe("AC-20 evidence", { timeout: 40_000 }, () => {
   const PLAN: PlanIn[] = [
     { id: "audit", output: "review-record" },

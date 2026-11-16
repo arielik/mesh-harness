@@ -8,8 +8,16 @@ import { ReviewRecord } from "./review.ts";
 
 export const TOOLS = {
   mesh_context: {
-    description: "Your mesh step (or what to do if you hold none): brief, design link, dependencies' summaries and branches, notes from earlier holders. Call it first.",
-    input: {},
+    description:
+      "Your mesh step (or what to do if you hold none): brief, design link, dependencies' summaries and branches, notes from earlier holders. Call it first. When an input says only some of its items fit, call it again with items_from for the next ones.",
+    input: {
+      items_from: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("only the item lists of your inputs (dispositions, debrief items), from this 0-based index: the number an input that holds only part of its items gives you"),
+    },
   },
   mesh_next: {
     description: "List ready mesh steps for this repo (or the given repo) that you could claim.",

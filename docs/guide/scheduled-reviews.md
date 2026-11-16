@@ -261,6 +261,10 @@ and a disposition for each confirmed item: disposition accepted, reason "recorde
 link "https://tracker.example.com/demo/<fingerprint>". Then call mesh_done.
 ```
 
+When a run raises more items than fit in one input, the input "dispositions" holds whole items only
+and a line after it says how many were left out; the agent calls `mesh_context` with `items_from`
+for the next ones (the mesh skill tells it to). Nothing is cut in the middle of an item.
+
 Commit them and make sure the runner's checkout has the commit (`git pull` there): the run uses the
 checkout's `HEAD`, not your working tree.
 

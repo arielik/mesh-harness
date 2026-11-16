@@ -350,3 +350,52 @@ describe("RL-6 filed items", () => {
     expect(W({}, ["accepted"], [])).toBe(true);
   });
 });
+
+// RL-2: an item list served as a step input is never cut inside an item (pageItems).
+describe("RL-2 item pages", () => {
+  const items = Array.from({ length: 10 }, (_, i) => ({ fp: `item${i}`, note: "n".repeat(90) }));
+  const one = JSON.stringify(items[0]).length;
+
+  it("test_pageItems_whole_list_no_page", () => {
+    const r = C.pageItems({ lineage: "L" }, items, 0, 100_000, true);
+    expect(r.page).toBeUndefined();
+    expect(JSON.parse(r.content)).toStrictEqual({ lineage: "L", items });
+  });
+
+  it("test_pageItems_whole_items_within_max", () => {
+    const max = 40 + one * 4;
+    const r = C.pageItems({ lineage: "L" }, items, 0, max, true);
+    expect(r.content.length).toBeLessThanOrEqual(max);
+    const c = JSON.parse(r.content);
+    expect(c.items).toStrictEqual(items.slice(0, r.page.count));
+    expect(r.page.count).toBeGreaterThan(0);
+    expect(r.page).toStrictEqual({ from: 0, count: r.page.count, total: 10 });
+    expect(c.page).toStrictEqual(r.page);
+    // The next page starts where this one stopped, and the pages cover every item once.
+    const seen = [...c.items];
+    let from = r.page.count;
+    while (from < 10) {
+      const p = C.pageItems({ lineage: "L" }, items, from, max, true);
+      expect(p.content.length).toBeLessThanOrEqual(max);
+      seen.push(...JSON.parse(p.content).items);
+      from += p.page.count;
+    }
+    expect(seen).toStrictEqual(items);
+  });
+
+  it("test_pageItems_no_room", () => {
+    // Not even one item fits: none (atLeastOne false), or that one whole (atLeastOne true).
+    const none = C.pageItems({ lineage: "L" }, items, 3, 10, false);
+    expect(none.page).toStrictEqual({ from: 3, count: 0, total: 10 });
+    expect(JSON.parse(none.content).items).toStrictEqual([]);
+    const big = C.pageItems({ lineage: "L" }, items, 3, 10, true);
+    expect(JSON.parse(big.content).items).toStrictEqual([items[3]]);
+    expect(big.page).toStrictEqual({ from: 3, count: 1, total: 10 });
+  });
+
+  it("test_pageItems_past_end", () => {
+    const r = C.pageItems({}, items, 12, 100_000, true);
+    expect(r.page).toStrictEqual({ from: 12, count: 0, total: 10 });
+    expect(JSON.parse(r.content).items).toStrictEqual([]);
+  });
+});
