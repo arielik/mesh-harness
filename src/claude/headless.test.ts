@@ -56,7 +56,8 @@ afterEach(() => {
     }
   }
   for (const c of children.splice(0)) c.kill("SIGKILL");
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  // A killed process group may still be writing for a moment (macOS: ENOTEMPTY): retry the removal.
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 function setup(step: string, script: unknown[]) {
