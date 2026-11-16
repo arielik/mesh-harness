@@ -144,7 +144,9 @@ edits, no web), `read-only+checks` (plus commands a registered profile lists, su
 as `pnpm lint`), `propose-via-branch` (plus `Edit`, `Write`, `git add`, `git commit`). Every profile
 also allows the four tools a run needs: `mesh_context`, `mesh_artifact`, `mesh_review`, `mesh_done`.
 Register your own with `mesh profile add <name> --file profile.yaml`; `mesh profile show <name>`
-prints the compiled settings. Profiles are best effort, not a sandbox: your user-level
+prints the compiled settings. A registered profile can also set environment variables for the
+run's process (`env: { CI: "1" }`; mesh's, Claude Code's, git's and loader variables such as
+`PATH` are refused, see [concepts](concepts.md#headless-steps)). Profiles are best effort, not a sandbox: your user-level
 `permissions.allow` in `~/.claude/settings.json` still applies to runs, so keep it small on a runner.
 The full table is in [concepts](concepts.md#headless-steps).
 
@@ -709,6 +711,7 @@ run g1-audit-mwdr1wev: headless run of G1.audit did not start: could not make a 
 |---|---|
 | `agent <name> has invalid front matter` | quote the `description` (or fix the YAML), commit, pull on the runner. `mesh agents` shows `invalid` until the next scan. |
 | `could not make a worktree: fatal: …` | git's own error. Usually the daemon cannot write the checkout's `.git` (permissions, a sandbox). `… already exists` means a daemon stopped in the middle of a start left the run's worktree folder: remove `<run dir>/worktree` and run `git worktree prune` in the checkout. |
+| `the run's profile is refused: profiles may not set <NAME>` | the offer's profile snapshot sets a variable this runner's mesh refuses (a hub on another version). Remove it from the profile's `env` and save the pulse again so it pins the new snapshot. |
 | agent missing, roster definition not available, missing profile | the agent file is not in the runner's checkout at `HEAD`; the catalog definition was never pushed; the profile was removed. |
 
 A failed step leaves its goal open until it is older than `--max-goal-age` and abandoned. It waits

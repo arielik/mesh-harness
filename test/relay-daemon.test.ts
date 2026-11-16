@@ -251,6 +251,19 @@ describe("AC-21 headless start", { timeout: 40_000 }, () => {
     expect(call.argv).not.toContain("--agent");
   });
 
+  // RL-1: a registered profile's `env` reaches the run's process and its profile.json.
+  it("test_RL1_profile_env_reaches_run", async () => {
+    const k = await dcast();
+    const saved = await r.call(k.ann, "POST", "/v1/profiles", { name: "envy", text: 'extends: read-only\nenv:\n  B: two words\n  A: "1"\n' });
+    expect(saved.status, JSON.stringify(saved.json)).toBe(201);
+    const id = await headlessStep(k, { id: "envd", mode: "headless", profile: "envy" }, [{ waitFor: "end" }]);
+    await offerAndPull(k, id);
+    const call = await r.started(id);
+    const run = await r.runOf(k.ann, id);
+    expect(call.probe).toMatchObject({ A: "1", B: "two words", C: null, MESH_STEP: id, MESH_RUN: run.runId });
+    expect(JSON.parse(readFileSync(join(r.runDir(k.ann, run), "profile.json"), "utf8")).env).toStrictEqual({ A: "1", B: "two words" });
+  });
+
   it("test_AC21_event_and_idempotency", async () => {
     const k = await dcast();
     const { id, msg } = await startAudit(k);

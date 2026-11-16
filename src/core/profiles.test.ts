@@ -129,6 +129,48 @@ describe("AC-05 parseProfile", () => {
     expect(wrongBase.error).toMatch(/^extends: /);
   });
 
+  // RL-1: `env` sets variables for the run's process; it is part of the settings and the hash.
+  it("test_RL1_env_compiles_sorted_and_hashed", () => {
+    const ok = C.parseProfile('env:\n  NODE_ENV: test\n  CI: "true"\n  A_B9: ""\n');
+    expect(ok.error).toBeUndefined();
+    const c = C.compileProfile(ok.file);
+    expect(c.settings).toStrictEqual({ permissions: { allow: RO_ALLOW, deny: RO_DENY }, env: { A_B9: "", CI: "true", NODE_ENV: "test" } });
+    expect(Object.keys(c.settings.env)).toStrictEqual(["A_B9", "CI", "NODE_ENV"]);
+    expect(C.profileSha256(c.base, c.settings)).not.toBe(C.profileSha256(c.base, { permissions: c.settings.permissions }));
+    // No env (or an empty map) leaves the settings, and so the hash, as before.
+    expect("env" in C.compileProfile(C.parseProfile("env: {}\n").file).settings).toBe(false);
+    expect("env" in C.compileProfile(C.parseProfile("extends: read-only\n").file).settings).toBe(false);
+    // The snapshot schema keeps env (a daemon parsing an offer must not drop it).
+    expect(P.ProfileSnapshot.parse(C.profileSnapshot("p", "read-only", c.settings)).settings.env).toStrictEqual(c.settings.env);
+  });
+
+  it.each([
+    ["env:\n  lower: x\n", "env: lower is not a variable name (1-100 of A-Z, 0-9 and _, not starting with a digit)"],
+    ["env:\n  9X: x\n", "env: 9X is not a variable name (1-100 of A-Z, 0-9 and _, not starting with a digit)"],
+    ["env:\n  PATH: /tmp\n", "profiles may not set PATH"],
+    ["env:\n  MESH_STEP: x\n", "profiles may not set MESH_STEP"],
+    ["env:\n  ANTHROPIC_BASE_URL: http://x\n", "profiles may not set ANTHROPIC_BASE_URL"],
+    ["env:\n  CLAUDE_CONFIG_DIR: /x\n", "profiles may not set CLAUDE_CONFIG_DIR"],
+    ["env:\n  GIT_SSH_COMMAND: x\n", "profiles may not set GIT_SSH_COMMAND"],
+    ["env:\n  LD_PRELOAD: x\n", "profiles may not set LD_PRELOAD"],
+    ["env:\n  NODE_OPTIONS: x\n", "profiles may not set NODE_OPTIONS"],
+    ["env:\n  TMUX: x\n", "profiles may not set TMUX"],
+    ['env:\n  X: "a\\nb"\n', "env.X: a value may not contain a line break or NUL"],
+    ['env:\n  X: "a\\rb"\n', "env.X: a value may not contain a line break or NUL"],
+    [`env:\n  X: "${"v".repeat(1001)}"\n`, "env.X: a value is at most 1000 characters"],
+    [`env:\n${Array.from({ length: 51 }, (_, i) => `  V${i}: x`).join("\n")}\n`, "env: a profile sets at most 50 variables"],
+    ["env:\n  X: 1\n", "env.X: an env value is a string (quote numbers and booleans)"],
+  ])("test_RL1_env_refused %#", (text, error) => {
+    expect(C.parseProfile(text)).toStrictEqual({ error });
+  });
+
+  it("test_RL1_profile_run_env", () => {
+    expect(C.profileRunEnv({ permissions: { allow: [], deny: [] } })).toStrictEqual({ env: {} });
+    expect(C.profileRunEnv({ permissions: { allow: [], deny: [] }, env: { CI: "1" } })).toStrictEqual({ env: { CI: "1" } });
+    // A snapshot from the hub that sets a refused variable never reaches the run.
+    expect(C.profileRunEnv({ permissions: { allow: [], deny: [] }, env: { CI: "1", PATH: "/tmp" } })).toStrictEqual({ error: "profiles may not set PATH" });
+  });
+
   it("test_AC05_parse_ok", () => {
     const ok = C.parseProfile('allow: ["Bash(pnpm lint)", "mcp__mesh__mesh_done"]\nchecks: ["pnpm test"]\n');
     expect(ok.error).toBeUndefined();

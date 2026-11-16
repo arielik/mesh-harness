@@ -107,6 +107,11 @@ describe("AC-07 profile", { timeout: 20_000 }, () => {
     expect(res.code, res.err).toBe(0);
     const settings = (await r.call(ann, "GET", "/v1/profiles/read-only")).json.settings;
     expect(res.out.replace(/\n$/, "")).toBe(JSON.stringify(settings, null, 2));
+    // RL-1: a registered profile's env is part of what show prints.
+    expect((await r.call(ann, "POST", "/v1/profiles", { name: "envy", text: "extends: read-only\nenv:\n  CI: \"1\"\n" })).status).toBe(201);
+    const envy = await r.cli(ann, ["profile", "show", "envy"]);
+    expect(envy.code, envy.err).toBe(0);
+    expect(JSON.parse(envy.out).env).toStrictEqual({ CI: "1" });
     // test_AC07_show_unknown
     const bad = await r.cli(ann, ["profile", "show", "x"]);
     expect(bad.code).toBe(1);

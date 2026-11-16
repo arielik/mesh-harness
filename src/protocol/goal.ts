@@ -65,9 +65,14 @@ export const ProfileBase = z.enum(["read-only", "read-only+checks", "propose-via
 export type ProfileBase = z.infer<typeof ProfileBase>;
 
 /** RL-1: the Claude Code settings a profile compiles to. */
-export const ProfileSettings = z.object({ permissions: z.object({ allow: z.array(z.string()), deny: z.array(z.string()) }) });
+export const ProfileSettings = z.object({
+  permissions: z.object({ allow: z.array(z.string()), deny: z.array(z.string()) }),
+  /** The environment variables the run's process gets (absent when the profile sets none). */
+  env: z.record(z.string(), z.string()).optional(),
+});
 export interface ProfileSettings {
   permissions: { allow: string[]; deny: string[] };
+  env?: Record<string, string> | undefined;
 }
 
 export const ProfileSnapshot = z.object({ name: ProfileName, base: ProfileBase, sha256: z.string(), settings: ProfileSettings });
@@ -202,6 +207,8 @@ export const ProfileFile = z
     checks: z.array(z.string().min(1).max(200)).max(50).optional(),
     allow: z.array(z.string().min(1).max(300)).max(100).optional(),
     deny: z.array(z.string().min(1).max(300)).max(100).optional(),
+    /** Environment variables for the run's process; names and values are checked by `parseProfile`. */
+    env: z.record(z.string(), z.string({ error: "an env value is a string (quote numbers and booleans)" })).optional(),
   })
   .strict();
 export type ProfileFile = z.infer<typeof ProfileFile>;

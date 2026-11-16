@@ -11,10 +11,11 @@ import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { HeadlessRunner } from "../claude/index.ts";
-import { agentFileHash, builtinProfile, HEADLESS_ENV_UNSET, headlessArgv, headlessPrompt, parseAgentFile, profileSha256, redactSecrets, renderTail, stepSlug, telemetryFromStream } from "../core/index.ts";
+import { agentFileHash, builtinProfile, HEADLESS_ENV_UNSET, headlessArgv, headlessPrompt, parseAgentFile, profileRunEnv, profileSha256, redactSecrets, renderTail, stepSlug, telemetryFromStream } from "../core/index.ts";
 import {
   AgentDef,
   MESH_TOOL_RULES,
+  ProfileSettings,
   ProfileSnapshot,
   RunFile,
   writeFileAtomic,
@@ -586,6 +587,16 @@ export class HeadlessRuns {
       if (!b || profileSha256(b.base, b.settings) !== run.profile.sha256) return this.notStarted(next, "the run's profile.json is missing");
       writeFileAtomic(this.file(run, "profile.json"), JSON.stringify(b.settings));
     }
+    // A profile's `env` reaches the run's process; mesh's own variables are set after it.
+    let profileEnv: Record<string, string>;
+    try {
+      const settings = ProfileSettings.parse(JSON.parse(readFileSync(this.file(run, "profile.json"), "utf8")));
+      const got = profileRunEnv(settings);
+      if ("error" in got) return this.notStarted(next, `the run's profile is refused: ${got.error}`);
+      profileEnv = got.env;
+    } catch (e) {
+      return this.notStarted(next, `the run's profile.json is not valid: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
+    }
     let agentName = meta.agent;
     if (meta.agent?.includes("/")) {
       // RL-5: a roster key runs the pinned catalog definition; nothing is read from the worktree.
@@ -643,7 +654,7 @@ export class HeadlessRuns {
       usd: run.budget.usd,
     });
     // RL-7: terminal- and session-binding variables of the daemon never reach the run.
-    const r = await runner.start({ argv, cwd: worktree, env: { MESH_STEP: run.step, MESH_RUN: run.runId }, unsetEnv: HEADLESS_ENV_UNSET, runDir: run.dir });
+    const r = await runner.start({ argv, cwd: worktree, env: { ...profileEnv, MESH_STEP: run.step, MESH_RUN: run.runId }, unsetEnv: HEADLESS_ENV_UNSET, runDir: run.dir });
     if (!r.ok) return this.notStarted(next, r.error);
     // RL-8: a run that is no longer queued (never expected with the start guard) never goes back to running.
     if (this.runs.get(run.runId)?.state !== "queued") {
