@@ -23,10 +23,14 @@ const RO_ALLOW = [
   "Bash(git rev-parse *)",
   "Bash(git ls-files *)",
   "Bash(git cat-file *)",
+  "Bash(grep *)",
+  "Bash(rg *)",
+  "Bash(find *)",
 ];
-const RO_DENY = ["Bash(git * --output*)", "Bash(git -c *)", "Bash(git * --ext-diff*)", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
+const SEARCH_DENY = ["Bash(find *-exec*)", "Bash(find *-ok*)", "Bash(find *-delete*)", "Bash(find *-fprint*)", "Bash(find *-fls*)", "Bash(rg *--pre*)"];
+const RO_DENY = ["Bash(git * --output*)", "Bash(git -c *)", "Bash(git * --ext-diff*)", ...SEARCH_DENY, "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
 const PVB_ALLOW = [...RO_ALLOW, "Edit", "Write", "Bash(git add *)", "Bash(git commit *)"];
-const PVB_DENY = ["Bash(git * --output*)", "Bash(git -c *)", "Bash(git * --ext-diff*)", "Bash(git push *)", "NotebookEdit", "WebFetch", "WebSearch"];
+const PVB_DENY = ["Bash(git * --output*)", "Bash(git -c *)", "Bash(git * --ext-diff*)", ...SEARCH_DENY, "Bash(git push *)", "NotebookEdit", "WebFetch", "WebSearch"];
 
 const sha = (base: string, settings: unknown) => createHash("sha256").update(JSON.stringify({ base, settings })).digest("hex");
 
@@ -40,6 +44,24 @@ describe("AC-05 built-in profiles", () => {
     expect(by("propose-via-branch")?.settings).toStrictEqual({ permissions: { allow: PVB_ALLOW, deny: PVB_DENY } });
     for (const p of b) expect(p.base, p.name).toBe(p.name);
     for (const p of b) expect(typeof p.description, p.name).toBe("string");
+  });
+
+  // A build without the Grep and Glob tools searches through Bash: the shell forms are allowed, and
+  // the forms that run commands or write files match a deny rule (a rule's `*` matches any text).
+  it("test_AC05_search_through_bash", () => {
+    const esc = (x: string) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+    const matches = (rule: string, cmd: string) => {
+      const m = /^Bash\((.*)\)$/.exec(rule);
+      return m ? new RegExp(`^${(m[1] ?? "").split("*").map(esc).join(".*")}$`).test(cmd) : false;
+    };
+    for (const name of ["read-only", "propose-via-branch"]) {
+      const { allow, deny } = (C.builtinProfile(name) as { settings: { permissions: { allow: string[]; deny: string[] } } }).settings.permissions;
+      const allowed = (cmd: string) => allow.some((r) => matches(r, cmd)) && !deny.some((r) => matches(r, cmd));
+      for (const cmd of ["grep -rn foo src", "rg -n foo", "find . -name '*.ts'", "find src -type f"]) expect(allowed(cmd), `${name}: ${cmd}`).toBe(true);
+      for (const cmd of ["find . -name x -delete", "find . -exec rm {} ;", "find . -execdir sh ;", "find . -ok rm {} ;", "find . -fprint out", "find . -fls out", "rg --pre cat foo", "rg foo --pre=sh"]) {
+        expect(allowed(cmd), `${name}: ${cmd}`).toBe(false);
+      }
+    }
   });
 
   it("test_AC05_mesh_rules_first", () => {

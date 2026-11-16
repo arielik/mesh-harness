@@ -138,8 +138,9 @@ What the run does **not** get:
 - any messages: nothing is pasted into it and autopilot leaves it alone;
 - push rights: only the daemon pushes, and only `propose-via-branch` runs, to `mesh/<step>`.
 
-**Permission profiles.** `read-only` (the default: `Read`, `Grep`, `Glob`, `LS` and exact read-only
-git commands; no edits, no web), `read-only+checks` (plus commands a registered profile lists, such
+**Permission profiles.** `read-only` (the default: `Read`, `Grep`, `Glob`, `LS`, exact read-only
+git commands and `grep`/`rg`/`find` through Bash for builds without the Grep and Glob tools; no
+edits, no web), `read-only+checks` (plus commands a registered profile lists, such
 as `pnpm lint`), `propose-via-branch` (plus `Edit`, `Write`, `git add`, `git commit`). Every profile
 also allows the four tools a run needs: `mesh_context`, `mesh_artifact`, `mesh_review`, `mesh_done`.
 Register your own with `mesh profile add <name> --file profile.yaml`; `mesh profile show <name>`

@@ -139,3 +139,14 @@ describe("RL-4 AC-13 debrief brief", () => {
     expect(inside.has(lines.indexOf(LINE))).toBe(false);
   });
 });
+
+// RL-1: a headless step's brief says how to search when the run's Claude Code has no Grep or Glob
+// tool (the built-in profiles allow grep, rg and find through Bash).
+describe("RL-1 headless brief search", () => {
+  it("test_RL1_headless_brief_names_shell_search", () => {
+    const hstep = { ...step, policy: { mode: "headless" } } as unknown as Step;
+    const out = brief({ step: hstep, goal, deps: [], notes: [], openQuestions: [] } as unknown as StepContext);
+    expect(out).toContain("if the Grep or Glob tool is not available, search with Bash: grep -rn, rg or find -name");
+    expect(brief(ctx())).not.toContain("search with Bash");
+  });
+});

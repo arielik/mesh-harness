@@ -176,9 +176,9 @@ with the four mesh tools (`mcp__mesh__mesh_context`, `mcp__mesh__mesh_artifact`,
 
 | Profile | Allows (after the mesh tools) | Denies |
 |---|---|---|
-| `read-only` | `Read`, `Grep`, `Glob`, `LS`, `Bash(git log --no-ext-diff *)`, `Bash(git show --no-ext-diff *)`, `Bash(git rev-parse *)`, `Bash(git ls-files *)`, `Bash(git cat-file *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` |
+| `read-only` | `Read`, `Grep`, `Glob`, `LS`, `Bash(git log --no-ext-diff *)`, `Bash(git show --no-ext-diff *)`, `Bash(git rev-parse *)`, `Bash(git ls-files *)`, `Bash(git cat-file *)`, `Bash(grep *)`, `Bash(rg *)`, `Bash(find *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Bash(find *-exec*)`, `Bash(find *-ok*)`, `Bash(find *-delete*)`, `Bash(find *-fprint*)`, `Bash(find *-fls*)`, `Bash(rg *--pre*)`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` |
 | `read-only+checks` | as `read-only` (a registered profile adds its `checks`) | as `read-only` |
-| `propose-via-branch` | as `read-only`, then `Edit`, `Write`, `Bash(git add *)`, `Bash(git commit *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Bash(git push *)`, `NotebookEdit`, `WebFetch`, `WebSearch` |
+| `propose-via-branch` | as `read-only`, then `Edit`, `Write`, `Bash(git add *)`, `Bash(git commit *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, the six `find`/`rg` denies of `read-only`, `Bash(git push *)`, `NotebookEdit`, `WebFetch`, `WebSearch` |
 
 A registered profile (`mesh profile add <name> --file profile.yaml`) is YAML: `extends` (one of
 the three, default `read-only`), `checks` (commands, each allowed as `Bash(<command>)`), `allow`,
@@ -187,6 +187,15 @@ base's, then `deny`. Profiles may not allow `Bash`, `Bash(*)`, `Bash(:*)`, a che
 `git push` rule: only the daemon pushes, and an unrestricted shell would run unattended under
 another member's credentials. Its creator or an admin may replace it. The hub snapshots the
 profile into the offer, so a profile changed later does not reach an offered run.
+
+**Search without Grep and Glob.** Some Claude Code builds start `claude -p` without the `Grep` and
+`Glob` tools (search runs through Bash; the run's `system/init` event lists the tools it has). A
+run that calls them then gets `No such tool available: Grep`. The built-in profiles therefore also
+allow `grep`, `rg` and `find` through Bash, and deny the forms that run commands or write files
+(`find -exec`/`-execdir`/`-ok`/`-delete`/`-fprint`/`-fls`, `rg --pre`); Claude Code itself refuses
+output redirection to a file. The brief of a headless step says so. An agent whose front matter
+names `tools: Read, Grep, Glob` gets those tools (an explicit tool list enables them); without
+`Bash` in that list it cannot use the shell forms.
 
 What a profile cannot do:
 - `read-only` **cannot stop reads** inside the run's worktree: Claude Code allows read-only

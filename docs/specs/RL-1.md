@@ -134,9 +134,9 @@ Built-in settings, exactly (allow lists start with `MESH_TOOL_RULES`):
 
 | Profile | `allow` after the mesh tool rules | `deny` |
 |---|---|---|
-| `read-only` | `Read`, `Grep`, `Glob`, `LS`, `Bash(git log --no-ext-diff *)`, `Bash(git show --no-ext-diff *)`, `Bash(git rev-parse *)`, `Bash(git ls-files *)`, `Bash(git cat-file *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` |
+| `read-only` | `Read`, `Grep`, `Glob`, `LS`, `Bash(git log --no-ext-diff *)`, `Bash(git show --no-ext-diff *)`, `Bash(git rev-parse *)`, `Bash(git ls-files *)`, `Bash(git cat-file *)`, `Bash(grep *)`, `Bash(rg *)`, `Bash(find *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Bash(find *-exec*)`, `Bash(find *-ok*)`, `Bash(find *-delete*)`, `Bash(find *-fprint*)`, `Bash(find *-fls*)`, `Bash(rg *--pre*)`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` |
 | `read-only+checks` | as `read-only` | as `read-only` |
-| `propose-via-branch` | as `read-only`, then `Edit`, `Write`, `Bash(git add *)`, `Bash(git commit *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, `Bash(git push *)`, `NotebookEdit`, `WebFetch`, `WebSearch` |
+| `propose-via-branch` | as `read-only`, then `Edit`, `Write`, `Bash(git add *)`, `Bash(git commit *)` | `Bash(git * --output*)`, `Bash(git -c *)`, `Bash(git * --ext-diff*)`, the six `find`/`rg` denies of `read-only`, `Bash(git push *)`, `NotebookEdit`, `WebFetch`, `WebSearch` |
 
 `compileProfile`: `allow` = the base's allow, then `Bash(<c>)` for each `checks` entry, then `allow`;
 `deny` = the base's deny, then `deny`; repeats removed, first occurrence kept. `base` = `extends`.

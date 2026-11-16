@@ -15,9 +15,16 @@ const READ_ONLY_ALLOW = [
   "Bash(git rev-parse *)",
   "Bash(git ls-files *)",
   "Bash(git cat-file *)",
+  // Some Claude Code builds start `claude -p` without the Grep and Glob tools (search runs through
+  // Bash), so a run's search has these shell forms; SEARCH_DENY keeps them from running or writing.
+  "Bash(grep *)",
+  "Bash(rg *)",
+  "Bash(find *)",
 ];
 const GIT_DENY = ["Bash(git * --output*)", "Bash(git -c *)", "Bash(git * --ext-diff*)"];
-const READ_ONLY_DENY = [...GIT_DENY, "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
+/** find actions that run commands or write files, and rg's preprocessor (it runs a command per file). */
+const SEARCH_DENY = ["Bash(find *-exec*)", "Bash(find *-ok*)", "Bash(find *-delete*)", "Bash(find *-fprint*)", "Bash(find *-fls*)", "Bash(rg *--pre*)"];
+const READ_ONLY_DENY = [...GIT_DENY, ...SEARCH_DENY, "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
 
 const readOnly = (): ProfileSettings => ({ permissions: { allow: [...MESH_TOOL_RULES, ...READ_ONLY_ALLOW], deny: [...READ_ONLY_DENY] } });
 
@@ -30,7 +37,7 @@ export interface BuiltinProfile {
 
 /** The three built-in profiles, in this order. */
 export const BUILTIN_PROFILES: readonly BuiltinProfile[] = [
-  { name: "read-only", base: "read-only", description: "Read the repo; no edits, no commands but read-only git.", settings: readOnly() },
+  { name: "read-only", base: "read-only", description: "Read the repo; no edits, no commands but read-only git and search.", settings: readOnly() },
   { name: "read-only+checks", base: "read-only+checks", description: "As read-only; registered profiles add their check commands.", settings: readOnly() },
   {
     name: "propose-via-branch",
@@ -39,7 +46,7 @@ export const BUILTIN_PROFILES: readonly BuiltinProfile[] = [
     settings: {
       permissions: {
         allow: [...MESH_TOOL_RULES, ...READ_ONLY_ALLOW, "Edit", "Write", "Bash(git add *)", "Bash(git commit *)"],
-        deny: [...GIT_DENY, "Bash(git push *)", "NotebookEdit", "WebFetch", "WebSearch"],
+        deny: [...GIT_DENY, ...SEARCH_DENY, "Bash(git push *)", "NotebookEdit", "WebFetch", "WebSearch"],
       },
     },
   },

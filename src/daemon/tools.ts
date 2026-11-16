@@ -113,6 +113,14 @@ export function brief(ctx: StepContext): string {
   if (p?.blind?.length) lines.push(`Blind: you must not read the work of ${p.blind.join(", ")} (branches, plans, summaries); work from the spec and the contract.`);
   if (p?.forbid?.length) lines.push(`Do not read: ${p.forbid.join(", ")}.`);
   lines.push("", "Brief:", ctx.step.brief);
+  // RL-1: some Claude Code builds run `claude -p` without the Grep and Glob tools; the read-only
+  // profiles allow the shell forms instead.
+  if (p?.mode === "headless") {
+    lines.push(
+      "",
+      "Search: if the Grep or Glob tool is not available, search with Bash: grep -rn, rg or find -name (your profile allows them; find -exec/-delete, rg --pre and output redirection are refused).",
+    );
+  }
   if (p?.mode === "debrief") lines.push("", "This step is a debrief with your person: follow the mesh-debrief skill (mesh_dispose for each decision, then mesh_review, then mesh_done).");
   if (ctx.acs?.length) {
     lines.push("", "Acceptance criteria:");
