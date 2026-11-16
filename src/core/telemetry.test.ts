@@ -8,7 +8,7 @@ import * as core from "./index.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new exports, read loosely
 const C = core as any;
-type Run = { durationMs: number; exitCode: number | undefined; killedForBudget: boolean };
+type Run = { durationMs: number; exitCode: number | undefined; killedForBudget: boolean; stoppedAfterDone?: boolean };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- telemetry fields, read loosely
 const tele = (stream: string, run: Run): any => C.telemetryFromStream(stream, run);
 const tail = (stream: string, stderr: string, exit: string): string => C.renderTail(stream, stderr, exit);
@@ -110,6 +110,9 @@ describe("AC-16 partial", () => {
     [{ killedForBudget: false, exitCode: 143 }, "crashed"],
     [{ killedForBudget: false, exitCode: 1 }, "crashed"],
     [{ killedForBudget: false, exitCode: undefined }, "crashed"],
+    // RL-1: ended by the daemon after its accepted mesh_done: not a crash, not a budget kill.
+    [{ killedForBudget: false, exitCode: 143, stoppedAfterDone: true }, "no_result"],
+    [{ killedForBudget: false, exitCode: 137, stoppedAfterDone: true }, "no_result"],
   ])("test_AC16_exit_mapping %j", (run, exit) => {
     expect(tele(lines(...events()), { durationMs: 1, ...run }).exit).toBe(exit);
   });

@@ -148,7 +148,8 @@ prints the compiled settings. Profiles are best effort, not a sandbox: your user
 The full table is in [concepts](concepts.md#headless-steps).
 
 **Budget.** `turns` (default 30), `minutes` (default 30) and optionally `usd` per step. Past the
-minutes the daemon stops the run's whole process group; the step then fails with a transcript.
+minutes the daemon stops the run's whole process group; the step then fails with a transcript. A
+run that lingers after its accepted `mesh_done` is stopped 60 s later, without touching the step.
 
 ### What it costs
 

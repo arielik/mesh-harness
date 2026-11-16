@@ -29,7 +29,7 @@ export type StreamTelemetry = Pick<
 >;
 
 /** Telemetry from a run's stream: complete with a `result` event, else partial (`turnsApprox`). */
-export function telemetryFromStream(stream: string, run: { durationMs: number; exitCode: number | undefined; killedForBudget: boolean }): StreamTelemetry {
+export function telemetryFromStream(stream: string, run: { durationMs: number; exitCode: number | undefined; killedForBudget: boolean; stoppedAfterDone?: boolean | undefined }): StreamTelemetry {
   const evs = events(stream);
   const init = evs.find((e) => e.type === "system" && e.subtype === "init");
   const assistants = evs.filter((e) => e.type === "assistant" && isObj(e.message));
@@ -81,7 +81,9 @@ export function telemetryFromStream(stream: string, run: { durationMs: number; e
     cacheRead += num(u.cache_read_input_tokens);
     cacheWrite += num(u.cache_creation_input_tokens);
   }
-  const exit: RunExit = run.killedForBudget ? "killed_budget" : run.exitCode === 0 ? "no_result" : "crashed";
+  // RL-1: a run ended by the daemon after its accepted mesh_done did not crash: its signal exit code
+  // reads as an exit without a result.
+  const exit: RunExit = run.killedForBudget ? "killed_budget" : run.exitCode === 0 || run.stoppedAfterDone ? "no_result" : "crashed";
   return {
     ...head,
     turns: byId.size,

@@ -27,6 +27,8 @@ export const RunFile = z.object({
   /** Names the process instance (not just its pid), see HeadlessRunner. */
   startId: z.string().optional(),
   killedForBudget: z.boolean().optional(),
+  /** RL-1: ended by the daemon DONE_GRACE_MS after its step's mesh_done was accepted (not a budget kill). */
+  stoppedAfterDone: z.boolean().optional(),
   endedAt: z.number().optional(),
   exitCode: z.number().int().optional(),
   exit: RunExit.optional(),

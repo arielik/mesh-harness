@@ -71,6 +71,13 @@ function agentsJsonEntry(text: string): Record<string, unknown> {
   return { description: a.description ?? "", prompt: a.body.trim(), ...(tools ? { tools } : {}), ...(a.model ? { model: a.model } : {}) };
 }
 
+/**
+ * RL-1: how long a run's `claude -p` may stay after its step's mesh_done was accepted (background
+ * sub-agent notifications can wake it again) before the daemon ends it like a budget kill. The run
+ * then finishes with its normal exit, never `killed_budget`.
+ */
+export const DONE_GRACE_MS = 60_000;
+
 export type OfferOutcome = { state: "delivered" | "failed"; method: string } | "retry";
 
 /** Run-directory sidecar: what the offer said and which local sessions are the run's. */
@@ -87,6 +94,8 @@ interface RunMeta {
   notStarted?: string | undefined;
   /** RL-7: a mesh_done of the run's step from one of its sessions was accepted (or queued offline). */
   doneAccepted?: boolean | undefined;
+  /** RL-1: when that mesh_done was accepted (the grace period of DONE_GRACE_MS starts then). */
+  doneAcceptedAt?: number | undefined;
 }
 
 /** Run-directory sidecar: progress of the run's hub calls, so a retry goes on where it stopped. */
@@ -296,7 +305,7 @@ export class HeadlessRuns {
     for (const run of this.runs.values()) {
       if (run.state !== "running" || run.step !== step || !this.runSids(run).has(sid)) continue;
       const m = this.meta(run);
-      if (m.doneAccepted !== true) this.saveMeta(run, { ...m, doneAccepted: true });
+      if (m.doneAccepted !== true) this.saveMeta(run, { ...m, doneAccepted: true, doneAcceptedAt: this.deps.now() });
     }
   }
 
@@ -675,7 +684,8 @@ export class HeadlessRuns {
         const cur = this.runs.get(run.runId) as RunFile;
         if (cur.endedAt === undefined) {
           if (!this.end(cur).startedDone) await this.reportStarted(cur);
-          this.checkBudget(cur);
+          this.checkDoneGrace(cur);
+          this.checkBudget(this.runs.get(run.runId) as RunFile);
           // The run as checkBudget left it (killedForBudget): a run that dies at once from the signal
           // ends as killed_budget, not crashed.
           await this.detectEnd(this.runs.get(run.runId) as RunFile);
@@ -718,9 +728,31 @@ export class HeadlessRuns {
     }
   }
 
+  /**
+   * RL-1: a run whose step's mesh_done was accepted and that is still alive DONE_GRACE_MS later is
+   * ended (SIGTERM, then SIGKILL, as the budget kill); it finishes with its normal exit.
+   */
+  private checkDoneGrace(run: RunFile): void {
+    if (run.pid === undefined || run.startId === undefined || run.startedAt === undefined || run.killedForBudget || run.stoppedAfterDone) return;
+    const m = this.meta(run);
+    if (m.doneAccepted !== true) return;
+    if (m.doneAcceptedAt === undefined) {
+      // Accepted by a daemon that kept no time: the grace period starts now.
+      this.saveMeta(run, { ...m, doneAcceptedAt: this.deps.now() });
+      return;
+    }
+    if (this.deps.now() < m.doneAcceptedAt + DONE_GRACE_MS) return;
+    if (existsSync(this.file(run, "exit")) || !this.deps.runner.alive(run.pid, run.startId)) return;
+    this.save({ ...run, stoppedAfterDone: true });
+    this.deps.log(`run ${run.runId}: still running ${DONE_GRACE_MS / 1000} s after its mesh_done; stopping it`);
+    void this.deps.runner.kill(run.pid, run.startId).catch((e) => this.deps.log(`run ${run.runId}: kill failed: ${String(e)}`));
+  }
+
   private checkBudget(run: RunFile): void {
-    if (run.pid === undefined || run.startId === undefined || run.startedAt === undefined || run.killedForBudget) return;
+    if (run.pid === undefined || run.startId === undefined || run.startedAt === undefined || run.killedForBudget || run.stoppedAfterDone) return;
     if (this.deps.now() < run.startedAt + run.budget.minutes * 60_000) return;
+    // RL-1: after an accepted mesh_done the grace period ends the run, never the budget.
+    if (this.meta(run).doneAccepted === true) return;
     if (existsSync(this.file(run, "exit")) || !this.deps.runner.alive(run.pid, run.startId)) return;
     this.save({ ...run, killedForBudget: true });
     this.deps.log(`run ${run.runId}: budget of ${run.budget.minutes} min used up; stopping it`);
@@ -760,6 +792,7 @@ export class HeadlessRuns {
       durationMs: run.startedAt !== undefined && run.endedAt !== undefined ? Math.max(0, run.endedAt - run.startedAt) : 0,
       exitCode: run.exitCode,
       killedForBudget: run.killedForBudget === true,
+      stoppedAfterDone: run.stoppedAfterDone === true,
     });
     let redactions = 0;
     for (const line of this.read(run, "artifacts.jsonl").split("\n")) {

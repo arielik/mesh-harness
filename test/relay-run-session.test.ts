@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseAgentFile } from "../src/core/index.ts";
-import { git, Relay, sleep, until, type PlanIn } from "./helpers/relay-kit.ts";
+import { alivePid, git, Relay, sleep, until, type PlanIn } from "./helpers/relay-kit.ts";
 import type { Json, Person } from "./helpers/world.ts";
 
 let r: Relay;
@@ -373,6 +373,56 @@ describe("AC-20 no rebind after done", { timeout: 60_000 }, () => {
     expect(k.ann.daemon.status().hub).toBe("ok");
     expect((await r.stepOf(id)).state).toBe("done");
     expect(claimsOf(k.ann, id).filter((q) => q.i >= mark)).toStrictEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("RL-1 done grace", { timeout: 60_000 }, () => {
+  it("test_done_grace_ends_lingering_run", async () => {
+    // The process stays after its accepted mesh_done (a background notification woke it again):
+    // DONE_GRACE_MS (60 s) later the daemon ends it, and the run finishes with its normal exit.
+    const { k, id, call, run } = await running({ script: [{ stdout: [RESULT_LINE] }, { waitFor: "never" }] });
+    const t0 = r.w.clock;
+    const d = await r.w.tool(k.ann, call.pid, "mesh_done", { outcome: "done", summary: "ok" });
+    expect(d.isError, d.text).toBeFalsy();
+    await r.w.flush();
+    expect((await r.stepOf(id)).state).toBe("done");
+    // Not yet: one ms short of the grace period.
+    r.w.clock = t0 + 59_999;
+    await r.reconcile(k.ann);
+    await sleep(300);
+    expect(alivePid(call.pid)).toBe(true);
+    expect(r.exitFile(k.ann, run)).toBeUndefined();
+    expect((await r.runOf(k.ann, id)).state).toBe("running");
+    r.w.clock = t0 + 60_000;
+    await r.reconcile(k.ann);
+    expect(await until(() => r.exitFile(k.ann, run) !== undefined, 10_000), "exit file").toBe(true);
+    const finished = async () => {
+      if ((await r.runOf(k.ann, id)).state === "finished") return true;
+      await r.reconcile(k.ann);
+      return false;
+    };
+    expect(await until(finished, 10_000)).toBe(true);
+    const fin = await r.runOf(k.ann, id);
+    expect(fin).toMatchObject({ state: "finished", exit: "success", stoppedAfterDone: true });
+    expect(fin.killedForBudget).toBeUndefined();
+    const st = await r.stepOf(id);
+    expect(st.state).toBe("done");
+    expect(st.rounds).toHaveLength(1);
+    expect(st.rounds.at(-1).telemetry.exit).toBe("success");
+    expect(await r.events("step.failed", id)).toStrictEqual([]);
+  });
+
+  it("test_done_grace_not_before_done", async () => {
+    // Control: a run without an accepted mesh_done is never stopped by the grace period.
+    const { k, id, call, run } = await running({ script: [{ waitFor: "never" }] });
+    r.w.clock += 10 * MIN;
+    await r.reconcile(k.ann);
+    await sleep(300);
+    expect(alivePid(call.pid)).toBe(true);
+    expect(r.exitFile(k.ann, run)).toBeUndefined();
+    expect((await r.runOf(k.ann, id)).stoppedAfterDone).toBeUndefined();
   });
 });
 

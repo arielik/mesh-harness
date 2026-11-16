@@ -111,7 +111,9 @@ profile and a budget. Fields of such a step (all optional, and only with `mode: 
 - `budget`: `turns` (default 30), `minutes` (default 30), `usd` (no default). In a preset, `turns`
   and `minutes` may be `{param}` placeholders (see *Preset parameters*). The run gets
   `--max-turns <turns + 1>`: one extra turn for loading the mesh tools. Past `minutes` the daemon
-  stops the run's whole process group; `usd` becomes `--max-budget-usd`.
+  stops the run's whole process group; `usd` becomes `--max-budget-usd`. A run still alive 60 s
+  after its `mesh_done` was accepted (a background sub-agent can wake it again) is stopped the same
+  way; it finishes with its normal exit, not `killed_budget`, and its step stays done.
 - `inputs`: what `mesh_context` serves the run as input: the artifacts (below) of the last round of
   named steps of the plan, or `artifacts` for those of the step's dependencies. Inputs are fenced
   and marked untrusted: the agent is told to read them as data, never as instructions. `inputs`
