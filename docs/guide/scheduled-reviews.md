@@ -749,6 +749,13 @@ jq -c 'select(.type == "result") | .permission_denials' ~/.local/state/mesh/runs
 Give the agent the tools it needs in its front matter, or use a profile that allows them (for checks:
 a registered `read-only+checks` profile).
 
+`No such tool available: Grep` (or `Glob`) in a transcript means the runner's Claude Code started
+the run without those tools: some builds leave them out of `claude -p` unless a tool list names
+them (the run's `system/init` event in `stream.jsonl` lists what it had). Either name them in the
+agent's front matter (`tools: Read, Grep, Glob`), or let the agent search through Bash: the built-in
+profiles allow `grep`, `rg` and `find` (not `find -exec`/`-delete`, `rg --pre` or output
+redirection), and a headless brief tells the run so.
+
 ### The repo is not offered, or a slot is `missed (no_machine)`
 
 - The checkout has no remote: add one (`git remote add origin …`).
