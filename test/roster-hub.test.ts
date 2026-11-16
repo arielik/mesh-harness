@@ -777,6 +777,17 @@ describe("RL-8 AC-08 pulse warnings, repo agent", () => {
     expect(res.json.warnings).toStrictEqual([W("audit", "bad")]);
   });
 
+  it("checkedAgents: agents the caller checked in the preset's checkout get no roster warning", async () => {
+    await setup();
+    const res = await create("ann", { ...(relay({ agent: "bad", validator: "bad" }) as Record<string, unknown>), checkedAgents: ["bad"] });
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.warnings).toStrictEqual([]);
+    // Not stored, and not a field to change on its own.
+    expect("checkedAgents" in (await k.call("ann", "GET", `/v1/pulses/${res.json.id}`)).json.pulse).toBe(false);
+    const upd = await k.call("ann", "POST", `/v1/pulses/${res.json.id}/update`, { checkedAgents: ["bad"] });
+    expect(upd.status).toBe(400);
+  });
+
   it("test_AC08_all_good_empty", async () => {
     await setup();
     const res = await create("ann", relay({ agent: "good" }));

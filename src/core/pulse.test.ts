@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Session } from "../protocol/index.ts";
-import { manualSlot, overlapBusy, pulseCandidates, type OverlapStep } from "./pulse.ts";
+import { checkoutAgentSteps, manualSlot, overlapBusy, pulseCandidates, type OverlapStep } from "./pulse.ts";
 import { suggest, type SuggestMachine, type SuggestSession } from "./suggest.ts";
 
 const MIN = 60_000;
@@ -180,5 +180,22 @@ describe("overlapBusy", () => {
       expect(overlapBusy([st("audit", state, "headless"), st("next", state, "headless")], RUN)).toBeUndefined();
     }
     expect(overlapBusy([], undefined)).toBeUndefined();
+  });
+});
+
+describe("RL-8 checkoutAgentSteps", () => {
+  it("repo agents of steps in the checkout's repo, in plan order", () => {
+    const steps = [
+      { id: "audit", agent: "auditor" },
+      { id: "other", repo: "/src/beta", agent: "auditor" },
+      { id: "keyed", agent: "agents/validator" },
+      { id: "plain" },
+      { id: "file", repo: "https://example.com/team/alpha.git", agent: "filer" },
+    ];
+    expect(checkoutAgentSteps(steps, "/src/alpha", "alpha")).toStrictEqual([
+      { step: "audit", agent: "auditor" },
+      { step: "file", agent: "filer" },
+    ]);
+    expect(checkoutAgentSteps(steps, "/src/alpha", "beta")).toStrictEqual([{ step: "other", agent: "auditor" }]);
   });
 });

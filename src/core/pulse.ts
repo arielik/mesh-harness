@@ -2,6 +2,7 @@
 
 import { randomBytes } from "node:crypto";
 import { HEADLESS_DEFAULTS, type Suggestion } from "../protocol/index.ts";
+import { repoName } from "./review.ts";
 import { suggest, type SuggestMachine, type SuggestSession } from "./suggest.ts";
 
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -37,6 +38,21 @@ export function profileNames(steps: readonly { profile?: string | undefined; mod
     if (n !== undefined) names.add(n);
   }
   return [...names].sort();
+}
+
+/**
+ * RL-8: the repo agents (an `agent` without `/`) of a pulse's steps that work in the repo named
+ * `checkout` (by last path segment; a step without `repo` works in `defaultRepo`), with their step
+ * ids, in plan order. `mesh pulse add` checks these in the preset's source checkout.
+ */
+export function checkoutAgentSteps(steps: readonly { id: string; repo?: string | undefined; agent?: string | undefined }[], defaultRepo: string, checkout: string): { step: string; agent: string }[] {
+  const out: { step: string; agent: string }[] = [];
+  for (const s of steps) {
+    if (!s.agent || s.agent.includes("/")) continue;
+    if (repoName(s.repo || defaultRepo) !== checkout) continue;
+    out.push({ step: s.id, agent: s.agent });
+  }
+  return out;
 }
 
 export interface PulseCandidatesInput {

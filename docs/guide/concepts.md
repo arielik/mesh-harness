@@ -395,9 +395,15 @@ pinned: the run reads it from the run's worktree.
 for each step whose agent the roster flags invalid (front matter that is not valid YAML): `warning:
 step "<id>": agent <name> in <repo> has invalid front matter: <reason>` for a repo agent the caller
 can see in the step's repo, `warning: step "<id>": roster agent <key> has invalid front matter:
-<reason>` for a roster key's pinned definition. The pulse is still created or updated (exit 0); a
-slot's run of that step would fail at start. The hub computes these in the `warnings` field of the
-`POST /v1/pulses` and `POST /v1/pulses/:id/update` replies, on every update.
+<reason>` for a roster key's pinned definition, each ending in `(roster)`. The pulse is still
+created or updated (exit 0); a slot's run of that step would fail at start. The hub computes these
+in the `warnings` field of the `POST /v1/pulses` and `POST /v1/pulses/:id/update` replies, on every
+update. When the preset is a repo file (`--preset` from a checkout, on `add` or `update`), the CLI
+checks the repo agents of the steps in that repo itself, as the files are at the snapshot commit
+(`git show <commit>:.claude/agents/<name>.md`), and prints `… (checkout <repo> at <commit>)` for an
+invalid one; the roster's copies, which may be stale or come from another checkout, are used only
+for agents that have no file there (it sends their names as `checkedAgents`, and the hub leaves
+them out).
 
 **Schedule.** `--every <duration>` (`30m`, `4h`, `7d`; 5 minutes to 366 days) counts periods from
 an anchor: `--at <ISO>` when given (an `--at` in the future is the first slot, however far ahead),

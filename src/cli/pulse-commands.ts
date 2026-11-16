@@ -3,8 +3,8 @@
 import { spawnSync } from "node:child_process";
 import { basename } from "node:path";
 import { sha256 } from "../auth/index.ts";
-import { presetText } from "../core/index.ts";
-import type { FireResult, PresetSnapshot, PulseDetail, PulseSlot, PulseView } from "../protocol/index.ts";
+import { checkoutAgentSteps, instantiate, parseAgentFile, parsePreset, presetText } from "../core/index.ts";
+import type { FireResult, PlanInput, PresetSnapshot, PulseDetail, PulseSlot, PulseView } from "../protocol/index.ts";
 import type { Command } from "./commands.ts";
 import { parseArgs, type CliEnv } from "./context.ts";
 import { findPresetSource, parseParams } from "./hub-commands.ts";
@@ -30,8 +30,14 @@ const stateText = (s: Pick<PulseSlot, "state" | "reason">) => `${s.state}${s.rea
 /** A usage error: printed, exit 2, nothing sent. */
 class Usage extends Error {}
 
+/** A preset snapshot and, for a repo file, the checkout it came from. */
+interface Snapshot {
+  preset: PresetSnapshot;
+  root?: string | undefined;
+}
+
 /** The preset snapshot `mesh pulse add --preset` sends: `presetText` of it, its sha256, and (repo files) where it came from. */
-function presetSnapshot(cwd: string, name: string): PresetSnapshot {
+function presetSnapshot(cwd: string, name: string): Snapshot {
   let found: ReturnType<typeof findPresetSource>;
   try {
     found = findPresetSource(cwd, name);
@@ -45,7 +51,50 @@ function presetSnapshot(cwd: string, name: string): PresetSnapshot {
     const commit = r.status === 0 ? r.stdout.trim() : "";
     if (commit) source = { repo: basename(found.root), commit };
   }
-  return { name, text, sha256: sha256(text), ...(source ? { source } : {}) };
+  return { preset: { name, text, sha256: sha256(text), ...(source ? { source } : {}) }, ...(source ? { root: found.root } : {}) };
+}
+
+/**
+ * RL-8: the repo agents of the pulse's steps in the preset's source checkout, each as its file is at
+ * the snapshot commit (`git show <commit>:.claude/agents/<name>.md`), not as the roster last saw a
+ * copy of it. `checked`: the agents found there (the hub leaves them out of its roster warnings);
+ * `warnings`: those with invalid front matter. An agent with no file at that commit, or also used by
+ * a step in another repo, is left to the roster.
+ */
+function checkoutAgents(s: Snapshot, params: Record<string, string>): { checked: string[]; warnings: string[] } {
+  const source = s.preset.source;
+  const repo = params.repo;
+  if (s.root === undefined || source === undefined || repo === undefined) return { checked: [], warnings: [] };
+  let steps: PlanInput["steps"];
+  try {
+    steps = instantiate(parsePreset(s.preset.name, s.preset.text), { repo, goal: "this goal", params }).steps;
+  } catch {
+    return { checked: [], warnings: [] };
+  }
+  const here = checkoutAgentSteps(steps, repo, source.repo);
+  const elsewhere = new Set(steps.filter((x) => x.agent && !here.some((h) => h.step === x.id)).map((x) => x.agent));
+  const checked: string[] = [];
+  const warnings: string[] = [];
+  const files = new Map<string, string | undefined>();
+  for (const { step, agent } of here) {
+    if (elsewhere.has(agent)) continue;
+    if (!files.has(agent)) {
+      const r = spawnSync("git", ["-C", s.root, "show", `${source.commit}:.claude/agents/${agent}.md`], { encoding: "utf8" });
+      files.set(agent, r.status === 0 ? r.stdout : undefined);
+    }
+    const text = files.get(agent);
+    if (text === undefined) continue;
+    if (!checked.includes(agent)) checked.push(agent);
+    const invalid = parseAgentFile(text).invalid;
+    if (invalid !== undefined) warnings.push(`step "${step}": agent ${agent} in ${source.repo} has invalid front matter: ${invalid} (checkout ${source.repo} at ${source.commit.slice(0, 12)})`);
+  }
+  return { checked, warnings };
+}
+
+/** Warnings on stderr, each saying where it came from: the checkout (ours) or the roster (the hub's). */
+function printWarnings(c: CliEnv, local: readonly string[], hub: readonly string[] | undefined): void {
+  for (const w of local) c.io.err(`warning: ${w}`);
+  for (const w of hub ?? []) c.io.err(`warning: ${w} (roster)`);
 }
 
 type Args = ReturnType<typeof parseArgs>;
@@ -131,10 +180,12 @@ export function pulseCommand(c: CliEnv): Command {
             if (a.str("every") === undefined && a.str("cron") === undefined) throw new Usage('give one schedule: --every <duration> or --cron "<5 fields>"');
             const fields = commonFields(a, c);
             const params = { ...paramsOf(a), repo };
-            const preset = presetSnapshot(c.cwd, name);
-            const p = await hub().post<PulseView>("/v1/pulses", { preset, params, ...fields, ...(a.has("paused") ? { enabled: false } : {}) });
+            const snap = presetSnapshot(c.cwd, name);
+            const local = checkoutAgents(snap, params);
+            const checked = local.checked.length ? { checkedAgents: local.checked } : {};
+            const p = await hub().post<PulseView>("/v1/pulses", { preset: snap.preset, params, ...fields, ...(a.has("paused") ? { enabled: false } : {}), ...checked });
             c.io.out(`Created pulse ${p.id} "${p.title}": ${p.schedule}, next run ${iso(p.nextAt)}.`);
-            for (const w of p.warnings ?? []) c.io.err(`warning: ${w}`);
+            printWarnings(c, local.warnings, p.warnings);
             return 0;
           }
           case "ls": {
@@ -159,7 +210,8 @@ export function pulseCommand(c: CliEnv): Command {
             const fields = commonFields(a, c);
             const given = paramsOf(a);
             const body: Record<string, unknown> = { ...fields };
-            if (a.str("preset") !== undefined) body.preset = presetSnapshot(c.cwd, a.str("preset") as string);
+            const snap = a.str("preset") !== undefined ? presetSnapshot(c.cwd, a.str("preset") as string) : undefined;
+            if (snap) body.preset = snap.preset;
             if (given !== undefined || a.str("repo") !== undefined) {
               let repo = a.str("repo");
               let base: Record<string, string> = {};
@@ -170,9 +222,16 @@ export function pulseCommand(c: CliEnv): Command {
               }
               body.params = { ...base, ...given, ...(repo !== undefined ? { repo } : {}) };
             }
+            // A new snapshot from a checkout: its agents are checked there (with the pulse's params).
+            let local: { checked: string[]; warnings: string[] } = { checked: [], warnings: [] };
+            if (snap?.root !== undefined) {
+              const params = (body.params as Record<string, string> | undefined) ?? (await hub().get<PulseDetail>(`/v1/pulses/${encodeURIComponent(id)}`)).pulse.params;
+              local = checkoutAgents(snap, params);
+              if (local.checked.length) body.checkedAgents = local.checked;
+            }
             const p = await hub().post<PulseView>(`/v1/pulses/${encodeURIComponent(id)}/update`, body);
             c.io.out(`Updated pulse ${p.id}; next run ${iso(p.nextAt)}.`);
-            for (const w of p.warnings ?? []) c.io.err(`warning: ${w}`);
+            printWarnings(c, local.warnings, p.warnings);
             return 0;
           }
           case "pause": {

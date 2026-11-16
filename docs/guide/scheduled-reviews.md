@@ -734,8 +734,13 @@ pulse is still saved:
 
 ```
 Created pulse p-1 "audit-relay on demo": every 7d, next run 2026-11-19T16:15:31.279Z.
-warning: step "audit": agent broken in demo has invalid front matter: front matter is not valid YAML: Nested mappings are not allowed in compact mappings at line 2, column 14
+warning: step "audit": agent broken in demo has invalid front matter: front matter is not valid YAML: Nested mappings are not allowed in compact mappings at line 2, column 14 (roster)
 ```
+
+`(roster)`: the hub's copy of the agent as a runner last reported it. With a preset from your
+checkout (`.mesh/presets/<name>.yaml`), the agents of the steps in that repo are checked as committed
+there at the snapshot commit instead, and the line ends in `(checkout demo at <commit>)`; a warning
+from the roster for an agent your checkout has fine means the roster's copy is stale.
 
 ### A run ended without `mesh_done`
 

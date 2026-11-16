@@ -3154,15 +3154,17 @@ export class HubService {
       await this.emit({ type: "pulse.created", user: actor.userId, payload: { pulse: p.id, title: p.title, preset: p.preset.name, sha256: p.preset.sha256, schedule: scheduleText(p.when) } });
       return { view: await this.pulseView(p), pulse: p };
     });
-    return { ...view, warnings: await this.pulseWarnings(actor, pulse) };
+    return { ...view, warnings: await this.pulseWarnings(actor, pulse, body.checkedAgents) };
   }
 
   /**
    * RL-8: one warning per step of the pulse's instantiated plan whose agent the roster flags invalid:
    * a roster key by its pinned catalog definition, a repo agent by the copies the caller can see in
-   * the step's repo. Never fails (a plan that cannot be instantiated gives none).
+   * the step's repo, except the repo agents in `checked` (the caller checked those in the preset's
+   * source checkout, which the roster's copies may not match). Never fails (a plan that cannot be
+   * instantiated gives none).
    */
-  private async pulseWarnings(actor: Actor, p: Pulse): Promise<string[]> {
+  private async pulseWarnings(actor: Actor, p: Pulse, checked: readonly string[] = []): Promise<string[]> {
     let plan: PlanInput;
     try {
       plan = instantiate(parsePreset(p.preset.name, p.preset.text), { repo: p.params.repo ?? "repo", goal: "this goal", params: p.params });
@@ -3181,6 +3183,7 @@ export class HubService {
         if (def?.invalid !== undefined) out.push(`step "${s.id}": roster agent ${def.key} has invalid front matter: ${def.invalid}`);
         continue;
       }
+      if (checked.includes(a)) continue;
       let view = views.get(a);
       if (!view) {
         view = await this.agentsView(actor, a);
@@ -3252,11 +3255,11 @@ export class HubService {
       const t = HubService.timings(next.when, next.window, next.maxGoalAge, now);
       next = { ...next, windowMs: t.windowMs, maxGoalAgeMs: t.maxGoalAgeMs, updatedAt: now };
       await this.store.savePulse(next);
-      await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: next.version, fields: Object.keys(body).sort() } });
+      await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: next.version, fields: Object.keys(body).filter((f) => f !== "checkedAgents").sort() } });
       return { view: await this.pulseView(next), pulse: next };
     });
     // RL-8: warnings on every update, from the resulting preset, params and pins.
-    return { ...view, warnings: await this.pulseWarnings(actor, pulse) };
+    return { ...view, warnings: await this.pulseWarnings(actor, pulse, body.checkedAgents) };
   }
 
   async pausePulse(actor: Actor, id: string): Promise<PulseView> {

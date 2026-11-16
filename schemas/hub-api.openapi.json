@@ -1949,6 +1949,15 @@
                   "enabled": {
                     "default": true,
                     "type": "boolean"
+                  },
+                  "checkedAgents": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
                   }
                 },
                 "required": [
@@ -2208,6 +2217,15 @@
                       "record",
                       "catch-up-once"
                     ]
+                  },
+                  "checkedAgents": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
                   }
                 },
                 "additionalProperties": false

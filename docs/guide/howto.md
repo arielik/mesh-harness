@@ -484,8 +484,12 @@ fix the agent file first:
 ```sh
 mesh pulse add --preset audit-relay --repo alpha --params agent=bad,validator=checker,filer=filer --every 7d
 #   Created pulse p-2 "audit-relay on alpha": every 7d, next run 2026-11-19T10:00:00.000Z.
-#   warning: step "audit": agent bad in alpha has invalid front matter: front matter is not valid YAML: …
+#   warning: step "audit": agent bad in alpha has invalid front matter: front matter is not valid YAML: … (roster)
 ```
+
+With a preset from your checkout (`.mesh/presets/<name>.yaml`), the steps' agents in that repo are
+checked as committed at the snapshot commit, and a warning ends in `(checkout alpha at <commit>)`;
+`(roster)` warnings are left for agents without a file there.
 
 Check it, run a slot now, and read what happened:
 

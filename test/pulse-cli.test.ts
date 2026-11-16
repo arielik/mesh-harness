@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BUILTIN_PRESETS, parsePreset, presetText } from "../src/core/index.ts";
+import { BUILTIN_PRESETS, parseAgentFile, parsePreset, presetText } from "../src/core/index.ts";
 import { git, Relay } from "./helpers/relay-kit.ts";
 import { body, DAY, HOUR, iso, MIN, Pk, RELAY_TEXT, sha, sha12, T0, type Bare, type Json } from "./helpers/pulse-kit.ts";
 import { ALPHA, rep, Rk } from "./helpers/roster-kit.ts";
@@ -480,13 +480,13 @@ describe("RL-7 AC-12 mesh preset ls", { timeout: 30_000 }, () => {
 // ---------------------------------------------------------------------------------------------
 
 // RL-8 AC-10: `mesh pulse add` / `mesh pulse update` print the hub's `warnings` on stderr, one
-// `warning: <warning>` line each, after the unchanged success line, and still exit 0
+// `warning: <warning> (roster)` line each, after the unchanged success line, and still exit 0
 // (docs/specs/RL-8.md, Pulse warnings).
 describe("RL-8 AC-10 pulse warnings", { timeout: 30_000 }, () => {
   const BAD = "---\nname: bad\ndescription: Validates: findings\n---\nYou validate.\n";
   const GOOD = "---\ndescription: Good agent\n---\nYou review.\n";
   const INV = "front matter is not valid YAML: sample at line 2, column 14";
-  const LINE = `warning: step "audit": agent bad in alpha has invalid front matter: ${INV}`;
+  const LINE = `warning: step "audit": agent bad in alpha has invalid front matter: ${INV} (roster)`;
   const ADD = (agent: string) => ["pulse", "add", "--preset", "audit-relay", "--repo", "alpha", "--params", `agent=${agent},validator=good,filer=good`, "--every", "7d"];
   const lines = (t: string) => t.split("\n").filter((l) => l !== "");
 
@@ -527,6 +527,53 @@ describe("RL-8 AC-10 pulse warnings", { timeout: 30_000 }, () => {
     const res = await cli(c.ann, ADD("good"));
     expect(res.code, res.err).toBe(0);
     expect(res.out.trim()).toBe(`Created pulse p-1 "audit-relay on alpha": every 7d, next run ${iso(NOW + 7 * DAY)}.`);
+    expect(res.err).toBe("");
+  });
+
+  // A preset from ann's checkout: its agents are checked as committed there at the snapshot commit,
+  // not as the roster's (possibly stale, other-checkout) copy; the roster only for files not there.
+  const REPO_ADD = (agent: string) => ["pulse", "add", "--preset", "weekly", "--repo", "alpha", "--params", `agent=${agent},validator=good,filer=good`, "--every", "7d"];
+  /** ann's checkout with .claude/agents/<name>.md and .mesh/presets/weekly.yaml (audit-relay's text) committed. */
+  function checkout(p: Person, agents: Record<string, string>): string {
+    mkdirSync(join(p.repoDir, ".claude", "agents"), { recursive: true });
+    for (const [name, text] of Object.entries(agents)) writeFileSync(join(p.repoDir, ".claude", "agents", `${name}.md`), text);
+    return commitPreset(p, "weekly", RELAY_TEXT());
+  }
+
+  it("checkout copy valid, roster copy invalid: no warning", async () => {
+    const c = await warnCast();
+    checkout(c.ann, { bad: GOOD, good: GOOD });
+    const res = await cli(c.ann, REPO_ADD("bad"), c.ann.repoDir);
+    expect(res.code, res.err).toBe(0);
+    expect(res.out.trim()).toBe(`Created pulse p-1 "weekly on alpha": every 7d, next run ${iso(NOW + 7 * DAY)}.`);
+    expect(res.err).toBe("");
+  });
+
+  it("checked at the snapshot commit, not the working tree", async () => {
+    const c = await warnCast();
+    const commit = checkout(c.ann, { bad: BAD, good: GOOD });
+    // Fixed in the working tree only: the snapshot commit still has the invalid file.
+    writeFileSync(join(c.ann.repoDir, ".claude", "agents", "bad.md"), GOOD);
+    const res = await cli(c.ann, REPO_ADD("bad"), c.ann.repoDir);
+    expect(res.code, res.err).toBe(0);
+    expect(lines(res.err)).toStrictEqual([`warning: step "audit": agent bad in alpha has invalid front matter: ${parseAgentFile(BAD).invalid} (checkout alpha at ${commit.slice(0, 12)})`]);
+  });
+
+  it("agent file not in the checkout: the roster's warning", async () => {
+    const c = await warnCast();
+    checkout(c.ann, { good: GOOD });
+    const res = await cli(c.ann, REPO_ADD("bad"), c.ann.repoDir);
+    expect(res.code, res.err).toBe(0);
+    expect(lines(res.err)).toStrictEqual([LINE]);
+  });
+
+  it("pulse update --preset checks the checkout too", async () => {
+    const c = await warnCast();
+    const add = await cli(c.ann, ADD("bad"));
+    expect(lines(add.err)).toStrictEqual([LINE]);
+    checkout(c.ann, { bad: GOOD, good: GOOD });
+    const res = await cli(c.ann, ["pulse", "update", "p-1", "--preset", "weekly"], c.ann.repoDir);
+    expect(res.code, res.err).toBe(0);
     expect(res.err).toBe("");
   });
 });

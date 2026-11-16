@@ -76,6 +76,12 @@ export const PulseFields = z
     maxGoalAge: DurationSpec.optional(),
     missed: Missed.optional(),
     enabled: z.boolean().optional(),
+    /**
+     * RL-8: repo agents (by name) the caller checked itself in the preset's source checkout at
+     * `preset.source.commit` (`mesh pulse add` from a checkout); the hub leaves them out of its
+     * warnings from the roster's copies. Never stored.
+     */
+    checkedAgents: z.array(z.string().min(1).max(100)).max(50).optional(),
   })
   .strict();
 
@@ -109,7 +115,7 @@ export const PulseUpdate = PulseFields.omit({ enabled: true })
   .partial()
   .superRefine((v, ctx) => {
     ranges(v, ctx);
-    if (Object.keys(v).length === 0) ctx.addIssue({ code: "custom", message: "give at least one field to change" });
+    if (Object.keys(v).filter((k) => k !== "checkedAgents").length === 0) ctx.addIssue({ code: "custom", message: "give at least one field to change" });
   });
 export type PulseUpdate = z.infer<typeof PulseUpdate>;
 
