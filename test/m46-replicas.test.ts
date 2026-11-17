@@ -166,7 +166,8 @@ describe.skipIf(!PG_URL)(`two hub replicas on one Postgres${PG_URL ? "" : " (ski
     expect(await a.runTick()).toBe(true); // still leading
     // The leader's connection dies (a crashed pod): the server drops its lock.
     expect(await pgdb.terminateLockHolder(target, LOCKS.tick)).toBe(1);
-    expect(await b.runTick()).toBe(true);
+    // The server frees the lock once it has ended the backend, which can trail the terminate call.
+    await until(() => b.runTick(), 5_000, "B leads after the leader's connection died");
     expect(await a.runTick()).toBe(false);
     // A clean shutdown releases the lock at once.
     await b.stop();
