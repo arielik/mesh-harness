@@ -2,7 +2,7 @@
 
 import { skillStatus } from "../claude/index.ts";
 import { runOf } from "../core/index.ts";
-import { MESH_DEBRIEF_SKILL, type DebriefView, type ItemView, type Step, type StepView, type StoredReview } from "../protocol/index.ts";
+import { MESH_DEBRIEF_SKILL, Severity, type DebriefView, type ItemView, type SinkResult, type Step, type StepView, type StoredReview } from "../protocol/index.ts";
 import type { Command } from "./commands.ts";
 import { parseArgs, type CliEnv } from "./context.ts";
 import { HubCallError, HubClient } from "./hub-client.ts";
@@ -95,13 +95,40 @@ export function debriefCommand(c: CliEnv, run: (args: string[]) => Promise<numbe
   };
 }
 
+/** RL-9: `mesh items sink <lineage> --topic <t> [--min-severity S2] [--dry-run]` (backfill). */
+async function itemsSink(c: CliEnv, args: readonly string[], usage: string): Promise<number> {
+  const a = parseArgs(args, ["topic", "min-severity"]);
+  const lineage = a.positional[0];
+  const topic = a.str("topic");
+  const min = a.str("min-severity");
+  if (!lineage || !topic) {
+    c.io.err(usage);
+    return 2;
+  }
+  if (min !== undefined && !Severity.safeParse(min).success) {
+    c.io.err(`--min-severity is one of ${Severity.options.join(", ")}, got "${min}"`);
+    return 2;
+  }
+  try {
+    const r = await HubClient.from(c.paths).post<SinkResult>("/v1/items/sink", { lineage, topic, ...(min ? { min_severity: min } : {}), ...(a.has("dry-run") ? { dry_run: true } : {}) });
+    if (a.has("dry-run")) c.io.out(`would add ${r.added.length} to ${r.goal ?? "a new goal"}`);
+    else c.io.out(`${r.goal ?? "no goal"}: added ${r.added.length}, reopened ${r.reopened.length}`);
+    return 0;
+  } catch (e) {
+    if (!(e instanceof HubCallError)) throw e;
+    c.io.err(e.message);
+    return 1;
+  }
+}
+
 export function itemsCommand(c: CliEnv): Command {
-  const usage = "usage: mesh items <lineage key | step id> [--all] [--json]";
+  const usage = ["usage: mesh items <lineage key | step id> [--all] [--json]", "       mesh items sink <lineage> --topic <t> [--min-severity S2] [--dry-run]"].join("\n");
   return {
     name: "items",
     help: usage,
-    summary: "items of a review lineage: <lineage key | step id> [--all] [--json]",
+    summary: "items of a review lineage: <lineage key | step id> [--all] [--json]; sink <lineage> --topic <t> adds its filed items to a clean-audit goal",
     async run(args) {
+      if (args[0] === "sink") return await itemsSink(c, args.slice(1), usage);
       const a = parseArgs(args);
       const target = a.positional[0];
       if (!target) {

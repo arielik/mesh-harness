@@ -1039,6 +1039,7 @@ export class HubStore {
           ...(e.answer !== undefined ? { answer: e.answer } : {}),
           ...(e.link !== undefined ? { link: e.link } : {}),
           ...(e.until !== undefined ? { until: e.until } : {}),
+          ...(e.requires !== undefined ? { requires: e.requires } : {}),
           at: e.at,
         }),
       );

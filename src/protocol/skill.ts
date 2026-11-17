@@ -65,8 +65,9 @@ the rules your agent declares (\`mesh-rules\`) as \`key.rule\`; others are recor
 mesh matches findings by rule, path and symbol, never by line numbers. Dispositions (\`confirmed\`,
 \`dismissed\`, \`deferred\` with \`until\`, \`accepted\`), each with the item's fingerprint and a
 reason, belong only in the record of a consuming step (a step with \`consumes\`; input
-\`dispositions\` lists the items it may act on), never in the record that raises the items. The
-record never fails the step: finish with \`mesh_done\`.
+\`dispositions\` lists the items it may act on), never in the record that raises the items. An
+\`accepted\` disposition may carry \`requires\`: the fingerprints of findings this fix cannot land
+before. The record never fails the step: finish with \`mesh_done\`.
 
 ## Debriefs
 
@@ -94,6 +95,15 @@ answers); work from the brief and its inputs, store reports with \`mesh_artifact
 finish with \`mesh_done\` (\`outcome: "fail"\` with a summary when you could not do the step). A run
 that ends without \`mesh_done\` is closed as failed. The step record mesh writes on \`mesh_done\` is
 not committed in a headless run: the run's worktree is discarded, so do not spend turns on it.
+
+## Finding steps
+
+A step whose id starts with \`f-\` (title \`[S1] …\` to \`[S4] …\`) is a finding step of a
+clean-audit goal: one finding an audit raised and a filer recorded with a tracking link. Read the
+brief from \`mesh_context\` (rule, path, evidence, proposal, link), fix the finding in the step's
+worktree (\`mesh run <repo> --step <step>\` makes its branch) and finish with \`mesh_done\`. Do not
+edit the tracking row: the next audit of the lineage resolves the finding, or raises it again;
+finishing the step records nothing on the item.
 
 ## Pulse goals
 
@@ -174,6 +184,8 @@ your person.
 | \`mesh artifact ls <goal>\` | reports stored on the hub; \`mesh artifact show <id>\` prints one |
 | \`mesh pulse add --preset <name> --repo <repo> --every 7d\` | run a preset on a schedule (\`--cron "<5 fields>" --tz <zone>\`); \`mesh pulse ls\`, \`show\`, \`fire\`, \`pause\`, \`rm\`; \`add\` and \`update\` warn (stderr, still saved) when a named agent is flagged invalid in the roster |
 | \`mesh goal ls --pulses\` | goal lists including goals made by pulses |
+| \`mesh goal drop <goal>\` | end a goal (\`--reason "…"\`; its owner, an approver or an admin; no step may be held) |
+| \`mesh items sink <lineage> --topic <t>\` | add a lineage's filed items to its clean-audit goal (\`--min-severity S2\`, \`--dry-run\`) |
 | \`mesh agents\` | the roster: agents of repos and catalog sources by name and hash (\`--name\`, \`--json\`) |
 | \`mesh agent add <source>/<name>\` | install a catalog agent into \`.claude/agents/\`, pinned in \`.mesh/agents.lock\`; \`mesh agent outdated\`, \`diff <name>\`, \`update <name>\` |
 | \`mesh doctor\` | check the installation |

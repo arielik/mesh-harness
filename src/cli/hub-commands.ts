@@ -204,14 +204,15 @@ export function goalCommand(c: CliEnv): Command {
     '  mesh goal revise <G> "<comment>"',
     '  mesh goal replan <G> ["<comment>"]',
     "  mesh goal files <G> [--write]",
+    '  mesh goal drop <G> [--reason "…"]   # its owner, an approver or an admin; no step may be held',
   ].join("\n");
   return {
     name: "goal",
     help: usage,
-    summary: "goals and plans: new, ls, show, tag, plan, approve, revise",
+    summary: "goals and plans: new, ls, show, tag, plan, approve, revise, drop",
     async run(args) {
       const [sub, ...rest] = args;
-      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs", "topic", "topics", "params"]);
+      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs", "topic", "topics", "params", "reason"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "new": {
@@ -311,6 +312,14 @@ export function goalCommand(c: CliEnv): Command {
           if (!id) break;
           await hub().post(`/v1/goals/${encodeURIComponent(id)}/replan`, words.length ? { comment: words.join(" ") } : {});
           c.io.out(`${id}.design is open again. Continue the design with: mesh run --design ${id}`);
+          return 0;
+        }
+        case "drop": {
+          // RL-9: end any goal (its ready, blocked and parked steps are dropped).
+          const id = a.positional[0];
+          if (!id) break;
+          const g = await hub().post<Goal>(`/v1/goals/${encodeURIComponent(id)}/drop`, a.str("reason") ? { reason: a.str("reason") } : {});
+          c.io.out(`Dropped ${g.id}`);
           return 0;
         }
         case "files": {

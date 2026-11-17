@@ -11,10 +11,12 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | Type | When | Payload |
 |---|---|---|
 | `user.logged_in` | a login | `provider`, `client`, `machine` |
-| `goal.created` | a new goal | `title`; goals made by a pulse or by ingest: `preset` (name), and for a pulse `pulse`, `slot` |
+| `goal.created` | a new goal | `title`; goals made by a pulse or by ingest: `preset` (name), and for a pulse `pulse`, `slot`; a clean-audit goal opened by a sink: `sink` (`repo`, `topic`) |
 | `goal.replan` | the design is reopened | `comment` |
 | `goal.done` | the last step finished | — |
-| `goal.dropped` | a pulse dropped the goal: its slot was missed, or its goal was abandoned | `reason` (`missed`, `abandoned`) |
+| `goal.dropped` | a pulse dropped the goal (its slot was missed, or its goal was abandoned), or a person dropped it (`mesh goal drop`; `user`) | `reason` (`missed`, `abandoned`, `person`); for `person` also `by` and `comment` (the `--reason`, when given) |
+| `goal.sunk` | a sink stage (done or skipped) or `mesh items sink` added or reopened finding steps in a clean-audit goal; `goal` = the clean-audit goal, `step` = the sink stage. Activity: `<n> findings from <from> (<m> reopened)` | `goal`, `from` (the sink stage's id, or `mesh items sink`), `added`, `reopened` (step ids) |
+| `goal.sink_failed` | a sink stage could not sink (its topic is no longer defined); nothing of the sink was written, the stage's own change committed, and the stage got the note `sink failed: <reason>`; `goal`, `step` = the relay goal and its sink stage | `from` (the sink stage's id), `reason` |
 | `plan.proposed` | `mesh_plan` / `mesh goal plan` | `version`, `steps` |
 | `plan.approved` | approval | `version` |
 | `plan.revised` | a person asked for changes | `version`, `comment` |
@@ -24,12 +26,12 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.paused` | the holder's session ended or machine went offline | `reason` |
 | `step.taken_over` | `mesh take` | `from` |
 | `step.noted` | `mesh_note` | — |
-| `step.done` / `step.failed` | `mesh_done` | `summary`, `mr`, `reopen`, `round`, `model`, `verdict`, `buckets` |
+| `step.done` / `step.failed` | `mesh_done`; `step.done` also when a later complete audit resolved the item of a ready or blocked finding step (`user` = the goal owner) | `summary`, `mr`, `reopen`, `round`, `model`, `verdict`, `buckets`; a resolved finding: `summary` (`resolved by <audit step id>`), `by` (the goal owner) |
 | `step.rejected` | `mesh_done` not accepted (reconcile: criteria not covered); the holder keeps the step | `reason`, `missing` |
 | `step.parked` | a rule stopped the step (round cap, churn, stall, a bucket routed to a person, reconcile after a retry) | `reason`, `round` |
 | `step.resumed` | a person resumed a parked or failed step | `comment`, `was` |
 | `gate.approved` / `gate.rejected` | a person (or a recorded rule) decided a gate step | `gate`, `rule`, `comment`, `reopen` |
-| `step.reopened` | a test, verify or review step failed it, or a gate was rejected | `by`, `reason` (bucket, criterion and assertion when given, never the tester's prose), `fixCycles`, `buckets` |
+| `step.reopened` | a test, verify or review step failed it, or a gate was rejected; a finding step whose item was filed again (`refiled`) or whose dismissal or deferral was reverted (`reverted`) | `by`, `reason` (bucket, criterion and assertion when given, never the tester's prose; `refiled` or `reverted` for finding steps), `fixCycles`, `buckets`; finding steps: `by` = the goal owner (refiled) or the reverting person, `from` = the sink stage or the debrief step |
 | `step.dropped` | a new plan removed it | — |
 | `question.asked` / `question.answered` | `mesh_ask` / an answer | `question` |
 | `message.sent` | a person messaged a session | `id` |
@@ -52,7 +54,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `calibration.opened` | the hub opened a calibration goal for an agent hash (its uncalibrated dismissals reached the threshold); `goal` = the new goal, `user` = the calibrator. Activity: `opened calibration of <key>@<hash12> (<n> dismissals)` | `key`, `hash`, `dismissals` (listed), `threshold`, `calibrator` |
 | `calibration.done` | a calibration goal became done (its listed dismissals are calibrated); `goal`. Activity: `calibration of <key>@<hash12> done: <outcome>` | `key`, `hash`, `dismissals` (listed), `outcome` (`change`: the `calibrate` record's assessment is `issues`; `no-change`: `clean`; else `none`) |
 | `step.skipped` | a conditional step (`when`) had nothing to consume when its dependencies were done | `reason` (`when`) |
-| `step.dropped` | a new plan dropped the step, or a pulse dropped its goal | — (a new plan); `reason` (`missed`, `abandoned`) when a pulse dropped the goal |
+| `step.dropped` | a new plan dropped the step, a pulse or a person dropped its goal, or the item of a ready or blocked finding step was dismissed, deferred or its filing reverted | — (a new plan); `reason` (`missed`, `abandoned`) when a pulse dropped the goal, `person` when a person did, `dismissed`, `deferred` or `reverted` for a finding step, with `by` (also `user`) = the deciding person, or the goal owner for an agent decider |
 | `pulse.created` | a pulse was saved | `pulse`, `title`, `preset` (name), `sha256`, `schedule` |
 | `pulse.updated` | a pulse was changed, or a deleted topic was taken off it | `pulse`, `version`, `fields` (the changed body keys, sorted) |
 | `pulse.paused` | the owner or an admin paused it; no `user` when the hub paused it because its owner is no longer a member | `pulse`, `reason` |

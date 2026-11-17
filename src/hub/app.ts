@@ -41,6 +41,8 @@ import {
   PulseCreate,
   PulseUpdate,
   GoalTopicsChange,
+  GoalDrop,
+  SinkRequest,
   NoteRequest,
   ProposePlan,
   ReleaseRequest,
@@ -240,6 +242,8 @@ export function buildRoutes(svc: HubService): Route[] {
       return c.json(await svc.approvePlan(a, param(c, "id"), b.version, b.comment));
     }),
     r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(await svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment))),
+    // RL-9: a person ends a goal.
+    r("POST", "/v1/goals/:id/drop", "member", async (c, a) => c.json(await svc.dropGoalByPerson(a, param(c, "id"), (await body(c, GoalDrop)).reason)), "goals:write"),
     r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
     r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) }), "goals:read"),
     r("POST", "/v1/goals/:id/topics", "member", async (c, a) => c.json(await svc.changeGoalTopics(a, param(c, "id"), await body(c, GoalTopicsChange))), "goals:write"),
@@ -350,6 +354,8 @@ export function buildRoutes(svc: HubService): Route[] {
       },
       "goals:read",
     ),
+    // RL-9: backfill a lineage's filed items into its clean-audit goal.
+    r("POST", "/v1/items/sink", "member", async (c, a) => c.json(await svc.sinkItems(a, await body(c, SinkRequest))), "goals:write"),
     // RL-4: debriefs.
     r("POST", "/v1/steps/:id/read", "member", async (c, a) => {
       await body(c, ReadRequest);

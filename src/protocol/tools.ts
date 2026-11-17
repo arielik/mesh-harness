@@ -66,7 +66,7 @@ export const TOOLS = {
   },
   mesh_review: {
     description:
-      "Submit the review record of your step (a step with output: review-record), before mesh_done. Each item has key {rule, path?, symbol?}, title, severity S1-S4, category and evidence [{path, lines?: [start, end], note?}]. The hub fingerprints each item by its key and folds the record against the previous record of the same lineage (new, repeat, regression, resolved). key.rule should be one of the rules your agent declares (others are recorded as other:<slug>); reuse the keys of the previous record for the same finding. Line numbers never matter for identity. Dispositions (confirmed, dismissed, deferred with until, accepted) belong only in the record of a consuming step (one with consumes), each with a reason and the item's fingerprint. coverage: complete when you looked at everything in scope (only then are missing items resolved). The record never fails the step: finish with mesh_done.",
+      "Submit the review record of your step (a step with output: review-record), before mesh_done. Each item has key {rule, path?, symbol?}, title, severity S1-S4, category and evidence [{path, lines?: [start, end], note?}]. The hub fingerprints each item by its key and folds the record against the previous record of the same lineage (new, repeat, regression, resolved). key.rule should be one of the rules your agent declares (others are recorded as other:<slug>); reuse the keys of the previous record for the same finding. Line numbers never matter for identity. Dispositions (confirmed, dismissed, deferred with until, accepted) belong only in the record of a consuming step (one with consumes), each with a reason and the item's fingerprint; an accepted one may carry requires: the fingerprints of findings this fix cannot land before. coverage: complete when you looked at everything in scope (only then are missing items resolved). The record never fails the step: finish with mesh_done.",
     input: ReviewRecord.shape,
   },
   mesh_ask: {
@@ -106,7 +106,7 @@ export const TOOLS = {
   },
   mesh_dispose: {
     description:
-      "For a debrief step only: record one decision of your person on one item at once. answer is the person's own words, verbatim; reason is the decision's reason. deferred needs until (YYYY-MM-DD). Call it once per decision, never deciding for the person; the debrief still ends with mesh_review and mesh_done.",
+      "For a debrief step only: record one decision of your person on one item at once. answer is the person's own words, verbatim; reason is the decision's reason. deferred needs until (YYYY-MM-DD); accepted may carry requires (fingerprints of findings this fix cannot land before). Call it once per decision, never deciding for the person; the debrief still ends with mesh_review and mesh_done.",
     input: DisposeRequest.omit({ sid: true }).shape,
   },
 } as const;

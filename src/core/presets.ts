@@ -207,6 +207,8 @@ export function instantiate(
     const step = fill(x) as PresetStep;
     // Reconcile needs criteria; without them the template still works, minus that check.
     if (!hasAcs) delete step.must_cover;
+    // RL-9: a sink topic is a topic name (trimmed, lowercased); the hub checks it.
+    if (step.sink) step.sink = { topic: step.sink.topic.trim().toLowerCase() };
     return step;
   });
   for (const step of steps) {

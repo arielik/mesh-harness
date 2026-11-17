@@ -9,7 +9,9 @@ import { AgentReport } from "./roster.ts";
 import { PresetSnapshot, PulseParams } from "./pulse.ts";
 import {
   Disposition,
+  Requires,
   ReviewItem,
+  Severity,
   ReviewRecord,
   type DispositionRow,
   type FoldMark,
@@ -263,10 +265,39 @@ export const DisposeRequest = z
     answer: z.string().min(1).max(4000),
     until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "until is a date YYYY-MM-DD").optional(),
     link: z.string().min(1).max(500).optional(),
+    /** RL-9: only with `accepted`: the fingerprints this fix cannot land before. */
+    requires: Requires.optional(),
     sid: z.string().optional(),
   })
   .strict();
 export type DisposeRequest = z.infer<typeof DisposeRequest>;
+
+/** RL-9: body of `POST /v1/goals/:id/drop` (end any goal; no step may be held). */
+export const GoalDrop = z.object({ reason: z.string().min(1).max(2000).optional() }).strict();
+export type GoalDrop = z.infer<typeof GoalDrop>;
+
+/** RL-9: body of `POST /v1/items/sink` (add a lineage's filed items to its clean-audit goal). */
+export const SinkRequest = z
+  .object({
+    lineage: z.string().min(1).max(600),
+    topic: z.string().min(1).max(100),
+    min_severity: Severity.optional(),
+    dry_run: z.boolean().optional(),
+  })
+  .strict();
+export type SinkRequest = z.infer<typeof SinkRequest>;
+
+/**
+ * RL-9: reply of `POST /v1/items/sink`. `goal` is null on a dry run that would open a goal (the ids
+ * then start with `<new>.`). `skipped` counts filed items left as they were.
+ */
+export interface SinkResult {
+  goal: string | null;
+  added: string[];
+  reopened: string[];
+  skipped: number;
+  notes: string[];
+}
 
 /** RL-4: reply of `POST /v1/steps/:id/dispositions`. */
 export interface DisposeResult {

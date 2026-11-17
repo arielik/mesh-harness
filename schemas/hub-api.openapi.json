@@ -2791,6 +2791,20 @@
                               "pattern": "^[^@\\s]\\S{0,99}$"
                             }
                           ]
+                        },
+                        "sink": {
+                          "type": "object",
+                          "properties": {
+                            "topic": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 40
+                            }
+                          },
+                          "required": [
+                            "topic"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -3012,6 +3026,75 @@
           },
           "401": {
             "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/goals/{id}/drop": {
+      "post": {
+        "operationId": "postVGoalsIdDrop",
+        "summary": "Drop a goal (its owner, an approver or an admin); no step may be held.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:write`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -5797,6 +5880,15 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 500
+                        },
+                        "requires": {
+                          "minItems": 1,
+                          "maxItems": 20,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[a-z2-7]{16}$"
+                          }
                         }
                       },
                       "required": [
@@ -5942,6 +6034,88 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/items/sink": {
+      "post": {
+        "operationId": "postVItemsSink",
+        "summary": "Add a lineage's filed items to the clean-audit goal of (repo, topic) (backfill).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:write`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "lineage": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  },
+                  "topic": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "min_severity": {
+                    "type": "string",
+                    "enum": [
+                      "S1",
+                      "S2",
+                      "S3",
+                      "S4"
+                    ]
+                  },
+                  "dry_run": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "lineage",
+                  "topic"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
           },
           "401": {
             "description": "Login required."
@@ -6141,6 +6315,15 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500
+                  },
+                  "requires": {
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-z2-7]{16}$"
+                    }
                   },
                   "sid": {
                     "type": "string"

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Disposition, Fold, ItemState, StepWhen } from "./review.ts";
+import { Disposition, Fold, ItemState, Severity, StepWhen } from "./review.ts";
 import { AGENT_NAME_RE, AGENT_NAME_RULE, AgentDef, parseRosterKey, ROSTER_KEY_RULE } from "./roster.ts";
 
 /**
@@ -124,6 +124,8 @@ export const Goal = z.object({
   agents: z.record(z.string(), AgentDef).optional(),
   /** RL-6: set only on calibration goals (opened by the hub when an agent hash reaches the threshold). */
   calibration: GoalCalibration.optional(),
+  /** RL-9: set only on clean-audit goals (opened by the hub for a sink stage's repo and topic). */
+  sink: z.object({ repo: z.string(), topic: z.string() }).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -350,6 +352,10 @@ export const Step = z.object({
   offer: StepOffer.optional(),
   /** RL-4: the last pre-read of a debrief step (`POST /v1/steps/:id/read`). */
   read: z.object({ user: z.string(), at: z.number(), round: z.number().int().min(1) }).optional(),
+  /** RL-9: the severity of a finding step (from its item). */
+  severity: Severity.optional(),
+  /** RL-9: the item a finding step fixes (its lineage and fingerprint). */
+  finding: z.object({ lineage: z.string(), fp: z.string() }).optional(),
   updatedAt: z.number(),
 });
 export type Step = z.infer<typeof Step>;
@@ -427,6 +433,8 @@ export const StepPolicy = z.object({
   may_set: z.array(Disposition).min(1).max(4).optional(),
   /** RL-4: who runs a debrief step: `@owner` (the goal's owner at the time of each check) or a user id. */
   assignee: z.union([z.literal("@owner"), z.string().regex(/^[^@\s]\S{0,99}$/, "assignee is a user id or @owner")]).optional(),
+  /** RL-9: items filed in the run go, one step each, to the clean-audit goal of (repo, topic). */
+  sink: z.object({ topic: z.string().min(1).max(40) }).strict().optional(),
 });
 export type StepPolicy = z.infer<typeof StepPolicy>;
 export const POLICY_KEYS = Object.keys(StepPolicy.shape) as (keyof StepPolicy)[];

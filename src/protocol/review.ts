@@ -52,13 +52,20 @@ export const ReviewItem = z
   .strict();
 export type ReviewItem = z.infer<typeof ReviewItem>;
 
+const Fp = z.string().regex(/^[a-z2-7]{16}$/, "a fingerprint is 16 characters of a-z and 2-7");
+
+/** RL-9: the fingerprints an `accepted` fix cannot land before (they become step deps). */
+export const Requires = z.array(Fp).min(1).max(20);
+
 export const RecordDisposition = z
   .object({
-    fingerprint: z.string().regex(/^[a-z2-7]{16}$/, "a fingerprint is 16 characters of a-z and 2-7"),
+    fingerprint: Fp,
     disposition: Disposition,
     reason: z.string().min(1).max(2000),
     until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "until is a date YYYY-MM-DD").optional(),
     link: z.string().min(1).max(500).optional(),
+    /** RL-9: only with `accepted`. */
+    requires: Requires.optional(),
   })
   .strict();
 export type RecordDisposition = z.infer<typeof RecordDisposition>;
@@ -142,6 +149,8 @@ const DispositionEntry = z.object({
   answer: z.string().optional(),
   link: z.string().optional(),
   until: z.string().optional(),
+  /** RL-9: the fingerprints an accepted fix cannot land before. */
+  requires: z.array(z.string()).optional(),
 });
 /** RL-4: a debrief disposition undone from the UI (`from` = the reverted state, `to` = the restored one). */
 const RevertEntry = z.object({
@@ -168,6 +177,7 @@ export const DispositionRow = z.object({
   answer: z.string().optional(),
   link: z.string().optional(),
   until: z.string().optional(),
+  requires: z.array(z.string()).optional(),
   at: z.number(),
 });
 export type DispositionRow = z.infer<typeof DispositionRow>;

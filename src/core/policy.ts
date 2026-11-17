@@ -10,9 +10,11 @@ const full = (goal: string, id: string) => (id.includes(".") ? id : `${goal}.${i
 
 /** The policy fields of a plan step, without the undefined ones. */
 export function policyOf(p: PlanStep): StepPolicy | undefined {
-  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate", "mode", "agent", "profile", "budget", "inputs", "output", "when", "consumes", "may_set", "assignee"] as const;
+  const keys = ["role", "acs", "blind", "reads", "forbid", "contract", "max_rounds", "park_on", "route", "target", "must_cover", "worktree", "reworks", "gate", "mode", "agent", "profile", "budget", "inputs", "output", "when", "consumes", "may_set", "assignee", "sink"] as const;
   const out: Record<string, unknown> = {};
   for (const k of keys) if (p[k] !== undefined) out[k] = p[k];
+  // RL-9: the sink's topic is stored as a topic name (trimmed, lowercased).
+  if (p.sink) out.sink = { topic: p.sink.topic.trim().toLowerCase() };
   // RL-4: the debrief defaults.
   if (out.mode === "debrief") {
     out.consumes ??= [...DEBRIEF_CONSUMES];
@@ -51,6 +53,8 @@ export function validatePolicies(planSteps: readonly PlanStep[], acs: readonly P
     seenAc.add(a.id);
   }
   for (const s of steps) {
+    // RL-9: a sink adds the items its stage files (accepted with a link) to a clean-audit goal.
+    if (s.sink && !s.may_set?.includes("accepted")) errors.push(`sink in step ${s.id} needs a stage that may set accepted`);
     if (s.kind === "gate" && s.mode === "debrief") {
       errors.push(`step "${s.id}": a gate step can't be a debrief`);
       continue;

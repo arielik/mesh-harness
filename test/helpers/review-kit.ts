@@ -19,7 +19,7 @@ export const NOV19 = Date.UTC(2026, 10, 19, 12);
 
 export const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 const B32 = "abcdefghijklmnopqrstuvwxyz234567";
-function base32(buf: Buffer): string {
+export function base32(buf: Buffer): string {
   let bits = 0;
   let v = 0;
   let out = "";

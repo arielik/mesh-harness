@@ -1,6 +1,6 @@
 // `mesh show <goal>`: the goal and its step DAG in the terminal (plan §5.3). Pure, snapshot-tested.
 
-import { diffPlans, levels, offerText, stageSummary, STEP_STAGES, stepStage } from "../core/index.ts";
+import { diffPlans, levels, offerText, repoName, sinkCounts, stageSummary, STEP_STAGES, stepStage } from "../core/index.ts";
 import type { GoalDetail, Step } from "../protocol/index.ts";
 
 const MARK: Record<Step["state"], string> = { done: "✓", claimed: "◐", paused: "◌", ready: "○", blocked: "·", failed: "✗", parked: "⏸", dropped: "–", skipped: "↷" };
@@ -25,6 +25,11 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
   lines.push(paint("1", `${g.id} · ${g.title}`));
   lines.push(`${g.state.replace(/_/g, " ")} · owner @${g.ownerId} · ${done}/${visible.length} steps done${g.primaryRepo ? ` · ${g.primaryRepo}` : ""}`);
   if (g.topics?.length) lines.push(`topics: ${g.topics.join(", ")}`);
+  // RL-9: a clean-audit goal's finding steps by severity.
+  if (g.sink) {
+    const c = sinkCounts(d.steps);
+    lines.push(`clean audits: ${g.sink.topic} on ${repoName(g.sink.repo)} · open S1 ${c.open.S1} · S2 ${c.open.S2} · S3 ${c.open.S3} · S4 ${c.open.S4} · done ${c.done} · dropped ${c.dropped}`);
+  }
   if (d.stick) lines.push(`sticks to ${d.stick}: its next ready steps are offered there (mesh withdraw ${g.id})`);
   lines.push(`steps: ${stageSummary(d.steps, stepStage, STEP_STAGES)}`);
   const plans = d.plans;
@@ -51,12 +56,12 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
       const parked = s.state === "parked" ? `parked: ${s.parkedReason ?? ""} (mesh step resume ${s.id})` : "";
       const role = s.policy?.role ? `[${s.policy.role}]` : "";
       const offer = d.offers?.[s.id];
-      const extras = [role, who(s, d), offer ? offerText(offer) : "", gate, parked, s.fixCycles ? `fix cycle ${s.fixCycles}` : "", s.mr ?? "", s.state === "done" && s.summary ? `— ${s.summary}` : ""].filter(Boolean).join("  ");
+      const extras = [s.finding ? s.title : "", role, who(s, d), offer ? offerText(offer) : "", gate, parked, s.fixCycles ? `fix cycle ${s.fixCycles}` : "", s.mr ?? "", s.state === "done" && s.summary ? `— ${s.summary}` : ""].filter(Boolean).join("  ");
       lines.push(`  ${paint(color, mark)} ${local(s.id).padEnd(idW)}  ${s.kind.padEnd(9)} ${(s.repo || "-").padEnd(16)} ${s.state.padEnd(8)} ${extras}`.trimEnd());
     }
   });
   const dropped = d.steps.filter((s) => s.state === "dropped");
-  if (dropped.length) lines.push(paint("2", `dropped by a later plan: ${dropped.map((s) => local(s.id)).join(", ")}`));
+  if (dropped.length) lines.push(paint("2", `${g.sink ? "dropped" : "dropped by a later plan"}: ${dropped.map((s) => local(s.id)).join(", ")}`));
   const ready = visible.filter((s) => s.state === "ready");
   if (ready.length) lines.push("", `ready to pick: ${ready.map((s) => `mesh run ${s.repo || "<repo>"} --step ${s.id}`).join("\n               ")}`);
   return lines.join("\n");

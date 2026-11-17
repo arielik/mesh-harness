@@ -17,6 +17,7 @@ nickname `runner` that does the work.
 - [Create and run a pulse](#create-and-run-a-pulse)
 - [Read the results](#read-the-results)
 - [Debrief: decide the findings yourself](#debrief-decide-the-findings-yourself)
+- [Clean-audit goals](#clean-audit-goals)
 - [How findings are compared from run to run](#how-findings-are-compared-from-run-to-run)
 - [Calibration and agent statistics](#calibration-and-agent-statistics)
 - [The roster: share agents between repos](#the-roster-share-agents-between-repos)
@@ -58,7 +59,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.26](operations.md#upgrading-to-0126).
+  describes; see [Upgrading to 0.1.27](operations.md#upgrading-to-0127).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else
@@ -565,6 +566,68 @@ later stages.
 
 A person's decision outranks an agent's in the same goal: a later agent decision of the item is
 ignored (an agreeing one, such as the filer recording its link on an item you accepted, is applied).
+
+## Clean-audit goals
+
+A relay ends at its filer: each accepted finding has a tracking row and is **filed**. To make the
+fixes workable in mesh, give the filer a **sink**. Each item filed in a run then becomes a step in
+one standing goal per repo and topic, which anyone can claim, offer to another machine or work in
+a worktree.
+
+Define the topic once (`mesh topic add ci`) and add `sink` to the stage that records the links:
+
+```yaml
+  - id: file
+    kind: docs
+    deps: [debrief]
+    mode: headless
+    agent: "{filer}"
+    profile: propose-via-branch
+    output: review-record
+    when: { open: true }
+    consumes: [accepted]
+    may_set: [accepted]
+    sink: { topic: ci }        # or "{topic}" with --params topic=ci
+    inputs: [dispositions]
+    title: File the accepted findings
+    brief: Propose an entry for each accepted item on this run's branch, then submit a review record that sets each one accepted with its link.
+```
+
+`sink` needs mesh 0.1.27 on the hub: an older hub refuses the preset with 422. See
+[Upgrading to 0.1.27](operations.md#upgrading-to-0127).
+
+The stage needs `accepted` in `may_set`, and the topic must exist (`mesh pulse add` and `mesh goal
+plan` refuse the preset otherwise). When `file` is done, or skipped because you filed everything in
+the debrief yourself, the hub opens `Clean audits: ci on demo` (first time only) and adds one step
+per filed item, titled with its severity:
+
+```console
+$ mesh show G12
+G12 · Clean audits: ci on demo
+in progress · owner @ann · 1/3 steps done · demo
+topics: ci
+clean audits: ci on demo · open S1 1 · S2 1 · S3 0 · S4 0 · done 1 · dropped 0
+…
+  ○ f-qc32ftf4twvuj4zm  implement demo             ready    [S1] Hardcoded token in config
+  · f-vdoqmlnqcj6peroa  implement demo             blocked  [S2] eval on user input
+```
+
+- **Pick one up** like any step: `mesh next` lists the `S1` finding of a goal before its `S2` ones;
+  `mesh run demo --step G12.f-qc32ftf4twvuj4zm` makes its worktree. The brief has the rule, path,
+  evidence, proposal and link; do not edit the tracking row.
+- **The next audit closes it.** When a later complete run no longer raises the finding, its step is
+  `done` (`resolved by G13.audit`); a held step only gets a note. Raised and filed again, a done step
+  is reopened (only when it is filed again after the step closed; its brief then has the new link).
+  Dismissed or deferred later, a waiting step is dropped.
+- **Order between fixes.** A filer (or you, in a debrief) may add `requires: [<fp>, …]` to an
+  `accepted` disposition: the step then waits for those findings' steps.
+- **Items filed before the sink existed:** `mesh items sink 'audit-debrief|demo|auditor' --topic ci
+  --min-severity S2 --dry-run` shows what it would add (`would add 2 to a new goal`); without
+  `--dry-run` it adds them (`G12: added 2, reopened 0`).
+- **End it** with `mesh goal drop G12 --reason "moved to another tracker"` (owner, approver or admin;
+  release held steps first). The next sink opens a new goal.
+
+The rules are in [concepts](concepts.md#clean-audit-goals).
 
 ## How findings are compared from run to run
 

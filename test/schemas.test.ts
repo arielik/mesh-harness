@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { HUB_API, hubOpenApi, jsonSchemas, MESH_SKILL } from "../src/protocol/index.ts";
 import { createApp } from "../src/hub/app.ts";
 import type { HubService } from "../src/hub/index.ts";
+import { HubStore } from "../src/store/index.ts";
 
 describe("published JSON Schemas", () => {
   it("match the protocol (run `pnpm schemas` after changing src/protocol)", () => {
@@ -682,8 +683,8 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
   const STATS = { method: "GET", path: "/v1/agents/:key/stats", rule: "member", scope: "goals:read", tag: "goals" };
 
   it("test_AC16_version", () => {
-    // RL-8 AC-12: the release is v0.1.22 (was RL-7 AC-17, v0.1.21).
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.26");
+    // RL-9 AC-19: the release is v0.1.27 (was v0.1.26).
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.27");
   });
 
   it("test_AC07_route_table", () => {
@@ -747,5 +748,42 @@ describe("RL-7 AC-17 OpenAPI", () => {
     expect(Object.keys(rows.properties)).toEqual(expect.arrayContaining(["repo", "kind", "path", "name", "hash", "description"]));
     expect(rows.properties.invalid).toMatchObject({ type: "string", maxLength: 300 });
     expect(rows.required ?? []).not.toContain("invalid");
+  });
+});
+
+// RL-9 AC-18 (route table, OpenAPI) and AC-19 (version, schema version). Written from the spec's
+// contracts only (docs/specs/RL-9.md).
+describe("RL-9 AC-18/AC-19 routes and schema", () => {
+  const ROUTES = [
+    { method: "POST", path: "/v1/goals/:id/drop", rule: "member", scope: "goals:write", tag: "goals" },
+    { method: "POST", path: "/v1/items/sink", rule: "member", scope: "goals:write", tag: "goals" },
+  ];
+
+  it("test_AC18_route_table", () => {
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule}`);
+    // Control: an existing goals route is there.
+    expect(served).toContain("POST /v1/goals member");
+    for (const want of ROUTES) {
+      const row = HUB_API.find((x) => x.method === want.method && x.path === want.path) as { rule: string; scope?: string; tag: string } | undefined;
+      expect(row, `${want.method} ${want.path} in HUB_API`).toBeDefined();
+      expect({ rule: row?.rule, scope: row?.scope, tag: row?.tag }).toStrictEqual({ rule: want.rule, scope: want.scope, tag: want.tag });
+      expect(served, `${want.method} ${want.path} served`).toContain(`${want.method} ${want.path} ${want.rule}`);
+    }
+  });
+
+  it("test_AC18_openapi", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as { paths: Record<string, Record<string, unknown>> };
+    expect(doc.paths["/v1/goals/{id}/drop"]?.post, "POST /v1/goals/{id}/drop in the OpenAPI document").toBeDefined();
+    expect(doc.paths["/v1/items/sink"]?.post, "POST /v1/items/sink in the OpenAPI document").toBeDefined();
+  });
+
+  it("test_AC19_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.27");
+  });
+
+  it("test_AC19_schema_version", () => {
+    expect(HubStore.SCHEMA_VERSION).toBe(11);
   });
 });

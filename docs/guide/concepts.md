@@ -615,6 +615,74 @@ enough new dismissals wait opens the next one. A dropped calibration goal releas
 (uncalibrated again, picked up at the next dismissal). A listed dismissal reverted later leaves the
 goal and its list unchanged and counts in no bucket.
 
+## Clean-audit goals
+
+**Sink.** A relay stage that may set `accepted` can carry `sink: { topic: <topic> }` (the topic must
+be defined, `all` is not one; a `{topic}` placeholder is filled from the preset's params, and the
+name is trimmed and lowercased). When the stage is `done`, or `skipped` (a person may have filed the
+items in a debrief), the hub adds every item **filed in the goal** (`accepted` with a `link`, its
+latest `accepted` disposition recorded in this goal) to the **clean-audit goal** of the lineage's
+repo and the topic, one step per item. A sink never fails the stage: when its topic was deleted in
+the meantime nothing of it is written, the stage gets the note `sink failed: <reason>` and the hub
+emits `goal.sink_failed`.
+
+**Clean-audit goal.** One goal per `(repo, topic)` (repos compare as exact strings, as lineages do),
+opened by the hub on first use: title `Clean audits: <topic> on <repo name>`, tagged with the topic,
+owned by the owner of the goal whose sink opened it, `in_progress` with an approved plan v1 without
+steps. Its steps are never completed into a goal `done` (the goal stands until a person drops it)
+and it refuses plans (`mesh goal plan` answers 409 `<G> is a clean-audit goal; its steps come from
+audits`). `mesh show <G>` adds the line
+`clean audits: <topic> on <repo name> · open S1 <a> · S2 <b> · S3 <c> · S4 <d> · done <n> · dropped <m>`.
+
+**Finding step.** An `implement` step in the item's repo with a worktree (`mesh run --step` makes
+its branch), id `f-` and 16 characters of the lowercase base32 SHA-256 of `<lineage>|<fp>`, title
+`[<severity>] <item title>` (cut to 200 characters), and a brief built from the item: rule, path,
+symbol, evidence, proposal, link, the reasons of its dispositions, and the last line `When the fix
+lands, the next audit of <lineage> resolves this finding; do not edit the tracking row.` (cut to 8000
+characters, keeping that line). Finishing a finding step records nothing on the item: the next audit
+decides (resolved, or raised again).
+
+**Item → step.** A filed item already covered by a step: a `done` or `dropped` step is reopened
+only when the item was filed again after the step closed (its latest `accepted` disposition is newer
+than the step's last change), with `step.reopened`, reason `refiled`, a new fix cycle, and title,
+severity and brief rebuilt from the item (so a new link shows); its dependants are not reopened. A
+backfill or a second filer round over an item nobody filed again leaves it as it is. A `ready` or
+`blocked` step gets the title, severity and brief rebuilt from the item; a held, parked or failed one
+gets a note. Later
+changes of the item follow it:
+
+| Item | Ready or blocked finding step | Held, parked or failed finding step |
+|---|---|---|
+| resolved by a complete audit | `done`, summary `resolved by <audit step>` | note |
+| dismissed or deferred | `dropped`, summary `<disposition> by <decider>: <reason>` | note |
+| a debrief's `accepted` reverted (no longer filed) | `dropped`, summary `reverted by <user>` | note |
+| a debrief's dismissal or deferral reverted (filed again) | a `dropped` step is reopened (reason `reverted`) | — |
+| raised again | a `done` step gets the note `raised again by <audit step>` | — |
+
+Steps closed or dropped this way unblock their dependants.
+
+**Severity order.** Ready lists (`mesh next`, `mesh_next`, the TUI) keep their order, except that
+within each goal its finding steps are sorted by severity (`S1` first, then their previous order) in
+the positions they hold. Steps offered to your machine still come first.
+
+**`requires`.** An `accepted` disposition (in a record or with `mesh_dispose`) may carry `requires`:
+the fingerprints (1-20) of the findings this fix cannot land before. Any other disposition with
+`requires` is refused with 422 `requires is only for accepted`. When the finding step is created or
+reopened, each fingerprint becomes a dep on the finding step of the same lineage, else on the only
+finding step of the goal with that fingerprint; otherwise it is left out with a note (`requires
+<fp>: not in this goal`, `… : ambiguous`, `… : cycle`). A `requires` is never refused for what it
+names.
+
+**Backfill.** `mesh items sink <lineage> --topic <t> [--min-severity S2] [--dry-run]` adds a
+lineage's filed items (at or above `--min-severity`) to the clean-audit goal, without deps (an admin,
+the owner of the lineage's newest goal, or of the clean-audit goal). A second call adds nothing.
+
+**`mesh goal drop`.** `mesh goal drop <G> [--reason "…"]` ends any goal: its owner, an approver or
+an admin; refused (409) while a step is `claimed` or `paused`. Its `ready`, `blocked` and `parked`
+steps are dropped (offers withdrawn), event `goal.dropped` with reason `person`. A pulse's goal can
+be dropped this way (its slot keeps its outcome), and a calibration goal (its dismissals are
+released). After a clean-audit goal is dropped, the next sink opens a new one.
+
 ## Agent statistics
 
 `GET /v1/agents/:key/stats?days=30` (scope `goals:read`; the key `<repo>/<name>` with `/` encoded as

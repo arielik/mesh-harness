@@ -389,6 +389,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/steps/:id/review` | Review records (v0.1.16): the review record of the held step's current round; the hub fingerprints and folds its items (raising) or applies its dispositions (consuming) |
 | `GET /v1/steps/:id/reviews` | Review records (v0.1.16): a step's review records, by round |
 | `GET /v1/items?lineage=` | Review records (v0.1.16): the items of a lineage with their history, most severe first |
+| `POST /v1/items/sink` | Clean-audit goals (v0.1.27): add a lineage's filed items (`min_severity`, `dry_run`) to the clean-audit goal of its repo and a topic, opening it when needed; an admin, the owner of the lineage's newest goal or of the clean-audit goal (scope `goals:write`) |
 | `POST /v1/steps/:id/read` | Debriefs (v0.1.18): the assignee marks a debrief's pre-read as read (`Step.read`; the round keeps it at done) |
 | `GET /v1/steps/:id/debrief` | Debriefs (v0.1.18): a debrief's pre-read: assignee, run, report, the items to decide (evidence locations, near-matches) and the decisions made (scope `goals:read`) |
 | `GET /v1/debriefs` | Debriefs (v0.1.18): the caller's debriefs (ready, claimed, paused) and their revertable debrief decisions of the last 7 days |
@@ -398,6 +399,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
 | `POST /v1/pulses/:id/{update,pause,resume,delete}` | Pulses (v0.1.17): change, pause, resume or remove a pulse (its owner or an admin) (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
 | `POST /v1/pulses/:id/fire` | Pulses (v0.1.17): fire a manual slot now (also while paused) |
+| `POST /v1/goals/:id/drop` | Clean-audit goals (v0.1.27): a person drops any goal (its owner, an approver or an admin; `reason`); 409 while a step is claimed or paused (scope `goals:write`) |
 | `POST /v1/goals/from-preset` | Ingest (v0.1.17): a goal with an approved plan from a preset snapshot, no design step (scope `goals:write`) |
 | `GET /v1/goals?pulses=1` | Pulses (v0.1.17): goal lists leave out pulse goals unless `pulses=1` |
 | `POST /v1/catalog-sources` | Roster (v0.1.19): register a catalog source (repo and folder) or change its folder/calibrator (admin); 201 new, 200 replaced |
