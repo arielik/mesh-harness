@@ -192,13 +192,15 @@ each, a `description` of at most 200 characters, and the whole file at most 2000
 process gets; they also go into the settings Claude Code reads, so they count in the profile's
 hash and `mesh profile show` prints them. Names are `[A-Z_][A-Z0-9_]*`, at most 50 variables, values
 at most 1000 characters with no line break. A profile may not set mesh's own or the run's binding
-variables (`MESH_*`, `TMUX`, `TMUX_PANE`, `CLAUDE_PID`), Claude Code's and the API's (`CLAUDE_*`,
+variables (every `MESH_*` name mesh itself reads, such as `MESH_STEP`, `MESH_RUN`, `MESH_TOKEN`
+and any `MESH_HUB_*`, plus `TMUX`, `TMUX_PANE`, `CLAUDE_PID`), Claude Code's and the API's (`CLAUDE_*`,
 `ANTHROPIC_*`), git's (`GIT_*`), or anything that changes which program runs or what it loads
 (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `IFS`, `ENV`, `BASH_ENV`, `PROMPT_COMMAND`,
 `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `NODE_PATH`, `NODE_EXTRA_CA_CERTS`, `PYTHONPATH`, `PYTHONHOME`,
 `PYTHONSTARTUP`, `PERL5OPT`, `PERL5LIB`, `RUBYOPT`, the `*_PROXY` variables, `SSL_CERT_FILE`,
 `SSL_CERT_DIR`): a run executes under its runner's login, and a profile is written by any member.
-The daemon checks the list again before a run starts and refuses a run whose snapshot sets one. Profiles may not allow `Bash`, `Bash(*)`, `Bash(:*)`, a check `*`, or any
+Other `MESH_*` names belong to other tools and may be set, for example a telemetry client's
+`MESH_GATEWAY`. The daemon checks the list again before a run starts and refuses a run whose snapshot sets one. Profiles may not allow `Bash`, `Bash(*)`, `Bash(:*)`, a check `*`, or any
 `git push` rule: only the daemon pushes, and an unrestricted shell would run unattended under
 another member's credentials. Its creator or an admin may replace it. The hub snapshots the
 profile into the offer, so a profile changed later does not reach an offered run.

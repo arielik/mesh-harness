@@ -33,7 +33,7 @@ export function profileCommand(c: CliEnv): Command {
     `  checks: [command, ...]            each allowed as Bash(<command>); at most ${L.checks}, each at most ${L.check} characters`,
     `  allow: [rule, ...], deny: [...]   Claude Code permission rules; at most ${L.rules} each, each at most ${L.rule} characters`,
     `  env: {NAME: "value", ...}         variables for the run's process; at most ${PROFILE_ENV_MAX}, values at most ${PROFILE_ENV_VALUE_MAX} characters`,
-    "                                    (MESH_*, CLAUDE_*, ANTHROPIC_*, GIT_*, PATH and loader variables are refused)",
+    "                                    (mesh's own MESH_* names, CLAUDE_*, ANTHROPIC_*, GIT_*, PATH and loader variables are refused)",
   ].join("\n");
   return {
     name: "profile",

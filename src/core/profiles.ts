@@ -83,15 +83,46 @@ export const PROFILE_ENV_MAX = 50;
 export const PROFILE_ENV_VALUE_MAX = 1000;
 
 /**
- * Variables a profile may not set: mesh's own (`MESH_*`, and those a headless run drops), Claude
- * Code's and the API client's (`CLAUDE_*`, `ANTHROPIC_*`: endpoint, credentials, tools), git's
- * (`GIT_*`: config, ssh and diff commands) and anything that changes which program runs or what it
- * loads first (`PATH`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`, proxies, CA files, ...). A run executes
- * under its runner's login, so a profile written by another member never redirects either.
+ * Variables a profile may not set: mesh's own (`MESH_ENV_RESERVED`, any `MESH_HUB_*`, and those a
+ * headless run drops), Claude Code's and the API client's (`CLAUDE_*`, `ANTHROPIC_*`: endpoint,
+ * credentials, tools), git's (`GIT_*`: config, ssh and diff commands) and anything that changes which
+ * program runs or what it loads first (`PATH`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`, proxies, CA files,
+ * ...). A run executes under its runner's login, so a profile written by another member never
+ * redirects either. Other `MESH_*` names belong to other tools (a telemetry client's gateway, say) and
+ * may be set; a test keeps every `MESH_*` name in mesh's source in this list.
  */
-const ENV_RESERVED_PREFIXES = ["MESH_", "CLAUDE_", "ANTHROPIC_", "GIT_", "LD_", "DYLD_"] as const;
-const ENV_RESERVED = new Set([
+export const MESH_ENV_RESERVED = [
+  "MESH_ASSETS_DIR",
+  "MESH_AUTOPILOT",
+  "MESH_BACKFILL",
+  "MESH_CLAUDE_BIN",
+  "MESH_CONFIG_DIR",
+  "MESH_DEBRIEF_SKILL",
+  "MESH_HOOK_PATH",
+  "MESH_HUB",
+  "MESH_KANIDM_SECRET",
+  "MESH_MCP_INSTRUCTIONS",
+  "MESH_OPENCODE_PLUGIN_VERSION",
+  "MESH_PACKAGE",
+  "MESH_PREFIX",
+  "MESH_REPO",
+  "MESH_RULES",
+  "MESH_RUN",
+  "MESH_SKILL",
+  "MESH_STATE_DIR",
+  "MESH_STEP",
+  "MESH_SYSTEM_CA",
+  "MESH_TEST",
+  "MESH_TEST_PG_URL",
+  "MESH_TOKEN",
+  "MESH_TOOL_RULES",
+  "MESH_VERSION",
+  "MESH_NO_SETUP",
+] as const;
+const ENV_RESERVED_PREFIXES = ["MESH_HUB_", "CLAUDE_", "ANTHROPIC_", "GIT_", "LD_", "DYLD_"] as const;
+const ENV_RESERVED = new Set<string>([
   ...HEADLESS_ENV_UNSET,
+  ...MESH_ENV_RESERVED,
   "PATH",
   "HOME",
   "USER",

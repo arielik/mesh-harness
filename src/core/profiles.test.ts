@@ -2,6 +2,9 @@
 // Core). The tables are copied from the spec, not imported, so a changed rule turns the test red.
 
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as protocol from "../protocol/index.ts";
 import * as core from "./index.ts";
@@ -162,6 +165,25 @@ describe("AC-05 parseProfile", () => {
     ["env:\n  X: 1\n", "env.X: an env value is a string (quote numbers and booleans)"],
   ])("test_RL1_env_refused %#", (text, error) => {
     expect(C.parseProfile(text)).toStrictEqual({ error });
+  });
+
+  it("test_RL1_env_mesh_names", () => {
+    // Every MESH_* name in mesh's own source is refused; another tool's MESH_* name may be set.
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const names = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) for (const m of readFileSync(p, "utf8").matchAll(/\bMESH_[A-Z0-9_]*[A-Z0-9]\b/g)) names.add(m[0]);
+      }
+    };
+    walk(root);
+    names.delete("MESH_ENV_RESERVED");
+    expect(names.size).toBeGreaterThan(10);
+    for (const n of names) expect([n, C.profileEnvError(n, "x")]).toStrictEqual([n, `profiles may not set ${n}`]);
+    expect(C.profileEnvError("MESH_HUB_ANYTHING", "x")).toBe("profiles may not set MESH_HUB_ANYTHING");
+    expect(C.parseProfile('env:\n  MESH_GATEWAY: "https://telemetry.example.com"\n  NODE_USE_SYSTEM_CA: "1"\n')).not.toHaveProperty("error");
   });
 
   it("test_RL1_profile_run_env", () => {
