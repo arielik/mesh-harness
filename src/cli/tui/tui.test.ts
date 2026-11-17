@@ -120,6 +120,10 @@ function fakeClient(o: { debriefs?: () => Promise<unknown>; revert?: (step: stri
     status: rec("status", async () => ({ hub: { url: "http://hub.invalid", state: "online" }, version: "test" })),
     goals: rec("goals", async () => []),
     fleet: rec("fleet", async () => ({ machines: [] })),
+    pulses: rec("pulses", async () => ({
+      pulses: [{ id: "p-1", owner: "ann", title: "weekly audit", enabled: true, schedule: "every 7d", nextAt: NOW + 3_600_000, recent: [{ slot: "s", state: "fired", firedAt: NOW - 60_000, decidedAt: NOW - 60_000, goal: "G9", tried: [] }] }],
+      goals: { G9: "in_progress" },
+    })),
     offers: rec("offers", async () => [offer("G1.a")]),
     accept: rec("accept", async () => ({ step: "G1.a", sid: "s1", message: "Accepted G1.a." })),
     decline: rec("decline", async () => ({ step: { id: "G1.a" } })),
@@ -300,5 +304,31 @@ describe("RL-4 AC-18 TUI keys", () => {
     await s2.stop();
     expect(text2).toContain("1 offered to you");
     expect(text2).not.toContain("2 offered to you");
+  });
+});
+
+describe("RL-3 TUI pulses panel", () => {
+  beforeEach(() => {
+    restore = [];
+  });
+
+  it("p opens the pulses panel and p closes it", async () => {
+    const f = fakeClient();
+    const { t, stop } = await start(f);
+    t.mark();
+    await t.press("p");
+    await sleep(120);
+    const open = t.since();
+    t.mark();
+    await t.press("p");
+    await sleep(120);
+    const closed = t.since();
+    await stop();
+    expect(open).toContain("PULSES");
+    expect(open).toContain("p-1");
+    expect(open).toContain("→ G9 in progress");
+    expect(count(f, "pulses")).toBe(1);
+    expect(closed).not.toContain("PULSES");
+    expect(closed).toContain("p pulses");
   });
 });

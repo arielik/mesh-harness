@@ -57,6 +57,8 @@ import {
   type Credentials,
   type DoneResult,
   type FleetView,
+  type PulseList,
+  type PulseView,
   type Harness,
   type InboxMessage,
   type LabelsResult,
@@ -1628,6 +1630,17 @@ export class Daemon {
         if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
         const live = await this.link.rpc<{ goals: unknown[] }>("GET", "/v1/live");
         return send(res, 200, { goals: live.goals });
+      }
+      if (req.method === "GET" && path === "/local/pulses") {
+        if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");
+        const [{ pulses }, { goals }] = await Promise.all([
+          this.link.rpc<{ pulses: PulseView[] }>("GET", "/v1/pulses"),
+          this.link.rpc<{ goals: { id: string; state: string }[] }>("GET", "/v1/goals?pulses=1"),
+        ]);
+        // The state of each goal the pulses' recent slots name, so the TUI can say where the last run is.
+        const named = new Set(pulses.flatMap((x) => x.recent.map((r) => r.goal).filter((g): g is string => g !== undefined)));
+        const out: PulseList = { pulses, goals: Object.fromEntries(goals.filter((g) => named.has(g.id)).map((g) => [g.id, g.state])) };
+        return send(res, 200, out);
       }
       if (req.method === "GET" && path === "/local/fleet") {
         if (!this.link?.credentials()) throw new HttpError(409, "not logged in to a hub; run: mesh login");

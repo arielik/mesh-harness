@@ -384,6 +384,21 @@ Each pulse is a `div.pulse[data-pulse="<id>"]` showing its id, title, `scheduleT
 `li[data-slot="<slot>"]` with class `slot-<state>`, text containing the state, ` (<reason>)` when
 there is a reason, and the goal id when there is one. Read-only.
 
+### TUI (src/cli/tui, v0.1.26)
+
+Key `p` toggles a pulses panel; `o`, `g` and `m` switch to their panels from it, and the session keys
+do nothing in it. Its data is the daemon's `GET /local/pulses` (`DaemonClient.pulses()`), refreshed
+every 10 s while open: `PulseList` `{pulses, goals}`, the hub's `GET /v1/pulses` and, from
+`GET /v1/goals?pulses=1`, the state of each goal a pulse's `recent` slots name (409
+`not logged in to a hub; run: mesh login` without credentials). `renderPulses(pulses, goals, v)`
+(render.ts) returns exactly `height` lines: header, empty line, `PULSES`, then one line per pulse
+(active first, then by `nextAt`): id, title, `active` or `paused[: <reason>]`, `scheduleText`,
+`next in <age>` (or `next -`), `last <state>[ (<reason>)] <age> ago[ → <goal> <goal state>]` (or
+`last never ran`), `@<owner>`; no pulses → `  No pulses. Create one: mesh pulse add --preset <name>
+--repo <repo> --every 7d`. The footer `p back to sessions · details: mesh pulse show <id> · fire now:
+mesh pulse fire <id>` is the last line, a status the line above it; no line is longer than `width`.
+The session list footer contains `p pulses`. Read-only.
+
 ### Docs
 
 | File | Change |

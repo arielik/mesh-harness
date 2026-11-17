@@ -206,6 +206,12 @@ export type PulseView = Omit<Pulse, "preset" | "profiles" | "agents"> & {
   warnings?: string[] | undefined;
 };
 
+/** The daemon's `GET /local/pulses` (the TUI's pulses panel): the hub's pulses and the state of the goals their recent slots name. */
+export interface PulseList {
+  pulses: PulseView[];
+  goals: Record<string, string>;
+}
+
 export interface PulseDetail {
   pulse: Pulse;
   schedule: string;

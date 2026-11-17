@@ -1,7 +1,7 @@
 // Pure rendering of the session list (plan §9). No I/O, so it can be snapshot-tested.
 
 import { age, messageStage, needsLabel, offerLine, renderFleet, SESSION_STAGES, sessionLabel, sessionStage, type SessionStage } from "../../core/index.ts";
-import type { DebriefSummary, DecidedView, FleetView, Message, OfferView, Session } from "../../protocol/index.ts";
+import type { DebriefSummary, DecidedView, FleetView, Message, OfferView, PulseView, Session } from "../../protocol/index.ts";
 
 /** Session groups come from the stage table in core (one source for every panel). */
 export type Group = SessionStage;
@@ -123,7 +123,7 @@ export function render(v: View): string[] {
 
   const footer: string[] = [];
   if (v.input) footer.push(paint(C.bold, `${v.input.label}${v.input.value}▌`));
-  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · L labels · n next step · o offers · g goals · m machines · r refresh · ↑↓ move · q quit"));
+  else footer.push(paint(C.dim, "⏎ jump · s say · a autopilot · L labels · n next step · o offers · g goals · p pulses · m machines · r refresh · ↑↓ move · q quit"));
   if (failedDeliveries.length) footer.push(paint(C.red, fit(`${failedDeliveries.length} message(s) could not be delivered: ${failedDeliveries.map((m) => m.error ?? "?").slice(0, 2).join("; ")}`, v.width)));
   if (v.status) footer.push(fit(v.status, v.width));
   const room = v.height - footer.length - 1;
@@ -218,4 +218,43 @@ export function renderGoals(goals: readonly GoalRow[], v: { width: number; heigh
   const body = lines.slice(0, room);
   while (body.length < room) body.push("");
   return [...body, "", ...footer];
+}
+
+export const PULSES_FOOTER = "p back to sessions · details: mesh pulse show <id> · fire now: mesh pulse fire <id>";
+
+/** When `at` is from `now`: `in 3d`, `5m ago`, or `-`. */
+function when(at: number | undefined, now: number): string {
+  if (at === undefined) return "-";
+  return at >= now ? `in ${age(at - now)}` : `${age(now - at)} ago`;
+}
+
+/**
+ * The pulses panel of the TUI (`p`, RL-3): every pulse of the hub, the caller's first, with its
+ * schedule, next run, and the newest slot with the state of the goal it created. Exactly `height`
+ * lines; the footer is the last line and a status, when given, the one above it.
+ */
+export function renderPulses(
+  pulses: readonly PulseView[],
+  goals: Readonly<Record<string, string>>,
+  v: { width: number; height: number; header: string; now: number; me?: string | undefined; status?: string | undefined },
+): string[] {
+  const lines = [v.header, "", "PULSES"];
+  if (pulses.length === 0) lines.push("  No pulses. Create one: mesh pulse add --preset <name> --repo <repo> --every 7d");
+  const rows = [...pulses].sort((a, b) => Number(b.owner === v.me) - Number(a.owner === v.me) || Number(b.enabled) - Number(a.enabled) || (a.nextAt ?? Infinity) - (b.nextAt ?? Infinity));
+  const idW = Math.max(4, ...rows.map((p) => p.id.length));
+  const titleW = Math.min(36, Math.max(5, ...rows.map((p) => p.title.length)));
+  const stateOf = (p: PulseView) => (p.enabled ? "active" : `paused${p.pausedReason ? `: ${p.pausedReason}` : ""}`);
+  const stateW = Math.min(24, Math.max(6, ...rows.map((p) => stateOf(p).length)));
+  const schedW = Math.min(24, Math.max(8, ...rows.map((p) => p.schedule.length)));
+  for (const p of rows) {
+    const last = p.recent[0];
+    const goal = last?.goal ? `${last.goal}${goals[last.goal] ? ` ${goals[last.goal]?.replace(/_/g, " ")}` : ""}` : "";
+    const lastText = last ? `${last.state}${last.reason ? ` (${last.reason})` : ""} ${when(last.firedAt ?? last.decidedAt, v.now)}${goal ? ` → ${goal}` : ""}` : "never ran";
+    lines.push(`  ${p.id.padEnd(idW)}  ${fit(p.title, titleW)}  ${fit(stateOf(p), stateW)}  ${fit(p.schedule, schedW)}  next ${fit(when(p.nextAt, v.now), 9)}  last ${lastText}  @${p.owner}`);
+  }
+  const footer = [...(v.status ? [v.status] : []), PULSES_FOOTER].map((l) => clip(l, v.width));
+  const room = Math.max(0, v.height - footer.length);
+  const body = lines.slice(0, room).map((l) => clip(l, v.width));
+  while (body.length < room) body.push("");
+  return [...body, ...footer].slice(-Math.max(0, v.height));
 }

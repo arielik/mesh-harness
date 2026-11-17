@@ -4,9 +4,9 @@
 import { spawn } from "node:child_process";
 import { attachCommand } from "../../claude/index.ts";
 import { jumpToPane, serverFromEnv } from "../../mux/index.ts";
-import { parseLabels, type DebriefSummary, type DecidedView, type FleetView, type OfferView, type Session, type SessionsResponse } from "../../protocol/index.ts";
+import { parseLabels, type DebriefSummary, type DecidedView, type FleetView, type OfferView, type PulseList, type Session, type SessionsResponse } from "../../protocol/index.ts";
 import type { DaemonClient, DaemonStatus } from "../client.ts";
-import { labelsLine, MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, renderOffers, whoOf, type GoalRow } from "./render.ts";
+import { labelsLine, MACHINES_FOOTER, ordered, render, renderGoals, renderMachines, renderOffers, renderPulses, PULSES_FOOTER, whoOf, type GoalRow } from "./render.ts";
 
 const ALT_ON = "\x1b[?1049h\x1b[?25l";
 const ALT_OFF = "\x1b[?25h\x1b[?1049l";
@@ -75,6 +75,10 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
   let debriefs: DebriefSummary[] = [];
   let decided: DecidedView[] = [];
   let offersOpen = false;
+  /** RL-3: the pulses panel (`p`) is open; `pulseList` is its data, refreshed every 10 s. */
+  let pulsesOpen = false;
+  let pulseList: PulseList | undefined;
+  let pulsesTimer: NodeJS.Timeout | undefined;
   /** An offer's step id, a debrief's step id, or `decided:<step>:<fp>`. */
   let selectedOffer: string | undefined;
   const panelIds = (): string[] => [...offers.map((o) => o.step), ...debriefs.map((d) => d.step), ...decided.map((e) => `decided:${e.step}:${e.fp}`)];
@@ -88,6 +92,12 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
       const ids = panelIds();
       if (selectedOffer === undefined || !ids.includes(selectedOffer)) selectedOffer = ids[0];
       const lines = renderOffers(offers, { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, now: Date.now(), selected: selectedOffer, status, debriefs, decided });
+      out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
+      return;
+    }
+    if (pulsesOpen) {
+      const v = { width: out.columns ?? 100, height: out.rows ?? 30, header: opts.header + hubTag, now: Date.now(), status };
+      const lines = pulseList ? renderPulses(pulseList.pulses, pulseList.goals, v) : [v.header, "", "PULSES", "  loading…", ...(status ? [status] : []), PULSES_FOOTER];
       out.write(`\x1b[H${lines.map((l) => `${l}\x1b[K`).join("\n")}\x1b[J`);
       return;
     }
@@ -187,6 +197,21 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
     selectedOffer = ids[Math.min(ids.length - 1, Math.max(0, i + delta))];
     draw();
   };
+  const loadPulses = async () => {
+    try {
+      pulseList = await client.pulses();
+      status = undefined;
+    } catch (e) {
+      status = e instanceof Error ? e.message : String(e);
+    }
+    draw();
+  };
+  const closePulses = () => {
+    pulsesOpen = false;
+    pulseList = undefined;
+    if (pulsesTimer) clearInterval(pulsesTimer);
+    pulsesTimer = undefined;
+  };
   const closeMachines = () => {
     machines = false;
     fleet = undefined;
@@ -203,6 +228,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
       clearInterval(timer);
       clearInterval(offersTimer);
       if (fleetTimer) clearInterval(fleetTimer);
+      if (pulsesTimer) clearInterval(pulsesTimer);
       out.off("resize", onResize);
       input.off("data", onData);
       leave();
@@ -259,6 +285,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
           return draw();
         }
         if (machines) closeMachines();
+        closePulses();
         goals = undefined;
         offersOpen = true;
         status = undefined;
@@ -320,14 +347,32 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         }
         goals = undefined;
         offersOpen = false;
+        closePulses();
         machines = true;
         draw();
         await loadFleet();
         if (machines && !fleetTimer) fleetTimer = setInterval(() => void (machines ? loadFleet() : undefined), 5_000);
         return;
       }
+      if (key === "p") {
+        if (pulsesOpen) {
+          closePulses();
+          status = undefined;
+          return draw();
+        }
+        if (machines) closeMachines();
+        goals = undefined;
+        offersOpen = false;
+        pulsesOpen = true;
+        status = undefined;
+        draw();
+        await loadPulses();
+        if (pulsesOpen && !pulsesTimer) pulsesTimer = setInterval(() => void (pulsesOpen ? loadPulses() : undefined), 10_000);
+        return;
+      }
       if (key === "g") {
         if (machines) closeMachines();
+        closePulses();
         offersOpen = false;
         if (goals) goals = undefined;
         else {
@@ -340,7 +385,7 @@ export async function runTui(client: DaemonClient, opts: { header: string; env: 
         }
         return draw();
       }
-      if (goals || machines) return;
+      if (goals || machines || pulsesOpen) return;
       if (key === "\x1b[A" || key === "k") return move(-1);
       if (key === "\x1b[B" || key === "j") return move(1);
       if (key === "r") {

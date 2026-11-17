@@ -44,6 +44,8 @@ const tmp = (prefix: string) => {
   return d;
 };
 
+const PULSES = [{ id: "p-1", owner: "ann", title: "audit", enabled: true, schedule: "every 7d", recent: [{ slot: "s1", state: "fired", decidedAt: 1, goal: "G7", tried: [] }] }];
+
 const FLEET: FleetView = {
   now: 5_000_000,
   user: { id: "bob", name: "bob", roles: ["member"] },
@@ -111,6 +113,8 @@ async function boot(opts: { share: DaemonConfig["shareSessions"]; roots?: string
           return json(200, { accepted: 0, share: opts.shareReply ?? opts.share });
         }
         if (u.pathname === "/v1/fleet") return json(200, FLEET);
+        if (u.pathname === "/v1/pulses") return json(200, { pulses: PULSES });
+        if (u.pathname === "/v1/goals" && u.searchParams.get("pulses") === "1") return json(200, { goals: [{ id: "G7", state: "in_progress" }, { id: "G8", state: "done" }] });
         if (u.pathname === "/health") return json(200, { ok: true });
         if (u.pathname === "/v1/inbox") return json(200, { messages: [] });
         return json(200, {});
@@ -258,6 +262,21 @@ describe("AC-21 GET /local/fleet", () => {
     const r = await b.http("GET", "/local/fleet");
     expect(r).toEqual({ status: 409, json: { error: "not logged in to a hub; run: mesh login" } });
     expect(b.requests.filter((x) => x.path === "/v1/fleet")).toEqual([]);
+  });
+});
+
+// RL-3: the TUI's pulses panel reads the hub's pulses and their recent goals' states through the daemon.
+describe("RL-3 GET /local/pulses", () => {
+  it("pulses with the state of the goals their recent slots name", async () => {
+    const b = await boot({ share: "me" });
+    const r = await b.http("GET", "/local/pulses");
+    expect(r).toEqual({ status: 200, json: { pulses: PULSES, goals: { G7: "in_progress" } } });
+    expect(b.requests.find((x) => x.path === "/v1/pulses")).toMatchObject({ method: "GET", auth: "Bearer device-token-1" });
+  });
+
+  it("409 without credentials", async () => {
+    const b = await boot({ share: "me", loggedIn: false });
+    expect(await b.http("GET", "/local/pulses")).toEqual({ status: 409, json: { error: "not logged in to a hub; run: mesh login" } });
   });
 });
 

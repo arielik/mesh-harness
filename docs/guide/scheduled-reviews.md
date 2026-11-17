@@ -58,7 +58,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.25](operations.md#upgrading-to-0125).
+  describes; see [Upgrading to 0.1.26](operations.md#upgrading-to-0126).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else
@@ -426,6 +426,9 @@ mesh pulse update p-2 --window 2h --labels runner
 mesh pulse rm p-2                 # its goals stay
 mesh goal ls --pulses             # pulse goals are left out of goal lists otherwise
 ```
+
+In the `mesh` terminal UI, `p` opens a live pulses panel: each pulse's schedule, its next run, and
+its last slot with the state of the goal it created (`last fired 3h ago → G7 in progress`).
 
 `pause`, `resume`, `update` and `rm` are for the owner or an admin. A `mesh pulse fire` while a goal
 of an earlier slot runs prints `Pulse p-2 skipped slot …: G7 is still running (overlap: skip).`

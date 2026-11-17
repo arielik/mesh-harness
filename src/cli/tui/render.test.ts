@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderFleet } from "../../core/index.ts";
 import type { FleetMachine, FleetSession, FleetView, Session } from "../../protocol/index.ts";
 import * as coreModule from "../../core/index.ts";
-import { age, groupOf, ordered, render, renderMachines } from "./render.ts";
+import { age, groupOf, ordered, PULSES_FOOTER, render, renderMachines, renderPulses } from "./render.ts";
 import * as renderModule from "./render.ts";
 
 const NOW = 10_000_000;
@@ -270,7 +270,7 @@ describe("AC-17 labels in the TUI", () => {
 
 // MM-3 AC-31: the "offered to you" badge, the session footer with `o offers`, and the offers panel.
 describe("AC-31 offers in the TUI", () => {
-  const SESSIONS_FOOTER = "⏎ jump · s say · a autopilot · L labels · n next step · o offers · g goals · m machines · r refresh · ↑↓ move · q quit";
+  const SESSIONS_FOOTER = "⏎ jump · s say · a autopilot · L labels · n next step · o offers · g goals · p pulses · m machines · r refresh · ↑↓ move · q quit";
   // RL-4 (Compatibility): the footer gains `u revert`.
   const OFFERS_FOOTER = "⏎ accept · d decline · u revert · o back to sessions · details: mesh offers";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new exports, read loosely
@@ -410,5 +410,35 @@ describe("RL-4 AC-17 debriefs in the o panel", () => {
 
   it("test_AC17_footer_export", () => {
     expect(R.OFFERS_FOOTER).toBe(FOOTER);
+  });
+});
+
+describe("RL-3 renderPulses", () => {
+  const now = Date.UTC(2026, 10, 17, 12);
+  const H = 3_600_000;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- only the fields the panel reads
+  const pulse = (id: string, over: Record<string, unknown> = {}): any => ({ id, owner: "ann", title: `audit ${id}`, enabled: true, schedule: "every 7d", nextAt: now + 48 * H, recent: [], ...over });
+
+  it("rows: schedule, next run, last slot with its goal's state; paused last; footer last", () => {
+    const pulses = [
+      pulse("p-2", { enabled: false, pausedReason: "owner", nextAt: undefined }),
+      pulse("p-1", { recent: [{ slot: "s", state: "fired", firedAt: now - 3 * H, decidedAt: now - 3 * H, goal: "G7", tried: [] }] }),
+      pulse("p-3", { nextAt: now + H, recent: [{ slot: "s", state: "skipped", reason: "overlap", decidedAt: now - H, tried: [] }] }),
+    ];
+    const lines = renderPulses(pulses, { G7: "awaiting_approval" }, { width: 200, height: 10, header: "mesh", now }).map((l) => l.trimEnd());
+    expect(lines).toHaveLength(10);
+    expect(lines.slice(0, 3)).toStrictEqual(["mesh", "", "PULSES"]);
+    expect(lines[3]).toMatch(/^ {2}p-3 .*active .*every 7d .*next in 1h .*last skipped \(overlap\) 1h ago {2}@ann$/);
+    expect(lines[4]).toMatch(/^ {2}p-1 .*next in 2d .*last fired 3h ago → G7 awaiting approval {2}@ann$/);
+    expect(lines[5]).toMatch(/^ {2}p-2 .*paused: .*next - .*last never ran {2}@ann$/);
+    expect(lines[9]).toBe(PULSES_FOOTER);
+  });
+
+  it("no pulses, a status line, a narrow terminal", () => {
+    const lines = renderPulses([], {}, { width: 30, height: 6, header: "mesh", now, status: "hub offline" });
+    expect(lines).toHaveLength(6);
+    expect(lines[3]).toBe("  No pulses. Create one: mesh…");
+    expect(lines[4]).toBe("hub offline");
+    expect(lines.every((l) => l.length <= 30)).toBe(true);
   });
 });

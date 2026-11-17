@@ -1,4 +1,4 @@
-import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest, type OfferView, type Step, type DebriefList, type RevertResult } from "../protocol/index.ts";
+import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest, type OfferView, type Step, type DebriefList, type PulseList, type RevertResult } from "../protocol/index.ts";
 
 export class DaemonUnreachable extends Error {
   constructor(port: number) {
@@ -72,6 +72,11 @@ export class DaemonClient {
 
   async goals(): Promise<{ id: string; title: string; state: string; owner: string; done: number; total: number; holders: string[] }[]> {
     return ((await this.call("GET", "/local/goals")) as { goals: { id: string; title: string; state: string; owner: string; done: number; total: number; holders: string[] }[] }).goals;
+  }
+
+  /** RL-3: the hub's pulses, with the state of the goals their recent slots name, through the daemon. */
+  async pulses(): Promise<PulseList> {
+    return (await this.call("GET", "/local/pulses")) as PulseList;
   }
 
   /** MM-1: the hub's GET /v1/fleet, through the daemon. */
