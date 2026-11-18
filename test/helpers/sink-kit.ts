@@ -296,6 +296,92 @@ export class Sk {
     for (const e of await this.r.allEvents()) if (e.goal === CG || e.payload?.goal === CG) counts[e.type] = (counts[e.type] ?? 0) + 1;
     return { steps, counts, plans: ((view.plans ?? []) as Json[]).length };
   }
+
+  // ---- RL-10 additions (docs/specs/RL-10.md): retarget, release, finish, revert, live-step reads ----
+
+  /** `POST /v1/items/retarget` as `who`. */
+  retarget(who: Person | string, body: Record<string, unknown>) {
+    return this.call(who, "POST", "/v1/items/retarget", body);
+  }
+  /** `retarget` expecting 200; returns the `RetargetResult`. */
+  async retargetOk(who: Person | string, body: Record<string, unknown>): Promise<Json> {
+    const res = await this.retarget(who, body);
+    expect(res.status, `retarget ${JSON.stringify(body)}: ${JSON.stringify(res.json)}`).toBe(200);
+    await this.w.flush();
+    return res.json;
+  }
+  /** `p` releases `id` through the route (200). */
+  async release(p: Person | string, id: string): Promise<void> {
+    const res = await this.r.act(p, id, "release", {});
+    expect(res.status, `release ${id}: ${JSON.stringify(res.json)}`).toBe(200);
+    await this.w.flush();
+  }
+  /** `p` claims and finishes `id` (done) through the routes: a step in a target-only repo has no checkout. */
+  async finish(p: Person | string, id: string): Promise<void> {
+    const c = await this.r.act(p, id, "claim", {});
+    expect(c.status, `claim ${id}: ${JSON.stringify(c.json)}`).toBe(200);
+    const d = await this.r.act(p, id, "done", { outcome: "done", summary: "fixed" });
+    expect(d.status, `done ${id}: ${JSON.stringify(d.json)}`).toBe(200);
+    await this.w.flush();
+  }
+  /** ann reverts the disposition of `f` recorded in debrief step `D` (200). */
+  async revertD(D: string, f: string): Promise<void> {
+    const rv = await this.call(this.ann, "POST", `/v1/steps/${D}/dispositions/revert`, { fingerprint: f });
+    expect(rv.status, `revert ${f} in ${D}: ${JSON.stringify(rv.json)}`).toBe(200);
+    await this.w.flush();
+  }
+  /** ann holds the debrief step of `R` and dismisses `f` with `mesh_dispose`; returns the debrief id. */
+  async debriefDismiss(R: Run, f: string): Promise<string> {
+    const D = R.s("debrief");
+    const pid = await this.hold(this.ann, D);
+    await this.toolOk(this.ann, pid, "mesh_dispose", { fingerprint: f, disposition: "dismissed", reason: `R-${f}`, answer: `ANS-${f}` });
+    return D;
+  }
+  /** Every finding step of `(lineage, f)` over every clean-audit goal (any topic, dropped goals and moved-away steps included), full ids sorted. */
+  async allFor(f: string, lineage = LIN()): Promise<string[]> {
+    const out: string[] = [];
+    for (const g of await this.goals()) {
+      if (!g.sink) continue;
+      for (const s of await this.fsteps(g.id as string)) if (s.finding?.lineage === lineage && s.finding?.fp === f) out.push(s.id as string);
+    }
+    return out.sort();
+  }
+  /** The live finding steps of `(lineage, f)` of `topic` that are not closed (no `movedTo`, goal not dropped, state not done/skipped/dropped), sorted. */
+  async liveOpen(f: string, lineage = LIN(), topic = "ci"): Promise<string[]> {
+    const out: string[] = [];
+    for (const g of await this.goals()) {
+      if (!g.sink || g.sink.topic !== topic || g.state === "dropped") continue;
+      for (const s of await this.fsteps(g.id as string)) {
+        if (s.finding?.lineage !== lineage || s.finding?.fp !== f) continue;
+        const full = await this.step(s.id as string);
+        if (full.movedTo === undefined && !["done", "skipped", "dropped"].includes(full.state as string)) out.push(s.id as string);
+      }
+    }
+    return out.sort();
+  }
+  /** The single `step.dropped` event of `fromId` with reason `moved` (undefined when none; never two). */
+  async moveOf(fromId: string): Promise<Json | undefined> {
+    const xs = await this.ev("step.dropped", (e) => e.step === fromId && e.payload?.reason === "moved");
+    expect(xs.length, `at most one move of ${fromId}`).toBeLessThanOrEqual(1);
+    return xs[0];
+  }
+  /** The fp of the item of `lineage` whose stored rule is `other:<rule>` (for keys whose fp the test cannot compute). */
+  async fpByRule(rule: string, lineage = LIN()): Promise<string> {
+    const xs = (await this.items(lineage)).filter((x) => (x.rule ?? x.key?.rule) === `other:${rule}`);
+    expect(xs, `one item with rule other:${rule}`).toHaveLength(1);
+    return xs[0].fp as string;
+  }
+  /** What "nothing written" compares: every clean-audit goal's snapshot, the lineage's item rows, event counts by type. */
+  async world(lineage = LIN()): Promise<Json> {
+    const goals: Record<string, Json> = {};
+    for (const g of (await this.goals()).filter((x) => x.sink)) goals[g.id as string] = { state: g.state, sink: g.sink, ownerId: g.ownerId, ...(await this.snapshot(g.id as string)) };
+    const items = (await this.items(lineage))
+      .map((x) => ({ fp: x.fp, state: x.state, repo: x.repo, history: ((x.history ?? []) as Json[]).length }))
+      .sort((a, b) => String(a.fp).localeCompare(String(b.fp)));
+    const events: Record<string, number> = {};
+    for (const e of await this.r.allEvents()) events[e.type] = (events[e.type] ?? 0) + 1;
+    return { goals, items, events };
+  }
 }
 
 export interface OrderWorld {
@@ -335,3 +421,53 @@ export async function orderSetup(s: Sk, sev: [string, string, string, string]): 
 
 export { disp, fpOf, item };
 export type { Json, Person, PlanIn };
+
+// ---- RL-10 additions (docs/specs/RL-10.md): target repos ------------------------------------------
+
+/** Repos used only as targets (no checkout, no daemon). */
+export const X = "x";
+export const Y = "y";
+/** An item with a target repo (`repo` is not part of the key). */
+export const IR = <T extends object>(it: T, repo: string): T & { repo: string } => ({ ...it, repo });
+/** The documented title of the clean-audit goal of a single-segment repo. */
+export const TITLE = (repo: string, topic = "ci") => `Clean audits: ${topic} on ${repo}`;
+/** `item(rule, o)` with a key that has no `path` (a symbol instead). */
+export const noPath = (rule: string, o: Parameters<typeof item>[1] = {}) => ({ ...item(rule, o), key: { rule, symbol: `s-${rule}` } });
+export const IG = item("rg", { title: "T-G" });
+export const IM = item("rm", { title: "T-M" });
+export const IN = item("rn", { title: "T-N" });
+export const fG = fpR("rg");
+export const fM = fpR("rm");
+export const fN = fpR("rn");
+/** A debrief stage that consumes `accepted` and may set `dismissed` (the RL-9 AC-07b shape). */
+export const DEBRIEF_DISMISS = DEBRIEF({ consumes: ["accepted"], may_set: ["dismissed"] });
+
+/**
+ * AC-06b / AC-06c setup: G1 files D (no repo) → `rD` in the `r` goal; `retarget(fD, "x")` moves it
+ * to `xD`; bob finishes `xD` (done); a later run G2 raises D with `repo: r` (fold: target x → r,
+ * nothing open to move), then (unless `fileD: false`) G2's `file` refiles D.
+ */
+export async function revived(k: Sk, retarget: (f: string, repo: string) => Promise<unknown>, o: { fileD?: boolean } = {}) {
+  const G1 = await k.run();
+  await k.raise(G1, [ID]);
+  await k.file(G1, [acc(fD)]);
+  const Gr = await k.CG(REPO);
+  const rD = k.fs(Gr, fD);
+  const notes0 = await k.notes(rD);
+  await retarget(fD, X);
+  const Gx = await k.CG(X);
+  const xD = k.fs(Gx, fD);
+  expect((await k.step(xD)).state, "control: D moved to x").toBe("ready");
+  expect((await k.step(rD)).movedTo, "control: rD moved away").toBe(xD);
+  k.tick();
+  await k.finish(k.bob, xD);
+  expect((await k.step(xD)).state, "control: xD done").toBe("done");
+  k.tick();
+  const G2 = await k.run();
+  await k.raise(G2, [IR(ID, REPO)]);
+  expect((await k.item(fD)).repo, "control: the fold set D's target back to r").toBe(REPO);
+  expect((await k.step(rD)).movedTo, "control: nothing moved by the fold (xD closed)").toBe(xD);
+  if (o.fileD !== false) await k.file(G2, [acc(fD)]);
+  else await k.file(G2, []);
+  return { G1, G2, Gr, Gx, rD, xD, notes0 };
+}

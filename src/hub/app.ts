@@ -43,6 +43,7 @@ import {
   GoalTopicsChange,
   GoalDrop,
   SinkRequest,
+  RetargetRequest,
   NoteRequest,
   ProposePlan,
   ReleaseRequest,
@@ -356,6 +357,7 @@ export function buildRoutes(svc: HubService): Route[] {
     ),
     // RL-9: backfill a lineage's filed items into its clean-audit goal.
     r("POST", "/v1/items/sink", "member", async (c, a) => c.json(await svc.sinkItems(a, await body(c, SinkRequest))), "goals:write"),
+    r("POST", "/v1/items/retarget", "member", async (c, a) => c.json(await svc.retargetItems(a, await body(c, RetargetRequest))), "goals:write"),
     // RL-4: debriefs.
     r("POST", "/v1/steps/:id/read", "member", async (c, a) => {
       await body(c, ReadRequest);

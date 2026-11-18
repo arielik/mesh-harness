@@ -59,7 +59,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.27](operations.md#upgrading-to-0127).
+  describes; see [Upgrading to 0.1.28](operations.md#upgrading-to-0128).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else
@@ -594,7 +594,7 @@ Define the topic once (`mesh topic add ci`) and add `sink` to the stage that rec
 ```
 
 `sink` needs mesh 0.1.27 on the hub: an older hub refuses the preset with 422. See
-[Upgrading to 0.1.27](operations.md#upgrading-to-0127).
+[Upgrading to 0.1.28](operations.md#upgrading-to-0128).
 
 The stage needs `accepted` in `may_set`, and the topic must exist (`mesh pulse add` and `mesh goal
 plan` refuse the preset otherwise). When `file` is done, or skipped because you filed everything in
@@ -626,6 +626,44 @@ clean audits: ci on demo · open S1 1 · S2 1 · S3 0 · S4 0 · done 1 · dropp
   `--dry-run` it adds them (`G12: added 2, reopened 0`).
 - **End it** with `mesh goal drop G12 --reason "moved to another tracker"` (owner, approver or admin;
   release held steps first). The next sink opens a new goal.
+
+### Auditors that check other repos
+
+An auditor run from one repo may check others (a CI auditor in `demo` that reads the pipelines of
+`api` and `web`). Its findings belong in the clean-audit goals of the repos they are about, so their
+steps start in the right checkout:
+
+- **Set `repo` on each item** that is about another repo, and keep that repo in the key too (`path`
+  or `symbol`, e.g. `path: api/.ci.yml`): the fingerprint never reads `repo`, and a record that lists
+  one fingerprint for two repos is refused (`item <fp> is listed for more than one repo (api, web);
+  put the repo in its key`). Items without `repo` stay in the repo the audit ran in.
+
+  ```json
+  { "key": { "rule": "pinned-images", "path": "api/.ci.yml" }, "repo": "api",
+    "title": "Unpinned image in the build job", "severity": "S2", "category": "ci", "evidence": [] }
+  ```
+
+  The sink then files each item in `Clean audits: ci on api`, `… on web` or `… on demo`, and
+  `mesh items` shows `api/.ci.yml → api` for it. `repo` needs mesh 0.1.28 on the hub and on the
+  daemon of the machine that runs the auditor (see [Upgrading to 0.1.28](operations.md#upgrading-to-0128)).
+- **When an auditor starts sending `repo`**, the next record moves the open steps of the items it
+  now places elsewhere: the old step is dropped with `moved to <new id>`, the new one has `moved from
+  <old id>`. A claimed (or paused, parked, failed) step stays where it is with a note; release it and
+  run `mesh items retarget` (below) to move it.
+- **Items no audit raises again** keep their old place. Set their repo with `mesh items retarget`,
+  dry run first:
+
+  ```console
+  $ mesh items retarget 'ci-relay|demo|auditor' --all --from-key-path --dry-run
+  would retarget 2 items; moved 2 steps; held 0
+  G12.f-qc32ftf4twvuj4zm → new:api/f-qc32ftf4twvuj4zm
+  G12.f-vdoqmlnqcj6peroa → G15.f-vdoqmlnqcj6peroa
+  note: 7xkq2bj5dmr3gq4a: key path src/build.ts is not a repo name
+  ```
+
+  `--from-key-path` takes each item's key `path` when it is a repo name (no `/`, no file extension);
+  for one item, or a repo with a group (`group/api`), use `mesh items retarget <lineage> <fp> --repo
+  <repo>`. Without `--dry-run` it sets the items' repo and moves their open steps.
 
 The rules are in [concepts](concepts.md#clean-audit-goals).
 

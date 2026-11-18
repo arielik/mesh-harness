@@ -683,8 +683,8 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
   const STATS = { method: "GET", path: "/v1/agents/:key/stats", rule: "member", scope: "goals:read", tag: "goals" };
 
   it("test_AC16_version", () => {
-    // RL-9 AC-19: the release is v0.1.27 (was v0.1.26).
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.27");
+    // RL-10 AC-13: the release is v0.1.28 (was v0.1.27).
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.28");
   });
 
   it("test_AC07_route_table", () => {
@@ -780,10 +780,49 @@ describe("RL-9 AC-18/AC-19 routes and schema", () => {
   });
 
   it("test_AC19_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.27");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.28");
   });
 
   it("test_AC19_schema_version", () => {
+    expect(HubStore.SCHEMA_VERSION).toBe(11);
+  });
+});
+
+// RL-10 AC-12 (route table, OpenAPI) and AC-13 (version, schema version). Written from the spec's
+// contracts only (docs/specs/RL-10.md).
+describe("RL-10 AC-12/AC-13 routes and schema", () => {
+  const RETARGET = { method: "POST", path: "/v1/items/retarget", rule: "member", scope: "goals:write", tag: "goals" };
+
+  it("test_AC12_route_table", () => {
+    const svc = { config: { url: "http://127.0.0.1:1" } } as unknown as HubService;
+    const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule}`);
+    // Control: the RL-9 backfill route is still there.
+    expect(served).toContain("POST /v1/items/sink member");
+    const row = HUB_API.find((x) => x.method === RETARGET.method && x.path === RETARGET.path) as { rule: string; scope?: string; tag: string } | undefined;
+    expect(row, "POST /v1/items/retarget in HUB_API").toBeDefined();
+    expect({ rule: row?.rule, scope: row?.scope, tag: row?.tag }).toStrictEqual({ rule: RETARGET.rule, scope: RETARGET.scope, tag: RETARGET.tag });
+    expect(served).toContain(`${RETARGET.method} ${RETARGET.path} ${RETARGET.rule}`);
+  });
+
+  it("test_AC12_openapi", () => {
+    expect(`${JSON.stringify(hubOpenApi(), null, 2)}\n`).toBe(read("schemas/hub-api.openapi.json"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON document
+    const doc = JSON.parse(read("schemas/hub-api.openapi.json")) as any;
+    expect(doc.paths["/v1/items/sink"]?.post, "control: POST /v1/items/sink").toBeDefined();
+    expect(doc.paths["/v1/items/retarget"]?.post, "POST /v1/items/retarget in the OpenAPI document").toBeDefined();
+    // The review route's item schema (the one with `key`) has `repo` with maxLength 300.
+    const body = doc.paths["/v1/steps/{id}/review"].post.requestBody.content["application/json"].schema;
+    const itemSchema = body.properties.items.items;
+    expect(Object.keys(itemSchema.properties), "control: the ReviewItem schema").toContain("key");
+    expect(itemSchema.properties.repo).toMatchObject({ type: "string", maxLength: 300 });
+    expect(itemSchema.required ?? []).not.toContain("repo");
+  });
+
+  it("test_AC13_version", () => {
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.28");
+  });
+
+  it("test_AC13_schema_version", () => {
     expect(HubStore.SCHEMA_VERSION).toBe(11);
   });
 });

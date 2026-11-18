@@ -356,6 +356,8 @@ export const Step = z.object({
   severity: Severity.optional(),
   /** RL-9: the item a finding step fixes (its lineage and fingerprint). */
   finding: z.object({ lineage: z.string(), fp: z.string() }).optional(),
+  /** RL-10: set only on a moved-away finding step: the full id of the step it was moved to. */
+  movedTo: z.string().optional(),
   updatedAt: z.number(),
 });
 export type Step = z.infer<typeof Step>;

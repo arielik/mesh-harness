@@ -34,6 +34,7 @@ import {
   ReleaseRequest,
   Replan,
   ResumeRequest,
+  RetargetRequest,
   RevertRequest,
   ReviewUpload,
   RunReport,
@@ -235,6 +236,15 @@ export const HUB_API: readonly HubApiRoute[] = [
     tag: "goals",
     body: SinkRequest,
     summary: "Add a lineage's filed items to the clean-audit goal of (repo, topic) (backfill).",
+  },
+  {
+    method: "POST",
+    path: "/v1/items/retarget",
+    rule: "member",
+    scope: "goals:write",
+    tag: "goals",
+    body: RetargetRequest,
+    summary: "Set the target repo of a lineage's items and move their open finding steps.",
   },
   { method: "POST", path: "/v1/steps/:id/read", rule: "member", tag: "steps", body: ReadRequest, summary: "Mark the pre-read of a debrief step as read (its assignee only)." },
   {

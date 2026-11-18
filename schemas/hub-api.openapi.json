@@ -5832,6 +5832,11 @@
                           "type": "string",
                           "maxLength": 4000
                         },
+                        "repo": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 300
+                        },
                         "eh": {
                           "type": "string",
                           "pattern": "^[0-9a-f]{64}$"
@@ -6097,6 +6102,95 @@
                 "required": [
                   "lineage",
                   "topic"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/items/retarget": {
+      "post": {
+        "operationId": "postVItemsRetarget",
+        "summary": "Set the target repo of a lineage's items and move their open finding steps.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:write`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "lineage": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  },
+                  "fps": {
+                    "minItems": 1,
+                    "maxItems": 500,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-z2-7]{16}$"
+                    }
+                  },
+                  "all": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "from_key_path": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "dry_run": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "lineage"
                 ],
                 "additionalProperties": false
               }

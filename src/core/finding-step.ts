@@ -42,6 +42,26 @@ export function lineageRepo(lineage: string): string {
   return a < 0 || b <= a ? lineage : lineage.slice(a + 1, b);
 }
 
+/** RL-10: the target repo of an item row: its `repo` when set, else the lineage repo. */
+export function targetRepo(row: Pick<ItemRow, "lineage" | "repo">): string {
+  return row.repo ?? lineageRepo(row.lineage);
+}
+
+/** RL-10: a moved-away finding step (it was moved to the step its `movedTo` names). */
+export function isMovedAway(s: Pick<Step, "movedTo">): boolean {
+  return s.movedTo !== undefined;
+}
+
+/**
+ * RL-10: the repo a key path names, for `mesh items retarget --from-key-path`. No path → `none`; a
+ * path with `/` or ending in `.` and 1-5 letters or digits (a file) → `bad`; else the path.
+ */
+export function keyPathRepo(path: string | undefined): { repo: string } | { note: "none" | "bad" } {
+  if (path === undefined) return { note: "none" };
+  if (path.includes("/") || /\.[A-Za-z0-9]{1,5}$/.test(path)) return { note: "bad" };
+  return { repo: path };
+}
+
 /** The last line of every finding step's brief. */
 export function findingLastLine(lineage: string): string {
   return `When the fix lands, the next audit of ${lineage} resolves this finding; do not edit the tracking row.`;
@@ -111,13 +131,14 @@ export function refillBySeverity<T extends Pick<Step, "goal" | "finding" | "seve
   return out;
 }
 
-/** The header counts of a clean-audit goal: open finding steps by severity, done and dropped ones. */
-export function sinkCounts(steps: readonly Pick<Step, "state" | "finding" | "severity">[]): { open: Record<Severity, number>; done: number; dropped: number } {
+/** The header counts of a clean-audit goal: open finding steps by severity, done and dropped ones (moved-away steps left out). */
+export function sinkCounts(steps: readonly Pick<Step, "state" | "finding" | "severity" | "movedTo">[]): { open: Record<Severity, number>; done: number; dropped: number } {
   const open: Record<Severity, number> = { S1: 0, S2: 0, S3: 0, S4: 0 };
   let done = 0;
   let dropped = 0;
   for (const s of steps) {
-    if (!isFinding(s)) continue;
+    // RL-10: a moved-away step is counted where it lives now.
+    if (!isFinding(s) || isMovedAway(s)) continue;
     if (s.state === "done") done++;
     else if (s.state === "dropped") dropped++;
     else if (s.state !== "skipped") open[s.severity as Severity]++;

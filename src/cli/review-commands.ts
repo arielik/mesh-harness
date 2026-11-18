@@ -1,8 +1,8 @@
 // RL-2: `mesh items` (the items of a review lineage, with their states). RL-4: `mesh debrief`.
 
 import { skillStatus } from "../claude/index.ts";
-import { runOf } from "../core/index.ts";
-import { MESH_DEBRIEF_SKILL, Severity, type DebriefView, type ItemView, type SinkResult, type Step, type StepView, type StoredReview } from "../protocol/index.ts";
+import { lineageRepo, repoName, runOf } from "../core/index.ts";
+import { MESH_DEBRIEF_SKILL, Severity, type DebriefView, type ItemView, type RetargetResult, type SinkResult, type Step, type StepView, type StoredReview } from "../protocol/index.ts";
 import type { Command } from "./commands.ts";
 import { parseArgs, type CliEnv } from "./context.ts";
 import { HubCallError, HubClient } from "./hub-client.ts";
@@ -111,8 +111,46 @@ async function itemsSink(c: CliEnv, args: readonly string[], usage: string): Pro
   }
   try {
     const r = await HubClient.from(c.paths).post<SinkResult>("/v1/items/sink", { lineage, topic, ...(min ? { min_severity: min } : {}), ...(a.has("dry-run") ? { dry_run: true } : {}) });
-    if (a.has("dry-run")) c.io.out(`would add ${r.added.length} to ${r.goal ?? "a new goal"}`);
-    else c.io.out(`${r.goal ?? "no goal"}: added ${r.added.length}, reopened ${r.reopened.length}`);
+    // RL-10: one line per target repo when the items target two or more (an older hub sends no goals).
+    const entries = r.goals ?? [];
+    if (entries.length <= 1) {
+      if (a.has("dry-run")) c.io.out(`would add ${r.added.length} to ${r.goal ?? "a new goal"}`);
+      else c.io.out(`${r.goal ?? "no goal"}: added ${r.added.length}, reopened ${r.reopened.length}`);
+      return 0;
+    }
+    for (const e of entries) {
+      if (a.has("dry-run")) c.io.out(`would add ${e.added.length} to ${e.goal ?? "a new goal"} (${repoName(e.repo)})`);
+      else c.io.out(`${e.goal ?? "no goal"}: added ${e.added.length}, reopened ${e.reopened.length} (${repoName(e.repo)})`);
+    }
+    return 0;
+  } catch (e) {
+    if (!(e instanceof HubCallError)) throw e;
+    c.io.err(e.message);
+    return 1;
+  }
+}
+
+/** RL-10: `mesh items retarget <lineage> (<fp>… | --all) (--repo <r> | --from-key-path) [--dry-run]`. */
+async function itemsRetarget(c: CliEnv, args: readonly string[], usage: string): Promise<number> {
+  const a = parseArgs(args, ["repo"]);
+  const [lineage, ...fps] = a.positional;
+  const repo = a.str("repo");
+  const dry = a.has("dry-run");
+  if (!lineage || (fps.length > 0) === a.has("all") || a.has("repo") === a.has("from-key-path") || (a.has("repo") && !repo?.trim())) {
+    c.io.err(usage);
+    return 2;
+  }
+  try {
+    const r = await HubClient.from(c.paths).post<RetargetResult>("/v1/items/retarget", {
+      lineage,
+      ...(fps.length ? { fps } : { all: true }),
+      ...(repo !== undefined ? { repo } : { from_key_path: true }),
+      ...(dry ? { dry_run: true } : {}),
+    });
+    c.io.out(`${dry ? "would retarget" : "retargeted"} ${r.items.length} items; moved ${r.moved.length} steps; held ${r.held.length}`);
+    for (const m of r.moved) c.io.out(`${m.from} → ${m.to}`);
+    for (const h of r.held) c.io.out(`held: ${h}`);
+    for (const n of r.notes) c.io.out(`note: ${n}`);
     return 0;
   } catch (e) {
     if (!(e instanceof HubCallError)) throw e;
@@ -122,13 +160,19 @@ async function itemsSink(c: CliEnv, args: readonly string[], usage: string): Pro
 }
 
 export function itemsCommand(c: CliEnv): Command {
-  const usage = ["usage: mesh items <lineage key | step id> [--all] [--json]", "       mesh items sink <lineage> --topic <t> [--min-severity S2] [--dry-run]"].join("\n");
+  const usage = [
+    "usage: mesh items <lineage key | step id> [--all] [--json]",
+    "       mesh items sink <lineage> --topic <t> [--min-severity S2] [--dry-run]",
+    "       mesh items retarget <lineage> (<fp>… | --all) (--repo <r> | --from-key-path) [--dry-run]",
+  ].join("\n");
   return {
     name: "items",
     help: usage,
-    summary: "items of a review lineage: <lineage key | step id> [--all] [--json]; sink <lineage> --topic <t> adds its filed items to a clean-audit goal",
+    summary:
+      "items of a review lineage: <lineage key | step id> [--all] [--json]; sink <lineage> --topic <t> adds its filed items to a clean-audit goal; retarget <lineage> sets the repo its findings are about",
     async run(args) {
       if (args[0] === "sink") return await itemsSink(c, args.slice(1), usage);
+      if (args[0] === "retarget") return await itemsRetarget(c, args.slice(1), usage);
       const a = parseArgs(args);
       const target = a.positional[0];
       if (!target) {
@@ -152,7 +196,9 @@ export function itemsCommand(c: CliEnv): Command {
           c.io.out(`No items in ${lineage}.`);
           return 0;
         }
-        for (const i of shown) c.io.out(`${i.fp}  ${i.state}  ${i.severity}  ${i.rule}  ${i.path ?? "-"}  ${i.title}`);
+        // RL-10: the target repo after the path when it is not the lineage repo.
+        const where = (i: ItemView) => (i.repo !== undefined && i.repo !== lineageRepo(lineage) ? `${i.path ?? "-"} → ${i.repo}` : (i.path ?? "-"));
+        for (const i of shown) c.io.out(`${i.fp}  ${i.state}  ${i.severity}  ${i.rule}  ${where(i)}  ${i.title}`);
         return 0;
       } catch (e) {
         if (!(e instanceof HubCallError)) throw e;

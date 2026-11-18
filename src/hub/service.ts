@@ -65,6 +65,9 @@ import {
   findingStepId,
   findingTitle,
   lineageRepo,
+  isMovedAway,
+  keyPathRepo,
+  targetRepo,
   refillBySeverity,
   consumedNow,
   reopen,
@@ -187,6 +190,8 @@ import type {
   ReviewResult,
   SinkRequest,
   SinkResult,
+  RetargetRequest,
+  RetargetResult,
   ReviewUpload,
   StoredRecord,
   StoredReview,
@@ -204,7 +209,7 @@ import type {
   PulseWhenInput,
   SlotReason,
 } from "../protocol/index.ts";
-import { AGENT_NAME_RE, ALL_TOPIC, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
+import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
@@ -263,21 +268,38 @@ function byItemOrder(a: ItemRow, b: ItemRow): number {
   return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || a.first.at - b.first.at || (a.fp < b.fp ? -1 : a.fp > b.fp ? 1 : 0);
 }
 
-/** RL-9: the goal id in the step ids of a sink that will open its clean-audit goal. */
+/** RL-9: the goal id in the step ids of a sink dry run that would open its clean-audit goal. */
 const NEW_GOAL = "<new>";
 /** RL-9: the states a sync or a refile leaves alone apart from a note. */
 const HELD_OR_FAILED: ReadonlySet<string> = new Set(["claimed", "paused", "parked", "failed"]);
+/** RL-10: open finding steps (a move takes them). */
+const OPEN_STATES: ReadonlySet<string> = new Set(["ready", "blocked"]);
+/** RL-10: closed finding steps. */
+const CLOSED_STATES: ReadonlySet<string> = new Set(["done", "skipped", "dropped"]);
+/** RL-10: a placeholder goal id of a work (a clean-audit goal still to be opened; private-use characters, no `.`); never stored. */
+const PLACEHOLDER = /\uE000\d+\uE000/g;
 
 /** RL-9: who decided, as notes and summaries name them: the person's user, or the agent key. */
 function deciderText(d: Decider): string {
   return d.kind === "person" ? d.user : d.key;
 }
 
+const HOLDER_FIELDS = ["outcome", "summary", "holderUser", "holderSid", "holderMachine", "claimedAt", "pausedAt", "roundStartedAt", "parkedReason", "parkedAt"] as const;
+
 /** RL-9: a done or dropped finding step reopened (rule 3): blocked until settled, a new fix cycle, rounds kept. */
 function reopenedFinding(cur: Step, now: number): Step {
   const next: Step = { ...cur, state: "blocked", fixCycles: cur.fixCycles + 1, updatedAt: now };
-  for (const k of ["outcome", "summary", "holderUser", "holderSid", "holderMachine", "claimedAt", "pausedAt", "roundStartedAt", "parkedReason", "parkedAt"] as const) delete next[k];
+  for (const k of HOLDER_FIELDS) delete next[k];
   // MM-3: a later holder's work is not reported to the offerer of an accepted offer.
+  if (next.offer?.state === "accepted") delete next.offer;
+  return next;
+}
+
+/** RL-10: a moved-away finding step revived: `movedTo` and holder fields cleared, no deps, same fix cycle, notes and rounds kept. */
+function revivedFinding(cur: Step, repo: string, now: number): Step {
+  const next: Step = { ...cur, state: "blocked", repo, deps: [], updatedAt: now };
+  for (const k of HOLDER_FIELDS) delete next[k];
+  delete next.movedTo;
   if (next.offer?.state === "accepted") delete next.offer;
   return next;
 }
@@ -290,23 +312,57 @@ interface SinkItem {
   accepted?: { at: number; step: string } | undefined;
 }
 
-/** RL-9: a sink decided in memory (`decideSink`), written by `writeSink`. */
-interface SinkPlan {
-  /** The clean-audit goal, when it exists. */
-  goal: Goal | undefined;
-  /** The goal id in the step ids: the goal's, or `NEW_GOAL`. */
-  gid: string;
-  existing: Step[];
-  changed: Step[];
-  added: string[];
-  reopened: string[];
-  skipped: number;
-  notes: { step: string; text: string }[];
-  owner: string;
+/** RL-10: one clean-audit goal of a work (read once per call), or one still to be opened. */
+interface WorkGoal {
   repo: string;
   topic: string;
+  /** The goal, when it exists (set by `writeWork` when it opens one). */
+  goal: Goal | undefined;
+  /** The goal id in the step ids: the goal's, or a placeholder (`PLACEHOLDER`). */
+  gid: string;
+  /** The goal's owner, or the owner a new goal gets. */
+  owner: string;
+  existing: Step[];
+  all: Map<string, Step>;
+  changed: Set<string>;
+  /** Steps created or moved here (`goal.sunk` and `SinkResult`). */
+  added: string[];
+  /** Steps reopened or revived by a sink. */
+  reopened: string[];
+  /** Its place in `Work.goals` (insertion order). */
+  ord: number;
+}
+
+/** RL-10: the live finding steps of one lineage by fingerprint, over the clean-audit goals that are not dropped (built once per call). */
+type FindingIndex = Map<string, { goal: Goal; step: Step }[]>;
+
+/**
+ * RL-10: the placing work of one call (sink, backfill, fold move, retarget, revert): decided in
+ * memory over several clean-audit goals, then written once by `writeWork`. Every text naming a step
+ * id may hold a placeholder, rendered at write time.
+ */
+interface Work {
+  now: number;
   from: string;
   fromStep?: string | undefined;
+  /** Who ends offers (the caller), else each goal's owner. */
+  user?: string | undefined;
+  goals: Map<string, WorkGoal>;
+  byKey: Map<string, string>;
+  /** The work's goals that hold a finding step of `(lineage, fp)` at its home id (moved-away ones included), by `lineage\u0000fp`. */
+  byFinding: Map<string, Set<WorkGoal>>;
+  loaded: Set<string>;
+  allGoals?: Goal[] | undefined;
+  seq: number;
+  notes: { gid: string; step: string; user: string; text: string }[];
+  dropped: { gid: string; step: string; user: string; to: string }[];
+  reopens: { gid: string; step: string; user: string; reason: "refiled" | "moved" | "reverted" }[];
+  touched: { gid: string; id: string; lineage: string; requires: readonly string[]; deps: "replace" | "add"; user: string }[];
+  noted: Set<string>;
+  skipped: number;
+  /** Item notes and skipped moves (`RetargetResult.notes`). */
+  resultNotes: string[];
+  cache: Map<string, StoredReview[]>;
 }
 
 export class HubService {
@@ -1126,6 +1182,13 @@ export class HubService {
       const toApply: RecordDisposition[] = [];
       if (raising && fields.dispositions.length) problems.push(`dispositions need consumes; ${step.id} raises items`);
       if (!raising && fields.items.length) problems.push(`${step.id} consumes items; its record may not raise new ones`);
+      // RL-10: one fingerprint listed for two repos (absent: the lineage repo) cannot be placed.
+      if (raising) {
+        for (const fp of fps) {
+          const repos = [...new Set(items.filter((i) => i.fp === fp).map((i) => i.repo ?? lineageRepo(lineage)))];
+          if (repos.length > 1) problems.push(`item ${fp} is listed for more than one repo (${repos.join(", ")}); put the repo in its key`);
+        }
+      }
       if (!raising) {
         const consumes: readonly ItemState[] = p.consumes ?? [];
         const runFps = new Set(runRecord ? uniqueFps(runRecord.record.items) : []);
@@ -1181,12 +1244,14 @@ export class HubService {
           if (mark) it.mark = mark;
         }
         const carried = new Set(f.carried);
+        const retargeted: { row: ItemRow; from: string; to: string }[] = [];
         for (const fp of fps) {
           const it = first.get(fp) as StoredReviewItem;
           const row = rows.get(fp);
           const state = f.states.get(fp) ?? "open";
+          // RL-10: an item with repo sets the row's; without, the row keeps its own (a retarget survives).
           const next: ItemRow = row
-            ? { ...row, state, title: it.title, severity: it.severity, category: it.category, last: seenAt }
+            ? { ...row, state, title: it.title, severity: it.severity, category: it.category, last: seenAt, ...(it.repo !== undefined ? { repo: it.repo } : {}) }
             : {
                 lineage,
                 fp,
@@ -1200,7 +1265,9 @@ export class HubService {
                 raisedBy: agent ? { key: agent.key, ...(agent.hash ? { hash: agent.hash } : {}) } : { key: `${repoName(step.repo)}/${local(step)}` },
                 first: seenAt,
                 last: seenAt,
+                ...(it.repo !== undefined ? { repo: it.repo } : {}),
               };
+          if (row && targetRepo(row) !== targetRepo(next)) retargeted.push({ row: next, from: targetRepo(row), to: targetRepo(next) });
           if (it.eh) next.eh = it.eh;
           else delete next.eh;
           await this.store.saveItem(next);
@@ -1213,6 +1280,8 @@ export class HubService {
           await this.store.saveItem({ ...row, state: "resolved" });
           await this.store.addItemHistory(lineage, fp, { ...seenAt, from: row.state, to: "resolved", kind: "fold", mark: "resolved" });
         }
+        // RL-10: an item whose target repo changed moves its open finding steps (before the resolved sync).
+        if (retargeted.length) await this.foldMove(goal, step, lineage, retargeted, actor.userId, now);
         fold = f.fold;
         resolved = f.resolved;
         // RL-9: resolved findings close their steps; findings raised again note their done steps.
@@ -1223,11 +1292,12 @@ export class HubService {
       // Dispositions of a consuming record (only when the whole record has no problem).
       const applied: { fp: string; disposition: string; from: ItemState }[] = [];
       const via: DispositionVia = debrief ? "debrief-session" : "stage";
-      const sinkGoals = toApply.length ? await this.sinkGoalsOf(lineage) : [];
+      // RL-10: one index of the lineage's live finding steps for the whole batch.
+      const ix = toApply.length ? await this.findingIndex(lineage) : undefined;
       for (const d of toApply) {
         const row = await this.store.getItem(lineage, d.fingerprint);
         if (!row) continue;
-        await this.applyDisposition(lineage, row, d, decider, via, seenAt, undefined, sinkGoals);
+        await this.applyDisposition(lineage, row, d, decider, via, seenAt, undefined, ix);
         applied.push({ fp: d.fingerprint, disposition: d.disposition, from: row.state });
         if (debrief) await this.debriefNote(actor, step, sid, `debrief: ${d.disposition} ${d.fingerprint} "${row.title}": ${d.reason}`, now);
       }
@@ -1325,7 +1395,7 @@ export class HubService {
     via: DispositionVia,
     seenAt: { goal: string; step: string; round: number; at: number },
     answer?: string,
-    sinkGoals?: readonly Goal[],
+    ix?: FindingIndex,
   ): Promise<DispositionRow> {
     const next: ItemRow = { ...row, state: d.disposition };
     if (d.disposition === "dismissed") {
@@ -1350,7 +1420,7 @@ export class HubService {
       ...(d.requires?.length ? { requires: d.requires } : {}),
     });
     // RL-9: a dismissal or deferral drops the item's ready finding steps (held ones get a note).
-    await this.syncDisposition(lineage, d.fingerprint, d, decider, seenAt.at, sinkGoals);
+    await this.syncDisposition(lineage, d.fingerprint, d, decider, seenAt.at, ix);
     return {
       lineage,
       fp: d.fingerprint,
@@ -3837,172 +3907,425 @@ export class HubService {
     return { evidence: [] };
   }
 
-  /**
-   * Rules 1-5 of a sink, decided in memory; nothing is written. A goal still to be opened has the
-   * placeholder id `NEW_GOAL` in the step ids (`writeSink` maps it).
-   */
-  private async decideSink(o: {
-    repo: string;
-    topic: string;
-    items: readonly SinkItem[];
-    owner: string;
-    from: string;
-    fromStep?: string | undefined;
-    deps: boolean;
-    minRank?: number | undefined;
-  }): Promise<SinkPlan> {
-    const goal = await this.cleanAuditGoal(o.repo, o.topic);
-    const gid = goal?.id ?? NEW_GOAL;
-    const existing = goal ? await this.store.listSteps({ goal: goal.id }) : [];
-    const all = new Map(existing.map((s) => [s.id, s] as const));
-    const changed = new Map<string, Step>();
-    const added: string[] = [];
-    const reopened: string[] = [];
-    const notes: { step: string; text: string }[] = [];
-    const touched: { id: string; lineage: string; requires: readonly string[] }[] = [];
-    const cache = new Map<string, StoredReview[]>();
-    let skipped = 0;
-    const now = this.now();
-    const put = (s: Step) => {
-      all.set(s.id, s);
-      changed.set(s.id, s);
+  // ---------- placing finding steps (RL-10) ----------
+
+  /** RL-10: a new work for one call; `now` is the time its writes carry. */
+  private newWork(from: string, now: number, o: { fromStep?: string | undefined; user?: string | undefined } = {}): Work {
+    return {
+      now,
+      from,
+      fromStep: o.fromStep,
+      user: o.user,
+      goals: new Map(),
+      byKey: new Map(),
+      byFinding: new Map(),
+      loaded: new Set(),
+      seq: 0,
+      notes: [],
+      dropped: [],
+      reopens: [],
+      touched: [],
+      noted: new Set(),
+      skipped: 0,
+      resultNotes: [],
+      cache: new Map(),
     };
-    /** The brief of a finding step, built from the item, its newest evidence and its disposition reasons. */
-    const briefOf = async (row: ItemRow): Promise<string> => {
-      const ev = await this.itemEvidence(row.lineage, row.fp, cache);
-      const reasons = (await this.store.itemHistory(row.lineage, row.fp)).flatMap((e) => (e.kind === "disposition" ? [`${e.disposition} by ${deciderText(e.decider)}: ${e.reason}`] : []));
-      return findingBrief({ item: row, evidence: ev.evidence, proposal: ev.proposal, reasons });
-    };
-    for (const { row, requires, accepted } of o.items) {
-      if (o.minRank !== undefined && SEVERITY_RANK[row.severity] > o.minRank) continue;
-      const id = `${gid}.${findingStepId(row.lineage, row.fp)}`;
-      const cur = all.get(id);
-      const title = findingTitle(row.severity, row.title);
-      if (cur && (cur.finding?.lineage !== row.lineage || cur.finding.fp !== row.fp)) {
-        // A hash clash: never overwrite another finding's step.
-        notes.push({ step: id, text: `finding ${row.fp} of ${row.lineage} has the step id of another finding; not added` });
-        skipped++;
-        continue;
-      }
-      if (!cur) {
-        put({
-          id,
-          goal: gid,
-          planVersion: 1,
-          kind: "implement",
-          repo: lineageRepo(row.lineage),
-          title,
-          brief: await briefOf(row),
-          deps: [],
-          state: "blocked",
-          fixCycles: 0,
-          policy: { worktree: true },
-          severity: row.severity,
-          finding: { lineage: row.lineage, fp: row.fp },
-          updatedAt: now,
-        });
-        added.push(id);
-        touched.push({ id, lineage: row.lineage, requires });
-      } else if (cur.state === "done" || cur.state === "dropped") {
-        // Rule 3: reopen only when the item was filed again after the step closed (not on a backfill
-        // or a second filer round over an item nobody filed again).
-        if (!(await this.filedAfterClose(cur, row, accepted))) {
-          skipped++;
-          continue;
-        }
-        put({ ...reopenedFinding(cur, now), title, severity: row.severity, brief: await briefOf(row) });
-        notes.push({ step: id, text: `refiled by ${o.from}` });
-        reopened.push(id);
-        touched.push({ id, lineage: row.lineage, requires });
-      } else if (cur.state === "ready" || cur.state === "blocked") {
-        const brief = await briefOf(row);
-        if (cur.title !== title || cur.severity !== row.severity || cur.brief !== brief) put({ ...cur, title, severity: row.severity, brief, updatedAt: now });
-        skipped++;
-      } else if (HELD_OR_FAILED.has(cur.state)) {
-        notes.push({ step: id, text: `refiled by ${o.from} (${row.severity})` });
-        skipped++;
-      } else skipped++;
-    }
-    // Rule 5: deps of the steps created or reopened now, once every step of this event exists.
-    if (o.deps) {
-      const depsMap = new Map([...all.values()].map((s) => [s.id, s.deps] as const));
-      for (const t of touched) {
-        const step = all.get(t.id) as Step;
-        const deps = [...step.deps];
-        for (const fp of t.requires) {
-          const own = `${gid}.${findingStepId(t.lineage, fp)}`;
-          let dep: string | undefined;
-          if (all.get(own)?.finding?.fp === fp) dep = own;
-          else {
-            const cands = [...all.values()].filter((s) => s.finding?.fp === fp);
-            const lineages = new Set(cands.map((s) => s.finding?.lineage));
-            if (cands.length === 1) dep = (cands[0] as Step).id;
-            else {
-              notes.push({ step: t.id, text: `requires ${fp}: ${lineages.size > 1 ? "ambiguous" : "not in this goal"}` });
-              continue;
-            }
-          }
-          if (deps.includes(dep)) continue;
-          if (closesCycle(depsMap, t.id, dep)) {
-            notes.push({ step: t.id, text: `requires ${fp}: cycle` });
-            continue;
-          }
-          deps.push(dep);
-          depsMap.set(t.id, [...deps]);
-        }
-        if (deps.length !== step.deps.length) put({ ...step, deps });
-      }
-    }
-    // State by deps: created and reopened steps come out ready or blocked.
-    if (changed.size) for (const s of settle([...all.values()], now, () => true).changed) put(s);
-    return { goal, gid, existing, changed: [...changed.values()], added, reopened, skipped, notes, owner: goal?.ownerId ?? o.owner, repo: o.repo, topic: o.topic, from: o.from, fromStep: o.fromStep };
   }
 
-  /** Write a decided sink (inside the caller's transaction): the goal when new, the steps, notes and events. */
-  private async writeSink(plan: SinkPlan, now: number): Promise<SinkResult> {
-    let goal = plan.goal;
-    if (!goal && (plan.added.length || plan.reopened.length)) {
-      const title = `Clean audits: ${plan.topic} on ${repoName(plan.repo)}`;
-      goal = await this.store.createGoal({
+  /** RL-10: every clean-audit goal of `topic` that is not dropped, with its steps, into the work (once per topic). */
+  private async loadTopic(w: Work, topic: string): Promise<void> {
+    if (w.loaded.has(topic)) return;
+    w.loaded.add(topic);
+    w.allGoals ??= await this.store.listGoals();
+    for (const goal of w.allGoals) {
+      if (!goal.sink || goal.sink.topic !== topic || goal.state === "dropped" || w.goals.has(goal.id)) continue;
+      const existing = await this.store.listSteps({ goal: goal.id });
+      const wg: WorkGoal = { repo: goal.sink.repo, topic, goal, gid: goal.id, owner: goal.ownerId, existing, all: new Map(existing.map((s) => [s.id, s] as const)), changed: new Set(), added: [], reopened: [], ord: w.goals.size };
+      w.goals.set(goal.id, wg);
+      for (const s of existing) HubService.index(w, wg, s);
+      const key = `${goal.sink.repo}\u0000${topic}`;
+      if (!w.byKey.has(key)) w.byKey.set(key, goal.id);
+    }
+  }
+
+  /** RL-10: every topic of a clean-audit goal that is not dropped, into the work. */
+  private async loadAllTopics(w: Work): Promise<void> {
+    w.allGoals ??= await this.store.listGoals();
+    for (const g of w.allGoals) if (g.sink && g.state !== "dropped") await this.loadTopic(w, g.sink.topic);
+  }
+
+  /** RL-10: the clean-audit goal of `(repo, topic)` in the work, or a placeholder for one to open. */
+  private async workGoal(w: Work, repo: string, topic: string, ownerIfNew: string): Promise<WorkGoal> {
+    await this.loadTopic(w, topic);
+    const key = `${repo}\u0000${topic}`;
+    const gid = w.byKey.get(key);
+    if (gid !== undefined) return w.goals.get(gid) as WorkGoal;
+    const ph = `\uE000${++w.seq}\uE000`;
+    const wg: WorkGoal = { repo, topic, goal: undefined, gid: ph, owner: ownerIfNew, existing: [], all: new Map(), changed: new Set(), added: [], reopened: [], ord: w.goals.size };
+    w.goals.set(ph, wg);
+    w.byKey.set(key, ph);
+    return wg;
+  }
+
+  private static put(w: Work, wg: WorkGoal, s: Step): void {
+    wg.all.set(s.id, s);
+    wg.changed.add(s.id);
+    HubService.index(w, wg, s);
+  }
+
+  /** RL-10: register a finding step at its home id in the work's `(lineage, fp)` index. */
+  private static index(w: Work, wg: WorkGoal, s: Step): void {
+    const f = s.finding;
+    if (!f || s.id !== `${wg.gid}.${findingStepId(f.lineage, f.fp)}`) return;
+    const key = `${f.lineage}\u0000${f.fp}`;
+    let set = w.byFinding.get(key);
+    if (!set) w.byFinding.set(key, (set = new Set()));
+    set.add(wg);
+  }
+
+  /** RL-10: the work's goals with a finding step of `(lineage, fp)` at its home id, each with that step, in `Work.goals` order. */
+  private static indexed(w: Work, lineage: string, fp: string): { wg: WorkGoal; step: Step }[] {
+    const local = findingStepId(lineage, fp);
+    const out: { wg: WorkGoal; step: Step }[] = [];
+    for (const wg of w.byFinding.get(`${lineage}\u0000${fp}`) ?? []) {
+      const step = wg.all.get(`${wg.gid}.${local}`);
+      if (step?.finding?.lineage === lineage && step.finding.fp === fp) out.push({ wg, step });
+    }
+    return out.sort((a, b) => a.wg.ord - b.wg.ord);
+  }
+
+  private static note(w: Work, wg: WorkGoal, step: string, user: string, text: string): void {
+    w.notes.push({ gid: wg.gid, step, user, text });
+  }
+
+  /** RL-10: a note written once per call (held-step notes). */
+  private static noteOnce(w: Work, wg: WorkGoal, step: string, user: string, text: string): void {
+    const key = `${step}\u0000${text}`;
+    if (w.noted.has(key)) return;
+    w.noted.add(key);
+    HubService.note(w, wg, step, user, text);
+  }
+
+  /** RL-10: every finding step of `(lineage, fp)` in the work's goals of `topic`, moved-away ones included. */
+  private static findings(w: Work, lineage: string, fp: string, topic: string): { wg: WorkGoal; step: Step }[] {
+    return HubService.indexed(w, lineage, fp).filter((f) => f.wg.topic === topic);
+  }
+
+  /** The brief of a finding step, built from the item, its newest evidence and its disposition reasons. */
+  private async findingBriefOf(w: Work, row: ItemRow): Promise<string> {
+    const ev = await this.itemEvidence(row.lineage, row.fp, w.cache);
+    const reasons = (await this.store.itemHistory(row.lineage, row.fp)).flatMap((e) => (e.kind === "disposition" ? [`${e.disposition} by ${deciderText(e.decider)}: ${e.reason}`] : []));
+    return findingBrief({ item: row, evidence: ev.evidence, proposal: ev.proposal, reasons });
+  }
+
+  /** RL-10: "requires of an item": the union of `requires` over all its `accepted` dispositions (any goal). */
+  private async itemRequires(lineage: string, fp: string): Promise<string[]> {
+    return [...new Set((await this.store.listDispositions({ lineage, fp })).filter((d) => d.disposition === "accepted").flatMap((d) => d.requires ?? []))];
+  }
+
+  /** A new finding step of an item in `wg` (RL-9 rule 2 fields). */
+  private async newFindingStep(w: Work, wg: WorkGoal, row: ItemRow, fixCycles: number): Promise<Step> {
+    return {
+      id: `${wg.gid}.${findingStepId(row.lineage, row.fp)}`,
+      goal: wg.gid,
+      planVersion: 1,
+      kind: "implement",
+      repo: wg.repo,
+      title: findingTitle(row.severity, row.title),
+      brief: await this.findingBriefOf(w, row),
+      deps: [],
+      state: "blocked",
+      fixCycles,
+      policy: { worktree: true },
+      severity: row.severity,
+      finding: { lineage: row.lineage, fp: row.fp },
+      updatedAt: w.now,
+    };
+  }
+
+  /**
+   * RL-10 "Placing the home step": the one routine of every path that opens a finding step (sink,
+   * backfill, revert). A held foreign step stops it with a note; an open one is moved (the move
+   * opens the home step); then the home step is created, revived, reopened or left by what exists.
+   */
+  private async placeHome(w: Work, item: SinkItem, topic: string, o: { kind: "sink" | "backfill" | "revert"; ownerIfNew: string; user?: string | undefined }): Promise<void> {
+    const { row, requires, accepted } = item;
+    const target = targetRepo(row);
+    const home = await this.workGoal(w, target, topic, o.ownerIfNew);
+    const user = o.user ?? home.owner;
+    const found = HubService.findings(w, row.lineage, row.fp, topic);
+    // Foreign step first.
+    const foreign = found.filter((f) => f.wg !== home && !isMovedAway(f.step) && !CLOSED_STATES.has(f.step.state));
+    const held = foreign.filter((f) => HELD_OR_FAILED.has(f.step.state));
+    if (held.length) {
+      for (const f of held) HubService.noteOnce(w, f.wg, f.step.id, o.user ?? f.wg.owner, `filed for repo ${target}; move it with: mesh items retarget ${row.lineage} ${row.fp} --repo ${target}`);
+      if (o.kind !== "revert") w.skipped++;
+      return;
+    }
+    const open = foreign.find((f) => OPEN_STATES.has(f.step.state));
+    if (open) {
+      await this.moveStep(w, open.wg, open.step, target, row, open.wg.owner);
+      return;
+    }
+    const id = `${home.gid}.${findingStepId(row.lineage, row.fp)}`;
+    const cur = home.all.get(id);
+    if (cur && (cur.finding?.lineage !== row.lineage || cur.finding.fp !== row.fp)) {
+      // A hash clash: never overwrite another finding's step.
+      if (o.kind === "revert") return;
+      HubService.note(w, home, id, user, `finding ${row.fp} of ${row.lineage} has the step id of another finding; not added`);
+      w.skipped++;
+      return;
+    }
+    if (o.kind === "revert") {
+      // Only a live dropped home step reopens, deps unchanged.
+      if (!cur || isMovedAway(cur) || cur.state !== "dropped") return;
+      HubService.put(w, home, reopenedFinding(cur, w.now));
+      HubService.note(w, home, id, user, `reverted by ${w.from}`);
+      w.reopens.push({ gid: home.gid, step: id, user, reason: "reverted" });
+      return;
+    }
+    const opening = !cur || isMovedAway(cur) || cur.state === "done" || cur.state === "dropped";
+    // A sink or backfill opens only an item filed after the last close of every finding step of it.
+    if (opening && !(await this.filedAfterEveryClose(found, row, accepted))) {
+      w.skipped++;
+      return;
+    }
+    const title = findingTitle(row.severity, row.title);
+    const sink = o.kind === "sink";
+    if (!cur) {
+      HubService.put(w, home, await this.newFindingStep(w, home, row, 0));
+      home.added.push(id);
+      if (sink) w.touched.push({ gid: home.gid, id, lineage: row.lineage, requires, deps: "replace", user });
+    } else if (isMovedAway(cur)) {
+      HubService.put(w, home, { ...revivedFinding(cur, target, w.now), title, severity: row.severity, brief: await this.findingBriefOf(w, row) });
+      HubService.note(w, home, id, user, `refiled by ${w.from}`);
+      w.reopens.push({ gid: home.gid, step: id, user, reason: "refiled" });
+      home.reopened.push(id);
+      if (sink) w.touched.push({ gid: home.gid, id, lineage: row.lineage, requires, deps: "replace", user });
+    } else if (cur.state === "done" || cur.state === "dropped") {
+      HubService.put(w, home, { ...reopenedFinding(cur, w.now), title, severity: row.severity, brief: await this.findingBriefOf(w, row) });
+      HubService.note(w, home, id, user, `refiled by ${w.from}`);
+      w.reopens.push({ gid: home.gid, step: id, user, reason: "refiled" });
+      home.reopened.push(id);
+      if (sink) w.touched.push({ gid: home.gid, id, lineage: row.lineage, requires, deps: "add", user });
+    } else if (OPEN_STATES.has(cur.state)) {
+      const brief = await this.findingBriefOf(w, row);
+      if (cur.title !== title || cur.severity !== row.severity || cur.brief !== brief) HubService.put(w, home, { ...cur, title, severity: row.severity, brief, updatedAt: w.now });
+      w.skipped++;
+    } else if (HELD_OR_FAILED.has(cur.state)) {
+      HubService.note(w, home, id, user, `refiled by ${w.from} (${row.severity})`);
+      w.skipped++;
+    } else w.skipped++;
+  }
+
+  /** RL-10: the item's latest `accepted` is newer than the last close of every closed finding step of it (none: true). */
+  private async filedAfterEveryClose(found: readonly { step: Step }[], row: ItemRow, accepted: { at: number; step: string } | undefined): Promise<boolean> {
+    for (const { step } of found) if (CLOSED_STATES.has(step.state) && !(await this.filedAfterClose(step, row, accepted))) return false;
+    return true;
+  }
+
+  /**
+   * RL-10 "Moving a finding step": the open step `S` of goal `A` moves to the clean-audit goal of
+   * `(n, A's topic)`, whose home step is created, revived or reopened. Returns the new id, or
+   * undefined when the move is skipped.
+   */
+  private async moveStep(w: Work, A: WorkGoal, S: Step, n: string, row: ItemRow, user: string): Promise<string | undefined> {
+    const t = A.topic;
+    if (!(await this.store.getTopic(t))) {
+      const text = `move to ${n} skipped: topic ${t} is not defined`;
+      HubService.noteOnce(w, A, S.id, user, text);
+      w.resultNotes.push(text);
+      return undefined;
+    }
+    const B = await this.workGoal(w, n, t, A.owner);
+    const H = `${B.gid}.${findingStepId(row.lineage, row.fp)}`;
+    const cur = B.all.get(H);
+    if (cur && (cur.finding?.lineage !== row.lineage || cur.finding.fp !== row.fp)) {
+      const text = `move to ${n} skipped: finding ${row.fp} of ${row.lineage} has the step id of another finding there`;
+      HubService.noteOnce(w, A, S.id, user, text);
+      w.resultNotes.push(text);
+      return undefined;
+    }
+    const title = findingTitle(row.severity, row.title);
+    let opened = true;
+    if (!cur) {
+      HubService.put(w, B, await this.newFindingStep(w, B, row, S.fixCycles));
+      HubService.note(w, B, H, user, `moved from ${S.id}`);
+    } else if (isMovedAway(cur)) {
+      HubService.put(w, B, { ...revivedFinding(cur, n, w.now), title, severity: row.severity, brief: await this.findingBriefOf(w, row) });
+      HubService.note(w, B, H, user, `moved back from ${S.id}`);
+      w.reopens.push({ gid: B.gid, step: H, user, reason: "moved" });
+    } else if (CLOSED_STATES.has(cur.state)) {
+      HubService.put(w, B, { ...reopenedFinding(cur, w.now), repo: n, deps: [], title, severity: row.severity, brief: await this.findingBriefOf(w, row) });
+      HubService.note(w, B, H, user, `moved from ${S.id}`);
+      w.reopens.push({ gid: B.gid, step: H, user, reason: "moved" });
+    } else {
+      // A live open or held home step (not reachable by the one-open-step rule): left as it is.
+      HubService.note(w, B, H, user, `moved from ${S.id}`);
+      opened = false;
+    }
+    if (opened) {
+      B.added.push(H);
+      w.touched.push({ gid: B.gid, id: H, lineage: row.lineage, requires: await this.itemRequires(row.lineage, row.fp), deps: "replace", user });
+    }
+    HubService.put(w, A, { ...S, state: "dropped", movedTo: H, summary: `moved to ${H}`, updatedAt: w.now });
+    w.dropped.push({ gid: A.gid, step: S.id, user, to: H });
+    for (const d of A.all.values()) if (d.deps.includes(S.id) && !isMovedAway(d)) HubService.note(w, A, d.id, user, `dep ${S.id} moved to ${H}`);
+    return H;
+  }
+
+  /**
+   * RL-10 retarget step 3 (also the fold move): each live finding step of the item that is not
+   * closed and whose goal's repo is not `to`: open → moved, held → the release note.
+   */
+  private async retargetSteps(w: Work, row: ItemRow, to: string, user: string | undefined, out: { moved: { from: string; to: string }[]; held: string[] }): Promise<void> {
+    await this.loadAllTopics(w);
+    const hits = HubService.indexed(w, row.lineage, row.fp)
+      .filter(({ wg, step }) => wg.goal && !isMovedAway(step) && !CLOSED_STATES.has(step.state) && wg.repo !== to)
+      .sort((a, b) => goalSeq(a.wg.gid) - goalSeq(b.wg.gid));
+    for (const { wg, step } of hits) {
+      if (HELD_OR_FAILED.has(step.state)) {
+        HubService.noteOnce(w, wg, step.id, user ?? wg.owner, `retarget to ${to}: release the step, then run the retarget again`);
+        if (!out.held.includes(step.id)) out.held.push(step.id);
+      } else {
+        const H = await this.moveStep(w, wg, step, to, row, user ?? wg.owner);
+        if (H !== undefined) out.moved.push({ from: step.id, to: H });
+      }
+    }
+  }
+
+  /** RL-10: RL-9 rule 5 (deps within the step's own goal) for the touched steps, then each changed goal settled. */
+  private finishWork(w: Work): void {
+    const depsMaps = new Map<string, Map<string, readonly string[]>>();
+    for (const t of w.touched) {
+      const wg = w.goals.get(t.gid) as WorkGoal;
+      let depsMap = depsMaps.get(t.gid);
+      if (!depsMap) {
+        depsMap = new Map([...wg.all.values()].map((s) => [s.id, s.deps] as const));
+        depsMaps.set(t.gid, depsMap);
+      }
+      const step = wg.all.get(t.id) as Step;
+      const deps = t.deps === "replace" ? [] : [...step.deps];
+      for (const fp of t.requires) {
+        const own = `${wg.gid}.${findingStepId(t.lineage, fp)}`;
+        const ownStep = wg.all.get(own);
+        let dep: string | undefined;
+        if (ownStep?.finding?.fp === fp && !isMovedAway(ownStep)) dep = own;
+        else {
+          const cands = [...wg.all.values()].filter((s) => s.finding?.fp === fp && !isMovedAway(s));
+          const lineages = new Set(cands.map((s) => s.finding?.lineage));
+          if (cands.length === 1) dep = (cands[0] as Step).id;
+          else {
+            HubService.note(w, wg, t.id, t.user, `requires ${fp}: ${lineages.size > 1 ? "ambiguous" : "not in this goal"}`);
+            continue;
+          }
+        }
+        if (deps.includes(dep)) continue;
+        if (closesCycle(depsMap, t.id, dep)) {
+          HubService.note(w, wg, t.id, t.user, `requires ${fp}: cycle`);
+          continue;
+        }
+        deps.push(dep);
+        depsMap.set(t.id, [...deps]);
+      }
+      if (deps.length !== step.deps.length || deps.some((d, i) => d !== step.deps[i])) HubService.put(w, wg, { ...step, deps });
+    }
+    // State by deps: created, reopened and moved steps come out ready or blocked; dependants of a moved step unblock.
+    for (const wg of w.goals.values()) if (wg.changed.size) for (const s of settle([...wg.all.values()], w.now, () => true).changed) HubService.put(w, wg, s);
+  }
+
+  /** RL-10: a work's texts and ids as a dry run shows them: a goal still to be opened is `<new>` (sink) or `new:<repo>/<local>` (retarget). */
+  private static renderDry(w: Work, form: "sink" | "retarget"): (text: string) => string {
+    if (form === "sink") return (text) => text.replace(PLACEHOLDER, NEW_GOAL);
+    return (text) =>
+      text.replace(/\uE000\d+\uE000(\.[A-Za-z0-9-]+)?/g, (m: string, local: string | undefined) => {
+        const ph = local ? m.slice(0, m.length - local.length) : m;
+        const repo = w.goals.get(ph)?.repo ?? "";
+        return local ? `new:${repo}/${local.slice(1)}` : `new:${repo}`;
+      });
+  }
+
+  /**
+   * RL-10: write a decided work (inside the caller's transaction): the goals to open (by repo, then
+   * topic), the steps, offers, moved drops, notes, reopens, ready steps and one `goal.sunk` per goal
+   * that got added or reopened steps. Returns the renderer of ids and texts.
+   */
+  private async writeWork(w: Work): Promise<(text: string) => string> {
+    const now = w.now;
+    const real = new Map<string, string>();
+    const fresh = [...w.goals.values()].filter((g) => !g.goal && (g.added.length || g.reopened.length)).sort((a, b) => (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.topic < b.topic ? -1 : a.topic > b.topic ? 1 : 0));
+    for (const wg of fresh) {
+      const title = `Clean audits: ${wg.topic} on ${repoName(wg.repo)}`;
+      const goal = await this.store.createGoal({
         title,
-        ownerId: plan.owner,
+        ownerId: wg.owner,
         state: "in_progress",
-        primaryRepo: plan.repo,
-        topics: [plan.topic],
-        sink: { repo: plan.repo, topic: plan.topic },
+        primaryRepo: wg.repo,
+        topics: [wg.topic],
+        sink: { repo: wg.repo, topic: wg.topic },
         priority: 3,
         createdAt: now,
         updatedAt: now,
       });
       // An approved plan v1 without steps (validatePlan is not run: finding steps are saved directly).
-      await this.store.savePlan({ goal: goal.id, version: 1, steps: [], proposedBy: plan.owner, proposedAt: now, decision: "approved", decidedBy: plan.owner, decidedAt: now });
-      await this.emit({ at: now, type: "goal.created", user: plan.owner, goal: goal.id, payload: { title, sink: { repo: plan.repo, topic: plan.topic } } });
+      await this.store.savePlan({ goal: goal.id, version: 1, steps: [], proposedBy: wg.owner, proposedAt: now, decision: "approved", decidedBy: wg.owner, decidedAt: now });
+      await this.emit({ at: now, type: "goal.created", user: wg.owner, goal: goal.id, payload: { title, sink: { repo: wg.repo, topic: wg.topic } } });
+      real.set(wg.gid, goal.id);
+      wg.goal = goal;
     }
-    if (!goal) return { goal: null, added: [], reopened: [], skipped: plan.skipped, notes: [] };
-    const gid = goal.id;
-    const map = (id: string) => (id.startsWith(`${NEW_GOAL}.`) ? `${gid}${id.slice(NEW_GOAL.length)}` : id);
-    const steps = plan.changed.map((s) => ({ ...s, id: map(s.id), goal: gid, deps: s.deps.map(map) }));
-    const owner = goal.ownerId;
-    const ended = endOffersLeavingReady(plan.existing, steps, now);
-    if (ended.steps.length) await this.store.saveSteps(ended.steps);
-    await this.emitOffersEnded({ userId: owner }, ended.ended);
-    for (const n of plan.notes) {
-      const step = map(n.step);
-      await this.store.addNote({ step, user: owner, text: n.text, at: now });
-      await this.emit({ at: now, type: "step.noted", user: owner, goal: gid, step });
+    const render = (text: string) => text.replace(PLACEHOLDER, (m) => real.get(m) ?? m);
+    const ordered = [
+      ...[...w.goals.values()].filter((g) => g.goal && !real.has(g.gid)).sort((a, b) => goalSeq(a.gid) - goalSeq(b.gid)),
+      ...fresh,
+    ];
+    const before = new Map<string, string>();
+    const written: { gid: string; step: Step }[] = [];
+    const byId = new Map<string, Step>();
+    for (const wg of ordered) {
+      if (!wg.changed.size) continue;
+      const gid = render(wg.gid);
+      const steps = [...wg.changed].map((id) => {
+        const s = wg.all.get(id) as Step;
+        const out: Step = { ...s, id: render(s.id), goal: gid, deps: s.deps.map(render) };
+        if (s.movedTo !== undefined) out.movedTo = render(s.movedTo);
+        if (s.summary !== undefined) out.summary = render(s.summary);
+        return out;
+      });
+      for (const s of wg.existing) before.set(s.id, s.state);
+      const ended = endOffersLeavingReady(wg.existing, steps, now);
+      if (ended.steps.length) await this.store.saveSteps(ended.steps);
+      await this.emitOffersEnded({ userId: w.user ?? wg.owner }, ended.ended);
+      for (const s of steps) {
+        written.push({ gid, step: s });
+        byId.set(s.id, s);
+      }
     }
-    const reopened = plan.reopened.map(map);
-    const byId = new Map(steps.map((s) => [s.id, s] as const));
-    for (const id of reopened) {
-      await this.emit({ at: now, type: "step.reopened", user: owner, goal: gid, step: id, payload: { by: owner, reason: "refiled", fixCycles: byId.get(id)?.fixCycles, from: plan.from } });
+    for (const d of w.dropped) {
+      await this.emit({ at: now, type: "step.dropped", user: d.user, goal: render(d.gid), step: render(d.step), payload: { reason: "moved", to: render(d.to), by: d.user } });
     }
-    const before = new Map(plan.existing.map((s) => [s.id, s.state] as const));
-    for (const s of steps) if (s.state === "ready" && before.get(s.id) !== "ready") await this.emitReady(gid, s.id);
-    const added = plan.added.map(map);
-    if (added.length || reopened.length) {
-      await this.emit({ at: now, type: "goal.sunk", user: owner, goal: gid, ...(plan.fromStep ? { step: plan.fromStep } : {}), payload: { goal: gid, from: plan.from, added, reopened } });
+    for (const n of w.notes) {
+      const step = render(n.step);
+      await this.store.addNote({ step, user: n.user, text: render(n.text), at: now });
+      await this.emit({ at: now, type: "step.noted", user: n.user, goal: render(n.gid), step });
     }
-    return { goal: gid, added, reopened, skipped: plan.skipped, notes: plan.notes.map((n) => n.text) };
+    for (const r of w.reopens) {
+      const step = render(r.step);
+      await this.emit({ at: now, type: "step.reopened", user: r.user, goal: render(r.gid), step, payload: { by: r.user, reason: r.reason, fixCycles: byId.get(step)?.fixCycles, from: w.from } });
+    }
+    for (const { gid, step } of written) if (step.state === "ready" && before.get(step.id) !== "ready") await this.emitReady(gid, step.id);
+    for (const wg of ordered) {
+      if (!wg.added.length && !wg.reopened.length) continue;
+      const gid = render(wg.gid);
+      await this.emit({
+        at: now,
+        type: "goal.sunk",
+        user: wg.owner,
+        goal: gid,
+        ...(w.fromStep ? { step: w.fromStep } : {}),
+        payload: { goal: gid, from: w.from, added: wg.added.map(render), reopened: wg.reopened.map(render) },
+      });
+    }
+    return render;
   }
 
   /** A note and `goal.sink_failed` on a sink stage whose sink cannot run (nothing of the sink is written). */
@@ -4026,8 +4349,11 @@ export class HubService {
     const lineage = lineageOf(relayGoal, run);
     const items = await this.filedItems(lineage, relayGoal.id);
     if (!items.length) return;
-    const plan = await this.decideSink({ repo: lineageRepo(lineage), topic, items, owner: relayGoal.ownerId, from: sinkStep.id, fromStep: sinkStep.id, deps: true });
-    await this.writeSink(plan, now);
+    // RL-10: each item is placed in the clean-audit goal of its target repo.
+    const w = this.newWork(sinkStep.id, now, { fromStep: sinkStep.id });
+    for (const item of items) await this.placeHome(w, item, topic, { kind: "sink", ownerIfNew: relayGoal.ownerId });
+    this.finishWork(w);
+    await this.writeWork(w);
   }
 
   /** Run the sink of each of `ids` that has one and is now done or skipped. */
@@ -4040,18 +4366,37 @@ export class HubService {
     }
   }
 
-  /** The clean-audit goals of a lineage's repo that are not dropped (read once per fold or record). */
-  private async sinkGoalsOf(lineage: string): Promise<Goal[]> {
-    const repo = lineageRepo(lineage);
-    return (await this.store.listGoals()).filter((g) => g.sink?.repo === repo && g.state !== "dropped");
+  /** RL-10: every clean-audit goal that is not dropped (any repo; read once per fold or record). */
+  private async cleanAuditGoals(): Promise<Goal[]> {
+    return (await this.store.listGoals()).filter((g) => g.sink !== undefined && g.state !== "dropped");
   }
 
-  /** The finding steps of `(lineage, fp)` in the lineage repo's clean-audit goals that are not dropped. */
-  private async findingStepsOf(lineage: string, fp: string, goals?: readonly Goal[]): Promise<{ goal: Goal; step: Step }[]> {
+  /** The live finding steps of `(lineage, fp)` (RL-10: in every clean-audit goal that is not dropped, moved-away steps left out); one fingerprint. */
+  private async findingStepsOf(lineage: string, fp: string): Promise<{ goal: Goal; step: Step }[]> {
     const out: { goal: Goal; step: Step }[] = [];
-    for (const goal of goals ?? (await this.sinkGoalsOf(lineage))) {
+    for (const goal of await this.cleanAuditGoals()) {
       const step = await this.store.getStep(`${goal.id}.${findingStepId(lineage, fp)}`);
-      if (step?.finding?.lineage === lineage && step.finding.fp === fp) out.push({ goal, step });
+      if (step?.finding?.lineage === lineage && step.finding.fp === fp && !isMovedAway(step)) out.push({ goal, step });
+    }
+    return out;
+  }
+
+  /**
+   * RL-10: the live finding steps of a lineage by fingerprint (one step list per clean-audit goal),
+   * for a call that looks up many fingerprints (a fold, a batch of dispositions). The same steps
+   * `findingStepsOf` finds, in the same order; a step closed later in the call keeps its read state
+   * (each close reads the step again).
+   */
+  private async findingIndex(lineage: string): Promise<FindingIndex> {
+    const out: FindingIndex = new Map();
+    for (const goal of await this.cleanAuditGoals()) {
+      for (const step of await this.store.listSteps({ goal: goal.id })) {
+        const f = step.finding;
+        if (f?.lineage !== lineage || step.id !== `${goal.id}.${findingStepId(lineage, f.fp)}` || isMovedAway(step)) continue;
+        const hits = out.get(f.fp);
+        if (hits) hits.push({ goal, step });
+        else out.set(f.fp, [{ goal, step }]);
+      }
     }
     return out;
   }
@@ -4078,49 +4423,46 @@ export class HubService {
     await this.emit({ at: now, type: "step.noted", user: by, goal: step.goal, step: step.id });
   }
 
-  /** Reopen a dropped finding step with its deps unchanged (a reverted dismissal or deferral). */
-  private async reopenFinding(goal: Goal, step: Step, o: { from: string; by: string }, now: number): Promise<void> {
-    const steps = await this.store.listSteps({ goal: goal.id });
-    const cur = steps.find((s) => s.id === step.id) ?? step;
-    if (cur.state !== "dropped" && cur.state !== "done") return;
-    const next = reopenedFinding(cur, now);
-    const all = steps.map((s) => (s.id === cur.id ? next : s));
-    const settled = settle(all, now, () => true);
-    const changes = new Map<string, Step>([[next.id, next], ...settled.changed.map((s) => [s.id, s] as const)]);
-    const ended = endOffersLeavingReady(steps, [...changes.values()], now);
-    await this.store.saveSteps(ended.steps);
-    await this.emitOffersEnded({ userId: o.by }, ended.ended);
-    const final = changes.get(next.id) as Step;
-    await this.noteFinding(final, `reverted by ${o.from}`, o.by, now);
-    await this.emit({ at: now, type: "step.reopened", user: o.by, goal: goal.id, step: final.id, payload: { by: o.by, reason: "reverted", fixCycles: final.fixCycles, from: o.from } });
-    for (const s of changes.values()) if (s.state === "ready") await this.emitReady(goal.id, s.id);
-  }
-
   /** The item → step sync of a disposition (`dismissed` or `deferred`): ready or blocked steps drop, held ones get a note. */
-  private async syncDisposition(lineage: string, fp: string, d: { disposition: string; reason: string }, decider: Decider, now: number, goals?: readonly Goal[]): Promise<void> {
+  private async syncDisposition(lineage: string, fp: string, d: { disposition: string; reason: string }, decider: Decider, now: number, ix?: FindingIndex): Promise<void> {
     if (d.disposition !== "dismissed" && d.disposition !== "deferred") return;
     const text = `${d.disposition} by ${deciderText(decider)}: ${d.reason}`;
-    for (const { goal, step } of await this.findingStepsOf(lineage, fp, goals)) {
+    for (const { goal, step } of ix ? (ix.get(fp) ?? []) : await this.findingStepsOf(lineage, fp)) {
       const by = decider.kind === "person" ? decider.user : goal.ownerId;
       if (step.state === "ready" || step.state === "blocked") await this.closeFinding(goal, step, { state: "dropped", summary: text, by, reason: d.disposition }, now);
       else if (HELD_OR_FAILED.has(step.state)) await this.noteFinding(step, text, by, now);
     }
   }
 
+  /**
+   * RL-10 fold move: `item.retargeted` per item whose target repo the fold changed, then retarget
+   * step 3 for each (open steps moved, held ones noted), in the record's transaction.
+   */
+  private async foldMove(goal: Goal, auditStep: Step, lineage: string, retargeted: readonly { row: ItemRow; from: string; to: string }[], by: string, now: number): Promise<void> {
+    for (const r of retargeted) {
+      await this.emit({ at: now, type: "item.retargeted", user: by, goal: goal.id, step: auditStep.id, payload: { lineage, fp: r.row.fp, from: r.from, to: r.to, by } });
+    }
+    const w = this.newWork(auditStep.id, now, { fromStep: auditStep.id });
+    const out = { moved: [] as { from: string; to: string }[], held: [] as string[] };
+    for (const r of retargeted) await this.retargetSteps(w, r.row, r.to, undefined, out);
+    this.finishWork(w);
+    await this.writeWork(w);
+  }
+
   /** The item → step sync of a complete raising record: resolved items close their steps; raised-again ones note done steps. */
   private async syncFold(lineage: string, auditStep: string, resolved: readonly string[], again: readonly string[], now: number): Promise<void> {
     if (!resolved.length && !again.length) return;
-    const goals = await this.sinkGoalsOf(lineage);
-    if (!goals.length) return;
+    const ix = await this.findingIndex(lineage);
+    if (!ix.size) return;
     for (const fp of resolved) {
-      for (const { goal, step } of await this.findingStepsOf(lineage, fp, goals)) {
+      for (const { goal, step } of ix.get(fp) ?? []) {
         const text = `resolved by ${auditStep}`;
         if (step.state === "ready" || step.state === "blocked") await this.closeFinding(goal, step, { state: "done", summary: text, by: goal.ownerId }, now);
         else if (HELD_OR_FAILED.has(step.state)) await this.noteFinding(step, text, goal.ownerId, now);
       }
     }
     for (const fp of again) {
-      for (const { goal, step } of await this.findingStepsOf(lineage, fp, goals)) {
+      for (const { goal, step } of ix.get(fp) ?? []) {
         if (step.state === "done") await this.noteFinding(step, `raised again by ${auditStep}`, goal.ownerId, now);
       }
     }
@@ -4130,7 +4472,20 @@ export class HubService {
   private async syncRevert(d: DispositionRow, next: ItemRow, debriefStep: string, by: string, now: number): Promise<void> {
     const filed = next.state === "accepted" && next.link !== undefined;
     if ((d.disposition === "dismissed" || d.disposition === "deferred") && filed) {
-      for (const { goal, step } of await this.findingStepsOf(d.lineage, d.fp)) if (step.state === "dropped") await this.reopenFinding(goal, step, { from: debriefStep, by }, now);
+      // RL-10: only the home step of the topic of each goal whose step this disposition dropped
+      // reopens (live and dropped), after the foreign-step check.
+      const local = findingStepId(d.lineage, d.fp);
+      const topics = new Set<string>();
+      for (const g of await this.cleanAuditGoals()) {
+        if (!g.sink || topics.has(g.sink.topic)) continue;
+        const s = await this.store.getStep(`${g.id}.${local}`);
+        if (s?.finding?.lineage === d.lineage && s.finding.fp === d.fp && HubService.droppedBy(s, d)) topics.add(g.sink.topic);
+      }
+      if (!topics.size) return;
+      const w = this.newWork(debriefStep, now, { user: by });
+      for (const topic of topics) await this.placeHome(w, { row: next, requires: [] }, topic, { kind: "revert", ownerIfNew: by, user: by });
+      this.finishWork(w);
+      await this.writeWork(w);
     } else if (d.disposition === "accepted" && !filed) {
       for (const { goal, step } of await this.findingStepsOf(d.lineage, d.fp)) {
         const text = `reverted by ${by}`;
@@ -4138,6 +4493,15 @@ export class HubService {
         else if (HELD_OR_FAILED.has(step.state)) await this.noteFinding(step, text, by, now);
       }
     }
+  }
+
+  /**
+   * RL-10: whether a disposition's item → step sync dropped `step`, decided from the step itself (events
+   * are pruned): still dropped, not moved away, last written at the disposition's time, with the
+   * `<disposition> by …` summary `syncDisposition` writes. A later reopen and drop changes both.
+   */
+  private static droppedBy(step: Step, d: DispositionRow): boolean {
+    return !isMovedAway(step) && step.state === "dropped" && step.updatedAt === d.at && (step.summary ?? "").startsWith(`${d.disposition} by `);
   }
 
   /** The 400s of a sink topic (as `mesh topic`); returns the topic name. */
@@ -4165,24 +4529,109 @@ export class HubService {
     });
   }
 
-  /** `POST /v1/items/sink`: add a lineage's filed items to the clean-audit goal of (repo, topic) (backfill, no deps). */
+  /** The newest goal of a lineage (largest `createdAt`, then goal number): a goal with a review record of it. */
+  private async newestGoalOf(lineage: string): Promise<Goal | undefined> {
+    let newest: Goal | undefined;
+    const goalIds = new Set((await this.store.listReviews({ lineage })).map((r) => r.goal));
+    for (const gid of goalIds) {
+      const g = await this.store.getGoal(gid);
+      if (g && (!newest || g.createdAt > newest.createdAt || (g.createdAt === newest.createdAt && goalSeq(g.id) > goalSeq(newest.id)))) newest = g;
+    }
+    return newest;
+  }
+
+  /**
+   * `POST /v1/items/sink`: add a lineage's filed items to the clean-audit goals of (target repo,
+   * topic) (backfill, no deps). RL-10: grouped by target repo, one `goals` entry per repo.
+   */
   async sinkItems(actor: Actor, b: SinkRequest): Promise<SinkResult> {
     return await this.goalTx(async () => {
       const topic = await this.sinkTopic(b.topic);
       const repo = lineageRepo(b.lineage);
       const existing = await this.cleanAuditGoal(repo, topic);
-      let newest: Goal | undefined;
-      const goalIds = new Set((await this.store.listReviews({ lineage: b.lineage })).map((r) => r.goal));
-      for (const gid of goalIds) {
-        const g = await this.store.getGoal(gid);
-        if (g && (!newest || g.createdAt > newest.createdAt || (g.createdAt === newest.createdAt && goalSeq(g.id) > goalSeq(newest.id)))) newest = g;
-      }
-      const allowed = actor.roles.includes("admin") || actor.userId === newest?.ownerId || actor.userId === existing?.ownerId;
-      if (!allowed) throw new HubError(403, `only an admin, the owner of the lineage's newest goal or of ${existing?.id ?? "the clean-audit goal"} can sink ${b.lineage}`);
       const items = await this.filedItems(b.lineage);
-      const plan = await this.decideSink({ repo, topic, items, owner: actor.userId, from: "mesh items sink", deps: false, minRank: b.min_severity ? SEVERITY_RANK[b.min_severity] : undefined });
-      if (b.dry_run) return { goal: existing?.id ?? null, added: plan.added, reopened: plan.reopened, skipped: plan.skipped, notes: plan.notes.map((n) => n.text) };
-      return await this.writeSink(plan, this.now());
+      const newest = await this.newestGoalOf(b.lineage);
+      let allowed = actor.roles.includes("admin") || actor.userId === newest?.ownerId || actor.userId === existing?.ownerId;
+      for (const r of new Set(items.map((i) => targetRepo(i.row)))) {
+        if (allowed) break;
+        if (r !== repo && (await this.cleanAuditGoal(r, topic))?.ownerId === actor.userId) allowed = true;
+      }
+      if (!allowed) throw new HubError(403, `only an admin, the owner of the lineage's newest goal or of ${existing?.id ?? "the clean-audit goal"} can sink ${b.lineage}`);
+      const minRank = b.min_severity ? SEVERITY_RANK[b.min_severity] : undefined;
+      const selected = items.filter((i) => minRank === undefined || SEVERITY_RANK[i.row.severity] <= minRank);
+      const w = this.newWork("mesh items sink", this.now());
+      for (const item of selected) await this.placeHome(w, item, topic, { kind: "backfill", ownerIfNew: actor.userId });
+      this.finishWork(w);
+      const render = b.dry_run ? HubService.renderDry(w, "sink") : await this.writeWork(w);
+      const repos = [...new Set(selected.map((i) => targetRepo(i.row)))].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+      const goals = repos.map((r) => {
+        const gid = w.byKey.get(`${r}\u0000${topic}`);
+        const wg = gid !== undefined ? w.goals.get(gid) : undefined;
+        return { goal: wg?.goal?.id ?? null, repo: r, added: (wg?.added ?? []).map(render), reopened: (wg?.reopened ?? []).map(render) };
+      });
+      const goal = goals.length === 1 ? (goals[0] as { goal: string | null }).goal : goals.length === 0 ? (existing?.id ?? null) : null;
+      const added = goals.flatMap((g) => g.added);
+      const reopened = goals.flatMap((g) => g.reopened);
+      return { goal, added, reopened, skipped: w.skipped, notes: w.notes.map((n) => render(n.text)), goals };
+    });
+  }
+
+  /** `POST /v1/items/retarget` (RL-10): set the target repo of a lineage's items and move their open finding steps. */
+  async retargetItems(actor: Actor, b: RetargetRequest): Promise<RetargetResult> {
+    if ((b.fps ? 1 : 0) + (b.all ? 1 : 0) !== 1 || (b.repo !== undefined ? 1 : 0) + (b.from_key_path ? 1 : 0) !== 1) {
+      throw new HubError(400, "retarget needs fps or all, and repo or from_key_path");
+    }
+    return await this.goalTx(async () => {
+      const lineage = b.lineage;
+      const rows = await this.store.listItems(lineage);
+      if (!rows.length) throw new HubError(404, `no items in ${lineage}`);
+      const byFp = new Map(rows.map((r) => [r.fp, r] as const));
+      const fps = b.fps ? [...new Set(b.fps)] : undefined;
+      for (const fp of fps ?? []) if (!byFp.has(fp)) throw new HubError(404, `unknown item ${fp} in ${lineage}`);
+      const w = this.newWork("mesh items retarget", this.now(), { user: actor.userId });
+      let allowed = actor.roles.includes("admin") || actor.userId === (await this.newestGoalOf(lineage))?.ownerId;
+      if (!allowed) {
+        // The clean-audit goals and their steps are read once, into the work the retarget then uses.
+        await this.loadAllTopics(w);
+        allowed = [...w.goals.values()].some((wg) => wg.owner === actor.userId && [...wg.all.values()].some((s) => s.finding?.lineage === lineage && !isMovedAway(s)));
+      }
+      if (!allowed) throw new HubError(403, `only an admin, the owner of the lineage's newest goal or of a clean-audit goal with its steps can retarget ${lineage}`);
+      const selected = fps ? fps.map((fp) => byFp.get(fp) as ItemRow) : [...rows].sort(byItemOrder);
+      const items: { fp: string; from: string; to: string }[] = [];
+      const out = { moved: [] as { from: string; to: string }[], held: [] as string[] };
+      const saves: ItemRow[] = [];
+      for (const row of selected) {
+        let to: string;
+        if (b.repo !== undefined) to = b.repo.trim();
+        else {
+          const k = keyPathRepo(row.path);
+          const ok = "repo" in k ? TargetRepo.safeParse(k.repo) : undefined;
+          if (!ok?.success) {
+            w.resultNotes.push("note" in k && k.note === "none" ? `${row.fp}: no key path` : `${row.fp}: key path ${row.path ?? ""} is not a repo name`);
+            continue;
+          }
+          to = ok.data;
+        }
+        const from = targetRepo(row);
+        let cur = row;
+        if (to !== from) {
+          cur = { ...row, repo: to };
+          saves.push(cur);
+          items.push({ fp: row.fp, from, to });
+        }
+        await this.retargetSteps(w, cur, to, actor.userId, out);
+      }
+      this.finishWork(w);
+      let render: (text: string) => string;
+      if (b.dry_run) render = HubService.renderDry(w, "retarget");
+      else {
+        for (const row of saves) await this.store.saveItem(row);
+        for (const it of items) {
+          await this.emit({ at: w.now, type: "item.retargeted", user: actor.userId, payload: { lineage, fp: it.fp, from: it.from, to: it.to, by: actor.userId } });
+        }
+        render = await this.writeWork(w);
+      }
+      return { items, moved: out.moved.map((m) => ({ from: render(m.from), to: render(m.to) })), held: out.held, notes: w.resultNotes.map(render) };
     });
   }
 
@@ -4873,6 +5322,7 @@ function describe(type: string, subject: string | undefined, payload: Record<str
     case "step.reopened":
       if (payload.reason === "refiled") return `${s} reopened: its finding was filed again (fix cycle ${String(payload.fixCycles)})`;
       if (payload.reason === "reverted") return `${s} reopened: a dismissal was reverted (fix cycle ${String(payload.fixCycles)})`;
+      if (payload.reason === "moved") return `${s} reopened: its finding was moved here (fix cycle ${String(payload.fixCycles)})`;
       return `${s} reopened (fix cycle ${String(payload.fixCycles)})`;
     case "step.taken_over":
       return `took over ${s} from ${String(payload.from)}`;
@@ -4895,6 +5345,7 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       if (payload.reason === "dismissed") return `${s} dropped: its finding was dismissed`;
       if (payload.reason === "deferred") return `${s} dropped: its finding was deferred`;
       if (payload.reason === "reverted") return `${s} dropped: its filing was reverted`;
+      if (payload.reason === "moved") return `${s} moved to ${String(payload.to)}`;
       return `${s} dropped by a new plan`;
     case "goal.dropped":
       return `${s} dropped (${String(payload.reason)})`;
@@ -4952,6 +5403,9 @@ function describe(type: string, subject: string | undefined, payload: Record<str
     // RL-4: ids only.
     case "item.reverted":
       return `reverted item ${String(payload.fp)} of ${s}`;
+    // RL-10: fp and repo only.
+    case "item.retargeted":
+      return `retargeted item ${String(payload.fp)} to ${String(payload.to)}`;
     case "step.read":
       return `read the pre-read of ${s}`;
     // RL-6: calibration (key, hash12 and counts only).

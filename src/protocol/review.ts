@@ -40,6 +40,18 @@ export const ReviewKey = z
   .strict();
 export type ReviewKey = z.infer<typeof ReviewKey>;
 
+/**
+ * RL-10: a target repo as a caller gives it (`ReviewItem.repo`, `RetargetRequest.repo`): 1–300
+ * characters after trimming, no control characters and no Unicode private-use characters (the hub
+ * uses those in ids it has not written yet).
+ */
+export const TargetRepo = z
+  .string()
+  .trim()
+  .min(1)
+  .max(300)
+  .refine((s) => !/[\p{Cc}\p{Co}]/u.test(s), "repo must not contain control or private-use characters");
+
 export const ReviewItem = z
   .object({
     key: ReviewKey,
@@ -48,6 +60,8 @@ export const ReviewItem = z
     category: z.string().min(1).max(60),
     evidence: z.array(ReviewEvidence).max(20),
     proposal: z.string().max(4000).optional(),
+    /** RL-10: the repo the finding is about (its target repo); never part of `key` or the fingerprint. */
+    repo: TargetRepo.optional(),
   })
   .strict();
 export type ReviewItem = z.infer<typeof ReviewItem>;
@@ -199,6 +213,8 @@ export const ItemRow = z.object({
   dismissedEh: z.string().optional(),
   until: z.string().optional(),
   link: z.string().optional(),
+  /** RL-10: the target repo when set; absent = the lineage repo. */
+  repo: z.string().optional(),
   raisedBy: z.object({ key: z.string(), hash: z.string().optional() }),
   first: Seen,
   last: Seen,

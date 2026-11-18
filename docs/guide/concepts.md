@@ -621,8 +621,8 @@ goal and its list unchanged and counts in no bucket.
 be defined, `all` is not one; a `{topic}` placeholder is filled from the preset's params, and the
 name is trimmed and lowercased). When the stage is `done`, or `skipped` (a person may have filed the
 items in a debrief), the hub adds every item **filed in the goal** (`accepted` with a `link`, its
-latest `accepted` disposition recorded in this goal) to the **clean-audit goal** of the lineage's
-repo and the topic, one step per item. A sink never fails the stage: when its topic was deleted in
+latest `accepted` disposition recorded in this goal) to the **clean-audit goal** of the item's
+target repo (below) and the topic, one step per item. A sink never fails the stage: when its topic was deleted in
 the meantime nothing of it is written, the stage gets the note `sink failed: <reason>` and the hub
 emits `goal.sink_failed`.
 
@@ -634,7 +634,18 @@ and it refuses plans (`mesh goal plan` answers 409 `<G> is a clean-audit goal; i
 audits`). `mesh show <G>` adds the line
 `clean audits: <topic> on <repo name> · open S1 <a> · S2 <b> · S3 <c> · S4 <d> · done <n> · dropped <m>`.
 
-**Finding step.** An `implement` step in the item's repo with a worktree (`mesh run --step` makes
+**Target repo.** A review item may carry `repo`: the repo the finding is about, when it is not the
+repo the audit ran in (an auditor run from one repo that checks the pipelines of others). It is
+stored on the item row and is never part of the key or the fingerprint. The item's **target repo** is
+its `repo` when set, else the lineage repo; its clean-audit goal and its finding step's `repo` follow
+the target repo, so the step starts in the checkout where the fix lands. A record without `repo`
+leaves the row's as it is (a repo set by `mesh items retarget` survives). A record that lists one
+fingerprint for two repos (absent counts as the lineage repo) is refused with 422 `item <fp> is
+listed for more than one repo (<r1>, <r2>, …); put the repo in its key`: an auditor that checks
+several repos keeps the repo inside its keys too (`path` or `symbol`). `mesh items` shows the target
+repo after the path (`<path> → <repo>`) when it is not the lineage repo.
+
+**Finding step.** An `implement` step in the item's target repo with a worktree (`mesh run --step` makes
 its branch), id `f-` and 16 characters of the lowercase base32 SHA-256 of `<lineage>|<fp>`, title
 `[<severity>] <item title>` (cut to 200 characters), and a brief built from the item: rule, path,
 symbol, evidence, proposal, link, the reasons of its dispositions, and the last line `When the fix
@@ -659,7 +670,33 @@ changes of the item follow it:
 | a debrief's dismissal or deferral reverted (filed again) | a `dropped` step is reopened (reason `reverted`) | — |
 | raised again | a `done` step gets the note `raised again by <audit step>` | — |
 
-Steps closed or dropped this way unblock their dependants.
+Steps closed or dropped this way unblock their dependants. These rows act on the item's finding
+steps in every clean-audit goal; the revert that reopens acts only on the item's home step (the step
+in the clean-audit goal of its target repo).
+
+**Moves.** A finding step whose item's target repo changed is moved to the clean-audit goal of the
+new target: by the record whose item now carries another `repo` (the fold), by a sink that meets the
+item's open step in another goal, or by `mesh items retarget`. The step keeps its local id; the old
+step becomes `dropped` with `movedTo` and the summary `moved to <new id>` (event `step.dropped`,
+reason `moved`), its dependants are unblocked with the note `dep <old id> moved to <new id>`, and the
+new one gets the note `moved from <old id>` (`moved back from <old id>` when an earlier moved-away
+step comes back; a `done` or `dropped` step there is reopened with a new fix cycle, event
+`step.reopened` reason `moved`). Its deps are the item's `requires` within the new goal. Only an
+open step (`ready` or `blocked`) moves: a held, parked or failed one stays where it is with a note
+(`retarget to <repo>: release the step, then run the retarget again`, or from a sink `filed for repo
+<repo>; move it with: mesh items retarget <lineage> <fp> --repo <repo>`), and nothing is opened for
+the item until it is released and moved, so an item has at most one open finding step per topic.
+Moved-away steps are left out of every lookup and of the `mesh show` counts. The goal a step left
+stays as it is (a person may `mesh goal drop` it).
+
+**`mesh items retarget`.** `mesh items retarget <lineage> (<fp>… | --all) (--repo <r> |
+--from-key-path) [--dry-run]` sets the target repo of existing items (for items no audit raises
+again) and moves their open finding steps: `--repo` sets one repo, `--from-key-path` takes each
+item's key `path` when it looks like a repo name (no `/`, not ending in a file extension; other items
+are left out with a note). It prints `retargeted <n> items; moved <m> steps; held <h>`, then each
+move, held step and note. Run it with `--dry-run` first. An admin, the owner of the lineage's newest
+goal, or the owner of a clean-audit goal that holds a live finding step of the lineage (not one
+moved away) may run it.
 
 **Severity order.** Ready lists (`mesh next`, `mesh_next`, the TUI) keep their order, except that
 within each goal its finding steps are sorted by severity (`S1` first, then their previous order) in
@@ -674,8 +711,11 @@ finding step of the goal with that fingerprint; otherwise it is left out with a 
 names.
 
 **Backfill.** `mesh items sink <lineage> --topic <t> [--min-severity S2] [--dry-run]` adds a
-lineage's filed items (at or above `--min-severity`) to the clean-audit goal, without deps (an admin,
-the owner of the lineage's newest goal, or of the clean-audit goal). A second call adds nothing.
+lineage's filed items (at or above `--min-severity`) to the clean-audit goals of their target repos,
+without deps (an admin, the owner of the lineage's newest goal, or of a clean-audit goal of the topic
+for the lineage repo or one of the target repos). With two or more target repos it prints one line
+per goal, each ending ` (<repo name>)`. A second call adds nothing, and it never reopens or
+re-creates a step a person finished unless the item was filed again after that.
 
 **`mesh goal drop`.** `mesh goal drop <G> [--reason "…"]` ends any goal: its owner, an approver or
 an admin; refused (409) while a step is `claimed` or `paused`. Its `ready`, `blocked` and `parked`

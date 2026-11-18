@@ -62,7 +62,10 @@ scope, else \`partial\`), \`assessment\` (\`clean\`, \`issues\` or \`blocked\`),
 severe to \`S4\`), \`category\` and \`evidence\` (\`path\`, \`lines\` \`[start, end]\`, \`note\`). Use
 the rules your agent declares (\`mesh-rules\`) as \`key.rule\`; others are recorded as
 \`other:<slug>\`. Reuse the keys of the previous record (input \`previous\`) for the same finding:
-mesh matches findings by rule, path and symbol, never by line numbers. Dispositions (\`confirmed\`,
+mesh matches findings by rule, path and symbol, never by line numbers. An item may carry
+\`repo\`: the repo the finding is about when it is not the repo the audit runs in (its finding step
+then lands in that repo's clean-audit goal); keep that repo in the key too (e.g. in \`path\`), since
+one fingerprint listed for two repos refuses the record. Dispositions (\`confirmed\`,
 \`dismissed\`, \`deferred\` with \`until\`, \`accepted\`), each with the item's fingerprint and a
 reason, belong only in the record of a consuming step (a step with \`consumes\`; input
 \`dispositions\` lists the items it may act on), never in the record that raises the items. An
@@ -186,6 +189,7 @@ your person.
 | \`mesh goal ls --pulses\` | goal lists including goals made by pulses |
 | \`mesh goal drop <goal>\` | end a goal (\`--reason "…"\`; its owner, an approver or an admin; no step may be held) |
 | \`mesh items sink <lineage> --topic <t>\` | add a lineage's filed items to its clean-audit goal (\`--min-severity S2\`, \`--dry-run\`) |
+| \`mesh items retarget <lineage> <fp>… --repo <r>\` | set the repo items are about and move their open finding steps (\`--all\`, \`--from-key-path\`, \`--dry-run\`) |
 | \`mesh agents\` | the roster: agents of repos and catalog sources by name and hash (\`--name\`, \`--json\`) |
 | \`mesh agent add <source>/<name>\` | install a catalog agent into \`.claude/agents/\`, pinned in \`.mesh/agents.lock\`; \`mesh agent outdated\`, \`diff <name>\`, \`update <name>\` |
 | \`mesh doctor\` | check the installation |

@@ -19,6 +19,7 @@ import {
   type ItemView,
   type ReviewEvidence,
   type StoredReview,
+  TargetRepo,
 } from "./review.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
@@ -290,12 +291,47 @@ export type SinkRequest = z.infer<typeof SinkRequest>;
 /**
  * RL-9: reply of `POST /v1/items/sink`. `goal` is null on a dry run that would open a goal (the ids
  * then start with `<new>.`). `skipped` counts filed items left as they were.
+ *
+ * RL-10: `goals` has one entry per target repo of the selected items, ordered by repo. `goal` is the
+ * entry's goal when there is exactly one entry, the lineage repo's clean-audit goal (or null) when
+ * there is none, else null; `added` and `reopened` are the unions over the entries.
  */
 export interface SinkResult {
   goal: string | null;
   added: string[];
   reopened: string[];
   skipped: number;
+  notes: string[];
+  goals: { goal: string | null; repo: string; added: string[]; reopened: string[] }[];
+}
+
+/**
+ * RL-10: body of `POST /v1/items/retarget` (set the target repo of a lineage's items and move their
+ * open finding steps). Exactly one of `fps` / `all` and one of `repo` / `from_key_path` (checked by
+ * the hub, 400 otherwise).
+ */
+export const RetargetRequest = z
+  .object({
+    lineage: z.string().min(1).max(600),
+    fps: z.array(Fingerprint).min(1).max(500).optional(),
+    all: z.literal(true).optional(),
+    repo: TargetRepo.optional(),
+    from_key_path: z.literal(true).optional(),
+    dry_run: z.boolean().optional(),
+  })
+  .strict();
+export type RetargetRequest = z.infer<typeof RetargetRequest>;
+
+/**
+ * RL-10: reply of `POST /v1/items/retarget`. `items` lists the items whose target repo changed
+ * (`from`, `to`: repos); `moved` the finding steps moved (`from`, `to`: step ids; on a dry run a step
+ * in a goal still to be created is named `new:<repo>/<local id>`); `held` the held steps left in
+ * place; `notes` the items left out and the moves skipped.
+ */
+export interface RetargetResult {
+  items: { fp: string; from: string; to: string }[];
+  moved: { from: string; to: string }[];
+  held: string[];
   notes: string[];
 }
 
