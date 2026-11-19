@@ -12,6 +12,6 @@ Some of them study one team's own repositories and process as input: their names
 - the SDD kit (`assets/sdd`, `mesh assets install`);
 - the plan templates (`mesh preset ls`).
 
-Latest: [OpenCode integration](2026-11-10-opencode-integration.md) (2026-11-10, built: verified facts about OpenCode v2 and the design as built). Before it: [hub scale-out on Postgres](2026-11-06-hub-scale-out.md) (2026-11-06).
+Latest: [harness efficiency and insights](2026-11-19-harness-efficiency-and-insights.md) (2026-11-19, for discussion: what mesh should measure and expose so a dashboard can show harness efficiency). Before it: [OpenCode integration](2026-11-10-opencode-integration.md) (2026-11-10, built: verified facts about OpenCode v2 and the design as built), and [hub scale-out on Postgres](2026-11-06-hub-scale-out.md) (2026-11-06).
 
 For using mesh, start with [the guide](../guide/overview.md).
