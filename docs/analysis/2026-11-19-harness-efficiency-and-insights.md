@@ -1,6 +1,8 @@
 # Harness efficiency and insights: what mesh should measure and expose next
 
-Date: 2026-11-19. Status: **analysis for discussion**; nothing is built by this document.
+Date: 2026-11-19. Status: **analysis for discussion**, revised after a critique round (r2,
+[§6](#6-critique-and-amendments-r2)); nothing is built by this document. Read §6 first: it corrects
+two findings below and moves CI data out of the hub.
 Code read at v0.1.29 (`71f3f3e`). Hub data read from one team hub at v0.1.28.
 
 Evidence markers: **[data]** comes from the hub event log (`mesh ledger export --events`, 5 731
@@ -352,3 +354,107 @@ presets. I-3 needs agents to emit measures, so it should ship with one reference
    the tool name as today? The first word can name an internal tool.
 4. Spot checks add person-steps. Which sample rate, and is it per agent hash or per pulse?
 5. Measures: free keys declared per agent (recommended), or a fixed catalogue in mesh?
+   *(r2: see §6.3; measures are no longer the path for CI data.)*
+
+---
+
+## 6. Critique and amendments (r2)
+
+A second pass over this document, plus a look at the CI and code-quality data the team already
+collects outside mesh. Read live on 2026-11-19 with read-only credentials: the CI server's API (14
+days of pipelines of the 4 audited repos, about 4 000 pipelines), its Prometheus (365 days
+retention) and the analysis server's API. The dashboards were read from their provisioned
+definitions.
+
+### 6.1 What the first pass got wrong or overstated
+
+| # | Claim in §1–§3 | Correction |
+|---|---|---|
+| C-1 | "People are the bottleneck": 7 goals waited 3.2 days at a debrief and silenced 4 pulses. | All 7 goals came from **manual trial fires** on the same day, while the agents were being tuned. They are trial goals nobody meant to debrief, not production work waiting on a person. The real finding is **trial hygiene**: a trial goal left open silences the schedule. I-10 (trial fires) moves to MUST, and I-5 needs `supersede` mainly for this case. The "0 of 499 decisions by a person" stands, but with no production debrief run yet it shows the process has not been exercised, not that people are slow. |
+| C-2 | "Findings pile up: 0 of 62 finding steps claimed". | The clean-audit goals were created 2 days before the read. Too early for a burn-down conclusion. Keep I-4, drop the claim. |
+| C-3 | complexity-audit "costs about $9 per run … large context per turn". | Wrong cause. Runs with 2 turns and no output tokens still cost $2–4, and one 8-turn run cost $24.71 on 2.1 M cache-read tokens. The cost comes from **subagents** the audit starts (Task, Workflow), which the parent run's token fields do not show. New I-22. |
+| C-4 | Denials are counted as waste. | A denial can be the profile doing its job. A denied command costs one short turn, not a run. Count denials and show them next to the profile, but keep them out of a waste figure unless the same command is denied in most runs (then it is a profile gap). |
+| C-5 | A hub-computed `wasteRatio` (§2.1). | The components are judgement calls (an audit whose items were all dismissed may still have been worth running). Expose the **raw components** per run; let each consumer weigh them. No composite score in the hub. |
+| C-6 | I-3: CI times as `measures` that audit agents write. | A number that an agent reads from a CI system and retypes is a worse copy of a number a script can read directly. CI and code-quality numbers have **deterministic sources** (§6.2). The hub should not hold a second copy; it should make the **join** possible (§6.3). |
+| C-7 | 19 proposals and about 10 new endpoints. | Too many to act on. §6.4 cuts the core to three read endpoints and two telemetry fields. |
+
+### 6.2 External data that already exists
+
+| Source | What it holds (verified) | Gaps for our questions |
+|---|---|---|
+| CI server API (GitLab, GraphQL) | every pipeline: ref, **commit**, source (push, merge request, schedule), status, duration, queued time, retried jobs; one paged query per repo | nothing aggregates it; one repo produced 3 100 pipelines in 14 days, so reads must be windowed |
+| CI pipelines exporter → Prometheus | 37 projects, 62 branch refs: last pipeline status, id, duration, queued time, run count; 943 job series (status, duration, queued time, artifact size); 365 days retention | gauges hold the **last** pipeline per ref; **no commit** label; branch pipelines only |
+| CI test collector → Prometheus | per develop pipeline of seven repos: job, section and test durations | covers develop only |
+| Static analysis server (SonarQube) | 12 projects including 3 of the 4 audited repos, analysed on every push; gate, coverage, complexity, cognitive complexity, code smells, debt, duplication; per-file measures through its API | the 4th audited repo is not analysed |
+| CI dashboards (Grafana) | four boards: overview (failing / passing, latest per branch, failed jobs), **timing** (per-run time, job time against its 14-day median, queued time, stage breakdown, **regressions: last 3 runs over 1.3× median**, an alert `CIJobSlowerThanMedian`, before/after 7 days, slowest tests, **flaky tests and jobs**), runners, analysis server | read by people; no harness data on them |
+
+What the data says about the audited repos (14 days):
+
+| | Repo A | Repo B | Repo C | Repo D |
+|---|---|---|---|---|
+| Pipelines (of them skipped) | 3 114 (809) | 533 (294) | 282 (137) | 77 (77) |
+| CI hours | 260 | 22 | 77 | 0 |
+| Successful pipeline, p50 / p90 | 5.2 / 14.9 min | 6.9 / 11.0 min | 50.7 / 104.9 min | — |
+| Failed, share of finished | 55% (develop 47%) | 10% (develop 9%) | 41% (develop 34%) | — |
+| Develop re-runs of a commit already green on its branch | **58, 15.3 h** | 2, 0.1 h | 0 | — |
+| Analysis gate | `ERROR`: 423 new violations | `ERROR`: new coverage 72.9% < 80%, 16 new violations | `ERROR`: new coverage 71.7% < 80%, 11 new violations | not analysed |
+
+Queue time is negligible everywhere (p90 ≤ 0.3 min); runner capacity is not the problem.
+
+**C-8 The CI audit was right, at a price.** Its finding "38 develop re-runs of branch-green commits
+(~15 h)" matches the query above (58 re-runs, 15.3 h over a longer window). A paged query computes
+it in seconds. The agent spent turns on arithmetic a script does exactly, and the dashboards already
+show slow-job regressions and flaky jobs the agent would otherwise have to derive. This is the case
+for I-20.
+
+### 6.3 Where each kind of data should live
+
+- **The hub owns harness-native facts:** runs, steps, rounds, pulses, slots, findings, dispositions,
+  waits, session states. Only it can produce them.
+- **External signals stay where they are** (the CI server, the exporter in Prometheus, the analysis
+  server), and a consumer joins them with hub data. The hub's job is to make the join **exact**:
+  - the **head commit per round** (I-17) is promoted to MUST. With it, "pipelines run on commits
+    made by mesh steps", "CI minutes per goal" and "red pipelines after an agent change" are a join on
+    the commit, not a guess by repo and time window;
+  - a run row (I-1) carries `repo`, `branch` and `commit` so it lines up with pipelines.
+- **I-3 is narrowed:** `measures` stay possible for numbers that only the audit can produce (for
+  example "functions over the complexity threshold" counted by the agent's own tool), declared and
+  compared like rules. They are no longer the route for CI or analysis-server numbers. Priority:
+  COULD.
+- **One board for both:** the hub's `/metrics` endpoint (I-14) moves to SHOULD. Scraped by the same
+  Prometheus as CI and analysis data, a dashboard can put harness runs, waits and cost next to
+  pipeline times and quality gates with no new UI.
+
+### 6.4 New proposals
+
+**I-20 Deterministic inputs for audits (M, SHOULD).** A preset step may declare `inputs:`, commands
+the daemon runs before the agent starts (in the run's worktree, under the same profile), whose output
+is attached as an artifact and named in the agent's context. A CI audit then starts from a computed
+digest (pipelines per commit, re-runs of green commits, retried jobs, duration percentiles) and a
+quality audit from the analysis server's measures. The agent interprets; it does not count. Fewer
+turns, and the numbers in the report are the script's, not the model's.
+
+**I-21 Pulses triggered by an external change (M, COULD).** Besides a schedule, a pulse may fire on
+a signal: `POST /v1/pulses/:id/signal` with a reason (for example a quality gate turning `ERROR`, or
+the default branch's pipeline failing three times). The hub applies the pulse's overlap rule, and the
+slot records the reason. With I-7 this replaces "run weekly whatever happens" with "run when
+something changed".
+
+**I-22 Subagent cost in run telemetry (S, MUST).** A run's `turns`, tokens and cost must include the
+subagents it started, with a breakdown (`subagents: {count, tokens, costUsdEstimate}`). Without it,
+the most expensive audits look cheap per turn and "cost per agent" is wrong.
+
+### 6.5 Revised core
+
+| Order | Item | Why first |
+|---|---|---|
+| 1 | I-10 trial fires (MUST) | the open trial goals are what silences the schedule today |
+| 2 | I-22 subagent cost (MUST) and I-1 run rows with raw waste components, `toolsUsed`, denial detail, `commit` (MUST) | every efficiency number depends on them |
+| 3 | I-17 head commit per round (MUST) | the exact join to CI and analysis data |
+| 4 | I-2 pulse run cards and health, versioned `/healthz` (MUST) | the overview in one call |
+| 5 | I-14 `/metrics` (SHOULD) | harness next to CI in an existing dashboard |
+| 6 | I-20 deterministic audit inputs (SHOULD) | cheaper audits with exact numbers |
+| 7 | I-5, I-6, I-8, I-9, I-15 (SHOULD) | policies and comparisons once the data is right |
+| later | I-3 (narrowed), I-4, I-7, I-11–I-13, I-16, I-18, I-19, I-21 (COULD) | — |
+
+A composite waste score, CI measures in review records, and a CI copy in the hub are dropped.
