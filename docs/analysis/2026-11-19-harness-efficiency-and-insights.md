@@ -401,6 +401,52 @@ What the data says about the audited repos (14 days):
 
 Queue time is negligible everywhere (p90 ≤ 0.3 min); runner capacity is not the problem.
 
+**One p50 per repo hides the profiles.** A repo runs several pipeline profiles: a pipeline where no
+job ran (`[skip ci]` or rules), a fast check profile, an integration profile, a lab or end-to-end
+profile, a nightly schedule. Their times differ by two orders of magnitude, so CI time must be
+reported **per profile**: the source (push, merge request, schedule) plus the set of stages that
+ran, and per job family (shard suffixes folded). From the same 14 days (p50 / p95 of successful
+pipelines; failed share of finished ones):
+
+| Repo | Profile (source: stages) | Pipelines | p50 / p95 | Failed | CI hours |
+|---|---|---|---|---|---|
+| all | no job ran (`[skip ci]`, rules) | 811 / 294 / 137 | 0 s (no duration recorded) | — | 0 |
+| A | push: check | 1 664 | 4.2 / 14.6 min | 55% | **161.6** |
+| A | push: check + lab | 299 | 18.6 / 60.2 min | **88%** | 22.1 |
+| A | push: check + infra + integration + lab + publish | 114 | 13.3 / 26.0 min | 27% | 28.4 |
+| A | merge request: check + integration | 29 | 6.3 / 17.3 min | 24% | 3.4 |
+| A | schedule: check + infra + integration + lab | 18 | 31.4 / 32.8 min | 73% | 9.5 |
+| A | schedule: check + infra + lab | 5 | 91.3 / 91.7 min | 100% | 6.3 |
+| B | push: check + conformance + consumer + test + verify-images | 84 | 8.2 / 13.4 min | 0% | 12.4 |
+| B | push: check + consumer + test | 59 | 1.4 / 9.4 min | **100%** | 2.6 |
+| B | merge request: check + conformance + consumer + test | 18 | 7.4 / 16.0 min | 0% | 2.3 |
+| C | push: check + integration + unit-test | 62 | 54.9 / 104.9 min | 15% | 35.1 |
+| C | schedule: check + integration + report + unit-test | 9 | **230.8 / 236.4 min** | 56% | 32.8 |
+| C | push: check (+ unit-test) | 48 | 0.9–1.2 / 1–4 min | 22–60% | 1.0 |
+
+Job families that carry the time (share of all job time in the repo):
+
+| Repo | Stage / job family | Runs | p50 / p95 | Failed | Share |
+|---|---|---|---|---|---|
+| A | check / check | 2 240 | 5.7 / 13.5 min | 45% | 28% |
+| A | check / unit-hermetic | 2 238 | 0.7 / 10.9 min | 19% | 21% |
+| A | check / unit | 2 240 | 2.4 / 9.5 min | 8% | 18% |
+| A | infra / sharded end-to-end lane (5 shards) | 1 050 | 0.4 / 12.5 min | 0% | 13% |
+| A | lab / formal (full) | 45 | 26.5 / 32.8 min | 10% | 4% |
+| B | consumer / consumer-build | 189 | 5.4 / 11.8 min | 1% | 25% |
+| B | test / coverage, unit-tests | 274 | 3.2–3.6 / 8 min | 0% | 27% |
+| B | conformance / per OVS version | 265 | 1.5 / 1.7 min | 0–1% (23 retries) | 11% |
+| C | integration / local-behavior | 47 | 91.6 / 102.8 min | 12% | **47%** |
+| C | integration / coverage (nightly) | 9 | 118.2 / 119.6 min | 0% | 20% |
+| C | integration / local-behavior on develop | 16 | 51.8 / 54.9 min | 12% | 17% |
+
+Readings: in repo A the fast check profile fails in more than half the runs and uses 62% of the
+repo's CI hours, which is mainly a pre-push problem, not a slow-test one; the lab profile fails 88%
+of the time. In repo C one integration job is half of all CI time. A dashboard that shows one p50 per
+repo shows none of this. The profile key (source + stages) and the job family are the two
+dimensions any CI-time view needs, and `[skip ci]` pipelines must be counted apart and kept out of
+the percentiles.
+
 **C-8 The CI audit was right, at a price.** Its finding "38 develop re-runs of branch-green commits
 (~15 h)" matches the query above (58 re-runs, 15.3 h over a longer window). A paged query computes
 it in seconds. The agent spent turns on arithmetic a script does exactly, and the dashboards already
