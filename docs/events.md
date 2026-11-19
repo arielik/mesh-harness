@@ -4,7 +4,7 @@ The hub keeps every change and observation as an event: `GET /v1/events?after=<s
 
 The events are the **live, precise channel**. They keep exact times and things only visible live, such as waits, stalls and abandoned work. The hub deletes them after `events_retention_days` (default 180). The **durable summary** of every step, plan and goal is the ledger committed in the repos (`.mesh/goals/**`, format `mesh.ledger.v1`, see [ledger.md](guide/ledger.md)). Nothing in the ledger is typed by hand.
 
-Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `session.*` and `agent.*`), `type`, and optionally `user`, `sid`, `goal`, `step` and `payload`.
+Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `session.*` and `agent.*`), `type`, and optionally `user`, `sid`, `goal`, `step` and `payload`. When a service token acted for a person (`X-Mesh-On-Behalf-Of`, see [auth](guide/auth.md)), `user` is the person and `payload.via` the service.
 
 ## Written by the hub
 
@@ -46,7 +46,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.artifact` | an artifact was stored for a held step (`mesh_artifact`, a run's transcript); `user`, `sid` | `id`, `kind`, `round`, `bytes`, `sha256`, `redactions` (never the content) |
 | `run.started` | a machine started a headless run of the step | `runId`, `machine`, `profile`, `profileHash` (the profile the offer carried) |
 | `run.finished` | a headless run ended (after its close-as-fail, if any) | `runId`, `round` (absent when the run has no round of its own), `branch`, and the telemetry fields (`turns`, `turnsApprox`, tokens, `costUsdEstimate`, `durationMs`, `exit`, `permissionDenials`, …) |
-| `profile.saved` | a permission profile was registered or replaced | `name`, `sha256` |
+| `profile.saved` | a permission profile was registered or replaced | `name`, `sha256`, `via` (the service that acted for `user`, when one did) |
 | `review.recorded` | a review record was stored (`mesh_review`); `user`, `sid` | `round`, `lineage`, `coverage`, `assessment`, `items` (unique fingerprints), `artifact`, `fold` (raising records: `new`, `repeat`, `regression`, `resolved`, `carried`), `dispositions` (applied), `ignored`, `already` (dispositions a debrief already recorded with `mesh_dispose`; `0` outside debriefs), `undeclaredRules` (never item titles, evidence, proposals or reasons) |
 | `item.disposed` | a consuming step's record set an item's disposition (one per applied disposition), or a debrief recorded a person's decision (`mesh_dispose`) | `lineage`, `fp`, `disposition`, `from`, `decider` (`agent` or `person`), `via` (`stage` or `debrief-session`), `round` (never the reason or the person's answer) |
 | `item.reverted` | a debrief decision was reverted (Revert, TUI `u`); `user` | `lineage`, `fp`, `from` (the reverted state), `to` (the restored state), `round`, `via` (`ui`) (never a reason or title) |
@@ -56,11 +56,11 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `calibration.done` | a calibration goal became done (its listed dismissals are calibrated); `goal`. Activity: `calibration of <key>@<hash12> done: <outcome>` | `key`, `hash`, `dismissals` (listed), `outcome` (`change`: the `calibrate` record's assessment is `issues`; `no-change`: `clean`; else `none`) |
 | `step.skipped` | a conditional step (`when`) had nothing to consume when its dependencies were done | `reason` (`when`) |
 | `step.dropped` | a new plan dropped the step, a pulse or a person dropped its goal, the item of a ready or blocked finding step was dismissed, deferred or its filing reverted, or an open finding step was moved to the clean-audit goal of its item's target repo | — (a new plan); `reason` (`missed`, `abandoned`) when a pulse dropped the goal, `person` when a person did, `dismissed`, `deferred` or `reverted` for a finding step, with `by` (also `user`) = the deciding person, or the goal owner for an agent decider; `moved` for a moved finding step, with `to` (the new step id) and `by` (also `user`) = the retarget caller, else the owner of the goal the step left. Activity for `moved`: `<step> moved to <new id>` |
-| `pulse.created` | a pulse was saved | `pulse`, `title`, `preset` (name), `sha256`, `schedule` |
-| `pulse.updated` | a pulse was changed, or a deleted topic was taken off it | `pulse`, `version`, `fields` (the changed body keys, sorted) |
-| `pulse.paused` | the owner or an admin paused it; no `user` when the hub paused it because its owner is no longer a member | `pulse`, `reason` |
-| `pulse.resumed` / `pulse.deleted` | resumed / removed | `pulse` |
-| `pulse.fired` | a slot created a goal; `goal`, and `user` for a manual fire | `pulse`, `slot`, `manual`, `catchUp` |
+| `pulse.created` | a pulse was saved | `pulse`, `title`, `preset` (name), `sha256`, `schedule`, `via` |
+| `pulse.updated` | a pulse was changed, or a deleted topic was taken off it | `pulse`, `version`, `fields` (the changed body keys, sorted), `via` |
+| `pulse.paused` | the owner or an admin paused it; no `user` when the hub paused it because its owner is no longer a member | `pulse`, `reason`, `via` |
+| `pulse.resumed` / `pulse.deleted` | resumed / removed | `pulse`, `via` |
+| `pulse.fired` | a slot created a goal; `goal`, and `user` for a manual fire | `pulse`, `slot`, `manual`, `catchUp`, `via` |
 | `pulse.skipped` | a slot was skipped while an earlier goal runs | `pulse`, `slot`, `reason` (`overlap`), `running` (that goal) |
 | `pulse.missed` | a slot was missed; `goal` when it had one | `pulse`, `slot`, `reason` (`no_machine`, `not_accepted`, `capacity`, `expired`, `hub_down`, `error`), `tried` (machines offered), `error` (reason `error` only) |
 | `pulse.abandoned` | a started goal older than `maxGoalAge` was dropped; `goal` | `pulse`, `slot` |

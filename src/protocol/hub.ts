@@ -23,6 +23,8 @@ import {
 } from "./review.ts";
 
 export const IDEMPOTENCY_HEADER = "idempotency-key";
+/** A service token acts for this person (user id) on the routes that allow it. */
+export const ON_BEHALF_OF_HEADER = "x-mesh-on-behalf-of";
 export const SESSION_COOKIE = "mesh_session";
 
 /** Observation spooled by a daemon (plan §5.3). Ids make replays harmless. */
@@ -691,6 +693,8 @@ export interface FleetMachine {
   labels: string[];
   /** MM-3: the accept policy its daemon last reported; absent when never reported. */
   accept?: string[] | undefined;
+  /** The user id of the person the machine is logged in as (0.1.29+; absent from an older hub). */
+  owner?: string | undefined;
   /** This is the machine of the calling token. */
   current: boolean;
   sessions: FleetSession[];

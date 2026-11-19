@@ -41,6 +41,7 @@ import {
   SinkRequest,
   SyncRequest,
   IDEMPOTENCY_HEADER,
+  ON_BEHALF_OF_HEADER,
   SESSION_COOKIE,
 } from "./hub.ts";
 import { HubEvent } from "./json-schema.ts";
@@ -50,7 +51,7 @@ import { CatalogPush, CatalogSourceSave } from "./roster.ts";
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -71,6 +72,8 @@ export interface HubApiRoute {
   status?: 200 | 201 | 302;
   /** Server-sent events instead of JSON. */
   sse?: boolean;
+  /** A service token with the route's scope may act for a person (the `x-mesh-on-behalf-of` header). */
+  onBehalfOf?: boolean;
 }
 
 const TOPIC_QUERY = "topic names, repeated or comma-separated: only goals with every one (`all`: every goal)";
@@ -112,7 +115,7 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "GET", path: "/v1/inbox", rule: "member", tag: "daemon", summary: "Messages waiting for the calling machine's sessions." },
   { method: "POST", path: "/v1/inbox/:id/ack", rule: "member", tag: "daemon", body: AckRequest, summary: "Mark an inbox message delivered or failed." },
   { method: "GET", path: "/v1/live", rule: "member", scope: "live:read", tag: "daemon", query: { topic: TOPIC_QUERY }, summary: "Live sessions across the team, and goals (filtered by topic)." },
-  { method: "GET", path: "/v1/fleet", rule: "member", scope: "live:read", tag: "daemon", summary: "Every machine logged in as the caller and what each session on it is doing (read-only)." },
+  { method: "GET", path: "/v1/fleet", rule: "member", scope: "live:read", onBehalfOf: true, tag: "daemon", summary: "Every machine logged in as the caller (or the person a service acts for) and what each session on it is doing (read-only)." },
   { method: "POST", path: "/v1/machines/:id/name", rule: "member", tag: "daemon", body: MachineName, summary: "Name one of your machines (or clear its name with null)." },
   { method: "POST", path: "/v1/machines/:id/labels", rule: "member", tag: "daemon", body: MachineLabels, summary: "Label one of your machines (replace, or add/remove)." },
   { method: "GET", path: "/v1/attention", rule: "member", tag: "daemon", summary: "What needs the calling user: questions, gates, stalled steps." },
@@ -139,13 +142,13 @@ export const HUB_API: readonly HubApiRoute[] = [
     summary: "Ingest: create a goal with an approved plan from a preset snapshot (no design step).",
   },
   { method: "GET", path: "/v1/pulses", rule: "member", scope: "goals:read", tag: "goals", query: { mine: "1: only the caller's pulses" }, summary: "Pulses (schedules that create goals from a preset), by number." },
-  { method: "POST", path: "/v1/pulses", rule: "member", tag: "goals", body: PulseCreate, status: 201, summary: "Create a pulse: a preset snapshot run on a schedule." },
+  { method: "POST", path: "/v1/pulses", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", body: PulseCreate, status: 201, summary: "Create a pulse: a preset snapshot run on a schedule." },
   { method: "GET", path: "/v1/pulses/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "One pulse with its 50 newest slots and the state of their goals." },
-  { method: "POST", path: "/v1/pulses/:id/update", rule: "member", tag: "goals", body: PulseUpdate, summary: "Change a pulse (its owner or an admin); a new preset or params is a new version." },
-  { method: "POST", path: "/v1/pulses/:id/pause", rule: "member", tag: "goals", summary: "Pause a pulse (its owner or an admin)." },
-  { method: "POST", path: "/v1/pulses/:id/resume", rule: "member", tag: "goals", summary: "Resume a paused pulse; slots passed while paused are not recorded." },
-  { method: "POST", path: "/v1/pulses/:id/fire", rule: "member", tag: "goals", status: 201, summary: "Fire a manual slot now (also while paused); the schedule is unchanged." },
-  { method: "POST", path: "/v1/pulses/:id/delete", rule: "member", tag: "goals", summary: "Remove a pulse; its slots and goals stay." },
+  { method: "POST", path: "/v1/pulses/:id/update", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", body: PulseUpdate, summary: "Change a pulse (its owner or an admin); a new preset or params is a new version." },
+  { method: "POST", path: "/v1/pulses/:id/pause", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", summary: "Pause a pulse (its owner or an admin)." },
+  { method: "POST", path: "/v1/pulses/:id/resume", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", summary: "Resume a paused pulse; slots passed while paused are not recorded." },
+  { method: "POST", path: "/v1/pulses/:id/fire", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", status: 201, summary: "Fire a manual slot now (also while paused); the schedule is unchanged." },
+  { method: "POST", path: "/v1/pulses/:id/delete", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", summary: "Remove a pulse; its slots and goals stay." },
   { method: "GET", path: "/v1/goals/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal with its plans and steps." },
   { method: "POST", path: "/v1/goals/:id/plan", rule: "member", tag: "goals", body: ProposePlan, status: 201, summary: "Propose a plan (design sessions)." },
   { method: "POST", path: "/v1/goals/:id/approve", rule: "member", tag: "goals", body: Approve, summary: "Approve the proposed plan (approvers)." },
@@ -165,7 +168,7 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "GET", path: "/v1/artifacts/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "One hub-stored artifact with its content (null once pruned)." },
   { method: "GET", path: "/v1/profiles", rule: "member", scope: "goals:read", tag: "goals", summary: "Permission profiles for headless steps: the built-ins, then registered ones." },
   { method: "GET", path: "/v1/profiles/:name", rule: "member", scope: "goals:read", tag: "goals", summary: "One permission profile with its compiled settings." },
-  { method: "POST", path: "/v1/profiles", rule: "member", tag: "goals", body: ProfileSave, status: 201, summary: "Register or replace a permission profile (its creator or an admin); 200 when replaced." },
+  { method: "POST", path: "/v1/profiles", rule: "member", scope: "profiles:write", onBehalfOf: true, tag: "goals", body: ProfileSave, status: 201, summary: "Register or replace a permission profile (its creator or an admin); 200 when replaced." },
   // RL-5: the roster.
   { method: "POST", path: "/v1/catalog-sources", rule: "admin", tag: "admin", body: CatalogSourceSave, status: 201, summary: "Register a catalog source of agent definitions (repo and folder); 200 when it replaced one." },
   { method: "GET", path: "/v1/catalog-sources", rule: "member", scope: "goals:read", tag: "goals", summary: "The catalog sources, by repo id." },
@@ -308,6 +311,9 @@ export function hubOpenApi(version = "1"): Record<string, unknown> {
     for (const [name, description] of Object.entries(r.query ?? {})) params.push({ name, in: "query", required: false, description, schema: { type: "string" } });
     if (r.method === "POST" && r.rule !== "public") {
       params.push({ name: IDEMPOTENCY_HEADER, in: "header", required: false, description: "Repeat-safe retries: a repeated key returns the first response.", schema: { type: "string" } });
+    }
+    if (r.onBehalfOf) {
+      params.push({ name: ON_BEHALF_OF_HEADER, in: "header", required: false, description: "Service tokens only: the user id of the person this request acts for (required for a service's writes).", schema: { type: "string" } });
     }
     const status = String(r.status ?? 200);
     const responses: Record<string, unknown> = {

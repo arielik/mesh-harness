@@ -228,7 +228,12 @@ export interface Actor extends Principal {
   machineId?: string | undefined;
   tokenHash: string;
   tokenKind: string;
+  /** mesh-ai B-178: the service account acting for this person (`userId`), when one is. */
+  via?: string | undefined;
 }
+
+/** The event payload field naming the service that acted for the person (mesh-ai B-178). */
+const viaOf = (actor: Actor): { via?: string } => (actor.via ? { via: actor.via } : {});
 
 interface LoginAttempt {
   provider: string;
@@ -810,7 +815,7 @@ export class HubService {
         description: parsed.file.description ?? "",
       };
       await this.store.saveProfile(p);
-      await this.emit({ type: "profile.saved", user: actor.userId, payload: { name: p.name, sha256: p.sha256 } });
+      await this.emit({ type: "profile.saved", user: actor.userId, payload: { name: p.name, sha256: p.sha256, ...viaOf(actor) } });
       return { view: this.profileView(p), created: !existing };
     });
   }
@@ -1902,6 +1907,42 @@ export class HubService {
     const user = await this.store.getUser(row.userId);
     if (!user) return undefined;
     return { userId: user.id, roles: user.roles as Role[], scopes: row.scopes, machineId: row.machineId, tokenHash: row.hash, tokenKind: row.kind };
+  }
+
+  /**
+   * mesh-ai B-178: who a request runs as. A service token (the `service` role without `member`)
+   * may name a person in `x-mesh-on-behalf-of` on the routes that allow it (`allowed`); the request
+   * then runs as that person with the member role only (never their admin role), and `via` names the
+   * service. A service's write on such a route needs the header. Anyone else sending it is refused.
+   */
+  async actingFor(caller: Actor, header: string | undefined, route: { allowed: boolean; write: boolean }): Promise<Actor> {
+    const service = caller.roles.includes("service") && !caller.roles.includes("member");
+    if (header === undefined) {
+      if (service && route.allowed && route.write) throw new HubError(400, "on-behalf-of required: a service writes for a person (x-mesh-on-behalf-of)");
+      return caller;
+    }
+    if (!service) throw new HubError(403, "on-behalf-of is for service tokens only");
+    if (!route.allowed) throw new HubError(400, "on-behalf-of is not accepted on this route");
+    const id = header.trim();
+    const user = id ? await this.store.getUser(id) : undefined;
+    if (!user || user.roles.includes("service")) throw new HubError(403, `unknown user ${JSON.stringify(id)}`);
+    return { userId: user.id, roles: ["member"], tokenHash: caller.tokenHash, tokenKind: caller.tokenKind, via: caller.userId };
+  }
+
+  /**
+   * mesh-ai B-178 (H3): a pulse made or changed for a person runs only on machines that person owns,
+   * so `target.machines` must name at least one, each the person's own (by id, `user/nickname` or
+   * bare nickname); labels may narrow it further.
+   */
+  private async checkTargetForPerson(actor: Actor, target: { machines?: readonly string[] | undefined }): Promise<void> {
+    if (!actor.via) return;
+    const names = target.machines ?? [];
+    if (names.length === 0) throw new HubError(400, "target.machines required: a pulse made for a person names the person's own machines");
+    const mine = await this.store.listMachines({ userId: actor.userId });
+    for (const n of names) {
+      const own = mine.some((m) => n === m.id || (m.nickname !== undefined && (n === m.nickname || n === `${actor.userId}/${m.nickname}`)));
+      if (!own) throw new HubError(403, `machine not yours: ${n}`);
+    }
   }
 
   /**
@@ -3094,6 +3135,7 @@ export class HubService {
         id: m.id,
         hostname: m.hostname,
         ...(m.nickname ? { nickname: m.nickname } : {}),
+        owner: m.userId,
         online: now - m.lastSeen < ONLINE_MS,
         lastSeen: m.lastSeen,
         counts: m.counts,
@@ -3278,6 +3320,7 @@ export class HubService {
     // RL-8: the reply carries warnings for agents flagged invalid (computed after the write).
     const { view, pulse } = await this.goalTx(async () => {
       const now = this.now();
+      await this.checkTargetForPerson(actor, body.target);
       const plan = await this.presetChecks(body.preset, body.params);
       const topics = await this.knownTopics(body.topics ?? []);
       const when = this.scheduleOf(body.when, now);
@@ -3308,7 +3351,7 @@ export class HubService {
         createdAt: now,
         updatedAt: now,
       });
-      await this.emit({ type: "pulse.created", user: actor.userId, payload: { pulse: p.id, title: p.title, preset: p.preset.name, sha256: p.preset.sha256, schedule: scheduleText(p.when) } });
+      await this.emit({ type: "pulse.created", user: actor.userId, payload: { pulse: p.id, title: p.title, preset: p.preset.name, sha256: p.preset.sha256, schedule: scheduleText(p.when), ...viaOf(actor) } });
       return { view: await this.pulseView(p), pulse: p };
     });
     return { ...view, warnings: await this.pulseWarnings(actor, pulse, body.checkedAgents) };
@@ -3409,10 +3452,11 @@ export class HubService {
       if (body.missed !== undefined) next.missed = body.missed;
       if (body.window !== undefined) next.window = body.window;
       if (body.maxGoalAge !== undefined) next.maxGoalAge = body.maxGoalAge;
+      await this.checkTargetForPerson(actor, next.target);
       const t = HubService.timings(next.when, next.window, next.maxGoalAge, now);
       next = { ...next, windowMs: t.windowMs, maxGoalAgeMs: t.maxGoalAgeMs, updatedAt: now };
       await this.store.savePulse(next);
-      await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: next.version, fields: Object.keys(body).filter((f) => f !== "checkedAgents").sort() } });
+      await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: next.version, fields: Object.keys(body).filter((f) => f !== "checkedAgents").sort(), ...viaOf(actor) } });
       return { view: await this.pulseView(next), pulse: next };
     });
     // RL-8: warnings on every update, from the resulting preset, params and pins.
@@ -3428,7 +3472,7 @@ export class HubService {
       const reason = `paused by ${actor.userId}`;
       const next: Pulse = { ...rest, enabled: false, pausedReason: reason, updatedAt: this.now() };
       await this.store.savePulse(next);
-      await this.emit({ type: "pulse.paused", user: actor.userId, payload: { pulse: p.id, reason } });
+      await this.emit({ type: "pulse.paused", user: actor.userId, payload: { pulse: p.id, reason, ...viaOf(actor) } });
       return await this.pulseView(next);
     });
   }
@@ -3443,7 +3487,7 @@ export class HubService {
       const at = nextSlot(p.when, now);
       const next: Pulse = { ...rest, enabled: true, ...(at !== undefined ? { nextAt: at } : {}), updatedAt: now };
       await this.store.savePulse(next);
-      await this.emit({ type: "pulse.resumed", user: actor.userId, payload: { pulse: p.id } });
+      await this.emit({ type: "pulse.resumed", user: actor.userId, payload: { pulse: p.id, ...viaOf(actor) } });
       return await this.pulseView(next);
     });
   }
@@ -3456,7 +3500,7 @@ export class HubService {
       const now = this.now();
       const { nextAt: _n, ...rest } = p;
       await this.store.savePulse({ ...rest, enabled: false, deletedAt: now, updatedAt: now });
-      await this.emit({ type: "pulse.deleted", user: actor.userId, payload: { pulse: p.id } });
+      await this.emit({ type: "pulse.deleted", user: actor.userId, payload: { pulse: p.id, ...viaOf(actor) } });
       return { pulse: p.id };
     });
   }
@@ -3470,7 +3514,7 @@ export class HubService {
         slot: await this.goalTx(async () => {
           const p = await this.pulseOr404(id);
           HubService.ownerOrAdmin(actor, p);
-          return await this.fireSlot(p, slotId, now, now, { manual: true, by: actor.userId });
+          return await this.fireSlot(p, slotId, now, now, { manual: true, by: actor.userId, via: actor.via });
         }),
       };
     } catch (e) {
@@ -4713,7 +4757,7 @@ export class HubService {
    * window is over, abandon started goals past `maxGoalAge`, skip on overlap, else create the goal
    * and make one attempt.
    */
-  private async fireSlot(p: Pulse, slotId: string, at: number, now: number, o: { manual?: boolean; by?: string; catchUp?: boolean }): Promise<PulseSlot> {
+  private async fireSlot(p: Pulse, slotId: string, at: number, now: number, o: { manual?: boolean; by?: string; via?: string | undefined; catchUp?: boolean }): Promise<PulseSlot> {
     const base: PulseSlot = {
       pulse: p.id,
       slot: slotId,
@@ -4780,7 +4824,7 @@ export class HubService {
       type: "pulse.fired",
       ...(o.manual && o.by !== undefined ? { user: o.by } : {}),
       goal: goal.id,
-      payload: { pulse: p.id, slot: slotId, ...(o.manual ? { manual: true } : {}), ...(o.catchUp ? { catchUp: true } : {}) },
+      payload: { pulse: p.id, slot: slotId, ...(o.manual ? { manual: true } : {}), ...(o.catchUp ? { catchUp: true } : {}), ...(o.via ? { via: o.via } : {}) },
     });
     const rsId = await this.runStepOf(goal);
     const rs = rsId ? await this.store.getStep(rsId) : undefined;

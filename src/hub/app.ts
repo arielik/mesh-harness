@@ -29,6 +29,7 @@ import {
   DisposeRequest,
   DoneRequest,
   IDEMPOTENCY_HEADER,
+  ON_BEHALF_OF_HEADER,
   ReadRequest,
   RevertRequest,
   LoginDirect,
@@ -65,6 +66,8 @@ export interface Route {
   path: string;
   rule: RouteRule;
   scope?: ServiceScope | undefined;
+  /** A service token with `scope` may act for a person here (ON_BEHALF_OF_HEADER). */
+  onBehalfOf?: boolean | undefined;
   handler: Handler;
 }
 
@@ -113,6 +116,8 @@ export function buildRoutes(svc: HubService): Route[] {
     setCookie(c, SESSION_COOKIE, r.token, { httpOnly: true, secure: secureCookie, sameSite: "Lax", path: "/", expires: new Date(r.expiresAt) });
 
   const r = (method: Route["method"], path: string, rule: RouteRule, handler: Handler, scope?: ServiceScope): Route => ({ method, path, rule, handler, scope });
+  /** A route a service token may call for a person (mesh-ai B-178). */
+  const forPerson = (route: Route): Route => ({ ...route, onBehalfOf: true });
   return [
     r("GET", "/health", "public", (c) => c.json({ ok: true })),
     // Probes (M4.6), no auth. Liveness: the process answers. Readiness: the database answers and is
@@ -190,7 +195,7 @@ export function buildRoutes(svc: HubService): Route[] {
 
     // ---------- dashboard ----------
     r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a, topicsQuery(c))), "live:read"),
-    r("GET", "/v1/fleet", "member", async (c, a) => c.json(await svc.fleet(a)), "live:read"),
+    forPerson(r("GET", "/v1/fleet", "member", async (c, a) => c.json(await svc.fleet(a)), "live:read")),
     r("POST", "/v1/machines/:id/name", "member", async (c, a) => c.json(await svc.renameMachine(a, param(c, "id"), (await body(c, MachineName)).nickname))),
     r("POST", "/v1/machines/:id/labels", "member", async (c, a) => c.json(await svc.labelMachine(a, param(c, "id"), await body(c, MachineLabels)))),
     r("GET", "/v1/attention", "member", async (c, a) => c.json({ attention: await svc.attentionFor(a) })),
@@ -251,13 +256,13 @@ export function buildRoutes(svc: HubService): Route[] {
 
     // ---------- pulses (RL-3) ----------
     r("GET", "/v1/pulses", "member", async (c, a) => c.json({ pulses: await svc.listPulsesView(a, c.req.query("mine") === "1") }), "goals:read"),
-    r("POST", "/v1/pulses", "member", async (c, a) => c.json(await svc.createPulse(a, await body(c, PulseCreate)), 201)),
+    forPerson(r("POST", "/v1/pulses", "member", async (c, a) => c.json(await svc.createPulse(a, await body(c, PulseCreate)), 201), "pulses:write")),
     r("GET", "/v1/pulses/:id", "member", async (c) => c.json(await svc.pulseDetail(param(c, "id"))), "goals:read"),
-    r("POST", "/v1/pulses/:id/update", "member", async (c, a) => c.json(await svc.updatePulse(a, param(c, "id"), await body(c, PulseUpdate)))),
-    r("POST", "/v1/pulses/:id/pause", "member", async (c, a) => c.json(await svc.pausePulse(a, param(c, "id")))),
-    r("POST", "/v1/pulses/:id/resume", "member", async (c, a) => c.json(await svc.resumePulse(a, param(c, "id")))),
-    r("POST", "/v1/pulses/:id/fire", "member", async (c, a) => c.json(await svc.firePulse(a, param(c, "id")), 201)),
-    r("POST", "/v1/pulses/:id/delete", "member", async (c, a) => c.json(await svc.deletePulse(a, param(c, "id")))),
+    forPerson(r("POST", "/v1/pulses/:id/update", "member", async (c, a) => c.json(await svc.updatePulse(a, param(c, "id"), await body(c, PulseUpdate))), "pulses:write")),
+    forPerson(r("POST", "/v1/pulses/:id/pause", "member", async (c, a) => c.json(await svc.pausePulse(a, param(c, "id"))), "pulses:write")),
+    forPerson(r("POST", "/v1/pulses/:id/resume", "member", async (c, a) => c.json(await svc.resumePulse(a, param(c, "id"))), "pulses:write")),
+    forPerson(r("POST", "/v1/pulses/:id/fire", "member", async (c, a) => c.json(await svc.firePulse(a, param(c, "id")), 201), "pulses:write")),
+    forPerson(r("POST", "/v1/pulses/:id/delete", "member", async (c, a) => c.json(await svc.deletePulse(a, param(c, "id"))), "pulses:write")),
 
     // ---------- topics ----------
     r("GET", "/v1/topics", "member", async (c) => c.json({ topics: await svc.listTopics() }), "goals:read"),
@@ -272,10 +277,18 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/artifacts/:id", "member", async (c) => c.json(await svc.getArtifact(param(c, "id"))), "goals:read"),
     r("GET", "/v1/profiles", "member", async (c) => c.json({ profiles: await svc.listProfiles() }), "goals:read"),
     r("GET", "/v1/profiles/:name", "member", async (c) => c.json(await svc.getProfileView(param(c, "name"))), "goals:read"),
-    r("POST", "/v1/profiles", "member", async (c, a) => {
-      const { view, created } = await svc.saveProfile(a, await body(c, ProfileSave));
-      return c.json(view, created ? 201 : 200);
-    }),
+    forPerson(
+      r(
+        "POST",
+        "/v1/profiles",
+        "member",
+        async (c, a) => {
+          const { view, created } = await svc.saveProfile(a, await body(c, ProfileSave));
+          return c.json(view, created ? 201 : 200);
+        },
+        "profiles:write",
+      ),
+    ),
 
     // ---------- roster (RL-5) ----------
     r("POST", "/v1/catalog-sources", "admin", async (c, a) => {
@@ -428,17 +441,21 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
 
   for (const route of routes) {
     app.on(route.method, route.path, async (c) => {
-      const actor = c.get("actor");
-      if (!allowed(route.rule, actor, route.scope)) return c.json({ error: actor ? "forbidden" : "login required" }, actor ? 403 : 401);
+      const caller = c.get("actor");
+      if (!allowed(route.rule, caller, route.scope)) return c.json({ error: caller ? "forbidden" : "login required" }, caller ? 403 : 401);
+      // mesh-ai B-178: a service token acts for a person on the routes that allow it.
+      const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: route.method === "POST" }) : caller;
+      // Retries of a service acting for a person never replay another caller's answer.
+      const idemUser = actor?.via ? `${actor.via}>${actor.userId}` : actor?.userId;
       const key = route.method === "POST" && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;
-      if (key && actor) {
-        const prior = (await svc.store.getIdem(key, actor.userId)) as { status: number; body: unknown } | undefined;
+      if (key && idemUser) {
+        const prior = (await svc.store.getIdem(key, idemUser)) as { status: number; body: unknown } | undefined;
         if (prior) return c.json(prior.body as object, prior.status as 200);
       }
       const res = await route.handler(c, actor as Actor);
-      if (key && actor && res.status < 300 && res.headers.get("content-type")?.includes("json")) {
+      if (key && idemUser && res.status < 300 && res.headers.get("content-type")?.includes("json")) {
         const clone = res.clone();
-        await svc.store.putIdem(key, actor.userId, { status: res.status, body: await clone.json() }, svc.now());
+        await svc.store.putIdem(key, idemUser, { status: res.status, body: await clone.json() }, svc.now());
       }
       return res;
     });

@@ -419,10 +419,10 @@ export class World {
   }
 
   /** A raw call with any bearer token (a device token from `login`, a service token, or none). */
-  async call(token: string | undefined, method: "GET" | "POST", path: string, body?: unknown): Promise<{ status: number; json: Json }> {
+  async call(token: string | undefined, method: "GET" | "POST", path: string, body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; json: Json }> {
     const r = await this.hubFetch(this.hub.url + path, {
       method,
-      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     const text = await r.text();

@@ -351,7 +351,7 @@ describe("RL-1 AC-34 checks, schema, boundaries", () => {
   const ROUTES = [
     { method: "GET", path: "/v1/profiles", scope: "goals:read", tag: "goals" },
     { method: "GET", path: "/v1/profiles/:name", scope: "goals:read", tag: "goals" },
-    { method: "POST", path: "/v1/profiles", scope: undefined, tag: "goals" },
+    { method: "POST", path: "/v1/profiles", scope: "profiles:write", tag: "goals" }, // mesh-ai B-178
     { method: "POST", path: "/v1/steps/:id/artifacts", scope: undefined, tag: "steps" },
     { method: "GET", path: "/v1/artifacts/:id", scope: "goals:read", tag: "goals" },
     { method: "GET", path: "/v1/goals/:id/artifacts", scope: "goals:read", tag: "goals" },
@@ -481,13 +481,13 @@ describe("RL-2 AC-30 docs and skill", () => {
 describe("RL-3 AC-27 checks, schema, boundaries", () => {
   const ROUTES = [
     { method: "GET", path: "/v1/pulses", scope: "goals:read" },
-    { method: "POST", path: "/v1/pulses", scope: undefined },
+    { method: "POST", path: "/v1/pulses", scope: "pulses:write" }, // mesh-ai B-178
     { method: "GET", path: "/v1/pulses/:id", scope: "goals:read" },
-    { method: "POST", path: "/v1/pulses/:id/update", scope: undefined },
-    { method: "POST", path: "/v1/pulses/:id/pause", scope: undefined },
-    { method: "POST", path: "/v1/pulses/:id/resume", scope: undefined },
-    { method: "POST", path: "/v1/pulses/:id/fire", scope: undefined },
-    { method: "POST", path: "/v1/pulses/:id/delete", scope: undefined },
+    { method: "POST", path: "/v1/pulses/:id/update", scope: "pulses:write" },
+    { method: "POST", path: "/v1/pulses/:id/pause", scope: "pulses:write" },
+    { method: "POST", path: "/v1/pulses/:id/resume", scope: "pulses:write" },
+    { method: "POST", path: "/v1/pulses/:id/fire", scope: "pulses:write" },
+    { method: "POST", path: "/v1/pulses/:id/delete", scope: "pulses:write" },
     { method: "POST", path: "/v1/goals/from-preset", scope: "goals:write" },
   ];
 
@@ -684,7 +684,7 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
 
   it("test_AC16_version", () => {
     // RL-10 AC-13: the release is v0.1.28 (was v0.1.27).
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.28");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.29");
   });
 
   it("test_AC07_route_table", () => {
@@ -780,7 +780,7 @@ describe("RL-9 AC-18/AC-19 routes and schema", () => {
   });
 
   it("test_AC19_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.28");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.29");
   });
 
   it("test_AC19_schema_version", () => {
@@ -819,7 +819,7 @@ describe("RL-10 AC-12/AC-13 routes and schema", () => {
   });
 
   it("test_AC13_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.28");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.29");
   });
 
   it("test_AC13_schema_version", () => {
