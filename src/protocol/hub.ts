@@ -2,13 +2,14 @@
 
 import { z } from "zod";
 import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile } from "./goal.ts";
-import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, Verdict } from "./goal.ts";
+import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, StepKind as StepKindSchema, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
 import { AgentReport } from "./roster.ts";
 import { PresetSnapshot, PulseParams } from "./pulse.ts";
 import {
   Disposition,
+  Fold,
   Requires,
   ReviewItem,
   Severity,
@@ -706,3 +707,59 @@ export interface FleetView {
   user: UserView;
   machines: FleetMachine[];
 }
+
+/** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
+export const HUB_FEATURES: readonly string[] = ["runs", "trial"];
+
+/** RL-11: the item states now of the items a run's raising record listed. */
+export const RunItems = z.object({
+  raised: z.number().int(),
+  open: z.number().int(),
+  confirmed: z.number().int(),
+  accepted: z.number().int(),
+  dismissed: z.number().int(),
+  deferred: z.number().int(),
+  resolved: z.number().int(),
+});
+export type RunItems = z.infer<typeof RunItems>;
+
+/** RL-11: raw waste parts of a run (no composite score). */
+export const RunWaste = z.object({
+  /** The round's outcome is `fail`. */
+  failed: z.boolean(),
+  /** The run was killed for its budget. */
+  overBudget: z.boolean(),
+  denials: z.number().int(),
+  /** The round's raising record listed items and every one of them is dismissed now. */
+  allDismissed: z.boolean(),
+});
+export type RunWaste = z.infer<typeof RunWaste>;
+
+/** RL-11: one row of `GET /v1/runs`: a headless run that closed a round. */
+export const RunRow = z.object({
+  runId: z.string(),
+  goal: z.string(),
+  step: z.string(),
+  round: z.number().int(),
+  kind: StepKindSchema,
+  repo: z.string(),
+  branch: z.string().optional(),
+  user: z.string(),
+  owner: z.string(),
+  machine: z.string().optional(),
+  pulse: z.string().optional(),
+  slot: z.string().optional(),
+  trial: z.boolean(),
+  startedAt: z.number().optional(),
+  finishedAt: z.number(),
+  outcome: z.enum(["done", "fail"]),
+  telemetry: RunTelemetry,
+  fold: Fold.optional(),
+  items: RunItems.optional(),
+  waste: RunWaste,
+  artifacts: z.array(z.string()),
+});
+export type RunRow = z.infer<typeof RunRow>;
+
+export const RunsPage = z.object({ runs: z.array(RunRow), next: z.string().optional() });
+export type RunsPage = z.infer<typeof RunsPage>;

@@ -399,7 +399,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET /v1/pulses?mine=1`, `GET /v1/pulses/:id` | Pulses (v0.1.17): pulses by number (no preset text); one pulse with its 50 newest slots and their goals' states (scope `goals:read`) |
 | `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
 | `POST /v1/pulses/:id/{update,pause,resume,delete}` | Pulses (v0.1.17): change, pause, resume or remove a pulse (its owner or an admin) (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
-| `POST /v1/pulses/:id/fire` | Pulses (v0.1.17): fire a manual slot now (also while paused) |
+| `POST /v1/pulses/:id/fire` | Pulses (v0.1.17): fire a manual slot now (also while paused); body `{trial: true}` (v0.1.30) fires a trial |
 | `POST /v1/goals/:id/drop` | Clean-audit goals (v0.1.27): a person drops any goal (its owner, an approver or an admin; `reason`); 409 while a step is claimed or paused (scope `goals:write`) |
 | `POST /v1/goals/from-preset` | Ingest (v0.1.17): a goal with an approved plan from a preset snapshot, no design step (scope `goals:write`) |
 | `GET /v1/goals?pulses=1` | Pulses (v0.1.17): goal lists leave out pulse goals unless `pulses=1` |
@@ -408,7 +408,8 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/catalog-sources/push` | Roster (v0.1.19): a daemon pushes the committed definitions of a source it reports at one commit (device token) |
 | `GET /v1/agents?name=` | Roster (v0.1.19): repo copies the caller sees and current catalog definitions, grouped by name, with `diverged`/`pinned`/`behind`/`modified` (scope `goals:read`) (v0.1.21: versions carry `invalid` when the front matter is not valid YAML) |
 | `GET /v1/agents/resolve?key=` | Roster (v0.1.19): one catalog definition with its text for `<source>/<name>[@<ref>]` (scope `goals:read`) |
-| `GET /v1/agents/:key/stats?days=` | Calibration (v0.1.20): an agent key's statistics per hash over the last `days` (1-365, default 30): runs, cost, findings, dispositions and calibration (key with `/` encoded; scope `goals:read`) |
+| `GET /v1/agents/:key/stats?days=` | Calibration (v0.1.20): an agent key's statistics per hash over the last `days` (1-365, default 30): runs, cost, findings, dispositions and calibration (key with `/` encoded; scope `goals:read`); `trial=include` (v0.1.30) counts trial goals |
+| `GET /v1/runs` | Runs (v0.1.30): headless runs that closed a round, newest first, with telemetry, item states now and raw waste parts; `since`, `until`, `goal`, `pulse`, `repo`, `agent`, `user`, `trial`, `limit`, `cursor` (scope `goals:read`) |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

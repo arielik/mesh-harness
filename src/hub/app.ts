@@ -7,6 +7,7 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
 import { ZodError, type ZodType } from "zod";
+import pkg from "../../package.json" with { type: "json" };
 import { AuthError } from "../auth/index.ts";
 import { allowed, type RouteRule } from "../core/index.ts";
 import {
@@ -53,9 +54,12 @@ import {
   Replan,
   SESSION_COOKIE,
   SyncRequest,
+  HUB_FEATURES,
+  PulseFire,
   type LoginResult,
   type ServiceScope,
 } from "../protocol/index.ts";
+import { HubStore } from "../store/index.ts";
 import { HubError, type Actor, type HubService } from "./service.ts";
 
 type Env = { Variables: { actor: Actor | undefined; viaCookie: boolean } };
@@ -110,6 +114,9 @@ export function pasteCodePage(code: string): string {
 `;
 }
 
+/** RL-11: the liveness body; asks nothing of the database. */
+const liveness = () => ({ ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: [...HUB_FEATURES] });
+
 export function buildRoutes(svc: HubService): Route[] {
   const secureCookie = svc.config.url.startsWith("https://");
   const setSession = (c: Context<Env>, r: LoginResult) =>
@@ -119,13 +126,14 @@ export function buildRoutes(svc: HubService): Route[] {
   /** A route a service token may call for a person (mesh-ai B-178). */
   const forPerson = (route: Route): Route => ({ ...route, onBehalfOf: true });
   return [
-    r("GET", "/health", "public", (c) => c.json({ ok: true })),
+    // RL-11: the probes say which hub this is (version, the schema it migrates to, its features).
+    r("GET", "/health", "public", (c) => c.json(liveness())),
     // Probes (M4.6), no auth. Liveness: the process answers. Readiness: the database answers and is
     // migrated; a load balancer sends this replica no traffic until it is ready.
-    r("GET", "/healthz", "public", (c) => c.json({ ok: true })),
+    r("GET", "/healthz", "public", (c) => c.json(liveness())),
     r("GET", "/readyz", "public", async (c) => {
       const ready = await svc.ready();
-      return c.json(ready, ready.ok ? 200 : 503);
+      return c.json({ ...ready, version: pkg.version }, ready.ok ? 200 : 503);
     }),
 
     // ---------- auth ----------
@@ -261,7 +269,7 @@ export function buildRoutes(svc: HubService): Route[] {
     forPerson(r("POST", "/v1/pulses/:id/update", "member", async (c, a) => c.json(await svc.updatePulse(a, param(c, "id"), await body(c, PulseUpdate))), "pulses:write")),
     forPerson(r("POST", "/v1/pulses/:id/pause", "member", async (c, a) => c.json(await svc.pausePulse(a, param(c, "id"))), "pulses:write")),
     forPerson(r("POST", "/v1/pulses/:id/resume", "member", async (c, a) => c.json(await svc.resumePulse(a, param(c, "id"))), "pulses:write")),
-    forPerson(r("POST", "/v1/pulses/:id/fire", "member", async (c, a) => c.json(await svc.firePulse(a, param(c, "id")), 201), "pulses:write")),
+    forPerson(r("POST", "/v1/pulses/:id/fire", "member", async (c, a) => c.json(await svc.firePulse(a, param(c, "id"), await body(c, PulseFire)), 201), "pulses:write")),
     forPerson(r("POST", "/v1/pulses/:id/delete", "member", async (c, a) => c.json(await svc.deletePulse(a, param(c, "id"))), "pulses:write")),
 
     // ---------- topics ----------
@@ -311,8 +319,31 @@ export function buildRoutes(svc: HubService): Route[] {
         } catch {
           // A malformed escape: the service answers the key error.
         }
-        return c.json(await svc.agentStats(key, c.req.query("days")));
+        return c.json(await svc.agentStats(key, c.req.query("days"), c.req.query("trial")));
       },
+      "goals:read",
+    ),
+
+    // RL-11: headless runs that closed a round, newest first.
+    r(
+      "GET",
+      "/v1/runs",
+      "member",
+      async (c) =>
+        c.json(
+          await svc.listRuns({
+            since: c.req.query("since"),
+            until: c.req.query("until"),
+            goal: c.req.query("goal"),
+            pulse: c.req.query("pulse"),
+            repo: c.req.query("repo"),
+            agent: c.req.query("agent"),
+            user: c.req.query("user"),
+            trial: c.req.query("trial"),
+            limit: c.req.query("limit"),
+            cursor: c.req.query("cursor"),
+          }),
+        ),
       "goals:read",
     ),
 

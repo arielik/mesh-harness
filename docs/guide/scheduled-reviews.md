@@ -59,7 +59,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.29](operations.md#upgrading-to-0129).
+  describes; see [Upgrading to 0.1.30](operations.md#upgrading-to-0130).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else
@@ -412,6 +412,7 @@ mesh pulse ls                     # --mine: only yours; --json
 #   p-1  paused  @ann  every 7d  next -  last fired  audit-relay on demo
 #   p-2  active  @ann  every 7d  next 2026-11-19T16:16:04.427Z  last fired  audit-relay on demo
 mesh pulse fire p-2               # a slot now (also while paused); does not move the schedule
+mesh pulse fire p-2 --trial       # a trial while you tune the agent (see below)
 #   Fired pulse p-2: slot manual:01M788WWN19A00CN1Y9AXJ8JF4 → G7.
 mesh pulse show p-2               # --json for everything, including a fire error's text
 #   p-2 "audit-relay on demo"  @ann  active
@@ -433,6 +434,16 @@ its last slot with the state of the goal it created (`last fired 3h ago → G7 i
 
 `pause`, `resume`, `update` and `rm` are for the owner or an admin. A `mesh pulse fire` while a goal
 of an earlier slot runs prints `Pulse p-2 skipped slot …: G7 is still running (overlap: skip).`
+
+**Firing a trial while you tune an agent.** While you adjust an agent, fire with `--trial`. A trial
+goal is marked `(trial)` in `mesh goal ls --pulses`, `mesh goal show` and `mesh pulse show`; it
+never makes a scheduled slot skip, it is left out of the agent's statistics and of `GET /v1/runs`
+(ask for it with `trial=include`), and its dismissals never count toward calibration. What it does
+not change: its records fold and file like any other, so an item you dismiss in a trial goal stays
+dismissed for the lineage (use a separate preset or repo for experiments whose decisions should not
+stick), and its runs use machines, so fire trials on a machine the pulse does not target, or when no
+slot is due, or a scheduled slot may be `missed (capacity)`. Leave no trial goal open: drop it with
+`mesh goal drop` when you are done.
 
 **Overlap.** With `--overlap skip` a goal of an earlier slot counts as running only while it has
 machine work in flight or about to start: a headless step that is ready (waiting to be offered, or
@@ -594,7 +605,7 @@ Define the topic once (`mesh topic add ci`) and add `sink` to the stage that rec
 ```
 
 `sink` needs mesh 0.1.27 on the hub: an older hub refuses the preset with 422. See
-[Upgrading to 0.1.29](operations.md#upgrading-to-0129).
+[Upgrading to 0.1.30](operations.md#upgrading-to-0130).
 
 The stage needs `accepted` in `may_set`, and the topic must exist (`mesh pulse add` and `mesh goal
 plan` refuse the preset otherwise). When `file` is done, or skipped because you filed everything in
@@ -645,7 +656,7 @@ steps start in the right checkout:
 
   The sink then files each item in `Clean audits: ci on api`, `… on web` or `… on demo`, and
   `mesh items` shows `api/.ci.yml → api` for it. `repo` needs mesh 0.1.28 on the hub and on the
-  daemon of the machine that runs the auditor (see [Upgrading to 0.1.29](operations.md#upgrading-to-0129)).
+  daemon of the machine that runs the auditor (see [Upgrading to 0.1.30](operations.md#upgrading-to-0130)).
 - **When an auditor starts sending `repo`**, the next record moves the open steps of the items it
   now places elsewhere: the old step is dropped with `moved to <new id>`, the new one has `moved from
   <old id>`. A claimed (or paused, parked, failed) step stays where it is with a note; release it and

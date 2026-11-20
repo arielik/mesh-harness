@@ -38,6 +38,7 @@ import {
   RevertRequest,
   ReviewUpload,
   RunReport,
+  RunsPage,
   SinkRequest,
   SyncRequest,
   IDEMPOTENCY_HEADER,
@@ -45,8 +46,12 @@ import {
   SESSION_COOKIE,
 } from "./hub.ts";
 import { HubEvent } from "./json-schema.ts";
-import { PulseCreate, PulseUpdate } from "./pulse.ts";
+import { PulseCreate, PulseFire, PulseUpdate } from "./pulse.ts";
 import { CatalogPush, CatalogSourceSave } from "./roster.ts";
+
+/** RL-11: the probe bodies. */
+const Liveness = z.object({ ok: z.literal(true), version: z.string(), schema: z.number().int(), features: z.array(z.string()) });
+const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(), error: z.string().optional(), version: z.string() });
 
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
@@ -83,9 +88,9 @@ const SUGGEST_QUERY = { team: "1: also everyone's machines", any: "1: also machi
 export const RevokeRequest = z.object({ userId: z.string().optional(), machineId: z.string().optional() });
 
 export const HUB_API: readonly HubApiRoute[] = [
-  { method: "GET", path: "/health", rule: "public", tag: "probes", summary: "Liveness (kept for older clients; same as /healthz)." },
-  { method: "GET", path: "/healthz", rule: "public", tag: "probes", summary: "Liveness: the process answers." },
-  { method: "GET", path: "/readyz", rule: "public", tag: "probes", summary: "Readiness: the database answers and is migrated (503 until then)." },
+  { method: "GET", path: "/health", rule: "public", tag: "probes", response: Liveness, summary: "Liveness (kept for older clients; same as /healthz)." },
+  { method: "GET", path: "/healthz", rule: "public", tag: "probes", response: Liveness, summary: "Liveness: the process answers, with the hub's version, the schema it migrates to and its features (no database read)." },
+  { method: "GET", path: "/readyz", rule: "public", tag: "probes", response: Readiness, summary: "Readiness: the database answers and is migrated (503 until then); carries the hub's version." },
 
   { method: "GET", path: "/auth/providers", rule: "public", tag: "auth", summary: "The login providers this hub offers." },
   { method: "POST", path: "/auth/:id/login", rule: "public", tag: "auth", body: LoginDirect, summary: "Log in with a token provider (or the Solo hub's local provider)." },
@@ -147,7 +152,17 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/pulses/:id/update", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", body: PulseUpdate, summary: "Change a pulse (its owner or an admin); a new preset or params is a new version." },
   { method: "POST", path: "/v1/pulses/:id/pause", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", summary: "Pause a pulse (its owner or an admin)." },
   { method: "POST", path: "/v1/pulses/:id/resume", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", summary: "Resume a paused pulse; slots passed while paused are not recorded." },
-  { method: "POST", path: "/v1/pulses/:id/fire", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", status: 201, summary: "Fire a manual slot now (also while paused); the schedule is unchanged." },
+  {
+    method: "POST",
+    path: "/v1/pulses/:id/fire",
+    rule: "member",
+    scope: "pulses:write",
+    onBehalfOf: true,
+    tag: "goals",
+    body: PulseFire,
+    status: 201,
+    summary: "Fire a manual slot now (also while paused); the schedule is unchanged. `trial: true` fires a trial (left out of statistics, calibration and runs; never blocks a slot).",
+  },
   { method: "POST", path: "/v1/pulses/:id/delete", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", summary: "Remove a pulse; its slots and goals stay." },
   { method: "GET", path: "/v1/goals/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal with its plans and steps." },
   { method: "POST", path: "/v1/goals/:id/plan", rule: "member", tag: "goals", body: ProposePlan, status: 201, summary: "Propose a plan (design sessions)." },
@@ -181,8 +196,29 @@ export const HUB_API: readonly HubApiRoute[] = [
     rule: "member",
     scope: "goals:read",
     tag: "goals",
-    query: { days: "1-365, default 30" },
+    query: { days: "1-365, default 30", trial: "exclude (default) or include: count the work of trial goals in the windowed counts" },
     summary: "Statistics of an agent key per hash: runs, cost, findings, dispositions and calibration (key with / encoded).",
+  },
+  {
+    method: "GET",
+    path: "/v1/runs",
+    rule: "member",
+    scope: "goals:read",
+    tag: "analysis",
+    query: {
+      since: "finishedAt from (ms since the epoch or an ISO time); default now - 30 days",
+      until: "finishedAt before (ms since the epoch or an ISO time)",
+      goal: "only this goal",
+      pulse: "only goals of this pulse",
+      repo: "only steps in this repo",
+      agent: "only runs of this agent key",
+      user: "only runs as this user",
+      trial: "exclude (default), include or only",
+      limit: "1-1000, default 200",
+      cursor: "the next of the previous page",
+    },
+    response: RunsPage,
+    summary: "Headless runs that closed a round, newest first: telemetry, item states now and raw waste parts.",
   },
 
   {

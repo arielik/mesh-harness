@@ -238,7 +238,7 @@ export function goalCommand(c: CliEnv): Command {
           const q = query ? `?${query}` : "";
           const { goals } = await hub().get<{ goals: Goal[] }>(`/v1/goals${q}`);
           if (goals.length === 0) c.io.out(topics.length ? `No goals with topic ${topics.join(" and ")}.` : "No goals yet. Create one: mesh goal new \"<title>\"");
-          for (const g of goals) c.io.out(`${g.id.padEnd(5)} ${g.state.padEnd(18)} @${g.ownerId.padEnd(12)} ${g.title}${g.topics?.length ? `  [${g.topics.join(", ")}]` : ""}`);
+          for (const g of goals) c.io.out(`${g.id.padEnd(5)} ${g.state.padEnd(18)} @${g.ownerId.padEnd(12)} ${g.title}${g.trial ? " (trial)" : ""}${g.topics?.length ? `  [${g.topics.join(", ")}]` : ""}`);
           return 0;
         }
         case "tag":

@@ -207,3 +207,89 @@ describe("AC-17 renderTail", () => {
     expect(out).toContain('"a"');
   });
 });
+
+// =============================================================================================
+// RL-11 AC-01, AC-02: toolsUsed and denied (docs/specs/RL-11.md, "Telemetry from the stream")
+// =============================================================================================
+
+const use = (name: unknown) => ({ type: "tool_use", id: "t", ...(name === undefined ? {} : { name }), input: {} });
+const sub = (id: string, content: unknown[]) => ({ ...assistant(id, content), parent_tool_use_id: "toolu_parent" });
+const RUN: Run = { durationMs: 10, exitCode: 0, killedForBudget: false };
+
+describe("RL-11 AC-01 toolsUsed", () => {
+  const blocks = [assistant("a1", [use("Read"), use("Bash")]), assistant("a2", [use("Read"), use(""), use(undefined)]), sub("s1", [use("Grep")])];
+
+  it("test_AC01_with_result", () => {
+    const t = tele(lines(...blocks, result()), RUN);
+    expect(t.toolsUsed).toStrictEqual(["Bash", "Grep", "Read"]);
+  });
+
+  it("test_AC01_partial", () => {
+    const t = tele(lines(...blocks), RUN);
+    expect(t.turnsApprox).toBe(true);
+    expect(t.toolsUsed).toStrictEqual(["Bash", "Grep", "Read"]);
+  });
+
+  it("test_AC01_none", () => {
+    const t = tele(lines(assistant("a1", [text("hi")]), result()), RUN);
+    expect("toolsUsed" in t).toBe(false);
+  });
+
+  it("test_AC01_cut_and_cap", () => {
+    const long = "x".repeat(250);
+    expect(tele(lines(assistant("a1", [use(long)]), result()), RUN).toolsUsed).toStrictEqual(["x".repeat(200)]);
+    const names = Array.from({ length: 205 }, (_, i) => `T${String(i).padStart(3, "0")}`);
+    const t = tele(lines(assistant("a1", [...names].reverse().map(use)), result()), RUN);
+    expect(t.toolsUsed).toStrictEqual(names.slice(0, 200));
+  });
+});
+
+describe("RL-11 AC-02 denied", () => {
+  const bash = (command: unknown) => ({ tool_name: "Bash", tool_use_id: "x", tool_input: command === undefined ? {} : { command } });
+  it("test_AC02_grouping", () => {
+    const denials = [bash("FOO=1 /usr/bin/git push origin x"), bash("FOO=1 /usr/bin/git push origin x"), bash("cargo test"), { tool_name: "Write", tool_input: { file_path: "/etc/x", content: "secret" } }, bash(undefined), { tool_input: { command: "rm -rf /" } }];
+    const t = tele(lines(result({ permission_denials: denials })), RUN);
+    expect(t.denied).toStrictEqual([
+      { tool: "Bash", command: "git", count: 2 },
+      { tool: "Bash", count: 1 },
+      { tool: "Bash", command: "cargo", count: 1 },
+      { tool: "Write", count: 1 },
+    ]);
+    expect(t.permissionDenials.count).toBe(6);
+    expect(JSON.stringify(t.denied)).not.toMatch(/push|origin|test|secret|etc|rm/);
+  });
+
+  it("test_AC02_no_word", () => {
+    const t = tele(lines(result({ permission_denials: [bash("A=1 B=2")] })), RUN);
+    expect(t.denied).toStrictEqual([{ tool: "Bash", count: 1 }]);
+  });
+
+  it("test_AC02_none", () => {
+    expect("denied" in tele(lines(result()), RUN)).toBe(false);
+    expect("denied" in tele(lines(assistant("a1", [text("x")])), RUN)).toBe(false);
+  });
+
+  it("test_AC02_cap", () => {
+    const denials = Array.from({ length: 60 }, (_, i) => bash(`cmd${i} arg`));
+    const t = tele(lines(result({ permission_denials: denials })), RUN);
+    expect(t.denied).toHaveLength(50);
+    expect(t.permissionDenials.count).toBe(60);
+    // All counts are 1: ordered by command in UTF-16 code-unit order, the first 50 kept.
+    const words = Array.from({ length: 60 }, (_, i) => `cmd${i}`).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    expect(t.denied).toStrictEqual(words.slice(0, 50).map((command) => ({ tool: "Bash", command, count: 1 })));
+  });
+
+  it("test_AC02_passes_hub_validation", async () => {
+    const { RunTelemetry } = await import("../protocol/index.ts");
+    const many = Array.from({ length: 60 }, (_, i) => bash(`cmd${i}`));
+    const names = Array.from({ length: 205 }, (_, i) => `T${i}`).map(use);
+    for (const stream of [
+      lines(assistant("a1", [use("x".repeat(250)), ...names]), result({ permission_denials: [...many, bash("A=1"), { tool_name: "W".repeat(300) }] })),
+      lines(assistant("a1", [use("Read")])),
+    ]) {
+      const t = tele(stream, RUN);
+      const full = { ...t, runId: "r", profile: "read-only", profileHash: "f".repeat(64), undeclaredRules: 0, redactions: 0 };
+      expect(RunTelemetry.safeParse(full).success, JSON.stringify(RunTelemetry.safeParse(full).error?.issues)).toBe(true);
+    }
+  });
+});

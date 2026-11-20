@@ -162,6 +162,9 @@ import type {
   ProfileSnapshot,
   ProfileView,
   RunTelemetry,
+  RunItems,
+  RunRow,
+  RunsPage,
   StepInput,
   StoredArtifact,
   ArtifactKind,
@@ -201,6 +204,7 @@ import type {
   GoalState,
   Pulse,
   PulseCreate,
+  PulseFire,
   PulseDetail,
   PulseSlot,
   PulseUpdate,
@@ -213,6 +217,30 @@ import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAUL
 import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
+
+/** RL-11: the sort key of a `GET /v1/runs` row and its opaque cursor. Newest first; ties by goal, step, round. */
+interface RunKey {
+  at: number;
+  goal: string;
+  step: string;
+  round: number;
+}
+const textCmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const runCursor = {
+  cmp: (a: RunKey, b: RunKey): number => b.at - a.at || textCmp(a.goal, b.goal) || textCmp(a.step, b.step) || a.round - b.round,
+  encode: (k: RunKey): string => Buffer.from(JSON.stringify([k.at, k.goal, k.step, k.round]), "utf8").toString("base64url"),
+  decode(s: string): RunKey | undefined {
+    try {
+      const v: unknown = JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
+      if (!Array.isArray(v) || v.length !== 4) return undefined;
+      const [at, goal, step, round] = v as unknown[];
+      if (typeof at !== "number" || !Number.isFinite(at) || typeof goal !== "string" || typeof step !== "string" || typeof round !== "number" || !Number.isInteger(round)) return undefined;
+      return { at, goal, step, round };
+    } catch {
+      return undefined;
+    }
+  },
+};
 
 export class HubError extends Error {
   status: number;
@@ -945,7 +973,13 @@ export class HubService {
         if (r.user !== actor.userId && !admin) throw new HubError(403, `round ${b.round} of ${step.id} is by ${r.user}`);
         if (b.telemetry || b.branch) {
           const now = this.now();
-          const round: Round = { ...r, ...(b.telemetry ? { telemetry: b.telemetry } : {}), ...(b.branch ? { branch: b.branch } : {}) };
+          const round: Round = {
+            ...r,
+            ...(b.telemetry ? { telemetry: b.telemetry } : {}),
+            ...(b.branch ? { branch: b.branch } : {}),
+            // RL-11: the machine that ran it.
+            ...(b.telemetry && actor.machineId ? { machine: actor.machineId } : {}),
+          };
           out = { ...step, rounds: (step.rounds ?? []).map((x) => (x.n === b.round ? round : x)), ...(b.branch ? { branch: b.branch } : {}), updatedAt: now };
           await this.saveStepFrom(out, step);
         }
@@ -3506,15 +3540,16 @@ export class HubService {
   }
 
   /** `POST /v1/pulses/:id/fire`: a manual slot now (also while paused); `nextAt` is not changed. */
-  async firePulse(actor: Actor, id: string): Promise<FireResult> {
+  async firePulse(actor: Actor, id: string, b: PulseFire = {}): Promise<FireResult> {
     const now = this.now();
     const slotId = manualSlot(now);
+    const trial = b.trial === true;
     try {
       return {
         slot: await this.goalTx(async () => {
           const p = await this.pulseOr404(id);
           HubService.ownerOrAdmin(actor, p);
-          return await this.fireSlot(p, slotId, now, now, { manual: true, by: actor.userId, via: actor.via });
+          return await this.fireSlot(p, slotId, now, now, { manual: true, by: actor.userId, via: actor.via, trial });
         }),
       };
     } catch (e) {
@@ -3523,7 +3558,7 @@ export class HubService {
       return {
         slot: await this.goalTx(async () => {
           const p = await this.pulseOr404(id);
-          const slot: PulseSlot = { pulse: p.id, slot: slotId, at: now, state: "missed", reason: "error", manual: true, by: actor.userId, error, tried: [], decidedAt: now };
+          const slot: PulseSlot = { pulse: p.id, slot: slotId, at: now, state: "missed", reason: "error", manual: true, by: actor.userId, ...(trial ? { trial: true as const } : {}), error, tried: [], decidedAt: now };
           if (await this.store.addSlot(slot)) await this.emit({ type: "pulse.missed", payload: { pulse: p.id, slot: slotId, reason: "error", tried: 0, error } });
           return (await this.store.getSlot(p.id, slotId)) ?? slot;
         }),
@@ -3581,6 +3616,8 @@ export class HubService {
       extra: Record<string, unknown>;
       /** RL-6: set on calibration goals only. */
       calibration?: GoalCalibration | undefined;
+      /** RL-11: a trial fire's goal. */
+      trial?: boolean | undefined;
     },
     now: number,
   ): Promise<Goal> {
@@ -3597,6 +3634,7 @@ export class HubService {
       profiles: o.profiles,
       ...(Object.keys(o.agents).length ? { agents: o.agents } : {}),
       ...(o.calibration ? { calibration: o.calibration } : {}),
+      ...(o.trial ? { trial: true as const } : {}),
       createdAt: now,
       updatedAt: now,
     });
@@ -3631,6 +3669,9 @@ export class HubService {
     counted: Counted[];
     status: ReturnType<typeof calibrationStatus>;
     goals: Goal[];
+    /** RL-11: counted dismissals of trial goals too (`counted` leaves them out). */
+    countedAll: Counted[];
+    trialGoals: Set<string>;
   }> {
     const steps = await this.store.listSteps({});
     const reviews = await this.store.listReviews({ raising: true });
@@ -3645,9 +3686,12 @@ export class HubService {
     }
     const entries = flagEntries(rows, (lineage, fp) => history.get(`${lineage}\n${fp}`) ?? []);
     const raising = raisingAgents(reviews);
-    const counted = countedDismissals(entries, raising);
+    const countedAll = countedDismissals(entries, raising);
     const goals = await this.store.listGoals();
-    return { steps, reviews, entries, raising, counted, status: calibrationStatus(goals), goals };
+    // RL-11: calibration never counts dismissals made in trial goals.
+    const trialGoals = new Set(goals.filter((g) => g.trial === true).map((g) => g.id));
+    const counted = countedAll.filter((c) => !trialGoals.has(c.ref.goal));
+    return { steps, reviews, entries, raising, counted, status: calibrationStatus(goals), goals, countedAll, trialGoals };
   }
 
   /** The catalog definition of an agent hash: the first source by repo id with a matching definition (any commit). */
@@ -3687,7 +3731,7 @@ export class HubService {
     // 1. The catalog source's calibrator.
     if (found?.source.calibrator && (await exists(found.source.calibrator))) return { user: found.source.calibrator, repo };
     // 2. The owner of the newest pulse goal that ran the agent key (any hash).
-    const pulseGoals = new Map(scan.goals.filter((g) => g.refs?.pulse !== undefined).map((g) => [g.id, g] as const));
+    const pulseGoals = new Map(scan.goals.filter((g) => g.refs?.pulse !== undefined && g.trial !== true).map((g) => [g.id, g] as const));
     let best: { at: number; owner: string } | undefined;
     for (const s of scan.steps) {
       const g = pulseGoals.get(s.goal);
@@ -3761,8 +3805,124 @@ export class HubService {
     await this.calibrationTrigger({ key: c.key, hash: c.hash }, at ?? this.now());
   }
 
+  /** RL-11 `GET /v1/runs`: headless runs that closed a round, newest first, with raw waste parts. */
+  async listRuns(q: {
+    since?: string | undefined;
+    until?: string | undefined;
+    goal?: string | undefined;
+    pulse?: string | undefined;
+    repo?: string | undefined;
+    agent?: string | undefined;
+    user?: string | undefined;
+    trial?: string | undefined;
+    limit?: string | undefined;
+    cursor?: string | undefined;
+  }): Promise<RunsPage> {
+    const time = (name: string, v: string | undefined): number | undefined => {
+      if (v === undefined) return undefined;
+      const bad = () => new HubError(400, `${name} must be milliseconds since the epoch or an ISO time`);
+      if (/^\d{1,15}$/.test(v)) return Number(v);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(v)) throw bad();
+      const t = Date.parse(v);
+      if (Number.isNaN(t)) throw bad();
+      return t;
+    };
+    const sinceGiven = time("since", q.since);
+    const until = time("until", q.until);
+    if (sinceGiven !== undefined && until !== undefined && sinceGiven >= until) throw new HubError(400, "since must be before until");
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include" && trial !== "only") throw new HubError(400, "trial must be exclude, include or only");
+    let limit = 200;
+    if (q.limit !== undefined) {
+      limit = /^\d{1,4}$/.test(q.limit) ? Number(q.limit) : NaN;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new HubError(400, "limit must be a whole number from 1 to 1000");
+    }
+    const after = q.cursor === undefined ? undefined : runCursor.decode(q.cursor);
+    if (q.cursor !== undefined && after === undefined) throw new HubError(400, "cursor is not valid");
+    const since = sinceGiven ?? this.now() - 30 * 86_400_000;
+    return await this.store.tx(async () => {
+      // A step's updatedAt is at least the finishedAt of each of its rounds.
+      const steps = await this.store.listSteps({ updatedSince: since, ...(q.goal !== undefined ? { goal: q.goal } : {}) });
+      const goals = new Map<string, Goal | undefined>();
+      const goalOf = async (id: string) => {
+        if (!goals.has(id)) goals.set(id, await this.store.getGoal(id));
+        return goals.get(id);
+      };
+      const picked: { step: Step; goal: Goal; round: Round & { telemetry: RunTelemetry } }[] = [];
+      for (const step of steps) {
+        // The store drops an empty goal filter; an empty or unknown goal gives no rows.
+        if (q.goal !== undefined && step.goal.toLowerCase() !== q.goal.toLowerCase()) continue;
+        if (q.repo !== undefined && step.repo !== q.repo) continue;
+        for (const round of step.rounds ?? []) {
+          const t = round.telemetry;
+          if (!t || round.finishedAt < since || (until !== undefined && round.finishedAt >= until)) continue;
+          if (q.agent !== undefined && t.agentKey !== q.agent) continue;
+          if (q.user !== undefined && round.user !== q.user) continue;
+          const goal = await goalOf(step.goal);
+          if (!goal) continue;
+          if (q.pulse !== undefined && goal.refs?.pulse !== q.pulse) continue;
+          const isTrial = goal.trial === true;
+          if ((trial === "exclude" && isTrial) || (trial === "only" && !isTrial)) continue;
+          picked.push({ step, goal, round: round as Round & { telemetry: RunTelemetry } });
+        }
+      }
+      const keyOf = (x: (typeof picked)[number]) => ({ at: x.round.finishedAt, goal: x.goal.id, step: x.step.id, round: x.round.n });
+      picked.sort((a, b) => runCursor.cmp(keyOf(a), keyOf(b)));
+      const rest = after === undefined ? picked : picked.filter((x) => runCursor.cmp(keyOf(x), after) > 0);
+      const page = rest.slice(0, limit);
+      const runs: RunRow[] = [];
+      for (const x of page) runs.push(await this.runRow(x.step, x.goal, x.round));
+      const last = page.at(-1);
+      return { runs, ...(rest.length > limit && last ? { next: runCursor.encode(keyOf(last)) } : {}) };
+    });
+  }
+
+  /** One `RunRow` (inside a transaction): the round's step, goal, raising record and its items now. */
+  private async runRow(step: Step, goal: Goal, round: Round & { telemetry: RunTelemetry }): Promise<RunRow> {
+    const t = round.telemetry;
+    const rec = (await this.store.listReviews({ step: step.id, raising: true })).find((r) => r.round === round.n);
+    let items: RunItems | undefined;
+    if (rec) {
+      items = { raised: 0, open: 0, confirmed: 0, accepted: 0, dismissed: 0, deferred: 0, resolved: 0 };
+      for (const fp of new Set(rec.record.items.map((i) => i.fp))) {
+        items.raised++;
+        const row = await this.store.getItem(rec.lineage, fp);
+        if (row) items[row.state]++;
+      }
+    }
+    return {
+      runId: t.runId,
+      goal: goal.id,
+      step: step.id,
+      round: round.n,
+      kind: step.kind,
+      repo: step.repo,
+      ...(round.branch !== undefined ? { branch: round.branch } : {}),
+      user: round.user,
+      owner: goal.ownerId,
+      ...(round.machine !== undefined ? { machine: round.machine } : {}),
+      ...(goal.refs?.pulse !== undefined ? { pulse: goal.refs.pulse } : {}),
+      ...(goal.refs?.slot !== undefined ? { slot: goal.refs.slot } : {}),
+      trial: goal.trial === true,
+      ...(round.startedAt !== undefined ? { startedAt: round.startedAt } : {}),
+      finishedAt: round.finishedAt,
+      outcome: round.outcome,
+      telemetry: t,
+      ...(round.fold ? { fold: round.fold } : {}),
+      ...(items ? { items } : {}),
+      waste: {
+        failed: round.outcome === "fail",
+        overBudget: t.exit === "killed_budget",
+        denials: t.permissionDenials.count,
+        allDismissed: items !== undefined && items.raised > 0 && items.dismissed === items.raised,
+      },
+      artifacts: round.artifactIds ?? [],
+    };
+  }
+
   /** `GET /v1/agents/:key/stats`: an agent key's statistics per hash. */
-  async agentStats(key: string, daysRaw: string | undefined): Promise<AgentStats> {
+  async agentStats(key: string, daysRaw: string | undefined, trialRaw?: string | undefined): Promise<AgentStats> {
+    if (trialRaw !== undefined && trialRaw !== "exclude" && trialRaw !== "include") throw new HubError(400, "trial must be exclude or include");
     let days = 30;
     if (daysRaw !== undefined) {
       days = /^\d+$/.test(daysRaw) ? Number(daysRaw) : NaN;
@@ -3772,7 +3932,8 @@ export class HubService {
     return await this.store.tx(async () => {
       const scan = await this.calibrationScan();
       const since = this.now() - days * 86_400_000;
-      return computeAgentStats({ key, days, since, threshold: this.config.calibration.threshold, ...scan });
+      const { countedAll, trialGoals, ...rest } = scan;
+      return computeAgentStats({ key, days, since, threshold: this.config.calibration.threshold, ...rest, counted: countedAll, trialGoals, includeTrial: trialRaw === "include" });
     });
   }
 
@@ -4757,7 +4918,7 @@ export class HubService {
    * window is over, abandon started goals past `maxGoalAge`, skip on overlap, else create the goal
    * and make one attempt.
    */
-  private async fireSlot(p: Pulse, slotId: string, at: number, now: number, o: { manual?: boolean; by?: string; via?: string | undefined; catchUp?: boolean }): Promise<PulseSlot> {
+  private async fireSlot(p: Pulse, slotId: string, at: number, now: number, o: { manual?: boolean; by?: string; via?: string | undefined; catchUp?: boolean; trial?: boolean }): Promise<PulseSlot> {
     const base: PulseSlot = {
       pulse: p.id,
       slot: slotId,
@@ -4765,6 +4926,7 @@ export class HubService {
       state: "fired",
       ...(o.manual ? { manual: true as const, ...(o.by !== undefined ? { by: o.by } : {}) } : {}),
       ...(o.catchUp ? { catchUp: true as const } : {}),
+      ...(o.trial ? { trial: true as const } : {}),
       tried: [],
       decidedAt: now,
     };
@@ -4788,7 +4950,8 @@ export class HubService {
       for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
         if (s.slot === slotId || s.goal === undefined) continue;
         const g = await this.store.getGoal(s.goal);
-        if (!g || g.state === "done" || g.state === "dropped") continue;
+        // RL-11: a trial goal never blocks a slot.
+        if (!g || g.state === "done" || g.state === "dropped" || g.trial === true) continue;
         // Only machine work blocks: a goal parked on its owner (a debrief, an interactive step) does not.
         if (overlapBusy(await this.store.listSteps({ goal: g.id }), await this.runStepOf(g)) !== undefined) {
           running = g.id;
@@ -4796,7 +4959,7 @@ export class HubService {
         }
       }
       if (running !== undefined) {
-        const skipped: PulseSlot = { ...base, state: "skipped", reason: "overlap" };
+        const skipped: PulseSlot = { ...base, state: "skipped", reason: "overlap", running };
         await this.store.saveSlot(skipped);
         await this.emit({ type: "pulse.skipped", payload: { pulse: p.id, slot: slotId, reason: "overlap", running } });
         return skipped;
@@ -4814,7 +4977,8 @@ export class HubService {
         priority: 3,
         refs: { pulse: p.id, slot: slotId },
         comment: `pulse ${p.id} (preset ${p.preset.name} ${p.preset.sha256.slice(0, 12)})`,
-        extra: { pulse: p.id, slot: slotId },
+        extra: { pulse: p.id, slot: slotId, ...(o.trial ? { trial: true } : {}) },
+        ...(o.trial ? { trial: true } : {}),
       },
       now,
     );
@@ -4824,7 +4988,7 @@ export class HubService {
       type: "pulse.fired",
       ...(o.manual && o.by !== undefined ? { user: o.by } : {}),
       goal: goal.id,
-      payload: { pulse: p.id, slot: slotId, ...(o.manual ? { manual: true } : {}), ...(o.catchUp ? { catchUp: true } : {}), ...(o.via ? { via: o.via } : {}) },
+      payload: { pulse: p.id, slot: slotId, ...(o.manual ? { manual: true } : {}), ...(o.catchUp ? { catchUp: true } : {}), ...(o.trial ? { trial: true } : {}), ...(o.via ? { via: o.via } : {}) },
     });
     const rsId = await this.runStepOf(goal);
     const rs = rsId ? await this.store.getStep(rsId) : undefined;

@@ -185,7 +185,7 @@ your person.
 | \`mesh session accept <session> --from <rules>\` | whose offers a session accepts automatically (\`--off\`, \`--clear\`) |
 | \`mesh profile ls\` | permission profiles for headless steps; \`mesh profile add <name> --file F\` registers one |
 | \`mesh artifact ls <goal>\` | reports stored on the hub; \`mesh artifact show <id>\` prints one |
-| \`mesh pulse add --preset <name> --repo <repo> --every 7d\` | run a preset on a schedule (\`--cron "<5 fields>" --tz <zone>\`); \`mesh pulse ls\`, \`show\`, \`fire\`, \`pause\`, \`rm\`; \`add\` and \`update\` warn (stderr, still saved) when a named agent is flagged invalid in the roster |
+| \`mesh pulse add --preset <name> --repo <repo> --every 7d\` | run a preset on a schedule (\`--cron "<5 fields>" --tz <zone>\`); \`mesh pulse ls\`, \`show\`, \`fire\` (\`--trial\` while tuning an agent: left out of statistics and calibration, never blocks a slot), \`pause\`, \`rm\`; \`add\` and \`update\` warn (stderr, still saved) when a named agent is flagged invalid in the roster |
 | \`mesh goal ls --pulses\` | goal lists including goals made by pulses |
 | \`mesh goal drop <goal>\` | end a goal (\`--reason "…"\`; its owner, an approver or an admin; no step may be held) |
 | \`mesh items sink <lineage> --topic <t>\` | add a lineage's filed items to its clean-audit goal (\`--min-severity S2\`, \`--dry-run\`) |

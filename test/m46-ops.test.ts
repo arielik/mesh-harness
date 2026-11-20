@@ -2,6 +2,7 @@
 // copied into Postgres). The probe tests run on SQLite; the Postgres legs run when MESH_TEST_PG_URL
 // is set (see test/helpers/pg.ts).
 
+import pkg from "../package.json" with { type: "json" };
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,14 +66,17 @@ const tmp = () => {
 describe("probes", () => {
   it("/healthz and /readyz answer without auth when the database is up and migrated", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true } });
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
+    // RL-11 AC-14: the probes carry the hub's version; /healthz its schema and features too.
+    const live = { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["runs", "trial"] };
+    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: live });
+    expect(await call(hub, "GET", "/health")).toEqual({ status: 200, json: live });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION, version: pkg.version } });
   });
 
   // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9; RL-3 AC-05 (migration 10) to 10; RL-5 AC-03 (migration 11) to 11.
   it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08, RL-3 AC-05, RL-5 AC-03)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 11 } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 11, version: pkg.version } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
@@ -82,9 +86,10 @@ describe("probes", () => {
     const r = await call(hub, "GET", "/readyz");
     expect(r.status).toBe(503);
     expect(r.json.error).toMatch(/schema version/);
+    expect(r.json.version).toBe(pkg.version);
     // A newer release migrated the shared database (rolling upgrade): this replica keeps serving.
     await hub.svc.store.db.run("UPDATE schema_version SET version = ?", HubStore.SCHEMA_VERSION + 1);
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION + 1 } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION + 1, version: pkg.version } });
     await hub.svc.store.db.run("UPDATE schema_version SET version = ?", HubStore.SCHEMA_VERSION);
     hub.svc.draining = true;
     expect((await call(hub, "GET", "/readyz")).status).toBe(503);
@@ -98,12 +103,14 @@ describe("probes", () => {
     const r = await call(hub, "GET", "/readyz");
     expect(r.status).toBe(503);
     expect(r.json.error).toMatch(/database unreachable/);
-    expect((await call(hub, "GET", "/healthz")).status).toBe(200);
+    expect(r.json.version).toBe(pkg.version);
+    // RL-11 AC-14: liveness reads nothing from the database.
+    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["runs", "trial"] } });
   });
 
   it.skipIf(!PG_URL)("/readyz on Postgres", async () => {
     const hub = await start(await pgdb.fresh());
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION, version: pkg.version } });
   });
 });
 

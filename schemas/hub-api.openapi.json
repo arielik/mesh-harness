@@ -76,7 +76,35 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "schema": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "features": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "version",
+                    "schema",
+                    "features"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -88,7 +116,7 @@
     "/healthz": {
       "get": {
         "operationId": "getHealthz",
-        "summary": "Liveness: the process answers.",
+        "summary": "Liveness: the process answers, with the hub's version, the schema it migrates to and its features (no database read).",
         "description": "No authentication.",
         "tags": [
           "probes"
@@ -99,7 +127,35 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "schema": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "features": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "version",
+                    "schema",
+                    "features"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -111,7 +167,7 @@
     "/readyz": {
       "get": {
         "operationId": "getReadyz",
-        "summary": "Readiness: the database answers and is migrated (503 until then).",
+        "summary": "Readiness: the database answers and is migrated (503 until then); carries the hub's version.",
         "description": "No authentication.",
         "tags": [
           "probes"
@@ -122,7 +178,29 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "schema": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "version"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -2403,7 +2481,7 @@
     "/v1/pulses/{id}/fire": {
       "post": {
         "operationId": "postVPulsesIdFire",
-        "summary": "Fire a manual slot now (also while paused); the schedule is unchanged.",
+        "summary": "Fire a manual slot now (also while paused); the schedule is unchanged. `trial: true` fires a trial (left out of statistics, calibration and runs; never blocks a slot).",
         "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `pulses:write`.",
         "tags": [
           "goals"
@@ -2436,6 +2514,23 @@
             }
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "trial": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "OK",
@@ -2446,6 +2541,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
           },
           "401": {
             "description": "Login required."
@@ -4230,6 +4328,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "trial",
+            "in": "query",
+            "required": false,
+            "description": "exclude (default) or include: count the work of trial goals in the windowed counts",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4239,6 +4346,514 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "operationId": "getVRuns",
+        "summary": "Headless runs that closed a round, newest first: telemetry, item states now and raw waste parts.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "analysis"
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "finishedAt from (ms since the epoch or an ISO time); default now - 30 days",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "finishedAt before (ms since the epoch or an ISO time)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "goal",
+            "in": "query",
+            "required": false,
+            "description": "only this goal",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pulse",
+            "in": "query",
+            "required": false,
+            "description": "only goals of this pulse",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "description": "only steps in this repo",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent",
+            "in": "query",
+            "required": false,
+            "description": "only runs of this agent key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "required": false,
+            "description": "only runs as this user",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trial",
+            "in": "query",
+            "required": false,
+            "description": "exclude (default), include or only",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1-1000, default 200",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "the next of the previous page",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "runId": {
+                            "type": "string"
+                          },
+                          "goal": {
+                            "type": "string"
+                          },
+                          "step": {
+                            "type": "string"
+                          },
+                          "round": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "design",
+                              "spec",
+                              "plan",
+                              "implement",
+                              "test",
+                              "verify",
+                              "review",
+                              "merge",
+                              "gate",
+                              "docs"
+                            ]
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "branch": {
+                            "type": "string"
+                          },
+                          "user": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string"
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "pulse": {
+                            "type": "string"
+                          },
+                          "slot": {
+                            "type": "string"
+                          },
+                          "trial": {
+                            "type": "boolean"
+                          },
+                          "startedAt": {
+                            "type": "number"
+                          },
+                          "finishedAt": {
+                            "type": "number"
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "enum": [
+                              "done",
+                              "fail"
+                            ]
+                          },
+                          "telemetry": {
+                            "type": "object",
+                            "properties": {
+                              "runId": {
+                                "type": "string"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "agentKey": {
+                                "type": "string"
+                              },
+                              "agentHash": {
+                                "type": "string"
+                              },
+                              "profile": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9][a-z0-9+._-]{0,39}$"
+                              },
+                              "profileHash": {
+                                "type": "string"
+                              },
+                              "sessionId": {
+                                "type": "string"
+                              },
+                              "turns": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "turnsApprox": {
+                                "type": "boolean"
+                              },
+                              "tokensIn": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "tokensOut": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "cacheRead": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "cacheWrite": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "costUsdEstimate": {
+                                "type": "number"
+                              },
+                              "durationMs": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "exit": {
+                                "type": "string",
+                                "pattern": "^(success|error_[a-z_]+|killed_budget|crashed|no_result)$"
+                              },
+                              "permissionDenials": {
+                                "type": "object",
+                                "properties": {
+                                  "count": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "tools": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "count",
+                                  "tools"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "tools": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "mcpServers": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "toolsUsed": {
+                                "minItems": 1,
+                                "maxItems": 200,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 200
+                                }
+                              },
+                              "denied": {
+                                "minItems": 1,
+                                "maxItems": 50,
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "tool": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 200
+                                    },
+                                    "command": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 64
+                                    },
+                                    "count": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "tool",
+                                    "count"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "undeclaredRules": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "redactions": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "runId",
+                              "profile",
+                              "profileHash",
+                              "turns",
+                              "turnsApprox",
+                              "tokensIn",
+                              "tokensOut",
+                              "cacheRead",
+                              "cacheWrite",
+                              "durationMs",
+                              "exit",
+                              "permissionDenials",
+                              "undeclaredRules",
+                              "redactions"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "fold": {
+                            "type": "object",
+                            "properties": {
+                              "new": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "repeat": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "regression": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "resolved": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "carried": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "new",
+                              "repeat",
+                              "regression",
+                              "resolved",
+                              "carried"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "raised": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "open": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "confirmed": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "accepted": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "dismissed": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "deferred": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "resolved": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "raised",
+                              "open",
+                              "confirmed",
+                              "accepted",
+                              "dismissed",
+                              "deferred",
+                              "resolved"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "waste": {
+                            "type": "object",
+                            "properties": {
+                              "failed": {
+                                "type": "boolean"
+                              },
+                              "overBudget": {
+                                "type": "boolean"
+                              },
+                              "denials": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "allDismissed": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "failed",
+                              "overBudget",
+                              "denials",
+                              "allDismissed"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "artifacts": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "runId",
+                          "goal",
+                          "step",
+                          "round",
+                          "kind",
+                          "repo",
+                          "user",
+                          "owner",
+                          "trial",
+                          "finishedAt",
+                          "outcome",
+                          "telemetry",
+                          "waste",
+                          "artifacts"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "next": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "runs"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -5693,6 +6308,46 @@
                         "type": "array",
                         "items": {
                           "type": "string"
+                        }
+                      },
+                      "toolsUsed": {
+                        "minItems": 1,
+                        "maxItems": 200,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        }
+                      },
+                      "denied": {
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "tool": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "command": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64
+                            },
+                            "count": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "tool",
+                            "count"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "undeclaredRules": {

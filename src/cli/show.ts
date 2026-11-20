@@ -22,7 +22,7 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
   const lines: string[] = [];
   const visible = d.steps.filter((s) => s.state !== "dropped");
   const done = visible.filter((s) => s.state === "done" || s.state === "skipped").length;
-  lines.push(paint("1", `${g.id} · ${g.title}`));
+  lines.push(paint("1", `${g.id} · ${g.title}${g.trial ? " (trial)" : ""}`));
   lines.push(`${g.state.replace(/_/g, " ")} · owner @${g.ownerId} · ${done}/${visible.length} steps done${g.primaryRepo ? ` · ${g.primaryRepo}` : ""}`);
   if (g.topics?.length) lines.push(`topics: ${g.topics.join(", ")}`);
   // RL-9: a clean-audit goal's finding steps by severity.

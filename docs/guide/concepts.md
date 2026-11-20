@@ -270,13 +270,47 @@ Each headless run reports `round.telemetry` to the hub (`POST /v1/steps/:id/run`
 and `profileHash`, `sessionId`, `turns`, `tokensIn`, `tokensOut`, `cacheRead`, `cacheWrite`,
 `costUsdEstimate`, `durationMs`, `exit` (`success`, an `error_*` subtype of the CLI's result,
 `killed_budget`, `crashed`, `no_result`), `permissionDenials` (count and tools), `tools`,
-`mcpServers` and `redactions`.
+`mcpServers` and `redactions`; from 0.1.30 also `toolsUsed` and `denied`.
+- **`toolsUsed`** (0.1.30): the tool names the run called, the main agent and its subagents alike,
+  sorted (UTF-16 code-unit order) and distinct, at most 200, each cut to 200 characters. Compared
+  with `tools` (what the run was offered) it shows the surface a profile could drop.
+- **`denied`** (0.1.30): the run's permission denials grouped by tool and, for `Bash` only, the
+  **first word** of the denied command (after leading `NAME=value` words, without its directory, at
+  most 64 characters), each with a `count`, most frequent first, at most 50 groups. The rest of the
+  command line, other tools' inputs and the denial messages are never sent. `permissionDenials.count`
+  still counts every denial.
 - **Complete** when the run's stream ends with Claude Code's `result` event: the numbers are the
   CLI's own.
 - **Partial** otherwise (killed, crashed): `turns` counts distinct assistant messages and is marked
   `turnsApprox: true`, tokens are summed once per message, `durationMs` comes from the daemon and
   there is no cost.
 - The cost is the client's estimate (`total_cost_usd`), not a bill.
+- The round also records the **machine** that ran it (`round.machine`, from 0.1.30).
+
+## Runs
+
+`GET /v1/runs` (0.1.30; scope `goals:read`) lists headless runs that closed a round, newest first:
+one row per round with telemetry, joined to its step (`kind`, `repo`, `branch`), its goal (`owner`,
+`pulse`, `slot`, `trial`), the person it ran as (`user`), the machine, `startedAt`, `finishedAt`,
+`outcome`, the stored `telemetry`, the round's `fold`, the round's `artifacts`, and `items`: for a
+raising step, how many items its record listed (`raised`) and how many of them are in each state
+**now** (`open`, `confirmed`, `accepted`, `dismissed`, `deferred`, `resolved`).
+
+- **Waste parts, no score.** `waste` holds raw parts only: `failed` (the round's outcome is `fail`;
+  `telemetry.exit` keeps the raw cause, and `no_result` is also the normal exit of a run stopped after
+  its accepted `mesh_done`), `overBudget` (killed for its budget), `denials` (the count) and
+  `allDismissed` (the record listed items and all of them are dismissed now). Which part is waste
+  for you is a judgement the hub leaves to its readers, so it computes no single score.
+- **Filters:** `since` and `until` (finishedAt in `[since, until)`, milliseconds or an ISO time;
+  `since` defaults to 30 days ago), `goal`, `pulse`, `repo`, `agent` (agent key), `user`, `trial`
+  (`exclude` by default, `include`, `only`), `limit` (1-1000, default 200) and `cursor` (the `next`
+  of the previous page; ties on `finishedAt` are ordered by goal, step and round).
+- **Poll with an overlap.** A row appears once its telemetry is stored, which is after the round
+  closed (the daemon pushes and stores the transcript first, later still when it was offline), but
+  the row is placed at its earlier `finishedAt`. A reader that polls with `since=<its last poll>`
+  can miss rows: poll with an overlap (for example a day) and de-duplicate by `runId`.
+- A run whose `mesh_done` was refused (the step was released or taken) closes no round and has no
+  row; it is still a `run.finished` event.
 
 ## Review records
 
@@ -440,6 +474,16 @@ anyway. A started goal older than `--max-goal-age`
 (default twice the period) is dropped at the next slot, which is recorded `abandoned`; a goal that
 never started is ended by its window instead.
 
+**Trial fires** (0.1.30). `mesh pulse fire <id> --trial` (`POST /v1/pulses/:id/fire` with `{"trial":
+true}`) fires a manual slot marked `trial`; its goal has `trial: true`, and `pulse.fired` and
+`goal.created` carry `trial: true`. A trial goal never makes a slot skip for overlap (a trial fire is
+itself skipped while a goal that is not a trial has machine work). Trial goals are left out of agent
+statistics and `GET /v1/runs` unless asked for, and their dismissals never count toward calibration.
+They still use machines: a trial run that holds a runner's headless capacity can make a scheduled
+slot's offer come back `capacity`. Their records fold, file and sink like any other, so decisions you
+make in a trial goal stick on the lineage's items. Every slot skipped for overlap records the goal
+that was running (`running`).
+
 **Downtime.** Slots that passed while the hub was down are recorded `missed`/`hub_down` (the 10
 latest at most). The latest one still fires when its window has not ended; with `--missed
 catch-up-once` it fires anyway (marked `catchUp`), with the default `record` it does not.
@@ -576,6 +620,11 @@ any person's: a later agent disposition of the item in the same goal is ignored.
 carry answers, reasons or titles; notes and the item history do (team-visible).
 
 ## Calibration
+
+**Trial goals** (0.1.30). Dismissals recorded in a trial goal (a pulse's trial fire) never count:
+not toward the threshold, not in the dismissals a calibration goal lists. Which goal a dismissal
+belongs to is the goal of the step that recorded it, whatever goal first raised the item. The
+calibrator choice (the newest pulse goal that ran the key) skips trial goals.
 
 **Counted dismissal.** Each dismissal of an item counts against the agent that raised it: the
 agent of the newest raising record of the item's lineage in that goal (the run's record). Both
@@ -729,6 +778,14 @@ released). After a clean-audit goal is dropped, the next sink opens a new one.
 `%2F`; `days` 1-365, default 30) sums, per agent hash, everything since `now − days`: the window is
 read from round `finishedAt`, review record `at` and disposition `at` (events are not used). The web
 Roster shows the same numbers per group (**Stats**).
+
+**Trial goals** (0.1.30). By default the statistics leave out the work of trial goals: runs (a run
+belongs to its step's goal), review records (`record.goal`), dispositions (the goal of the step that
+recorded them, whatever goal first raised the item) and reinstatements (the goal of the agent's
+dismissal, not of the person's later decision). `?trial=include` counts them in the windowed counts.
+`uncalibrated`, `calibrating` and `calibrated` (no window) never count trial dismissals, under both
+values, because calibration never does; `lastAt` follows the included activity. A hash used only in
+trial goals is not shown by default.
 
 | Field | Meaning |
 |---|---|

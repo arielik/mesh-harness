@@ -148,6 +148,10 @@ export const PulseSlot = z.object({
   /** Manual: the caller. */
   by: z.string().optional(),
   catchUp: z.literal(true).optional(),
+  /** RL-11: a trial fire (`mesh pulse fire --trial`). */
+  trial: z.literal(true).optional(),
+  /** RL-11: a slot skipped for overlap: the goal that was running. */
+  running: z.string().optional(),
   firedAt: z.number().optional(),
   /** Fired slots: the end of the window. */
   until: z.number().optional(),
@@ -220,6 +224,10 @@ export interface PulseDetail {
   /** State of each goal named by those slots. */
   goals: Record<string, GoalState>;
 }
+
+/** RL-11: the optional body of `POST /v1/pulses/:id/fire`. */
+export const PulseFire = z.object({ trial: z.boolean().optional() }).strict();
+export type PulseFire = z.infer<typeof PulseFire>;
 
 export interface FireResult {
   slot: PulseSlot;

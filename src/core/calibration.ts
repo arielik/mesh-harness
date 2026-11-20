@@ -192,8 +192,14 @@ export function agentStats(o: {
   counted: readonly Counted[];
   status: ReadonlyMap<string, Exclude<CalibrationStatus, "uncalibrated">>;
   goals: readonly Goal[];
+  /** RL-11: ids of trial goals. Their runs, records and dispositions count only with `includeTrial`; the no-window calibration counts never count them. */
+  trialGoals?: ReadonlySet<string> | undefined;
+  includeTrial?: boolean | undefined;
 }): AgentStats {
   const { key, since } = o;
+  const trial = o.trialGoals ?? new Set<string>();
+  /** Left out of the windowed counts. */
+  const out = (goal: string) => !o.includeTrial && trial.has(goal);
   const acc = new Map<string, HashAcc>();
   const of = (hash: string): HashAcc => {
     let a = acc.get(hash);
@@ -229,7 +235,7 @@ export function agentStats(o: {
 
   // Runs: rounds of headless steps with this agent key.
   for (const s of o.steps) {
-    if (s.policy?.mode !== "headless") continue;
+    if (s.policy?.mode !== "headless" || out(s.goal)) continue;
     for (const r of s.rounds ?? []) {
       const t = r.telemetry;
       if (!t || t.agentKey !== key || r.finishedAt < since) continue;
@@ -244,7 +250,7 @@ export function agentStats(o: {
 
   // Raising records of this agent key.
   for (const r of o.reviews) {
-    if (!r.raising || r.decider.kind !== "agent" || r.decider.key !== key || r.at < since) continue;
+    if (!r.raising || r.decider.kind !== "agent" || r.decider.key !== key || r.at < since || out(r.goal)) continue;
     const a = of(r.decider.hash ?? "");
     a.raised += new Set(r.record.items.map((i) => i.fp)).size;
     a.new += r.fold?.new ?? 0;
@@ -257,7 +263,7 @@ export function agentStats(o: {
   // Accepted: distinct (goal, lineage, fp) of non-reverted acceptances of items this key raised.
   const accepted = new Set<string>();
   for (const e of o.entries) {
-    if (e.disposition !== "accepted" || e.reverted || e.at < since) continue;
+    if (e.disposition !== "accepted" || e.reverted || e.at < since || out(e.goal)) continue;
     const agent = raisingAgentOf(o.raising, e.goal, e.lineage);
     if (!agent || agent.key !== key) continue;
     const k = `${agent.hash}\n${e.goal}\n${e.lineage}\n${e.fp}`;
@@ -271,12 +277,17 @@ export function agentStats(o: {
   // Counted dismissals of items this key raised.
   for (const c of o.counted) {
     if (c.raising.key !== key) continue;
+    const inTrial = trial.has(c.ref.goal);
+    if (inTrial && !o.includeTrial) continue;
     const a = of(c.raising.hash);
-    a.anyDismissalAt = a.anyDismissalAt === undefined ? c.ref.at : Math.max(a.anyDismissalAt, c.ref.at);
-    const st = statusOf(c, o.status);
-    if (st === "uncalibrated") a.uncalibrated++;
-    else if (st === "calibrating") a.calibrating++;
-    else a.calibrated++;
+    // RL-11: the no-window counts are the calibration list, which never holds trial dismissals.
+    if (!inTrial) {
+      a.anyDismissalAt = a.anyDismissalAt === undefined ? c.ref.at : Math.max(a.anyDismissalAt, c.ref.at);
+      const st = statusOf(c, o.status);
+      if (st === "uncalibrated") a.uncalibrated++;
+      else if (st === "calibrating") a.calibrating++;
+      else a.calibrated++;
+    }
     if (c.ref.at < since) continue;
     if (c.decider.kind === "agent") a.dismissedByAgents++;
     else a.dismissedByPeople++;
@@ -294,7 +305,7 @@ export function agentStats(o: {
     lastByItem.set(k, e);
   }
   for (const e of live) {
-    if (e.disposition !== "dismissed" || e.decider.kind !== "agent" || e.decider.key !== key) continue;
+    if (e.disposition !== "dismissed" || e.decider.kind !== "agent" || e.decider.key !== key || out(e.goal)) continue;
     const n = nextOf.get(e.ord);
     if (!n || n.decider.kind !== "person" || n.disposition === "dismissed" || n.at < since) continue;
     const a = of(e.decider.hash ?? "");

@@ -126,6 +126,8 @@ export const Goal = z.object({
   calibration: GoalCalibration.optional(),
   /** RL-9: set only on clean-audit goals (opened by the hub for a sink stage's repo and topic). */
   sink: z.object({ repo: z.string(), topic: z.string() }).optional(),
+  /** RL-11: made by a trial fire of a pulse (left out of statistics, calibration and runs by default). */
+  trial: z.literal(true).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -195,6 +197,20 @@ export const RunTelemetry = z.object({
   permissionDenials: z.object({ count: z.number().int(), tools: z.array(z.string()) }),
   tools: z.array(z.string()).optional(),
   mcpServers: z.array(z.string()).optional(),
+  /** RL-11: tool names the run called, strictly ascending. */
+  toolsUsed: z
+    .array(z.string().min(1).max(200))
+    .min(1)
+    .max(200)
+    .refine((xs) => xs.every((x, i) => i === 0 || (xs[i - 1] as string) < x), "toolsUsed must be sorted and distinct")
+    .optional(),
+  /** RL-11: permission denials grouped by tool and (Bash) the command's first word. */
+  denied: z
+    .array(z.object({ tool: z.string().min(1).max(200), command: z.string().min(1).max(64).optional(), count: z.number().int().min(1) }).strict())
+    .min(1)
+    .max(50)
+    .refine((xs) => new Set(xs.map((d) => `${d.tool}\n${d.command === undefined ? "-" : `+${d.command}`}`)).size === xs.length, "denied entries must be distinct by tool and command")
+    .optional(),
   /** 0 in S1. */
   undeclaredRules: z.number().int(),
   redactions: z.number().int(),
@@ -316,6 +332,8 @@ export const Round = z.object({
   fold: Fold.optional(),
   /** RL-4: the pre-read of a debrief step in this round (copied from `Step.read` at done). */
   read: z.object({ user: z.string(), at: z.number() }).optional(),
+  /** RL-11: the machine whose `finished` run report carried this round's telemetry. */
+  machine: z.string().optional(),
 });
 export type Round = z.infer<typeof Round>;
 

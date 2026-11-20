@@ -11,7 +11,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | Type | When | Payload |
 |---|---|---|
 | `user.logged_in` | a login | `provider`, `client`, `machine` |
-| `goal.created` | a new goal | `title`; goals made by a pulse or by ingest: `preset` (name), and for a pulse `pulse`, `slot`; a clean-audit goal opened by a sink: `sink` (`repo`, `topic`) |
+| `goal.created` | a new goal | `title`; goals made by a pulse or by ingest: `preset` (name), and for a pulse `pulse`, `slot`, and `trial: true` for a trial fire (0.1.30); a clean-audit goal opened by a sink: `sink` (`repo`, `topic`) |
 | `goal.replan` | the design is reopened | `comment` |
 | `goal.done` | the last step finished | — |
 | `goal.dropped` | a pulse dropped the goal (its slot was missed, or its goal was abandoned), or a person dropped it (`mesh goal drop`; `user`) | `reason` (`missed`, `abandoned`, `person`); for `person` also `by` and `comment` (the `--reason`, when given) |
@@ -45,7 +45,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.offer_withdrawn` | the offerer or an admin withdrew it, the offerer claimed the step, the step left `ready`, or a pulse moved on | `machine`, `reason` (`claimed by the offerer`, `step <state>`, `pulse: not accepted in time`, `pulse: slot missed`) |
 | `step.artifact` | an artifact was stored for a held step (`mesh_artifact`, a run's transcript); `user`, `sid` | `id`, `kind`, `round`, `bytes`, `sha256`, `redactions` (never the content) |
 | `run.started` | a machine started a headless run of the step | `runId`, `machine`, `profile`, `profileHash` (the profile the offer carried) |
-| `run.finished` | a headless run ended (after its close-as-fail, if any) | `runId`, `round` (absent when the run has no round of its own), `branch`, and the telemetry fields (`turns`, `turnsApprox`, tokens, `costUsdEstimate`, `durationMs`, `exit`, `permissionDenials`, …) |
+| `run.finished` | a headless run ended (after its close-as-fail, if any) | `runId`, `round` (absent when the run has no round of its own), `branch`, and the telemetry fields (`turns`, `turnsApprox`, tokens, `costUsdEstimate`, `durationMs`, `exit`, `permissionDenials`, `toolsUsed` and `denied` from 0.1.30, …) |
 | `profile.saved` | a permission profile was registered or replaced | `name`, `sha256`, `via` (the service that acted for `user`, when one did) |
 | `review.recorded` | a review record was stored (`mesh_review`); `user`, `sid` | `round`, `lineage`, `coverage`, `assessment`, `items` (unique fingerprints), `artifact`, `fold` (raising records: `new`, `repeat`, `regression`, `resolved`, `carried`), `dispositions` (applied), `ignored`, `already` (dispositions a debrief already recorded with `mesh_dispose`; `0` outside debriefs), `undeclaredRules` (never item titles, evidence, proposals or reasons) |
 | `item.disposed` | a consuming step's record set an item's disposition (one per applied disposition), or a debrief recorded a person's decision (`mesh_dispose`) | `lineage`, `fp`, `disposition`, `from`, `decider` (`agent` or `person`), `via` (`stage` or `debrief-session`), `round` (never the reason or the person's answer) |
@@ -60,7 +60,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `pulse.updated` | a pulse was changed, or a deleted topic was taken off it | `pulse`, `version`, `fields` (the changed body keys, sorted), `via` |
 | `pulse.paused` | the owner or an admin paused it; no `user` when the hub paused it because its owner is no longer a member | `pulse`, `reason`, `via` |
 | `pulse.resumed` / `pulse.deleted` | resumed / removed | `pulse`, `via` |
-| `pulse.fired` | a slot created a goal; `goal`, and `user` for a manual fire | `pulse`, `slot`, `manual`, `catchUp`, `via` |
+| `pulse.fired` | a slot created a goal; `goal`, and `user` for a manual fire | `pulse`, `slot`, `manual`, `catchUp`, `trial` (a trial fire, 0.1.30), `via` |
 | `pulse.skipped` | a slot was skipped while an earlier goal runs | `pulse`, `slot`, `reason` (`overlap`), `running` (that goal) |
 | `pulse.missed` | a slot was missed; `goal` when it had one | `pulse`, `slot`, `reason` (`no_machine`, `not_accepted`, `capacity`, `expired`, `hub_down`, `error`), `tried` (machines offered), `error` (reason `error` only) |
 | `pulse.abandoned` | a started goal older than `maxGoalAge` was dropped; `goal` | `pulse`, `slot` |

@@ -18,14 +18,15 @@ const USAGE = [
   "  mesh pulse ls [--mine] [--json]",
   "  mesh pulse show <id> [--json]",
   "  mesh pulse update <id> [any add flag except --paused]",
-  "  mesh pulse pause <id> | resume <id> | fire <id> | rm <id>",
+  "  mesh pulse pause <id> | resume <id> | rm <id>",
+  "  mesh pulse fire <id> [--trial]   # --trial: a trial run, left out of statistics, calibration and runs; never blocks a slot",
 ].join("\n");
 
 const VALUE_FLAGS = ["preset", "repo", "params", "every", "at", "cron", "tz", "title", "topics", "labels", "machines", "window", "overlap", "max-goal-age", "missed"];
 
 const iso = (t: number | undefined) => (t === undefined ? "-" : new Date(t).toISOString());
 const list = (v: string | undefined) => (v ?? "").split(",").map((x) => x.trim()).filter(Boolean);
-const stateText = (s: Pick<PulseSlot, "state" | "reason">) => `${s.state}${s.reason ? ` (${s.reason})` : ""}`;
+const stateText = (s: Pick<PulseSlot, "state" | "reason" | "trial">) => `${s.state}${s.reason ? ` (${s.reason})` : ""}${s.trial ? " (trial)" : ""}`;
 
 /** A usage error: printed, exit 2, nothing sent. */
 class Usage extends Error {}
@@ -248,18 +249,31 @@ export function pulseCommand(c: CliEnv): Command {
           }
           case "fire": {
             if (!id) break;
-            const { slot } = await hub().post<FireResult>(`/v1/pulses/${encodeURIComponent(id)}/fire`);
+            const trial = a.has("trial");
+            const { slot } = await hub().post<FireResult>(`/v1/pulses/${encodeURIComponent(id)}/fire`, trial ? { trial: true } : {});
+            // RL-11: a hub before 0.1.30 ignores the body and fires a normal slot.
+            if (trial && slot.trial !== true) {
+              c.io.err(
+                `The hub ignored --trial (it is older than 0.1.30): slot ${slot.slot} of pulse ${slot.pulse} is ${slot.state}${slot.goal ? ` with goal ${slot.goal}, a normal goal; drop it with: mesh goal drop ${slot.goal}` : ""}.`,
+              );
+              return 1;
+            }
+            const slotText = `${slot.slot}${slot.trial ? " (trial)" : ""}`;
             if (slot.state === "fired") {
-              c.io.out(`Fired pulse ${slot.pulse}: slot ${slot.slot} → ${slot.goal ?? "-"}.`);
+              c.io.out(`Fired pulse ${slot.pulse}: slot ${slotText} → ${slot.goal ?? "-"}.`);
               return 0;
             }
             if (slot.state === "skipped") {
-              const d = await hub().get<PulseDetail>(`/v1/pulses/${encodeURIComponent(slot.pulse)}`);
-              const running = d.slots.find((s) => s.state === "fired" && s.goal !== undefined && d.goals[s.goal] !== "done" && d.goals[s.goal] !== "dropped")?.goal ?? "a goal";
-              c.io.out(`Pulse ${slot.pulse} skipped slot ${slot.slot}: ${running} is still running (overlap: skip).`);
+              let running = slot.running;
+              if (running === undefined) {
+                // A hub before 0.1.30 does not say which goal was running: guess it from the slots.
+                const d = await hub().get<PulseDetail>(`/v1/pulses/${encodeURIComponent(slot.pulse)}`);
+                running = d.slots.find((s) => s.state === "fired" && s.goal !== undefined && d.goals[s.goal] !== "done" && d.goals[s.goal] !== "dropped")?.goal ?? "a goal";
+              }
+              c.io.out(`Pulse ${slot.pulse} skipped slot ${slotText}: ${running} is still running (overlap: skip).`);
               return 0;
             }
-            c.io.err(`Pulse ${slot.pulse} missed slot ${slot.slot}: ${slot.error ?? slot.reason ?? "unknown error"}`);
+            c.io.err(`Pulse ${slot.pulse} missed slot ${slotText}: ${slot.error ?? slot.reason ?? "unknown error"}`);
             return 1;
           }
           case "rm": {

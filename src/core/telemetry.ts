@@ -25,8 +25,70 @@ function events(stream: string): Obj[] {
 
 export type StreamTelemetry = Pick<
   RunTelemetry,
-  "model" | "sessionId" | "turns" | "turnsApprox" | "tokensIn" | "tokensOut" | "cacheRead" | "cacheWrite" | "costUsdEstimate" | "durationMs" | "exit" | "permissionDenials" | "tools" | "mcpServers"
+  | "model"
+  | "sessionId"
+  | "turns"
+  | "turnsApprox"
+  | "tokensIn"
+  | "tokensOut"
+  | "cacheRead"
+  | "cacheWrite"
+  | "costUsdEstimate"
+  | "durationMs"
+  | "exit"
+  | "permissionDenials"
+  | "tools"
+  | "mcpServers"
+  | "toolsUsed"
+  | "denied"
 >;
+
+/** UTF-16 code-unit order, JavaScript's string `<` (the hub checks the same order). */
+const byCodePoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** RL-11: tool names the run called (main agent and subagents), cut to 200, distinct, sorted, at most 200. */
+export function toolsUsedOf(assistants: readonly Obj[]): string[] | undefined {
+  const names = new Set<string>();
+  for (const e of assistants) {
+    const content = (e.message as Obj).content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content) {
+      if (!isObj(b) || b.type !== "tool_use" || typeof b.name !== "string" || b.name === "") continue;
+      names.add(b.name.slice(0, 200));
+    }
+  }
+  if (names.size === 0) return undefined;
+  return [...names].sort(byCodePoint).slice(0, 200);
+}
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** RL-11: the first word of a Bash command after leading `NAME=value` words, its last path part, cut to 64. */
+export function commandWord(command: string): string | undefined {
+  const words = command.split(/\s+/).filter((w) => w !== "");
+  const word = words.find((w) => !ASSIGNMENT.test(w));
+  if (word === undefined) return undefined;
+  const base = word.slice(word.lastIndexOf("/") + 1).slice(0, 64);
+  return base === "" ? undefined : base;
+}
+
+/** RL-11: permission denials grouped by (tool, Bash command word), most frequent first, at most 50. */
+export function deniedOf(denials: readonly unknown[]): RunTelemetry["denied"] {
+  const groups = new Map<string, { tool: string; command?: string; count: number }>();
+  for (const d of denials) {
+    if (!isObj(d) || typeof d.tool_name !== "string" || d.tool_name === "") continue;
+    const tool = d.tool_name.slice(0, 200);
+    const input = isObj(d.tool_input) ? d.tool_input : {};
+    const command = tool === "Bash" && typeof input.command === "string" ? commandWord(input.command) : undefined;
+    const k = `${tool}\n${command === undefined ? "0" : `1${command}`}`;
+    const g = groups.get(k);
+    if (g) g.count++;
+    else groups.set(k, { tool, ...(command !== undefined ? { command } : {}), count: 1 });
+  }
+  if (groups.size === 0) return undefined;
+  const cmp = (a: string | undefined, b: string | undefined) => (a === b ? 0 : a === undefined ? -1 : b === undefined ? 1 : byCodePoint(a, b));
+  return [...groups.values()].sort((a, b) => b.count - a.count || byCodePoint(a.tool, b.tool) || cmp(a.command, b.command)).slice(0, 50);
+}
 
 /** Telemetry from a run's stream: complete with a `result` event, else partial (`turnsApprox`). */
 export function telemetryFromStream(stream: string, run: { durationMs: number; exitCode: number | undefined; killedForBudget: boolean; stoppedAfterDone?: boolean | undefined }): StreamTelemetry {
@@ -44,14 +106,18 @@ export function telemetryFromStream(stream: string, run: { durationMs: number; e
     const m = (assistants[0]?.message as Obj | undefined)?.model;
     if (typeof m === "string") head.model = m;
   }
+  const toolsUsed = toolsUsedOf(assistants);
+  if (toolsUsed) head.toolsUsed = toolsUsed;
   const results = evs.filter((e) => e.type === "result");
   const result = results[results.length - 1];
   if (result) {
     const usage = isObj(result.usage) ? result.usage : {};
     const denials = Array.isArray(result.permission_denials) ? result.permission_denials : [];
     const tools = [...new Set(denials.filter(isObj).map((d) => d.tool_name).filter((n): n is string => typeof n === "string"))];
+    const denied = deniedOf(denials);
     return {
       ...head,
+      ...(denied ? { denied } : {}),
       turns: Math.max(0, Math.trunc(num(result.num_turns))),
       turnsApprox: false,
       tokensIn: Math.trunc(num(usage.input_tokens)),
