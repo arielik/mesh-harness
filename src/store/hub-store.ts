@@ -12,6 +12,7 @@ import {
   Question,
   ServiceScope,
   Session,
+  type StateDay,
   Step,
   StoredArtifact,
   StoredReview,
@@ -100,6 +101,13 @@ export const HUB_MIGRATIONS: readonly string[] = [
    CREATE INDEX IF NOT EXISTS agent_def_machine ON agent_def (origin, machine);
    CREATE INDEX IF NOT EXISTS agent_def_name ON agent_def (name);
    CREATE TABLE IF NOT EXISTS catalog_source (repo TEXT PRIMARY KEY, value TEXT NOT NULL, created_at INTEGER NOT NULL);`,
+  // RL-14: a session's state time on a step (absolute day totals, the newest report wins), and
+  // events by time for the efficiency window.
+  `CREATE TABLE IF NOT EXISTS step_time (step TEXT NOT NULL, sid TEXT NOT NULL, goal TEXT NOT NULL, user_id TEXT NOT NULL,
+     machine_id TEXT NOT NULL, as_of INTEGER NOT NULL, first_day INTEGER NOT NULL, value TEXT NOT NULL, PRIMARY KEY (step, sid));
+   CREATE INDEX IF NOT EXISTS step_time_goal ON step_time (goal);
+   CREATE INDEX IF NOT EXISTS step_time_as_of ON step_time (as_of);
+   CREATE INDEX IF NOT EXISTS event_at ON event (at);`,
 ];
 
 /**
@@ -177,7 +185,23 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    CREATE INDEX IF NOT EXISTS agent_def_machine ON agent_def (origin, machine);
    CREATE INDEX IF NOT EXISTS agent_def_name ON agent_def (name);
    CREATE TABLE IF NOT EXISTS catalog_source (repo TEXT PRIMARY KEY, value TEXT NOT NULL, created_at BIGINT NOT NULL);`,
+  `CREATE TABLE IF NOT EXISTS step_time (step TEXT NOT NULL, sid TEXT NOT NULL, goal TEXT NOT NULL, user_id TEXT NOT NULL,
+     machine_id TEXT NOT NULL, as_of BIGINT NOT NULL, first_day BIGINT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (step, sid));
+   CREATE INDEX IF NOT EXISTS step_time_goal ON step_time (lower(goal));
+   CREATE INDEX IF NOT EXISTS step_time_as_of ON step_time (as_of);
+   CREATE INDEX IF NOT EXISTS event_at ON event (at);`,
 ];
+
+/** RL-14: one session's state time on one step, as stored. */
+export interface StepTimeRow {
+  step: string;
+  sid: string;
+  goal: string;
+  userId: string;
+  machineId: string;
+  asOf: number;
+  days: StateDay[];
+}
 
 /** RL-1: a registered permission profile as the hub stores it. */
 /** RL-5: a catalog source as stored (the view as is). */
@@ -650,6 +674,53 @@ export class HubStore {
       json(s),
       now,
     );
+  }
+
+  /**
+   * RL-14: store a session's absolute state time on a step. The row is replaced only when the
+   * stored `as_of` is not newer and the row belongs to `userId`; returns whether it was written.
+   */
+  async putStepTime(r: StepTimeRow): Promise<boolean> {
+    const res = await this.db.run(
+      "INSERT INTO step_time (step, sid, goal, user_id, machine_id, as_of, first_day, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT(step, sid) DO UPDATE SET goal = excluded.goal, machine_id = excluded.machine_id, as_of = excluded.as_of, first_day = excluded.first_day, value = excluded.value " +
+        "WHERE step_time.as_of <= excluded.as_of AND step_time.user_id = excluded.user_id",
+      r.step,
+      r.sid,
+      r.goal,
+      r.userId,
+      r.machineId,
+      r.asOf,
+      r.days[0]?.day ?? 0,
+      json(r.days),
+    );
+    return res.changes === 1;
+  }
+
+  /** RL-14: state time rows of a goal, of some steps, or overlapping `[since, until)` (by first day and `as_of`). */
+  async listStepTimes(f: { goal?: string; steps?: readonly string[]; since?: number; until?: number }): Promise<StepTimeRow[]> {
+    const where: string[] = [];
+    const args: SqlValue[] = [];
+    if (f.goal !== undefined) {
+      where.push(this.db.dialect.eqNoCase("goal"));
+      args.push(f.goal);
+    }
+    if (f.steps) {
+      if (!f.steps.length) return [];
+      where.push(`step IN (${f.steps.map(() => "?").join(", ")})`);
+      args.push(...f.steps);
+    }
+    if (f.since !== undefined) {
+      where.push("as_of > ?");
+      args.push(f.since);
+    }
+    if (f.until !== undefined) {
+      where.push("first_day < ?");
+      args.push(f.until);
+    }
+    const sql = `SELECT * FROM step_time ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY step, sid`;
+    const rows = await this.db.all<{ step: string; sid: string; goal: string; user_id: string; machine_id: string; as_of: number; value: string }>(sql, ...args);
+    return rows.map((r) => ({ step: r.step, sid: r.sid, goal: r.goal, userId: r.user_id, machineId: r.machine_id, asOf: Number(r.as_of), days: JSON.parse(r.value) as StateDay[] }));
   }
 
   async getSession(sid: string): Promise<HubSession | undefined> {
@@ -1443,6 +1514,13 @@ export class HubStore {
     const rows = filter.goal
       ? await this.db.all<EventDbRow>("SELECT * FROM event WHERE seq > ? AND goal = ? ORDER BY seq LIMIT ?", after, filter.goal, limit)
       : await this.db.all<EventDbRow>("SELECT * FROM event WHERE seq > ? ORDER BY seq LIMIT ?", after, limit);
+    return rows.map(eventFrom);
+  }
+
+  /** RL-14: events of these types with `at` in `[since, until)`, in seq order. */
+  async eventsBetween(since: number, until: number, types: readonly string[]): Promise<EventRow[]> {
+    if (!types.length) return [];
+    const rows = await this.db.all<EventDbRow>(`SELECT * FROM event WHERE at >= ? AND at < ? AND type IN (${types.map(() => "?").join(", ")}) ORDER BY seq`, since, until, ...types);
     return rows.map(eventFrom);
   }
 

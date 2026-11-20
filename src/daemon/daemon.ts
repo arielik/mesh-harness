@@ -90,6 +90,7 @@ import { checkoutKey, initialLabels } from "./labels.ts";
 import { HubLink, HubRpcError, type LinkMode, type LinkStatus } from "./hub-link.ts";
 import { findCheckouts, REPO_SCAN_MS, repoInventory, scanRepos } from "./repos.ts";
 import { HeadlessRuns } from "./runs.ts";
+import { accrue, finalPending, withHeld } from "../core/state-time.ts";
 import { catalogPushes, scanAgents, type GitRun } from "./roster.ts";
 import { runTool, stepMessage, type ToolHost } from "./tools.ts";
 import { writePending, writeTrail } from "./trail.ts";
@@ -350,6 +351,7 @@ export class Daemon {
         ...(this.deps.hubTimeoutMs ? { timeoutMs: this.deps.hubTimeoutMs } : {}),
         onReplayed: (call, r) => this.replayed(call, r),
         onRejected: (call, e) => this.rejected(call, e),
+        onNotHeld: (sids, notHeld) => this.applyNotHeld(sids, notHeld),
       });
     }
     const runner = this.deps.headless;
@@ -552,6 +554,10 @@ export class Daemon {
     const before = new Map(this.sessions.map((s) => [s.sid, s]));
     this.sessions = result.sessions;
     if (result.changed.length === 0) return;
+    // RL-14: every change closes the session's open state-time interval.
+    const now = this.deps.now();
+    const touched = new Set(result.changed);
+    this.sessions = this.sessions.map((s) => (touched.has(s.sid) ? accrue(before.get(s.sid), s, now) : s));
     const changed = this.sessions.filter((s) => result.changed.includes(s.sid));
     for (const s of changed) {
       // MM-2: a session recorded for the first time gets its checkout's labels.
@@ -1456,8 +1462,12 @@ export class Daemon {
     this.checkOpenCodeServers();
     this.commit(applyTick(this.sessions, this.ctx(), this.runs?.liveRunSids()));
     this.autopilot();
-    // Forget long-ended sessions in memory; the store keeps them a week.
-    this.sessions = this.sessions.filter((s) => s.state !== "ended" || now - (s.endedAt ?? 0) < 24 * 60 * 60_000);
+    // Forget long-ended sessions in memory; the store keeps them a week. RL-14: a session whose final
+    // state time the hub has not accepted yet stays (at most the week).
+    const sent = this.link?.stateTimeSent;
+    this.sessions = this.sessions.filter(
+      (s) => s.state !== "ended" || now - (s.endedAt ?? 0) < 24 * 60 * 60_000 || (sent !== undefined && now - (s.endedAt ?? 0) < 7 * 24 * 60 * 60_000 && finalPending(s, sent)),
+    );
     this.store.pruneSessions(now - 7 * 24 * 60 * 60_000);
     this.store.pruneHookEvents(now - 30 * 24 * 60 * 60_000);
     this.store.pruneEventLog(now - 30 * 24 * 60 * 60_000);
@@ -1541,11 +1551,28 @@ export class Daemon {
     }
   }
 
+  /**
+   * RL-14: the hub's verdict on the step-holding sessions of a sync body: a session it lists does not
+   * hold its step (its state time stops there); one it does not list holds it again.
+   */
+  private applyNotHeld(sids: readonly string[], notHeld: readonly { sid: string; step: string }[]): void {
+    const listed = new Set(notHeld.map((x) => `${x.sid}\n${x.step}`));
+    const changed: string[] = [];
+    const next = this.sessions.map((s) => {
+      if (!sids.includes(s.sid) || s.step === undefined) return s;
+      const n = withHeld(s, !listed.has(`${s.sid}\n${s.step}`));
+      if (n !== s) changed.push(s.sid);
+      return n;
+    });
+    if (changed.length) this.commit({ sessions: next, changed });
+  }
+
   /** After typing a prompt, don't type again until Claude reports the new state. */
   private markWorking(sid: string): void {
     const i = this.sessions.findIndex((x) => x.sid === sid);
     if (i < 0) return;
-    const s: Session = { ...(this.sessions[i] as Session), state: "working" };
+    const prev = this.sessions[i] as Session;
+    const s: Session = accrue(prev, { ...prev, state: "working" }, this.deps.now());
     delete s.observed;
     delete s.needs;
     this.sessions = this.sessions.map((x, j) => (j === i ? s : x));

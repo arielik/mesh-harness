@@ -363,7 +363,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | Method and path | Purpose |
 |---|---|
 | `GET /auth/providers`, `GET /auth/:id/start`, `GET /auth/:id/callback`, `POST /auth/cli/exchange`, `POST /auth/:id/device`, `POST /auth/:id/device/poll`, `POST /auth/:id/token`, `POST /auth/logout` | Auth |
-| `POST /v1/machines`, `POST /v1/sync`, `GET /v1/inbox`, `POST /v1/inbox/:id/ack` | Daemon |
+| `POST /v1/machines`, `POST /v1/sync`, `GET /v1/inbox`, `POST /v1/inbox/:id/ack` | Daemon (`/v1/sync` also carries `stateTime`, absolute state time per session and step, from v0.1.36) |
 | `GET /v1/me`, `GET /v1/live`, `GET /v1/attention`, `GET /v1/stream` | Dashboard |
 | `GET/POST /v1/goals`, `GET /v1/goals/:id`, `POST /v1/goals/:id/{plan,approve,revise,replan}` | Goals |
 | `GET/POST /v1/topics`, `POST /v1/topics/:name/delete`, `POST /v1/goals/:id/topics`, `GET /v1/goals?topic=a,b` | Topics: labels for goals (v0.1.8). Every goal is in `all`; a filter with several topics means all of them |
@@ -416,6 +416,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET /v1/runs` | Runs (v0.1.30): headless runs that closed a round, newest first, with telemetry, item states now and raw waste parts; `since`, `until`, `goal`, `pulse`, `repo`, `agent`, `user`, `trial`, `limit`, `cursor` (scope `goals:read`) |
 | `GET /v1/pulses/:id/runs` | Run cards (v0.1.31): one card per slot of a pulse, newest first: stages with their times, runs and cost, fold, item states now, dispositions, reports, sinks and the delta against the previous complete run; `trial`, `limit`, `cursor` (scope `goals:read`) |
 | `GET /v1/health` | Health scorecard (v0.1.31): per pulse and a total over `days` (1-90, default 7): slots, `blockedBy`, runs and waste parts, goals, accepted items, `costPerAcceptedUsd`, open debriefs and calibrations, findings by severity; `repo`, `topic`, `trial` (scope `goals:read`) |
+| `GET /v1/goals/:id/efficiency`, `GET /v1/efficiency`, `GET /v1/stuck` | Efficiency (v0.1.36, RL-14): a card per goal and step with milliseconds per session state (`workingMs`, `needsYouMs`, `idleMs`, `stalledMs`), turns, rounds, fails, parks, commits, take-overs, fix cycles, first-try pass, wall time, run totals; the same over a window (`days` or `since`/`until`, `repo`, `trial`, `steps=1`) per goal, repo and total; the stuck signal (`needsYouMs`, `turns`, `repo`, `trial`) (scope `goals:read`) |
 | `GET /v1/events?after=` | Analysis feed |
 
 ---

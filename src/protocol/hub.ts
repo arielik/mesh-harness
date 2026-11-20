@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile, SpotSample } from "./goal.ts";
 import { AcState, ArtifactKind, Commit, ArtifactMediaType, Failure, Findings, GoalState as GoalStateSchema, PlanInput, ProfileBase, ProfileName, RunExit, RunTelemetry, StepKind as StepKindSchema, StepState as StepStateSchema, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
-import { Repo, Session } from "./session.ts";
+import { Repo, Session, StateDay } from "./session.ts";
 import { AgentReport } from "./roster.ts";
 import { PresetSnapshot, PulseParams, SlotReason, SlotState } from "./pulse.ts";
 import {
@@ -39,8 +39,29 @@ export const SyncEvent = z.object({
 });
 export type SyncEvent = z.infer<typeof SyncEvent>;
 
+/**
+ * RL-14: a session's absolute state time on one step as of `asOf` (the daemon clock). The hub keeps
+ * the newest report per `(step, sid)`, so a retried or replayed report never adds twice.
+ */
+export const StateTimeReport = z
+  .object({
+    sid: z.string().min(1).max(200),
+    step: z.string().min(1).max(200),
+    asOf: z.number().int().min(0),
+    days: z.array(StateDay).min(1).max(400),
+  })
+  .superRefine((r, ctx) => {
+    for (let i = 1; i < r.days.length; i++) {
+      if ((r.days[i] as StateDay).day <= (r.days[i - 1] as StateDay).day) ctx.addIssue({ code: "custom", message: "days must be strictly ascending" });
+    }
+    if (r.asOf < (r.days.at(-1) as StateDay).day) ctx.addIssue({ code: "custom", message: "asOf is before the last day" });
+  });
+export type StateTimeReport = z.infer<typeof StateTimeReport>;
+
 export const SyncRequest = z.object({
   events: z.array(SyncEvent).max(500).default([]),
+  /** RL-14: state time per (session, step); each entry is checked alone and an invalid one is skipped. */
+  stateTime: z.array(z.unknown()).max(500).optional(),
   /**
    * Full records of sessions that hold a step, plus metadata-only records of the other sessions
    * when the machine shares them (`shareSessions` `me` or `all`); otherwise those stay private (Q5).
@@ -74,6 +95,8 @@ export type SyncRequest = z.infer<typeof SyncRequest>;
 export interface SyncResponse {
   accepted: number;
   share?: ShareLevel | undefined;
+  /** RL-14: sessions of the body whose step the hub says they do not hold (their time stops accruing there). */
+  notHeld?: { sid: string; step: string }[] | undefined;
 }
 
 /** A machine nickname (MM-1): short, lowercase, unique among one person's machines. */
@@ -734,7 +757,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "efficiency", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -1044,3 +1067,99 @@ export const AgentCompare = z.object({
   to: HashSide,
 });
 export type AgentCompare = z.infer<typeof AgentCompare>;
+
+// ---------- RL-14: time per session state, efficiency cards, stuck signal ----------
+
+const ms = z.number().int().min(0);
+
+/** Milliseconds per session state. */
+export const StateTime = z.object({ workingMs: ms, needsYouMs: ms, idleMs: ms, stalledMs: ms });
+export type StateTime = z.infer<typeof StateTime>;
+
+/** One session's state time (on a step, or summed over a goal's steps). `machine` is the machine id. */
+export const SessionTime = StateTime.extend({ sid: z.string(), user: z.string(), machine: z.string(), asOf: z.number() });
+export type SessionTime = z.infer<typeof SessionTime>;
+
+/** Figures of a step, all time (card) or inside a window. `stateTime` absent: no session reported any (not zero). */
+export const StepFigures = z.object({
+  stateTime: StateTime.optional(),
+  turns: int,
+  rounds: int,
+  fails: int,
+  parks: int,
+  commits: int,
+  takeOvers: int,
+  runs: int,
+  runDurationMs: ms,
+  runTurns: int,
+  costUsd: z.number().optional(),
+});
+export type StepFigures = z.infer<typeof StepFigures>;
+
+export const StepEfficiency = StepFigures.extend({
+  step: z.string(),
+  kind: StepKindSchema,
+  mode: z.string(),
+  repo: z.string(),
+  state: StepStateSchema,
+  fixCycles: int,
+  holder: z.string().optional(),
+  movedTo: z.string().optional(),
+  startedAt: z.number().optional(),
+  endAt: z.number().optional(),
+  wallMs: ms.optional(),
+  commit: z.string().optional(),
+  commitAt: z.number().optional(),
+  done: z.boolean(),
+  firstTryPass: z.boolean(),
+  sessions: z.array(SessionTime),
+});
+export type StepEfficiency = z.infer<typeof StepEfficiency>;
+
+/** `GET /v1/goals/:id/efficiency`. */
+export const GoalEfficiency = StepFigures.extend({
+  goal: z.string(),
+  title: z.string(),
+  state: z.string(),
+  trial: z.boolean(),
+  createdAt: z.number(),
+  endAt: z.number().optional(),
+  wallMs: ms,
+  stateTimeSteps: int,
+  fixCycles: int,
+  steps: int,
+  done: int,
+  firstTryPass: int,
+  sessions: z.array(SessionTime),
+  stepCards: z.array(StepEfficiency),
+});
+export type GoalEfficiency = z.infer<typeof GoalEfficiency>;
+
+/** A step's figures inside a window. */
+export const StepWindowRow = StepFigures.extend({ step: z.string(), repo: z.string(), reopens: int, done: int, firstTryPass: int });
+export type StepWindowRow = z.infer<typeof StepWindowRow>;
+
+/** Sums over the steps in a window. */
+export const Rollup = StepFigures.extend({ steps: int, stateTimeSteps: int, reopens: int, done: int, firstTryPass: int });
+export type Rollup = z.infer<typeof Rollup>;
+
+/** `GET /v1/efficiency`. */
+export const EfficiencyWindow = z.object({
+  window: z.object({ since: z.number(), until: z.number() }),
+  total: Rollup,
+  repos: z.array(Rollup.extend({ repo: z.string() })),
+  goals: z.array(Rollup.extend({ goal: z.string(), title: z.string(), state: z.string(), trial: z.boolean(), stepRows: z.array(StepWindowRow).optional() })),
+});
+export type EfficiencyWindow = z.infer<typeof EfficiencyWindow>;
+
+/** `GET /v1/stuck`. */
+export const Stuck = z.object({
+  thresholds: z.object({ needsYouMs: ms, turns: int }),
+  sessions: z.array(
+    z.object({ sid: z.string(), user: z.string(), machine: z.string(), step: z.string(), goal: z.string(), repo: z.string(), needs: z.string().optional(), since: z.number(), forMs: ms, lastSeenAt: z.number() }),
+  ),
+  steps: z.array(z.object({ step: z.string(), goal: z.string(), repo: z.string(), holder: z.string().optional(), turns: int, commit: z.string().optional(), commitAt: z.number().optional(), claimedAt: z.number().optional() })),
+  repos: z.array(z.object({ repo: z.string(), sessions: int, steps: int })),
+  unmeasured: int,
+});
+export type Stuck = z.infer<typeof Stuck>;

@@ -438,12 +438,12 @@ function contract(d: Driver) {
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
     it("test_AC05_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(11);
+      expect(HUB_MIGRATIONS.length).toBe(12);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -579,9 +579,9 @@ function contract(d: Driver) {
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
     it("test_AC08_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
-      expect(HUB_MIGRATIONS.length).toBe(11);
-      expect(HUB_MIGRATIONS_PG.length).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HUB_MIGRATIONS.length).toBe(12);
+      expect(HUB_MIGRATIONS_PG.length).toBe(12);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -671,9 +671,9 @@ function contract(d: Driver) {
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
     it("test_AC06_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
-      expect(HUB_MIGRATIONS.length).toBe(11);
-      expect(HUB_MIGRATIONS_PG.length).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HUB_MIGRATIONS.length).toBe(12);
+      expect(HUB_MIGRATIONS_PG.length).toBe(12);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */
@@ -772,9 +772,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
-      expect(HUB_MIGRATIONS.length).toBe(11);
-      expect(HUB_MIGRATIONS_PG.length).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HUB_MIGRATIONS.length).toBe(12);
+      expect(HUB_MIGRATIONS_PG.length).toBe(12);
     });
 
     it("test_AC08_v7_migrates", async () => {
@@ -808,7 +808,7 @@ function contract(d: Driver) {
       expect(await X(s).listArtifacts({})).toStrictEqual([]);
       expect(await X(s).listProfiles()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(11);
+      expect(Number((v as { version: number }).version)).toBe(12);
     });
 
     it("test_AC08_artifact_roundtrip", async () => {
@@ -957,9 +957,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
-      expect(HUB_MIGRATIONS.length).toBe(11);
-      expect(HUB_MIGRATIONS_PG.length).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HUB_MIGRATIONS.length).toBe(12);
+      expect(HUB_MIGRATIONS_PG.length).toBe(12);
     });
 
     it("test_AC08_v8_migrates", async () => {
@@ -991,7 +991,7 @@ function contract(d: Driver) {
       expect(await X(s).listItems("L")).toStrictEqual([]);
       expect(await X(s).itemHistory("L")).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(11);
+      expect(Number((v as { version: number }).version)).toBe(12);
     });
 
     it("test_AC08_addReview", async () => {
@@ -1110,9 +1110,9 @@ function contract(d: Driver) {
     const slotIds = (xs: { slot: string }[]) => xs.map((x) => x.slot);
 
     it("test_AC05_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
-      expect(HUB_MIGRATIONS.length).toBe(11);
-      expect(HUB_MIGRATIONS_PG.length).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HUB_MIGRATIONS.length).toBe(12);
+      expect(HUB_MIGRATIONS_PG.length).toBe(12);
     });
 
     it("test_AC05_v9_upgrade", async () => {
@@ -1165,7 +1165,7 @@ function contract(d: Driver) {
       expect(await X(s).listPulses()).toStrictEqual([]);
       expect((await X(s).createPulse(pulseRow())).id).toBe("p-1");
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(11);
+      expect(Number((v as { version: number }).version)).toBe(12);
     });
 
     it("test_AC05_ids", async () => {
@@ -1322,7 +1322,7 @@ function contract(d: Driver) {
     });
 
     it("test_AC25_schema_version_unchanged", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
     });
 
     it("test_AC25_listSteps_updatedSince", async () => {
@@ -1372,9 +1372,9 @@ function contract(d: Driver) {
       xs.map(({ at: _a, ...x }) => x).sort((a, b) => `${String(a.machine)}${String(a.repo)}${String(a.name)}`.localeCompare(`${String(b.machine)}${String(b.repo)}${String(b.name)}`));
 
     it("test_AC03_schema_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(11);
-      expect(HUB_MIGRATIONS.length).toBe(11);
-      expect(HUB_MIGRATIONS_PG.length).toBe(11);
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HUB_MIGRATIONS.length).toBe(12);
+      expect(HUB_MIGRATIONS_PG.length).toBe(12);
     });
 
     it("test_AC03_v10_migrates", async () => {
@@ -1419,7 +1419,7 @@ function contract(d: Driver) {
       expect(await X(s).listRepoAgents()).toStrictEqual([]);
       expect(await X(s).listCatalogSources()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(11);
+      expect(Number((v as { version: number }).version)).toBe(12);
     });
 
     it("test_AC03_replace_machine_agents", async () => {
@@ -1525,6 +1525,46 @@ function contract(d: Driver) {
       expect(invalidOf(after[0])).toBe(INVALID);
       expect(after[0]?.commits).toStrictEqual([c(1), c(2)]);
       expect(after[0]).toMatchObject({ hash: hx(TEXT), text: TEXT, current: true });
+    });
+  });
+
+  // RL-14 AC-12: state time per (step, sid), the newest report wins; events by time.
+  describe("RL-14 step time", () => {
+    const D = 86_400_000;
+    const days = (w: number) => [{ day: 1000 * D, workingMs: w, needsYouMs: 0, idleMs: 0, stalledMs: 0 }];
+    const row = (asOf: number, w: number, over: Record<string, unknown> = {}) => ({ step: "G1.a", sid: "s1", goal: "G1", userId: "ada", machineId: "m1", asOf, days: days(w), ...over });
+
+    it("test_AC12_step_time_upsert", async () => {
+      const s = await store();
+      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(await s.putStepTime(row(1000 * D + 500, 500))).toBe(true);
+      // Newer wins, equal replaces, older is ignored, another user never overwrites.
+      expect(await s.putStepTime(row(1000 * D + 900, 900))).toBe(true);
+      expect(await s.putStepTime(row(1000 * D + 900, 901))).toBe(true);
+      expect(await s.putStepTime(row(1000 * D + 600, 600))).toBe(false);
+      expect(await s.putStepTime(row(1000 * D + 999, 999, { userId: "bob" }))).toBe(false);
+      await s.putStepTime(row(1001 * D + 10, 5, { step: "G2.b", goal: "G2", days: [{ day: 1001 * D, workingMs: 5, needsYouMs: 0, idleMs: 0, stalledMs: 0 }] }));
+      const all = await s.listStepTimes({});
+      expect(all.map((r) => [r.step, r.asOf, r.days[0]?.workingMs, r.userId])).toStrictEqual([
+        ["G1.a", 1000 * D + 900, 901, "ada"],
+        ["G2.b", 1001 * D + 10, 5, "ada"],
+      ]);
+      expect((await s.listStepTimes({ goal: "g1" })).map((r) => r.step)).toStrictEqual(["G1.a"]);
+      expect((await s.listStepTimes({ steps: ["G2.b"] })).map((r) => r.step)).toStrictEqual(["G2.b"]);
+      expect(await s.listStepTimes({ steps: [] })).toStrictEqual([]);
+      // Overlap with [since, until): as_of > since and first_day < until.
+      expect((await s.listStepTimes({ since: 1000 * D + 950, until: 1002 * D })).map((r) => r.step)).toStrictEqual(["G2.b"]);
+      expect((await s.listStepTimes({ since: 0, until: 1001 * D })).map((r) => r.step)).toStrictEqual(["G1.a"]);
+      // Events by time and type.
+      for (const [at, type] of [
+        [5, "session.turn_started"],
+        [10, "step.reopened"],
+        [20, "session.turn_started"],
+        [15, "step.done"],
+      ] as const)
+        await s.appendEvent({ at, type, step: "G1.a" });
+      expect((await s.eventsBetween(5, 20, ["session.turn_started", "step.reopened"])).map((e) => e.at)).toStrictEqual([5, 10]);
+      expect(await s.eventsBetween(0, 100, [])).toStrictEqual([]);
     });
   });
 }

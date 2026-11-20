@@ -41,6 +41,8 @@ export const TABLES: readonly { name: string; identity?: string }[] = [
   // RL-5: the roster.
   { name: "agent_def" },
   { name: "catalog_source" },
+  // RL-14: state time per (step, sid).
+  { name: "step_time" },
 ];
 
 /** BLOB columns (RL-1 artifact content) go to Postgres bytea as Buffers. */

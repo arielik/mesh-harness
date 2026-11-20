@@ -189,6 +189,10 @@ import type {
   ProfileView,
   RunTelemetry,
   Health,
+  EfficiencyWindow,
+  GoalEfficiency,
+  StepWindowRow,
+  Stuck,
   HealthTotal,
   PulseHealth,
   RunCard,
@@ -245,8 +249,9 @@ import type {
   PulseWhenInput,
   SlotReason,
 } from "../protocol/index.ts";
-import { PulseSlot as PulseSlotSchema } from "../protocol/index.ts";
+import { PulseSlot as PulseSlotSchema, StateTimeReport } from "../protocol/index.ts";
 import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
+import { FIGURE_EVENTS, goalCard, rollup, stepWindow, turnsSinceCommit } from "../core/efficiency.ts";
 import { HubStore, type EventRow, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
@@ -3151,10 +3156,28 @@ export class HubService {
           this.store.afterCommit(() => this.bus.publish({ type: "changed", seq }));
         }
       }
+      const notHeld: { sid: string; step: string }[] = [];
       for (const s of req.sessions) {
         const existing = await this.store.getSession(s.sid);
         if (existing && existing.userId !== actor.userId) continue; // never overwrite another user's session
-        await this.store.upsertSession(s, actor.userId, machine, now);
+        // RL-14: state time stays on the machine; the hub keeps it per (step, sid) only.
+        const { stateTime: _local, ...rest } = s;
+        await this.store.upsertSession(rest, actor.userId, machine, now);
+        if (s.step !== undefined) {
+          const st = await this.store.getStep(s.step);
+          if (!st || !heldBy(st, s.sid, actor.userId, machine)) notHeld.push({ sid: s.sid, step: s.step });
+        }
+      }
+      // RL-14: absolute state time per (step, sid); a bad entry is skipped, never failing the sync.
+      for (const raw of req.stateTime ?? []) {
+        const p = StateTimeReport.safeParse(raw);
+        if (!p.success) continue;
+        const r = p.data;
+        const st = await this.store.getStep(r.step);
+        if (!st) continue;
+        const owner = await this.store.getSession(r.sid);
+        if (owner && owner.userId !== actor.userId) continue;
+        await this.store.putStepTime({ step: st.id, sid: r.sid, goal: st.goal, userId: actor.userId, machineId: machine, asOf: r.asOf, days: r.days });
       }
       // A sync lists all the sessions the machine shares, so one it no longer lists (it dropped its
       // step, or the machine went back to sharing step holders only) leaves the live view. The row
@@ -3180,7 +3203,8 @@ export class HubService {
       }
       // MM-1: the stored share level tells the daemon this hub applies the visibility rule.
       const share = stored?.share;
-      return { accepted, ...(share ? { share } : {}) };
+      // RL-14: present when the body has a step-holding session (an empty list unmarks them all).
+      return { accepted, ...(share ? { share } : {}), ...(req.sessions.some((s) => s.step !== undefined) ? { notHeld } : {}) };
     });
   }
 
@@ -4216,6 +4240,178 @@ export class HubService {
     }
     ctx.cards.set(`${s.pulse}\n${s.slot}`, card);
     return { ...card };
+  }
+
+  // ---------- RL-14: efficiency cards, windows and the stuck signal ----------
+
+  /** `GET /v1/goals/:id/efficiency`: the efficiency card of a goal and its steps (all time). */
+  async goalEfficiency(id: string): Promise<GoalEfficiency> {
+    return this.store.tx(async () => {
+      const goal = await this.goalOr404(id);
+      const steps = await this.store.listSteps({ goal: goal.id });
+      const rows = await this.store.listStepTimes({ goal: goal.id });
+      const types = new Set<string>(FIGURE_EVENTS);
+      const events = (await this.store.eventsFor({ goal: goal.id })).filter((e) => types.has(e.type));
+      return goalCard(goal, steps, rows, events, this.now());
+    });
+  }
+
+  /** `GET /v1/efficiency`: figures inside a window, per goal, per repo and in total. */
+  async efficiencyWindow(q: { days?: string | undefined; since?: string | undefined; until?: string | undefined; repo?: string | undefined; trial?: string | undefined; steps?: string | undefined }): Promise<EfficiencyWindow> {
+    const D = 86_400_000;
+    if (q.days !== undefined && (q.since !== undefined || q.until !== undefined)) throw new HubError(400, "days cannot be combined with since or until");
+    const time = (name: string, v: string | undefined): number | undefined => {
+      if (v === undefined) return undefined;
+      const bad = () => new HubError(400, `${name} must be milliseconds since the epoch or an ISO time`);
+      if (/^\d{1,15}$/.test(v)) return Number(v);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(v)) throw bad();
+      const t = Date.parse(v);
+      if (Number.isNaN(t)) throw bad();
+      return t;
+    };
+    let days: number | undefined;
+    if (q.days !== undefined) {
+      days = /^\d{1,2}$/.test(q.days) ? Number(q.days) : NaN;
+      if (!Number.isInteger(days) || days < 1 || days > 90) throw new HubError(400, "days must be a whole number from 1 to 90");
+    }
+    const sinceGiven = time("since", q.since);
+    const untilGiven = time("until", q.until);
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    const now = this.now();
+    let since: number;
+    let until: number;
+    if (sinceGiven === undefined && untilGiven === undefined) {
+      const midnight = Math.floor(now / D) * D;
+      since = midnight - ((days ?? 7) - 1) * D;
+      until = now + 1;
+    } else {
+      until = untilGiven ?? now + 1;
+      since = sinceGiven ?? until - 7 * D;
+      if (since >= until) throw new HubError(400, "since must be before until");
+      if (until - since > 90 * D) throw new HubError(400, "the window is at most 90 days");
+    }
+    const withSteps = q.steps === "1";
+    return this.store.tx(async () => {
+      const lc = (x: string) => x.toLowerCase();
+      // Candidates: steps with state time overlapping the window, events in it, or rounds finished in it.
+      const ids = new Set<string>();
+      for (const r of await this.store.listStepTimes({ since, until })) ids.add(lc(r.step));
+      const events = await this.store.eventsBetween(since, until, FIGURE_EVENTS);
+      for (const e of events) if (e.step) ids.add(lc(e.step));
+      const byId = new Map<string, Step>();
+      for (const s of await this.store.listSteps({ updatedSince: since })) {
+        byId.set(lc(s.id), s);
+        if ((s.rounds ?? []).some((r) => r.finishedAt >= since && r.finishedAt < until)) ids.add(lc(s.id));
+      }
+      const goals = new Map<string, Goal | undefined>();
+      const goalOf = async (g: string) => {
+        if (!goals.has(g)) goals.set(g, await this.store.getGoal(g));
+        return goals.get(g);
+      };
+      const picked: Step[] = [];
+      for (const id of ids) {
+        const s = byId.get(id) ?? (await this.store.getStep(id));
+        if (!s) continue;
+        if (q.repo !== undefined && s.repo !== q.repo) continue;
+        const g = await goalOf(s.goal);
+        if (!g || (trial === "exclude" && g.trial === true)) continue;
+        picked.push(s);
+      }
+      const rows = await this.store.listStepTimes({ steps: picked.map((s) => s.id) });
+      const out: { goal: Goal; rows: StepWindowRow[]; order: Map<string, number> }[] = [];
+      const perGoal = new Map<string, (typeof out)[number]>();
+      for (const s of picked) {
+        const row = stepWindow(
+          s,
+          rows.filter((r) => lc(r.step) === lc(s.id)),
+          events.filter((e) => e.step !== undefined && lc(e.step) === lc(s.id)),
+          since,
+          until,
+        );
+        if (!row) continue;
+        let g = perGoal.get(s.goal);
+        if (!g) {
+          const goal = (await goalOf(s.goal)) as Goal;
+          const order = new Map((await this.store.listSteps({ goal: goal.id })).map((x, i) => [x.id, i] as const));
+          g = { goal, rows: [], order };
+          perGoal.set(s.goal, g);
+          out.push(g);
+        }
+        g.rows.push(row);
+      }
+      out.sort((a, b) => goalSeq(b.goal.id) - goalSeq(a.goal.id));
+      const all = out.flatMap((g) => g.rows);
+      const repos = [...new Set(all.map((r) => r.repo))].sort().map((repo) => ({ repo, ...rollup(all.filter((r) => r.repo === repo)) }));
+      return {
+        window: { since, until },
+        total: rollup(all),
+        repos,
+        goals: out.map((g) => {
+          const stepRows = [...g.rows].sort((a, b) => (g.order.get(a.step) ?? 0) - (g.order.get(b.step) ?? 0));
+          return { goal: g.goal.id, title: g.goal.title, state: g.goal.state, trial: g.goal.trial === true, ...rollup(stepRows), ...(withSteps ? { stepRows } : {}) };
+        }),
+      };
+    });
+  }
+
+  /** `GET /v1/stuck`: sessions waiting on a person too long, claimed steps turning without a commit. */
+  async stuck(q: { needsYouMs?: string | undefined; turns?: string | undefined; repo?: string | undefined; trial?: string | undefined }): Promise<Stuck> {
+    let needsYouMs = 1_800_000;
+    if (q.needsYouMs !== undefined) {
+      needsYouMs = /^\d{1,9}$/.test(q.needsYouMs) ? Number(q.needsYouMs) : NaN;
+      if (!Number.isInteger(needsYouMs) || needsYouMs < 60_000 || needsYouMs > 604_800_000) throw new HubError(400, "needsYouMs must be a whole number from 60000 to 604800000");
+    }
+    let turns = 40;
+    if (q.turns !== undefined) {
+      turns = /^\d{1,5}$/.test(q.turns) ? Number(q.turns) : NaN;
+      if (!Number.isInteger(turns) || turns < 1 || turns > 10_000) throw new HubError(400, "turns must be a whole number from 1 to 10000");
+    }
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    return this.store.tx(async () => {
+      const now = this.now();
+      const goals = new Map<string, Goal | undefined>();
+      const passes = async (s: Step) => {
+        if (q.repo !== undefined && s.repo !== q.repo) return false;
+        if (!goals.has(s.goal)) goals.set(s.goal, await this.store.getGoal(s.goal));
+        const g = goals.get(s.goal);
+        return g !== undefined && (trial === "include" || g.trial !== true);
+      };
+      const sessions: Stuck["sessions"] = [];
+      let unmeasured = 0;
+      for (const hs of await this.store.listSessions({ live: true })) {
+        const x = hs.session;
+        if (x.state !== "needs_you" || x.step === undefined) continue;
+        const s = await this.store.getStep(x.step);
+        if (!s || !heldBy(s, x.sid, hs.userId, hs.machineId) || !(await passes(s))) continue;
+        if (x.stateSince === undefined) {
+          unmeasured++;
+          continue;
+        }
+        const forMs = now - x.stateSince;
+        if (forMs < needsYouMs) continue;
+        sessions.push({ sid: x.sid, user: hs.userId, machine: hs.machineId, step: s.id, goal: s.goal, repo: s.repo, ...(x.needs ? { needs: x.needs } : {}), since: x.stateSince, forMs, lastSeenAt: hs.updatedAt });
+      }
+      sessions.sort((a, b) => b.forMs - a.forMs || (a.sid < b.sid ? -1 : a.sid > b.sid ? 1 : 0));
+      const steps: Stuck["steps"] = [];
+      for (const s of await this.store.listSteps({ state: "claimed" })) {
+        if (!(await passes(s))) continue;
+        const evs = (await this.store.eventsFor({ step: s.id })).filter((e) => e.type === "session.turn_started");
+        const t = turnsSinceCommit(s, evs);
+        if (t.turns < turns) continue;
+        steps.push({ step: s.id, goal: s.goal, repo: s.repo, ...(s.holderUser ? { holder: s.holderUser } : {}), turns: t.turns, ...(t.commit ? { commit: t.commit, commitAt: t.commitAt } : {}), ...(s.claimedAt !== undefined ? { claimedAt: s.claimedAt } : {}) });
+      }
+      steps.sort((a, b) => b.turns - a.turns || (a.step < b.step ? -1 : a.step > b.step ? 1 : 0));
+      const repoNames = [...new Set([...sessions.map((x) => x.repo), ...steps.map((x) => x.repo)])].sort();
+      return {
+        thresholds: { needsYouMs, turns },
+        sessions,
+        steps,
+        repos: repoNames.map((repo) => ({ repo, sessions: sessions.filter((x) => x.repo === repo).length, steps: steps.filter((x) => x.repo === repo).length })),
+        unmeasured,
+      };
+    });
   }
 
   /** `GET /v1/health`: a scorecard per pulse and a total. */
@@ -6601,6 +6797,17 @@ function describe(type: string, subject: string | undefined, payload: Record<str
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }
+}
+
+/**
+ * RL-14: the held rule (as `runs.ts` decides a run's step): `step` is claimed or paused, and its
+ * holder is session `sid`, or it has no holder session and is held by `user` on `machine` (or on no
+ * machine).
+ */
+export function heldBy(step: Step, sid: string, user: string, machine: string): boolean {
+  if (step.state !== "claimed" && step.state !== "paused") return false;
+  if (step.holderSid !== undefined) return step.holderSid === sid;
+  return step.holderUser === user && (step.holderMachine === undefined || step.holderMachine === machine);
 }
 
 /** The message of a thrown value. */

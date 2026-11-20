@@ -21,6 +21,23 @@ export function agentOf(s: { agent?: AgentKind | undefined }): AgentKind {
 
 export const Repo = z.object({ id: z.string(), name: z.string() });
 
+/** RL-14: one UTC day of a session's time on one step, per state (milliseconds). */
+export const DAY_MS = 86_400_000;
+export const StateDay = z
+  .object({
+    day: z.number().int().min(0).multipleOf(DAY_MS),
+    workingMs: z.number().int().min(0).max(DAY_MS),
+    needsYouMs: z.number().int().min(0).max(DAY_MS),
+    idleMs: z.number().int().min(0).max(DAY_MS),
+    stalledMs: z.number().int().min(0).max(DAY_MS),
+  })
+  .refine((d) => d.workingMs + d.needsYouMs + d.idleMs + d.stalledMs <= DAY_MS, "a day holds at most 86400000 ms");
+export type StateDay = z.infer<typeof StateDay>;
+
+/** RL-14: a session's closed state time per step (local to the daemon) and the start of its open interval. */
+export const SessionStateTime = z.object({ since: z.number(), steps: z.record(z.string(), z.array(StateDay)), notHeld: z.array(z.string()).optional() });
+export type SessionStateTime = z.infer<typeof SessionStateTime>;
+
 /** MM-2: what a session or machine is for. Labels use the topic-name syntax. */
 export const LABEL_RULE = "a label is 1-40 characters: lowercase letters, digits, '.', '_' or '-', starting with a letter or digit";
 export const MAX_LABELS = 10;
@@ -117,6 +134,10 @@ export const Session = z.object({
   escalated: z.boolean().optional(),
   /** The agent called mesh_ask during this turn: the turn ends waiting for an answer. */
   asked: z.boolean().optional(),
+  /** RL-14: when the session entered its current state (unset until its first state change after the upgrade). */
+  stateSince: z.number().optional(),
+  /** RL-14: state time per step; local to the daemon (never synced in a session record, never stored by the hub). */
+  stateTime: SessionStateTime.optional(),
 });
 export type Session = z.infer<typeof Session>;
 

@@ -10,6 +10,7 @@ export {
   HubStore,
   type EventRow,
   type HubSession,
+  type StepTimeRow,
   type MachineRow,
   type MessageRow,
   type NewEvent,

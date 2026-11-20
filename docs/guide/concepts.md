@@ -939,6 +939,56 @@ they include what trial runs did to the items.
 **Cost.** A health call reads every raising record and the items and history of each lineage it
 names; it is meant for a page load, not a poll every few seconds.
 
+## Efficiency
+
+From 0.1.36 the hub keeps how long each session spent in each state while it held a step, and
+three read-only routes (scope `goals:read`; a service reads with its own token, and
+`X-Mesh-On-Behalf-Of` is refused with 400) turn that and the step's rounds into an efficiency view.
+`/healthz` lists `efficiency` in `features`. The hub keeps raw parts; it computes no score.
+
+**State time.** The daemon counts milliseconds per state for every session that holds a step:
+`workingMs` (the active time), `needsYouMs` (the agent waits for a person: a permission prompt, a
+question, a dialog, input), `idleMs` (a turn ended and nobody prompted) and `stalledMs` (idle beyond
+the stall rule; a running headless run's session is never stalled). Time is cut at each UTC midnight,
+and the daemon sends the absolute totals per session, step and day with its sync; the hub keeps the
+newest report, so a retried or replayed sync never counts twice. A session's time while it holds no
+step stays on the machine. When the hub says a session no longer holds its step (another session took
+it over, or a person dropped it), the session stops counting for that step at the next sync.
+
+**Absent, not zero.** A step that no session reported state time for (an older daemon, or a step held
+only before the upgrade) has no `stateTime`; a step that did has it, possibly with zeros.
+`stateTimeSteps` says how many steps of a goal or roll-up contributed.
+
+**Card.** `GET /v1/goals/:id/efficiency` returns, for the goal and each step (all time): `stateTime`
+and one row per session (`sessions`: user, machine id, `asOf`), `turns` (prompts, from hooks),
+`rounds`, `fails`, `parks`, `commits`, `takeOvers`, `fixCycles` (every reopen starts one), `done`,
+`firstTryPass` (done, no fix cycle, no failed round), `startedAt`, `endAt`, `wallMs`, the newest
+`commit`, and the headless run totals `runs`, `runDurationMs`, `runTurns` (agentic turns, a different
+unit from `turns`), `costUsd`. Goal `wallMs` runs from the goal's creation to its last step's end (or
+now).
+
+**Window.** `GET /v1/efficiency` sums the same figures inside a window, per goal, per repo and in
+total (`steps=1` adds per-step rows). `days` (1-90, default 7) means whole UTC days up to now, unlike
+`GET /v1/health`'s `[now − days, now]`; or `since` and `until` (exclusive; milliseconds or ISO time,
+at most 90 days). A day's time counts in proportion to the part of that day (up to when it was
+reported) inside the window, so windows that start and end at UTC midnights are exact. Rounds count by
+when they finished; turns, reopens and take-overs by their events. `repo` filters by the step's repo,
+`trial=exclude` (default) or `include` by the goal.
+
+**Stuck.** `GET /v1/stuck` lists sessions in `needs_you` for longer than `needsYouMs` (default 30
+min), per session because one prompt on one machine waits for one person, with `lastSeenAt` (a machine
+that stopped syncing keeps a growing `forMs`); and claimed steps with at least `turns` (default 40)
+turns since their newest round with a commit, per step because turns add up across a step's sessions
+and commits are recorded on its rounds. `repos` counts both per repo. Sessions of older daemons, or
+already waiting at the upgrade, are counted in `unmeasured`.
+
+**Caveats.** Turns, reopens and take-overs come from events, which the hub prunes after
+`events_retention_days`. A daemon that was stopped counts its downtime as the state each session had;
+a working session the daemon only later presumes ended can add up to six hours of `workingMs`. A
+session left on a step it no longer holds keeps counting until the next sync tells its daemon. A
+window call reads every step, state time row and event of the window; it is meant for a page load, not
+a poll every few seconds.
+
 ## Agent statistics
 
 `GET /v1/agents/:key/stats?days=30` (scope `goals:read`; the key `<repo>/<name>` with `/` encoded as

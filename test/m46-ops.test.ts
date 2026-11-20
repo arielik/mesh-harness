@@ -67,7 +67,7 @@ describe("probes", () => {
   it("/healthz and /readyz answer without auth when the database is up and migrated", async () => {
     const hub = await start(":memory:");
     // RL-11 AC-14: the probes carry the hub's version; /healthz its schema and features too.
-    const live = { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"] };
+    const live = { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "efficiency", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"] };
     expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: live });
     expect(await call(hub, "GET", "/health")).toEqual({ status: 200, json: live });
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION, version: pkg.version } });
@@ -76,7 +76,7 @@ describe("probes", () => {
   // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9; RL-3 AC-05 (migration 10) to 10; RL-5 AC-03 (migration 11) to 11.
   it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08, RL-3 AC-05, RL-5 AC-03)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 11, version: pkg.version } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 12, version: pkg.version } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
@@ -105,7 +105,7 @@ describe("probes", () => {
     expect(r.json.error).toMatch(/database unreachable/);
     expect(r.json.version).toBe(pkg.version);
     // RL-11 AC-14: liveness reads nothing from the database.
-    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"] } });
+    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "efficiency", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"] } });
   });
 
   it.skipIf(!PG_URL)("/readyz on Postgres", async () => {

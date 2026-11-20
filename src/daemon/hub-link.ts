@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { type AgentReport, Credentials, IDEMPOTENCY_HEADER, type InboxMessage, type Repo, type Session, type ShareLevel, type SyncEvent, type SyncResponse } from "../protocol/index.ts";
 import type { DaemonStore, PendingCall } from "../store/index.ts";
+import { selectStateTime, type SentMark } from "../core/state-time.ts";
 
 export class HubRpcError extends Error {
   status: number;
@@ -62,6 +63,11 @@ export interface HubLinkDeps {
   fetch?: typeof fetch;
   /** Credentials of the daemon's local hub, used when no team hub is configured (Solo). */
   solo?: () => Credentials | undefined;
+  /**
+   * RL-14: the hub's `notHeld` verdict for the step-holding sessions of the first sync body of a
+   * flush (`sids`); not called when the hub sent none (an older hub).
+   */
+  onNotHeld?(sids: readonly string[], notHeld: readonly { sid: string; step: string }[]): void;
   /** A call queued while offline was sent (or refused) once the hub came back. */
   onReplayed?(call: PendingCall, result: unknown): void;
   onRejected?(call: PendingCall, error: HubRpcError): void;
@@ -83,7 +89,8 @@ const SYNC_SESSIONS_MAX = 200;
  * cap never drops them.
  */
 export function syncedSessions(all: readonly Session[], share: ShareLevel): Session[] {
-  const steps = all.filter((s) => s.step !== undefined);
+  // RL-14: state time stays on the machine; it is sent per (sid, step) in `stateTime`.
+  const steps = all.filter((s) => s.step !== undefined).map(({ stateTime: _local, ...s }) => s);
   if (share === "steps") return steps.slice(0, SYNC_SESSIONS_MAX);
   const rest = all
     .filter((s) => s.step === undefined)
@@ -313,12 +320,20 @@ export class HubLink {
   private factsFor(c: Credentials): void {
     const key = `${c.hub}\n${c.machine ?? ""}`;
     if (key === this.factsKey) return;
+    const switched = this.factsKey !== undefined;
     this.factsKey = key;
     this.confirmed = false;
     this.sentRepos = undefined;
     this.sentAgents = undefined;
     this.warnedUnconfirmed = false;
+    this.stateTimeSent.clear();
+    // RL-14: marks set by another hub no longer apply; the new hub's first reply sets them again.
+    // (Not at the first sync of this process: marks saved before a restart stay.)
+    if (switched) this.deps.onNotHeld?.(this.deps.sessions().filter((s) => s.step !== undefined).map((s) => s.sid), []);
   }
+
+  /** RL-14: what the hub last accepted per `(sid, step)` (this process, this hub). */
+  readonly stateTimeSent = new Map<string, SentMark>();
 
   private async doFlush(c: Credentials, probeNow = false): Promise<void> {
     try {
@@ -332,15 +347,19 @@ export class HubLink {
       const reposJson = JSON.stringify(repos);
       const agents = this.deps.machineAgents?.();
       const agentsJson = agents !== undefined ? JSON.stringify(agents) : undefined;
+      // RL-14: the first body of the flush carries the state time entries.
+      let stateTime: ReturnType<typeof selectStateTime> | undefined = selectStateTime(all, this.deps.now(), this.stateTimeSent);
       for (;;) {
         const batch = this.deps.store.outboxPeek(200);
         // `me` counts as `steps` until this hub has confirmed it applies the visibility rule.
         const effective: ShareLevel = share === "me" && !this.confirmed ? "steps" : share;
         const sendRepos = this.sentRepos !== reposJson;
         const sendAgents = agents !== undefined && this.sentAgents !== agentsJson;
+        const sessions = syncedSessions(all, effective);
         const body = {
           events: batch.map((b) => b.value),
-          sessions: syncedSessions(all, effective),
+          sessions,
+          ...(stateTime?.entries.length ? { stateTime: stateTime.entries } : {}),
           counts,
           machine: {
             share,
@@ -351,6 +370,11 @@ export class HubLink {
           },
         };
         const reply = await this.rpc<SyncResponse | undefined>("POST", "/v1/sync", body, undefined, { probe: true });
+        if (stateTime) {
+          for (const [k, m] of stateTime.marks) this.stateTimeSent.set(k, m);
+          if (Array.isArray(reply?.notHeld)) this.deps.onNotHeld?.(sessions.filter((s) => s.step !== undefined).map((s) => s.sid), reply.notHeld);
+          stateTime = undefined;
+        }
         if (sendRepos) this.sentRepos = reposJson;
         if (sendAgents) this.sentAgents = agentsJson;
         this.confirmed = reply?.share !== undefined;
