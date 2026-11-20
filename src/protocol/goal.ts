@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DurationSpec, durationMs } from "./duration.ts";
 import { Disposition, Fold, ItemState, Severity, StepWhen } from "./review.ts";
 import { AGENT_NAME_RE, AGENT_NAME_RULE, AgentDef, parseRosterKey, ROSTER_KEY_RULE } from "./roster.ts";
 
@@ -415,9 +416,28 @@ export const Step = z.object({
   finding: z.object({ lineage: z.string(), fp: z.string() }).optional(),
   /** RL-10: set only on a moved-away finding step: the full id of the step it was moved to. */
   movedTo: z.string().optional(),
+  /**
+   * RL-15: the hub's SLA bookkeeping of a debrief step for the waiting cycle that began at `since`:
+   * when it emitted `debrief.overdue` to the assignee and to the owner, and when it last auto-accepted.
+   */
+  overdue: z.object({ since: z.number(), assigneeAt: z.number().optional(), ownerAt: z.number().optional(), autoAt: z.number().optional() }).optional(),
   updatedAt: z.number(),
 });
 export type Step = z.infer<typeof Step>;
+
+const HOUR_MS = 3_600_000;
+/** RL-15: a debrief SLA, 1h to 30d. */
+export const SlaSpec = DurationSpec.refine((v) => {
+  const ms = durationMs(v);
+  return ms === undefined || (ms >= HOUR_MS && ms <= 30 * 24 * HOUR_MS);
+}, "sla is 1h to 30d");
+const AUTO_ACCEPT_RULE = "auto_accept takes S3 and S4 only (S1 and S2 always wait for a person)";
+/** RL-15: the severities a debrief may auto-accept after its SLA. */
+export const AutoAccept = z
+  .array(z.enum(["S3", "S4"], { error: AUTO_ACCEPT_RULE }))
+  .min(1)
+  .max(2)
+  .refine((a) => new Set(a).size === a.length, "auto_accept lists each severity once");
 
 const localId = z
   .string()
@@ -494,6 +514,10 @@ export const StepPolicy = z.object({
   assignee: z.union([z.literal("@owner"), z.string().regex(/^[^@\s]\S{0,99}$/, "assignee is a user id or @owner")]).optional(),
   /** RL-9: items filed in the run go, one step each, to the clean-audit goal of (repo, topic). */
   sink: z.object({ topic: z.string().min(1).max(40) }).strict().optional(),
+  /** RL-15: how long a debrief may wait before the hub raises it (1h to 30d). */
+  sla: SlaSpec.optional(),
+  /** RL-15: after the SLA, the hub accepts agent-confirmed items of these severities (S3, S4 only). */
+  auto_accept: AutoAccept.optional(),
 });
 export type StepPolicy = z.infer<typeof StepPolicy>;
 export const POLICY_KEYS = Object.keys(StepPolicy.shape) as (keyof StepPolicy)[];

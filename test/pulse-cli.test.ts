@@ -247,6 +247,29 @@ describe("AC-20 mesh pulse ls, show, update, pause, resume, fire, rm", { timeout
     expect(again.out.trim()).toBe(`Pulse p-1 skipped slot ${sk.slot}: ${s.goal} is still running (overlap: skip).`);
   });
 
+  it("test_AC12_overlap_flag_and_queued_fire", async () => {
+    // RL-15 AC-12: `--overlap queue|supersede` and the fire texts.
+    const c = await cast();
+    await k.pulseOk("ann", body());
+    const up = await cli(c.ann, ["pulse", "update", "p-1", "--overlap", "queue"]);
+    expect(up.code, up.err).toBe(0);
+    expect((await k.pulseOf("p-1")).overlap).toBe("queue");
+    const fired = await cli(c.ann, ["pulse", "fire", "p-1"]);
+    expect(fired.code, fired.err).toBe(0);
+    const s = (await k.slotsOf("p-1"))[0];
+    k.at(NOW + MIN);
+    const queued = await cli(c.ann, ["pulse", "fire", "p-1"]);
+    expect(queued.code, queued.err).toBe(0);
+    const q = (await k.slotsOf("p-1")).find((x) => x.state === "queued");
+    expect(queued.out.trim()).toBe(`Pulse p-1 queued slot ${q.slot}: ${s.goal} is still running (overlap: queue); it fires when that ends.`);
+    const sup = await cli(c.ann, ["pulse", "update", "p-1", "--overlap", "supersede"]);
+    expect(sup.code, sup.err).toBe(0);
+    k.at(NOW + 2 * MIN);
+    const skipped = await cli(c.ann, ["pulse", "fire", "p-1"]);
+    const sk = (await k.slotsOf("p-1")).find((x) => x.state === "skipped" && x.queued !== true);
+    expect(skipped.out.trim()).toBe(`Pulse p-1 skipped slot ${sk.slot}: ${s.goal} is still running (overlap: supersede).`);
+  });
+
   it("test_AC20_hub_error", async () => {
     const c = await cast();
     await k.pulseOk("ann", body());

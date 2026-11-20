@@ -147,7 +147,7 @@ describe("RL-12 AC-07 slots and runs", { timeout: 90_000 }, () => {
     expect(h.window).toStrictEqual({ since: NOW - 7 * DAY, until: NOW, days: 7 });
     const p = h.pulses[0] as Json;
     expect(p).toMatchObject({ pulse: "p-1", title: "hl on alpha", owner: "ann", enabled: true, schedule: "every 1d" });
-    expect(p.slots).toStrictEqual({ due: 7, fired: 3, started: 3, skipped: 1, missed: { no_machine: 1, capacity: 1 }, abandoned: 1 });
+    expect(p.slots).toStrictEqual({ due: 7, fired: 3, started: 3, skipped: 1, missed: { no_machine: 1, capacity: 1 }, abandoned: 1, queued: 0 });
     expect(p.manual).toBe(4);
     // The newest slot is the scheduled slot due(1) (the trial fire is left out).
     expect(p.lastSlot).toStrictEqual({ slot: iso(due(1)), at: due(1), state: "fired" });
@@ -260,7 +260,7 @@ describe("RL-12 AC-08 decisions", { timeout: 90_000 }, () => {
     // The oldest is G1's debrief, ready since G1's validate finished.
     expect(p1.debriefs.oldestMs).toBe(NOW - g1Ready);
     expect(p1.debriefs.oldestMs).toBeGreaterThan(NOW - debriefReady);
-    expect((h.pulses as Json[])[1]?.debriefs).toStrictEqual({ open: 0 });
+    expect((h.pulses as Json[])[1]?.debriefs).toStrictEqual({ open: 0, overdue: 0, breaches: [] });
     expect(((await healthOk(k, "?trial=include")).pulses as Json[])[1]?.debriefs.open).toBe(1);
     expect(h.total.debriefs.open).toBe(2);
   });
@@ -434,6 +434,6 @@ describe("RL-12 AC-10 AC-11 filters, total, scopes", { timeout: 90_000 }, () => 
     }
     expect(JSON.stringify((await k.r.call(k.c.ann, "GET", "/v1/goals?pulses=1")).json)).toBe(goalsBefore);
     expect((await k.r.call(k.c.ann, "GET", "/v1/events?after=0&limit=1000")).json).toStrictEqual(evBefore);
-    expect((await k.w.call(undefined as never, "GET", "/healthz")).json.features).toStrictEqual(["agent-compare", "changes", "commits", "efficiency", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"]);
+    expect((await k.w.call(undefined as never, "GET", "/healthz")).json.features).toStrictEqual(["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "health", "overlap-policy", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"]);
   });
 });

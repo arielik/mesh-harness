@@ -700,7 +700,7 @@ export interface LiveMachine {
 }
 
 export interface Attention {
-  kind: "approval" | "question" | "failed" | "stalled" | "paused" | "parked" | "needs_you" | "offer" | "offer_expired";
+  kind: "approval" | "question" | "failed" | "stalled" | "paused" | "parked" | "needs_you" | "offer" | "offer_expired" | "debrief_overdue";
   text: string;
   goal?: string | undefined;
   step?: string | undefined;
@@ -757,7 +757,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "efficiency", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "health", "overlap-policy", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -868,6 +868,10 @@ export const RunCard = z.object({
   manual: z.boolean(),
   trial: z.boolean(),
   catchUp: z.boolean(),
+  /** RL-15: the slot waited in state `queued`. */
+  queued: z.boolean(),
+  /** RL-15: the goals this fire superseded (dropped). */
+  superseded: z.array(z.string()),
   tries: int,
   startWaitMs: z.number().optional(),
   goalTitle: z.string().optional(),
@@ -890,7 +894,7 @@ export const RunCardsPage = z.object({ pulse: z.string(), cards: z.array(RunCard
 export type RunCardsPage = z.infer<typeof RunCardsPage>;
 
 const BySeverity = z.object({ S1: int, S2: int, S3: int, S4: int });
-const HealthSlots = z.object({ due: int, fired: int, started: int, skipped: int, missed: z.record(z.string(), int), abandoned: int });
+const HealthSlots = z.object({ due: int, fired: int, started: int, skipped: int, missed: z.record(z.string(), int), abandoned: int, queued: int });
 const HealthRuns = z.object({
   count: int,
   durationMs: int,
@@ -903,6 +907,26 @@ const HealthRuns = z.object({
 });
 const HealthGoals = z.object({ created: int, done: int, dropped: int, open: int });
 const Oldest = z.object({ open: int, oldestMs: z.number().optional() });
+/** RL-15: a debrief past its SLA. */
+export const DebriefBreach = z.object({
+  goal: z.string(),
+  step: z.string(),
+  assignee: z.string(),
+  /** The escalation user: the pulse owner (the goal owner without a pulse). */
+  owner: z.string(),
+  slaMs: int,
+  /** When the debrief began to wait (this cycle). */
+  since: z.number(),
+  /** `since + slaMs`. */
+  breachedAt: z.number(),
+  /** Past twice the SLA. */
+  escalated: z.boolean(),
+  /** Its `auto-accept` dispositions in its current round. */
+  autoAccepted: int,
+});
+export type DebriefBreach = z.infer<typeof DebriefBreach>;
+const PulseDebriefs = Oldest.extend({ overdue: int, breaches: z.array(DebriefBreach) });
+const TotalDebriefs = Oldest.extend({ overdue: int });
 const HealthFindings = z.object({ open: BySeverity, accepted: BySeverity });
 /** RL-18: item decisions (disposition history entries) in the window, and how many people took. */
 const HealthDecisions = z.object({ total: int, byPeople: int });
@@ -926,7 +950,7 @@ export const PulseHealth = z.object({
   goals: HealthGoals,
   accepted: int,
   costPerAcceptedUsd: z.number().optional(),
-  debriefs: Oldest,
+  debriefs: PulseDebriefs,
   findings: HealthFindings,
   decisions: HealthDecisions,
   /** RL-18: `decisions.byPeople / decisions.total`, 4 decimals; absent at 0 decisions. */
@@ -942,7 +966,7 @@ export const HealthTotal = z.object({
   goals: HealthGoals,
   accepted: int,
   costPerAcceptedUsd: z.number().optional(),
-  debriefs: Oldest,
+  debriefs: TotalDebriefs,
   findings: HealthFindings,
   calibrations: Oldest,
   decisions: HealthDecisions,

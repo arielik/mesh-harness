@@ -51,7 +51,7 @@ describe("AC-01 schemas", () => {
     ["unknown key", { foo: 1 }, undefined],
     ["mixed when", { when: { cron: "* * * * *", tz: "UTC", every: "1d" } }, undefined],
     ["stored when form", { when: { every: "1d", anchor: 0 } }, undefined],
-    ["overlap queue", { overlap: "queue" }, undefined],
+    ["overlap later", { overlap: "later" }, undefined],
     ["21 target labels", { target: { labels: Array.from({ length: 21 }, (_, i) => `l${i}`) } }, undefined],
   ];
   it.each(rejects)("test_AC01_create_rejects %s", (_name, over, msg) => {

@@ -28,3 +28,4 @@ export * from "./finding-step.ts";
 export * from "./stage-times.ts";
 export * from "./profile-fit.ts";
 export * from "./changes.ts";
+export * from "./sla.ts";

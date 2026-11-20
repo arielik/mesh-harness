@@ -2102,7 +2102,9 @@
                     "type": "string",
                     "enum": [
                       "skip",
-                      "allow"
+                      "allow",
+                      "queue",
+                      "supersede"
                     ]
                   },
                   "maxGoalAge": {
@@ -2276,7 +2278,8 @@
                               "fired",
                               "skipped",
                               "missed",
-                              "abandoned"
+                              "abandoned",
+                              "queued"
                             ]
                           },
                           "reason": {
@@ -2324,6 +2327,15 @@
                           },
                           "catchUp": {
                             "type": "boolean"
+                          },
+                          "queued": {
+                            "type": "boolean"
+                          },
+                          "superseded": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
                           },
                           "tries": {
                             "type": "integer",
@@ -2725,6 +2737,8 @@
                           "manual",
                           "trial",
                           "catchUp",
+                          "queued",
+                          "superseded",
                           "tries",
                           "stages",
                           "totals",
@@ -2898,6 +2912,11 @@
                                 "type": "integer",
                                 "minimum": -9007199254740991,
                                 "maximum": 9007199254740991
+                              },
+                              "queued": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
                               }
                             },
                             "required": [
@@ -2906,7 +2925,8 @@
                               "started",
                               "skipped",
                               "missed",
-                              "abandoned"
+                              "abandoned",
+                              "queued"
                             ],
                             "additionalProperties": false
                           },
@@ -2930,7 +2950,8 @@
                                   "fired",
                                   "skipped",
                                   "missed",
-                                  "abandoned"
+                                  "abandoned",
+                                  "queued"
                                 ]
                               },
                               "reason": {
@@ -3077,10 +3098,68 @@
                               },
                               "oldestMs": {
                                 "type": "number"
+                              },
+                              "overdue": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "breaches": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "goal": {
+                                      "type": "string"
+                                    },
+                                    "step": {
+                                      "type": "string"
+                                    },
+                                    "assignee": {
+                                      "type": "string"
+                                    },
+                                    "owner": {
+                                      "type": "string"
+                                    },
+                                    "slaMs": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "since": {
+                                      "type": "number"
+                                    },
+                                    "breachedAt": {
+                                      "type": "number"
+                                    },
+                                    "escalated": {
+                                      "type": "boolean"
+                                    },
+                                    "autoAccepted": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "goal",
+                                    "step",
+                                    "assignee",
+                                    "owner",
+                                    "slaMs",
+                                    "since",
+                                    "breachedAt",
+                                    "escalated",
+                                    "autoAccepted"
+                                  ],
+                                  "additionalProperties": false
+                                }
                               }
                             },
                             "required": [
-                              "open"
+                              "open",
+                              "overdue",
+                              "breaches"
                             ],
                             "additionalProperties": false
                           },
@@ -3246,6 +3325,11 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991
+                            },
+                            "queued": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
                             }
                           },
                           "required": [
@@ -3254,7 +3338,8 @@
                             "started",
                             "skipped",
                             "missed",
-                            "abandoned"
+                            "abandoned",
+                            "queued"
                           ],
                           "additionalProperties": false
                         },
@@ -3366,10 +3451,16 @@
                             },
                             "oldestMs": {
                               "type": "number"
+                            },
+                            "overdue": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
                             }
                           },
                           "required": [
-                            "open"
+                            "open",
+                            "overdue"
                           ],
                           "additionalProperties": false
                         },
@@ -5079,7 +5170,9 @@
                     "type": "string",
                     "enum": [
                       "skip",
-                      "allow"
+                      "allow",
+                      "queue",
+                      "supersede"
                     ]
                   },
                   "maxGoalAge": {
@@ -5751,6 +5844,22 @@
                             "topic"
                           ],
                           "additionalProperties": false
+                        },
+                        "sla": {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]{0,5}(m|h|d)$"
+                        },
+                        "auto_accept": {
+                          "minItems": 1,
+                          "maxItems": 2,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "S3",
+                              "S4"
+                            ]
+                          }
                         }
                       },
                       "required": [

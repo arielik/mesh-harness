@@ -4,7 +4,7 @@
 
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { PlanInput, PlanStep, StepBudget, type PlanAc } from "../protocol/index.ts";
+import { AutoAccept, PlanInput, PlanStep, SlaSpec, StepBudget, type PlanAc } from "../protocol/index.ts";
 
 /** RL-7: a budget value that is exactly one placeholder (`{turns}`). */
 const BUDGET_PLACEHOLDER = z.string().regex(/^\{[a-z][a-z0-9_]*\}$/);
@@ -38,8 +38,14 @@ export interface Preset {
   description: string;
   /** RL-7: default values of parameters (an explicit param beats a default). */
   params?: Record<string, string> | undefined;
+  /** RL-15: the SLA and auto-accept of every debrief step that sets none itself. */
+  debrief?: PresetDebrief | undefined;
   plan: { steps: PresetStep[] };
 }
+
+/** RL-15: a preset's top-level `debrief:` block. */
+export const PresetDebrief = z.object({ sla: SlaSpec.optional(), auto_accept: AutoAccept.optional() }).strict();
+export type PresetDebrief = z.infer<typeof PresetDebrief>;
 
 const s = (x: Partial<PresetStep> & Pick<PresetStep, "id" | "kind" | "title" | "brief">): PresetStep => ({ repo: "{repo}", deps: [], ...x }) as PresetStep;
 
@@ -178,10 +184,11 @@ export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDI
 
 /** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, steps}. */
 export function parsePreset(name: string, text: string): Preset {
-  const doc = parse(text) as { description?: string; params?: unknown; steps?: unknown };
+  const doc = parse(text) as { description?: string; params?: unknown; steps?: unknown; debrief?: unknown };
   const plan = z.object({ steps: z.array(PresetStep) }).parse({ steps: (doc.steps as unknown[] | undefined)?.map((x) => ({ repo: "{repo}", ...(x as object) })) ?? [] });
   const params = doc.params === undefined ? undefined : parseParams(doc.params);
-  return { name, description: doc.description ?? "", ...(params ? { params } : {}), plan: { steps: plan.steps } };
+  const debrief = doc.debrief === undefined ? undefined : PresetDebrief.parse(doc.debrief);
+  return { name, description: doc.description ?? "", ...(params ? { params } : {}), ...(debrief ? { debrief } : {}), plan: { steps: plan.steps } };
 }
 
 /** RL-7: a `params:` mapping; numbers become their decimal string. */
@@ -199,7 +206,8 @@ function parseParams(v: unknown): Record<string, string> {
 
 export function presetText(p: Preset): string {
   const params = p.params && Object.keys(p.params).length > 0 ? { params: p.params } : {};
-  return stringify({ preset: p.name, description: p.description, ...params, steps: p.plan.steps }, { lineWidth: 0 });
+  const debrief = p.debrief && Object.keys(p.debrief).length > 0 ? { debrief: p.debrief } : {};
+  return stringify({ preset: p.name, description: p.description, ...params, ...debrief, steps: p.plan.steps }, { lineWidth: 0 });
 }
 
 /** RL-7: the largest `budget.turns` / `budget.minutes` a filled placeholder may give. */
@@ -231,6 +239,11 @@ export function instantiate(
     if (!hasAcs) delete step.must_cover;
     // RL-9: a sink topic is a topic name (trimmed, lowercased); the hub checks it.
     if (step.sink) step.sink = { topic: step.sink.topic.trim().toLowerCase() };
+    // RL-15: the preset's debrief SLA and auto-accept, unless the step sets its own.
+    if (step.mode === "debrief" && p.debrief) {
+      if (step.sla === undefined && p.debrief.sla !== undefined) step.sla = p.debrief.sla;
+      if (step.auto_accept === undefined && p.debrief.auto_accept !== undefined) step.auto_accept = [...p.debrief.auto_accept];
+    }
     return step;
   });
   for (const step of steps) {

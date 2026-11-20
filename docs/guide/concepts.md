@@ -526,6 +526,36 @@ anyway. A started goal older than `--max-goal-age`
 (default twice the period) is dropped at the next slot, which is recorded `abandoned`; a goal that
 never started is ended by its window instead.
 
+**Queue and supersede** (0.1.37, `/healthz` feature `overlap-policy`). With `--overlap queue` a
+slot that `skip` would skip waits instead (state `queued`, `running` the goal it waits for, event
+`pulse.queued`) and fires at the first hub tick after no goal of the pulse has machine work: the slot
+becomes `fired` with its goal, `firedAt` the release time, `until` a window from then, the mark
+`queued`, and `pulse.fired` with `queued: true`. At most one slot waits: a later slot that finds work
+in flight replaces it (the older one becomes `skipped`/`overlap` with `replacedBy` in its
+`pulse.skipped`), and so does a later slot that fires. A paused pulse's queued slot waits; one of a
+deleted pulse, or of a pulse whose overlap changed, is skipped at the next tick. With `--overlap
+supersede` a slot that finds machine work in flight is skipped as with `skip`; otherwise, before it
+creates its goal, it drops every earlier goal of the pulse that only waits on people (no machine work
+and no held step; trial goals included): it sinks what that goal filed, carries the debrief items
+nobody decided into the new goal's debrief, drops the goal (`goal.dropped` with reason
+`superseded`, one `pulse.superseded` per goal) and lists the dropped goals in the new slot's
+`superseded`. Under `supersede` such a waiting goal is never abandoned for `--max-goal-age`; it waits
+to be superseded. A goal whose debrief someone holds is left alone. A trial fire never queues,
+replaces a queued slot or supersedes: under `queue` and `supersede` it behaves as under `skip`.
+A client that lists values exhaustively sees new ones from 0.1.37: `overlap` `queue` and
+`supersede`, slot state `queued`, `goal.dropped` reason `superseded`, disposition `via`
+`auto-accept` and attention kind `debrief_overdue`.
+
+**Carry.** The new goal's debrief lists the items of its own run's record **and** the undecided
+items carried from the goals it superseded (the items in the debrief's `consumes` states, matched by
+the debrief's step id and the run's lineage), whatever the new record's coverage. An item the new
+audit raises again is listed once; one it does not raise again stays listed until someone decides
+it, unless a complete record resolves it (an item is resolved only when it was in the lineage's last
+complete record). A carried item reaches the debrief without the new goal's validator seeing it, and
+a pulse update that renames the debrief step or changes the audit's agent matches no carry (the
+items stay open on their lineage).
+
+
 **Trial fires** (0.1.30). `mesh pulse fire <id> --trial` (`POST /v1/pulses/:id/fire` with `{"trial":
 true}`) fires a manual slot marked `trial`; its goal has `trial: true`, and `pulse.fired` and
 `goal.created` carry `trial: true`. A trial goal never makes a slot skip for overlap (a trial fire is
@@ -876,8 +906,9 @@ public liveness probe.
 **Run cards.** `GET /v1/pulses/:id/runs` returns one card per slot of the pulse, newest first
 (`limit` 1-100, default 20; `cursor` the `next` of the previous page, a position that stays valid
 with another `trial`). A card has the slot as stored (`state`, `reason`, `running`, `until`, `tries`,
-marks `manual`, `trial`, `catchUp`), `startWaitMs` (from the due time, or from the fire time of a
-manual or catch-up slot, to the run's start) and, when the slot made a goal:
+marks `manual`, `trial`, `catchUp`, `queued`, and `superseded`, the goals its fire dropped),
+`startWaitMs` (from the due time, or from the fire time of a manual, catch-up or queued slot, to the
+run's start) and, when the slot made a goal:
 - `stages`: each step in goal order with `mode`, `state`, `holder`, `agent`, `rounds`, `outcome`,
   `commit` (of its newest round, from 0.1.32),
   `runs`, `durationMs`, `turns`, `costUsd`, `exit`, and its times (below);
@@ -907,9 +938,10 @@ through a rejected or parked round also gets it, at that round's end, although i
 
 **Scorecard.** `GET /v1/health` (`days` 1-90, default 7; the window is `[now − days, now]`; `repo`
 the repo the pulse runs in; `topic`) returns one entry per pulse and a `total`:
-- `slots`: of the scheduled slots in the window, `due`, `fired`, `skipped`, `abandoned` (states now),
-  `missed` by reason, and `started` (whatever their state now); `manual` counts manual fires;
-- `lastSlot`, and `blockedBy`: with `overlap: skip`, the goal and step that would make a slot fired
+- `slots`: of the scheduled slots in the window, `due`, `fired`, `skipped`, `abandoned`, `queued`
+  (states now), `missed` by reason, and `started` (whatever their state now); `manual` counts manual
+  fires;
+- `lastSlot`, and `blockedBy`: with `overlap` `skip`, `queue` or `supersede`, the goal and step that would make a slot fired
   now be skipped, as the fire itself would decide (a goal the fire would retire or abandon does not
   block, nor does a trial goal), with its age;
 - `runs`: the runs that finished in the window, with duration, turns, cost and the waste parts
@@ -919,7 +951,11 @@ the repo the pulse runs in; `topic`) returns one entry per pulse and a `total`:
   window (an item accepted by a debrief and linked by a filer counts once); `costPerAcceptedUsd` =
   runs' cost / `accepted`, both by time in the window, absent at 0. It is the only ratio the hub
   computes; it has no composite score;
-- `debriefs`: open debriefs of open goals and the oldest wait;
+- `debriefs`: open debriefs of open goals and the oldest wait; from 0.1.37 also `overdue` (those
+  past their SLA) and `breaches`, one per overdue debrief: `goal`, `step`, `assignee`, `owner` (the
+  escalation user), `slaMs`, `since`, `breachedAt` (`since + slaMs`), `escalated` and
+  `autoAccepted` (its auto-accepts in its current round). Health counts a trial goal's debrief with
+  `trial=include`, although the hub raises nothing for it;
 - `findings`: the items of the pulse's lineages by severity, `open` (open or confirmed) and
   `accepted`;
 - `decisions`: the item decisions (disposition history entries; one reverted later still counts) in
@@ -938,6 +974,49 @@ they include what trial runs did to the items.
 
 **Cost.** A health call reads every raising record and the items and history of each lineage it
 names; it is meant for a page load, not a poll every few seconds.
+
+## Debrief SLA
+
+From 0.1.37 (`/healthz` feature `debrief-sla`) a debrief step may have an SLA: `sla: 48h` (1h to
+30d) on the step, or a preset-level block that applies to every debrief step that sets none itself:
+
+```yaml
+debrief:
+  sla: 48h
+  auto_accept: [S3, S4]
+steps:
+  - ...
+```
+
+**Waiting since.** A debrief waits from when it could start in its current cycle (its run-card
+`cycleReadyAt`, else `readyAt`), whether or not someone holds it. Past the SLA it is **breached**,
+past twice the SLA **escalated**. The hub then:
+- raises an attention item (`GET /v1/attention`, kind `debrief_overdue`, at the due time) for the
+  debrief's assignee once breached, and for the pulse's owner (the goal owner when the goal has no
+  pulse) once escalated;
+- emits `debrief.overdue` once per cycle and level (`to: "assignee"`, then `to: "owner"` when that is
+  another person). A reopened debrief starts a new cycle.
+
+Trial goals never raise SLA events, attention items or auto-accepts.
+
+**Auto-accept.** With `auto_accept` (S3 and S4 only: S1 and S2 always wait for a person; it needs
+`sla`, `accepted` in `may_set` and `confirmed` in `consumes`), when the SLA passes while the debrief
+is `ready` (nobody holds it), the hub accepts each debrief item that is `confirmed`, at a listed
+severity, whose latest decision is an agent's `confirmed` (a validator's). The decision is recorded
+like any other: `decider` `{kind: "agent", key: "mesh/debrief-sla"}` (a rule of the hub, never a
+person), `via: "auto-accept"`, the reason `accepted after the debrief SLA (<sla>): confirmed by
+<validator key> at <severity>`, a note on the debrief, `item.disposed` and one
+`debrief.auto_accepted`. It sets no link: the hub cannot open a tracker entry, so the item is
+accepted but not filed; a later filer stage that consumes `accepted` files it. The debrief stays
+open (its person closes it, or `supersede` drops its goal at the next slot).
+
+The debrief's view lists auto-accepts with its own decisions, and they revert the same way
+(`POST /v1/steps/:id/dispositions/revert` by the assignee, the goal owner or an admin). An item
+whose auto-accept was reverted is never auto-accepted again by that debrief. In the session the
+person may also overrule an auto-accept directly (`mesh_dispose` with another decision), and a
+closing record that lists the same decision counts it under `already`. Health `accepted` and
+`costPerAcceptedUsd` count auto-accepted items like any other acceptance; the decider tells them
+apart.
 
 ## Efficiency
 

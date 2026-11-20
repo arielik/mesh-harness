@@ -59,7 +59,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.36](operations.md#upgrading-to-0136).
+  describes; see [Upgrading to 0.1.37](operations.md#upgrading-to-0137).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else
@@ -400,7 +400,7 @@ Flags of `mesh pulse add` (and `update`, except `--paused`):
 | `--cron "<5 fields>" --tz <zone>` | standard cron in an IANA time zone (default: your CLI's), e.g. `--cron "0 9 * * 1" --tz Europe/Berlin` for Mondays 09:00; at most every 5 minutes |
 | `--labels a,b` / `--machines a,b` | only machines with every label / only these machines |
 | `--window <dur>` | how long after the slot's time the run may start (default the smaller of 4h and the period; 1m to 30d). A slot whose run has not started by then is `missed` and its goal dropped. |
-| `--overlap skip\|allow` | `skip` (default): no new goal while one of an earlier slot still has machine work (see **Overlap** below) |
+| `--overlap skip\|allow\|queue\|supersede` | `skip` (default): no new goal while one of an earlier slot still has machine work; `queue`: the slot waits and fires when that work ends; `supersede`: a new goal drops the earlier goals that only wait on people, carrying their undecided debrief items (see **Overlap** below) |
 | `--max-goal-age <dur>` | a started goal older than this is dropped at the next slot, recorded `abandoned` (default twice the period; 1h to 366d) |
 | `--missed record\|catch-up-once` | slots that passed while the hub was down: only recorded (default), or the latest one still fires |
 | `--title`, `--topics`, `--paused` | the goals' title, topics; create it paused |
@@ -454,6 +454,28 @@ debrief step for the owner, any other non-headless step, a failed or parked step
 finding keeps its schedule while the owner has not debriefed yet; each week's goal waits for its own
 debrief. A goal that really is stuck is still dropped at the next slot once it is older than
 `--max-goal-age` (recorded `abandoned`). `--overlap allow` fires whatever earlier goals are doing.
+
+`--overlap queue` keeps a slot that would be skipped: it waits (`queued`) and fires as soon as the
+running goal's machine work ends, so a weekly audit that overlapped by a few minutes still runs that
+week. Only the newest such slot waits; an older one is skipped when a newer one arrives.
+
+`--overlap supersede` is for debriefs that pile up (and trial goals left open): each new goal drops
+the earlier goals that only wait on people, after sinking what they filed, and its debrief lists the
+items nobody decided in them next to its own (see [concepts](concepts.md#pulses), **Carry**). Nothing
+is lost on the lineage: an item stays open until a debrief decides it or a complete audit no longer
+finds it. A goal whose debrief someone is doing is kept. A trial fire never queues or supersedes.
+
+**Debrief SLA.** A preset may give its debriefs an SLA and let low-severity items through without a
+person:
+
+```yaml
+debrief:
+  sla: 48h            # past it: an attention item for the assignee; past twice it: for the pulse owner
+  auto_accept: [S3, S4]   # after the SLA, accept what the validator confirmed at S3/S4 (S1, S2 always wait)
+```
+
+See [concepts](concepts.md#debrief-sla) for the events, the decider of an auto-accept and how to
+revert one. `GET /v1/health` lists the overdue debriefs of each pulse (`debriefs.breaches`).
 
 **Which machine.** At a slot the hub offers the first step, as you, to the first machine in
 `mesh assign --suggest` order that is online, has the repo, auto-accepts your offers, carries every
@@ -614,7 +636,7 @@ Define the topic once (`mesh topic add ci`) and add `sink` to the stage that rec
 ```
 
 `sink` needs mesh 0.1.27 on the hub: an older hub refuses the preset with 422. See
-[Upgrading to 0.1.36](operations.md#upgrading-to-0136).
+[Upgrading to 0.1.37](operations.md#upgrading-to-0137).
 
 The stage needs `accepted` in `may_set`, and the topic must exist (`mesh pulse add` and `mesh goal
 plan` refuse the preset otherwise). When `file` is done, or skipped because you filed everything in
@@ -665,7 +687,7 @@ steps start in the right checkout:
 
   The sink then files each item in `Clean audits: ci on api`, `… on web` or `… on demo`, and
   `mesh items` shows `api/.ci.yml → api` for it. `repo` needs mesh 0.1.28 on the hub and on the
-  daemon of the machine that runs the auditor (see [Upgrading to 0.1.36](operations.md#upgrading-to-0136)).
+  daemon of the machine that runs the auditor (see [Upgrading to 0.1.37](operations.md#upgrading-to-0137)).
 - **When an auditor starts sending `repo`**, the next record moves the open steps of the items it
   now places elsewhere: the old step is dropped with `moved to <new id>`, the new one has `moved from
   <old id>`. A claimed (or paused, parked, failed) step stays where it is with a note; release it and

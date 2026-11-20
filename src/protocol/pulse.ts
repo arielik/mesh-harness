@@ -2,24 +2,14 @@
 import { z } from "zod";
 import { type GoalState, ProfileSnapshot } from "./goal.ts";
 import { AgentDef } from "./roster.ts";
+import { DurationSpec, durationMs } from "./duration.ts";
 import { Label } from "./session.ts";
 
-/** A duration: a number and m (minutes), h (hours) or d (days), e.g. 30m, 4h, 7d. */
-export const DURATION_RE = /^[1-9][0-9]{0,5}(m|h|d)$/;
-const UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
-
-/** Milliseconds of a duration; `undefined` when `s` is not one. */
-export function durationMs(s: string): number | undefined {
-  if (!DURATION_RE.test(s)) return undefined;
-  const unit = s.slice(-1) as keyof typeof UNIT_MS;
-  return Number(s.slice(0, -1)) * UNIT_MS[unit];
-}
+export { DURATION_RE, DurationSpec, durationMs } from "./duration.ts";
 
 export const PulseId = z.string().regex(/^p-[1-9][0-9]*$/);
 export type PulseId = z.infer<typeof PulseId>;
 
-export const DurationSpec = z.string().regex(DURATION_RE, "a duration is a number and m, h or d, e.g. 30m, 4h, 7d");
-export type DurationSpec = z.infer<typeof DurationSpec>;
 
 /** What a pulse create or update says about its schedule (`at` = the anchor of `every`, ms). */
 export const PulseWhenInput = z.union([
@@ -59,7 +49,9 @@ export const PulseTarget = z
   .strict();
 export type PulseTarget = z.infer<typeof PulseTarget>;
 
-const Overlap = z.enum(["skip", "allow"]);
+/** RL-15: `queue` waits for the running goal; `supersede` drops goals that only wait on people. */
+export const Overlap = z.enum(["skip", "allow", "queue", "supersede"]);
+export type Overlap = z.infer<typeof Overlap>;
 const Missed = z.enum(["record", "catch-up-once"]);
 
 /** The fields of `PulseCreate`, without defaults or refinements (`PulseUpdate` is built from it). */
@@ -119,7 +111,7 @@ export const PulseUpdate = PulseFields.omit({ enabled: true })
   });
 export type PulseUpdate = z.infer<typeof PulseUpdate>;
 
-export const SlotState = z.enum(["fired", "skipped", "missed", "abandoned"]);
+export const SlotState = z.enum(["fired", "skipped", "missed", "abandoned", "queued"]);
 export type SlotState = z.infer<typeof SlotState>;
 export const SlotReason = z.enum(["overlap", "no_machine", "not_accepted", "capacity", "expired", "hub_down", "max_goal_age", "error"]);
 export type SlotReason = z.infer<typeof SlotReason>;
@@ -133,6 +125,20 @@ export type SlotTry = z.infer<typeof SlotTry>;
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 export const MANUAL_SLOT_RE = /^manual:[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** RL-15: undecided debrief items of superseded goals, carried into the next goal's debrief. */
+export const Carry = z.object({
+  /** The local id of the debrief step. */
+  step: z.string(),
+  lineage: z.string(),
+  /** 1..1000 fingerprints, unique, sorted. */
+  fps: z
+    .array(z.string())
+    .min(1)
+    .max(1000)
+    .refine((a) => a.every((x, i) => i === 0 || (a[i - 1] as string) < x), "fps are unique and sorted"),
+});
+export type Carry = z.infer<typeof Carry>;
 
 /** One slot of a pulse: due (or manual) time and what happened to it. */
 export const PulseSlot = z.object({
@@ -150,8 +156,14 @@ export const PulseSlot = z.object({
   catchUp: z.literal(true).optional(),
   /** RL-11: a trial fire (`mesh pulse fire --trial`). */
   trial: z.literal(true).optional(),
-  /** RL-11: a slot skipped for overlap: the goal that was running. */
+  /** RL-11: a slot skipped for overlap: the goal that was running. RL-15: also a queued slot's. */
   running: z.string().optional(),
+  /** RL-15: the slot waited in state `queued` (kept after it fires or is skipped). */
+  queued: z.literal(true).optional(),
+  /** RL-15: the goals this fire dropped (`overlap: supersede`), in slot order. */
+  superseded: z.array(z.string()).optional(),
+  /** RL-15: the debrief items carried from the superseded goals. */
+  carry: z.array(Carry).optional(),
   firedAt: z.number().optional(),
   /** Fired slots: the end of the window. */
   until: z.number().optional(),

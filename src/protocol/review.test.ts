@@ -213,7 +213,7 @@ describe("RL-4 AC-01 schemas", () => {
   });
 
   it("test_AC01_disposition_via", () => {
-    expect(P.DispositionVia.options).toStrictEqual(["stage", "debrief-session"]);
+    expect(P.DispositionVia.options).toStrictEqual(["stage", "debrief-session", "auto-accept"]);
   });
 
   it("test_AC01_rl2_rows_parse_unchanged", () => {

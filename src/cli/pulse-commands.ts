@@ -13,7 +13,8 @@ import { HubCallError, HubClient } from "./hub-client.ts";
 const USAGE = [
   "usage:",
   '  mesh pulse add --preset <name> --repo <repo> [--params k=v,k2=v2] (--every <dur> [--at <ISO>] | --cron "<5 fields>" [--tz <zone>])',
-  '                 [--title "…"] [--topics a,b] [--labels a,b] [--machines a,b] [--window <dur>] [--overlap skip|allow]',
+  '                 [--title "…"] [--topics a,b] [--labels a,b] [--machines a,b] [--window <dur>]',
+  "                 [--overlap skip|allow|queue|supersede]",
   "                 [--max-goal-age <dur>] [--missed record|catch-up-once] [--paused]",
   "  mesh pulse ls [--mine] [--json]",
   "  mesh pulse show <id> [--json]",
@@ -263,14 +264,23 @@ export function pulseCommand(c: CliEnv): Command {
               c.io.out(`Fired pulse ${slot.pulse}: slot ${slotText} → ${slot.goal ?? "-"}.`);
               return 0;
             }
+            if (slot.state === "queued") {
+              c.io.out(`Pulse ${slot.pulse} queued slot ${slotText}: ${slot.running ?? "a goal"} is still running (overlap: queue); it fires when that ends.`);
+              return 0;
+            }
             if (slot.state === "skipped") {
               let running = slot.running;
+              let overlap = "skip";
               if (running === undefined) {
                 // A hub before 0.1.30 does not say which goal was running: guess it from the slots.
                 const d = await hub().get<PulseDetail>(`/v1/pulses/${encodeURIComponent(slot.pulse)}`);
                 running = d.slots.find((s) => s.state === "fired" && s.goal !== undefined && d.goals[s.goal] !== "done" && d.goals[s.goal] !== "dropped")?.goal ?? "a goal";
+                overlap = d.pulse.overlap;
+              } else {
+                // RL-15: name the pulse's policy (a trial fire under queue or supersede is skipped too).
+                overlap = (await hub().get<PulseDetail>(`/v1/pulses/${encodeURIComponent(slot.pulse)}`)).pulse.overlap;
               }
-              c.io.out(`Pulse ${slot.pulse} skipped slot ${slotText}: ${running} is still running (overlap: skip).`);
+              c.io.out(`Pulse ${slot.pulse} skipped slot ${slotText}: ${running} is still running (overlap: ${overlap}).`);
               return 0;
             }
             c.io.err(`Pulse ${slot.pulse} missed slot ${slotText}: ${slot.error ?? slot.reason ?? "unknown error"}`);

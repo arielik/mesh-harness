@@ -141,7 +141,10 @@ export const StoredReview = z.object({
 export type StoredReview = z.infer<typeof StoredReview>;
 
 /** RL-4: how a disposition was recorded: in a stage's review record, or one at a time in a debrief. */
-export const DispositionVia = z.enum(["stage", "debrief-session"]);
+export const DispositionVia = z.enum(["stage", "debrief-session", "auto-accept"]);
+
+/** RL-15: the decider of an auto-accept after a debrief SLA (a rule of the hub, never a person). */
+export const SLA_DECIDER = { kind: "agent", key: "mesh/debrief-sla" } as const;
 export type DispositionVia = z.infer<typeof DispositionVia>;
 
 const HistoryBase = z.object({

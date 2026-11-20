@@ -117,6 +117,7 @@ import {
   timeline as changeTimeline,
   type FitRun,
   type Sighting,
+  slaState,
 } from "../core/index.ts";
 import type {
   AcState,
@@ -249,7 +250,7 @@ import type {
   PulseWhenInput,
   SlotReason,
 } from "../protocol/index.ts";
-import { PulseSlot as PulseSlotSchema, StateTimeReport } from "../protocol/index.ts";
+import { PulseSlot as PulseSlotSchema, StateTimeReport, SLA_DECIDER, type Carry } from "../protocol/index.ts";
 import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { FIGURE_EVENTS, goalCard, rollup, stepWindow, turnsSinceCommit } from "../core/efficiency.ts";
 import { HubStore, type EventRow, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
@@ -376,6 +377,9 @@ const ONLINE_MS = 2 * 60_000;
 const DAY_MS = 86_400_000;
 
 /** RL-2: the order of a lineage's items on every backend: most severe first, then first seen, then fp. */
+/** RL-15: the vias of a debrief's own decisions (a person's in the session, or the hub's after the SLA). */
+const DEBRIEF_VIAS: ReadonlySet<string> = new Set(["debrief-session", "auto-accept"]);
+
 function byItemOrder(a: ItemRow, b: ItemRow): number {
   return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || a.first.at - b.first.at || (a.fp < b.fp ? -1 : a.fp > b.fp ? 1 : 0);
 }
@@ -1272,6 +1276,14 @@ export class HubService {
     for (const s of steps) {
       const when = s.policy?.when;
       if (!when) continue;
+      if (isDebrief(s.policy)) {
+        // RL-15: a debrief looks at its debrief set (its run's record and what was carried into it).
+        const goal = await this.store.getGoal(s.goal);
+        const set = goal ? await this.debriefSet(s, goal, steps) : undefined;
+        const rows = set?.lineage ? await this.rowsOf(set.lineage, set.fps) : [];
+        map.set(s.id, set?.record || rows.length ? whenHolds(when, s.policy?.consumes ?? [], rows.map((r) => ({ state: r.state, severity: r.severity, link: r.link }))) : false);
+        continue;
+      }
       const { record } = await this.runRecordOf(s, steps);
       map.set(s.id, record ? whenHolds(when, s.policy?.consumes ?? [], (await this.recordItems(record)).map((r) => ({ state: r.state, severity: r.severity, link: r.link }))) : false);
     }
@@ -1353,7 +1365,7 @@ export class HubService {
       }
       if (!raising) {
         const consumes: readonly ItemState[] = p.consumes ?? [];
-        const runFps = new Set(runRecord ? uniqueFps(runRecord.record.items) : []);
+        const runFps = debrief ? (await this.debriefSet(step, goal, steps)).fps : new Set(runRecord ? uniqueFps(runRecord.record.items) : []);
         const given = new Set<string>();
         for (const d of fields.dispositions) {
           const fp = d.fingerprint;
@@ -1660,14 +1672,16 @@ export class HubService {
     const lineage = record?.lineage ?? lineageOf(goal, run);
     const report = await this.runReportOf(run);
     const out = { run, lineage, ...(report ? { report } : {}) };
-    if (!record) return { ...out, items: [] };
+    // RL-15: the debrief set: the run's record and the items carried from superseded goals.
+    const set = await this.debriefSet(step, goal, steps);
+    if (!record && !set.fps.size) return { ...out, items: [] };
     const consumes: readonly ItemState[] = step.policy?.consumes ?? DEBRIEF_CONSUMES;
-    const rows = (await this.recordItems(record)).filter((r) => consumes.includes(r.state)).sort(byItemOrder);
+    const rows = (await this.rowsOf(lineage, set.fps)).filter((r) => consumes.includes(r.state)).sort(byItemOrder);
     if (!rows.length) return { ...out, items: [] };
     const all = await this.store.listItems(lineage);
     const items: DebriefItem[] = [];
     for (const v of await this.withHistory(lineage, rows)) {
-      const first = record.record.items.find((i) => i.fp === v.fp);
+      const first = record?.record.items.find((i) => i.fp === v.fp) ?? (await this.lastRecordItem(lineage, v));
       items.push({
         ...v,
         evidence: (first?.evidence ?? []).map((e) => ({ path: e.path, ...(e.lines ? { lines: e.lines } : {}) })),
@@ -1678,6 +1692,40 @@ export class HubService {
       });
     }
     return { ...out, items };
+  }
+
+  /**
+   * RL-15: the debrief set of a debrief step: the fps of its run's latest record (none without one)
+   * and of its goal slot's `carry` entries for its local id and its run's lineage.
+   */
+  private async debriefSet(step: Step, goal: Goal, steps: readonly Step[]): Promise<{ lineage?: string; record?: StoredReview; fps: Set<string> }> {
+    const { run, record } = await this.runRecordOf(step, steps);
+    if (!run) return { fps: new Set() };
+    const lineage = record?.lineage ?? lineageOf(goal, run);
+    const fps = new Set(record ? uniqueFps(record.record.items) : []);
+    const pulse = goal.refs?.pulse;
+    const slotId = goal.refs?.slot;
+    if (pulse !== undefined && slotId !== undefined) {
+      const slot = await this.store.getSlot(pulse, slotId);
+      for (const c of slot?.carry ?? []) if (c.step === local(step) && c.lineage === lineage) for (const fp of c.fps) fps.add(fp);
+    }
+    return { lineage, ...(record ? { record } : {}), fps };
+  }
+
+  /** The item rows of `fps` in a lineage (missing ones left out). */
+  private async rowsOf(lineage: string, fps: Iterable<string>): Promise<ItemRow[]> {
+    const rows: ItemRow[] = [];
+    for (const fp of fps) {
+      const row = await this.store.getItem(lineage, fp);
+      if (row) rows.push(row);
+    }
+    return rows;
+  }
+
+  /** RL-15: the first item with a row's fp in the review record its `last` names (a carried item's evidence). */
+  private async lastRecordItem(lineage: string, row: ItemRow): Promise<StoredReviewItem | undefined> {
+    const rec = await this.store.getReview(row.last.step, row.last.round);
+    return rec?.lineage === lineage ? rec.record.items.find((i) => i.fp === row.fp) : undefined;
   }
 
   /** The run step's `report` artifact uploaded last in its highest round that has one. */
@@ -1692,7 +1740,7 @@ export class HubService {
 
   /** The latest debrief disposition of `fp` by this step in round `n` (whatever happened since). */
   private async sessionDecision(lineage: string, fp: string, stepId: string, n: number): Promise<DispositionRow | undefined> {
-    return (await this.store.listDispositions({ lineage, fp, step: stepId })).filter((d) => d.via === "debrief-session" && d.round === n).at(-1);
+    return (await this.store.listDispositions({ lineage, fp, step: stepId })).filter((d) => DEBRIEF_VIAS.has(d.via) && d.round === n).at(-1);
   }
 
   /**
@@ -1700,12 +1748,12 @@ export class HubService {
    * last disposition row of an item is ever a candidate, so two equal rows are never both revertable.
    */
   private async isRevertable(d: DispositionRow, laterRows: readonly DispositionRow[] = []): Promise<boolean> {
-    if (d.via !== "debrief-session") return false;
+    if (!DEBRIEF_VIAS.has(d.via)) return false;
     if (laterRows.some((o) => o.lineage === d.lineage && o.fp === d.fp)) return false;
     const last = (await this.store.itemHistory(d.lineage, d.fp)).at(-1);
     return (
       last?.kind === "disposition" &&
-      last.via === "debrief-session" &&
+      last.via === d.via &&
       last.step === d.step &&
       last.round === d.round &&
       last.at === d.at &&
@@ -1752,7 +1800,7 @@ export class HubService {
       const goal = await this.goalOr404(step.goal);
       const steps = await this.store.listSteps({ goal: goal.id });
       const d = await this.debriefData(step, goal, steps);
-      const decided = await this.decidedViews((await this.store.listDispositions({ step: step.id })).filter((x) => x.via === "debrief-session"));
+      const decided = await this.decidedViews((await this.store.listDispositions({ step: step.id })).filter((x) => DEBRIEF_VIAS.has(x.via)));
       return {
         step: step.id,
         goal: goal.id,
@@ -1826,7 +1874,7 @@ export class HubService {
       const lineage = record?.lineage ?? lineageOf(goal, run ?? step);
       const consumes: readonly ItemState[] = p?.consumes ?? DEBRIEF_CONSUMES;
       const fp = b.fingerprint;
-      const runFps = new Set(record ? uniqueFps(record.record.items) : []);
+      const runFps = (await this.debriefSet(step, goal, steps)).fps;
       let problem: string | undefined;
       let row: ItemRow | undefined;
       if (!p?.may_set?.includes(b.disposition)) problem = `${step.id} may not set ${b.disposition} (may_set: ${p?.may_set?.join(", ") ?? "none"})`;
@@ -1836,7 +1884,7 @@ export class HubService {
         row = await this.store.getItem(lineage, fp);
         // A change of mind: the item's latest disposition is this step's in this round.
         const latest = (await this.store.listDispositions({ lineage, fp })).at(-1);
-        const own = latest !== undefined && latest.step === step.id && latest.round === n && latest.via === "debrief-session";
+        const own = latest !== undefined && latest.step === step.id && latest.round === n && DEBRIEF_VIAS.has(latest.via);
         if (!row || (!consumes.includes(row.state) && !own)) problem = `item ${fp} is ${row?.state ?? "unknown"}; ${step.id} acts on ${consumes.join(", ")}`;
       }
       if (problem || !row) throw new HubError(422, problem ?? `no item ${fp}`);
@@ -1866,11 +1914,12 @@ export class HubService {
     return await this.goalTx(async () => {
       const step = await this.debriefOr409(id);
       const fp = b.fingerprint;
-      const d = (await this.store.listDispositions({ step: step.id, fp })).filter((x) => x.via === "debrief-session").at(-1);
+      const d = (await this.store.listDispositions({ step: step.id, fp })).filter((x) => DEBRIEF_VIAS.has(x.via)).at(-1);
       if (!d) throw new HubError(404, `${step.id} has no debrief disposition of ${fp}`);
       const goal = await this.goalOr404(step.goal);
-      const decider = d.decider.kind === "person" ? d.decider.user : "";
-      if (actor.userId !== decider && actor.userId !== goal.ownerId && !actor.roles.includes("admin")) throw new HubError(403, `only ${decider}, the goal owner or an admin can revert this`);
+      // RL-15: the debrief's assignee may revert too (an auto-accept has no person decider).
+      const names = [...new Set([...(d.decider.kind === "person" ? [d.decider.user] : []), await this.assigneeOf(step, goal)])];
+      if (!names.includes(actor.userId) && actor.userId !== goal.ownerId && !actor.roles.includes("admin")) throw new HubError(403, `only ${names.join(", ")}, the goal owner or an admin can revert this`);
       if (!(await this.isRevertable(d))) throw new HubError(409, `${fp} changed after the debrief decided it; nothing to revert`);
       const row = await this.store.getItem(d.lineage, fp);
       if (!row) throw new HubError(409, `${fp} changed after the debrief decided it; nothing to revert`);
@@ -3262,6 +3311,17 @@ export class HubService {
         const hs = await this.sessionOf(s.holderSid);
         if (s.state === "claimed" && hs?.state === "stalled") out.push({ kind: "stalled", text: `${s.id} stalled in ${s.holderUser}'s session`, goal: s.goal, step: s.id, sid: hs.sid, at: hs.lastStopAt ?? hs.lastEventAt });
       }
+      // RL-15: overdue debriefs, for the assignee once breached and for the owner once escalated.
+      for (const o of await this.overdueDebriefs(goals, this.now())) {
+        if (!(o.sla.breached && o.assignee === viewer.userId) && !(o.sla.escalated && o.owner === viewer.userId)) continue;
+        out.push({
+          kind: "debrief_overdue",
+          text: `Debrief ${o.step.id} "${o.step.title}" is overdue: waiting since ${new Date(o.sla.since).toISOString()}, SLA ${o.step.policy?.sla ?? ""}`,
+          goal: o.goal.id,
+          step: o.step.id,
+          at: o.sla.dueAt,
+        });
+      }
       for (const hs of await this.store.listSessions()) {
         if (hs.userId === viewer.userId && hs.session.state === "needs_you") {
           out.push({ kind: "needs_you", text: `${hs.session.repo?.name ?? hs.session.name ?? hs.session.sid.slice(0, 8)}: ${needsLabel(hs.session)}`, step: hs.session.step, sid: hs.session.sid, at: hs.session.lastStopAt ?? hs.session.lastEventAt });
@@ -4163,8 +4223,10 @@ export class HubService {
       manual: s.manual === true,
       trial: s.trial === true,
       catchUp: s.catchUp === true,
+      queued: s.queued === true,
+      superseded: s.superseded ?? [],
       tries: s.tried.length,
-      ...(s.startedAt !== undefined ? { startWaitMs: Math.max(0, s.startedAt - ((s.manual || s.catchUp) && s.firedAt !== undefined ? s.firedAt : s.at)) } : {}),
+      ...(s.startedAt !== undefined ? { startWaitMs: Math.max(0, s.startedAt - ((s.manual || s.catchUp || s.queued) && s.firedAt !== undefined ? s.firedAt : s.at)) } : {}),
       stages: [],
       totals: { runs: 0, durationMs: 0, turns: 0 },
       dispositions: { confirmed: 0, dismissed: 0, deferred: 0, accepted: 0, byPeople: 0, reverted: 0 },
@@ -4454,7 +4516,7 @@ export class HubService {
         const goalIds = new Set(goals.map((g) => g.id));
         const slotsIn = await this.store.listSlots({ pulse: p.id, since });
         const windowSlots = slotsIn.filter((s) => inWindow(s.at));
-        const slots: PulseHealth["slots"] = { due: 0, fired: 0, started: 0, skipped: 0, missed: {}, abandoned: 0 };
+        const slots: PulseHealth["slots"] = { due: 0, fired: 0, started: 0, skipped: 0, missed: {}, abandoned: 0, queued: 0 };
         let manual = 0;
         const slotGoals = new Set<string>();
         for (const s of windowSlots) {
@@ -4542,7 +4604,7 @@ export class HubService {
           }
         }
         // Open debriefs of open goals.
-        const debriefs: PulseHealth["debriefs"] = { open: 0 };
+        const debriefs: PulseHealth["debriefs"] = { open: 0, overdue: 0, breaches: [] };
         for (const g of goals) {
           if (g.state === "done" || g.state === "dropped") continue;
           const steps = await this.store.listSteps({ goal: g.id });
@@ -4555,8 +4617,27 @@ export class HubService {
             const t = stageTimes(st, byId, plans, now);
             const from = t.cycleReadyAt ?? t.readyAt;
             if (from !== undefined) debriefs.oldestMs = Math.max(debriefs.oldestMs ?? 0, Math.max(0, now - from));
+            // RL-15: past its SLA.
+            const sla = slaState(st, byId, plans, now);
+            if (sla?.breached) {
+              debriefs.overdue++;
+              const n = (st.rounds?.length ?? 0) + 1;
+              const autoAccepted = (await this.store.listDispositions({ step: st.id })).filter((d) => d.via === "auto-accept" && d.round === n).length;
+              debriefs.breaches.push({
+                goal: g.id,
+                step: st.id,
+                assignee: debriefAssignee(st.policy, g.ownerId),
+                owner: p.owner,
+                slaMs: sla.slaMs,
+                since: sla.since,
+                breachedAt: sla.dueAt,
+                escalated: sla.escalated,
+                autoAccepted,
+              });
+            }
           }
         }
+        debriefs.breaches.sort((a, b) => a.breachedAt - b.breachedAt || cmp(a.step, b.step));
         out.push({
           pulse: p.id,
           title: p.title,
@@ -4582,19 +4663,19 @@ export class HubService {
       // Total.
       const total: HealthTotal = {
         pulses: out.length,
-        slots: { due: 0, fired: 0, started: 0, skipped: 0, missed: {}, abandoned: 0 },
+        slots: { due: 0, fired: 0, started: 0, skipped: 0, missed: {}, abandoned: 0, queued: 0 },
         manual: 0,
         runs: { count: 0, durationMs: 0, turns: 0, failed: 0, overBudget: 0, denials: 0, allDismissed: 0 },
         goals: { created: 0, done: 0, dropped: 0, open: 0 },
         accepted: 0,
-        debriefs: { open: 0 },
+        debriefs: { open: 0, overdue: 0 },
         findings: emptyFindings(),
         calibrations: { open: 0 },
         decisions: { total: 0, byPeople: 0 },
         spotChecks: { open: 0, decided: 0, disagreed: 0 },
       };
       for (const h of out) {
-        for (const k of ["due", "fired", "started", "skipped", "abandoned"] as const) total.slots[k] += h.slots[k];
+        for (const k of ["due", "fired", "started", "skipped", "abandoned", "queued"] as const) total.slots[k] += h.slots[k];
         for (const [r, n] of Object.entries(h.slots.missed)) total.slots.missed[r] = (total.slots.missed[r] ?? 0) + n;
         total.manual += h.manual;
         for (const k of ["count", "durationMs", "turns", "failed", "overBudget", "denials", "allDismissed"] as const) total.runs[k] += h.runs[k];
@@ -4604,6 +4685,7 @@ export class HubService {
         total.debriefs.open += h.debriefs.open;
         total.decisions.total += h.decisions.total;
         total.decisions.byPeople += h.decisions.byPeople;
+        total.debriefs.overdue += h.debriefs.overdue;
         if (h.debriefs.oldestMs !== undefined) total.debriefs.oldestMs = Math.max(total.debriefs.oldestMs ?? 0, h.debriefs.oldestMs);
       }
       Object.assign(total, perAccepted(total.runs.costUsd, total.accepted));
@@ -4637,7 +4719,7 @@ export class HubService {
 
   /** RL-12: what `fireSlot` would find blocking at `now` (read only); undefined when nothing blocks. */
   private async blockedBy(p: Pulse, now: number): Promise<{ goal: string; step: string; ageMs: number } | undefined> {
-    if (p.overlap !== "skip") return undefined;
+    if (p.overlap === "allow") return undefined;
     for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
       if (s.goal === undefined) continue;
       const g = await this.store.getGoal(s.goal);
@@ -5198,7 +5280,7 @@ export class HubService {
    * Drop a goal (inside `goalTx`): every step not done, skipped, dropped or failed is dropped (open
    * offers withdrawn); `goal.dropped` and `step.dropped` carry the reason.
    */
-  private async dropGoal(goalId: string, reason: "abandoned" | "missed" | "person", now: number, o: { by?: string | undefined; comment?: string | undefined } = {}): Promise<void> {
+  private async dropGoal(goalId: string, reason: "abandoned" | "missed" | "person" | "superseded", now: number, o: { by?: string | undefined; comment?: string | undefined } = {}): Promise<void> {
     const goal = await this.store.getGoal(goalId);
     if (!goal || goal.state === "dropped") return;
     const dropped: Step[] = [];
@@ -6103,36 +6185,49 @@ export class HubService {
     for (const s of await this.store.listSlots({ pulse: p.id, pending: true })) {
       if (s.slot !== slotId) await this.advanceSlot(s, p, now, { attempt: false });
     }
+    // RL-15: under supersede a non-trial fire supersedes waiting goals instead of abandoning them.
+    const supersedes = p.overlap === "supersede" && !o.trial;
     // Abandon: started goals older than maxGoalAge.
     for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
       if (s.slot === slotId || s.startedAt === undefined || s.goal === undefined) continue;
       const g = await this.store.getGoal(s.goal);
       if (!g || g.state === "done" || g.state === "dropped" || now - g.createdAt < p.maxGoalAgeMs) continue;
+      if (supersedes && (await this.waitingGoal(g))) continue;
       await this.dropGoal(g.id, "abandoned", now);
       await this.store.saveSlot({ ...s, state: "abandoned", reason: "max_goal_age", decidedAt: now });
       await this.emit({ type: "pulse.abandoned", goal: g.id, payload: { pulse: p.id, slot: s.slot } });
     }
-    // Overlap.
-    if (p.overlap === "skip") {
-      let running: string | undefined;
-      for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
-        if (s.slot === slotId || s.goal === undefined) continue;
-        const g = await this.store.getGoal(s.goal);
-        // RL-11: a trial goal never blocks a slot.
-        if (!g || g.state === "done" || g.state === "dropped" || g.trial === true) continue;
-        // Only machine work blocks: a goal parked on its owner (a debrief, an interactive step) does not.
-        if (overlapBusy(await this.store.listSteps({ goal: g.id }), await this.runStepOf(g)) !== undefined) {
-          running = g.id;
-          break;
-        }
-      }
+    // Overlap. RL-15: a trial fire applies `skip` under `queue` and `supersede`.
+    const policy = o.trial && (p.overlap === "queue" || p.overlap === "supersede") ? "skip" : p.overlap;
+    if (policy !== "allow") {
+      const running = await this.runningGoal(p, slotId);
       if (running !== undefined) {
+        if (policy === "queue") {
+          await this.replaceQueued(p, slotId, now, slotId);
+          const queued: PulseSlot = { ...base, state: "queued", queued: true, running };
+          await this.store.saveSlot(queued);
+          await this.emit({ type: "pulse.queued", ...(o.manual && o.by !== undefined ? { user: o.by } : {}), payload: { pulse: p.id, slot: slotId, running } });
+          return queued;
+        }
         const skipped: PulseSlot = { ...base, state: "skipped", reason: "overlap", running };
         await this.store.saveSlot(skipped);
         await this.emit({ type: "pulse.skipped", payload: { pulse: p.id, slot: slotId, reason: "overlap", running } });
         return skipped;
       }
     }
+    // RL-15: a non-trial fire that creates a goal replaces a queued slot.
+    if (p.overlap === "queue" && !o.trial) await this.replaceQueued(p, slotId, now, slotId);
+    let slot: PulseSlot = base;
+    if (supersedes) {
+      const sup = await this.supersede(p, slotId, now);
+      slot = { ...slot, ...(sup.goals.length ? { superseded: sup.goals } : {}), ...(sup.carry.length ? { carry: sup.carry } : {}) };
+    }
+    return await this.slotGoal(p, slot, now, { ...o, from: o.manual || o.catchUp ? now : at });
+  }
+
+  /** Create a slot's goal, save the fired slot, emit `pulse.fired` and make one attempt (inside the pulse's transaction). */
+  private async slotGoal(p: Pulse, base: PulseSlot, now: number, o: { manual?: boolean | undefined; by?: string | undefined; via?: string | undefined; catchUp?: boolean | undefined; trial?: boolean | undefined; queued?: boolean; from: number }): Promise<PulseSlot> {
+    const slotId = base.slot;
     const goal = await this.createWithPlan(
       {
         owner: p.owner,
@@ -6150,13 +6245,21 @@ export class HubService {
       },
       now,
     );
-    let slot: PulseSlot = { ...base, goal: goal.id, firedAt: now, until: (o.manual || o.catchUp ? now : at) + p.windowMs };
+    let slot: PulseSlot = { ...base, state: "fired", decidedAt: now, goal: goal.id, firedAt: now, until: o.from + p.windowMs };
     await this.store.saveSlot(slot);
     await this.emit({
       type: "pulse.fired",
-      ...(o.manual && o.by !== undefined ? { user: o.by } : {}),
+      ...(o.manual && o.by !== undefined && !o.queued ? { user: o.by } : {}),
       goal: goal.id,
-      payload: { pulse: p.id, slot: slotId, ...(o.manual ? { manual: true } : {}), ...(o.catchUp ? { catchUp: true } : {}), ...(o.trial ? { trial: true } : {}), ...(o.via ? { via: o.via } : {}) },
+      payload: {
+        pulse: p.id,
+        slot: slotId,
+        ...(o.manual ? { manual: true } : {}),
+        ...(o.catchUp ? { catchUp: true } : {}),
+        ...(o.trial ? { trial: true } : {}),
+        ...(o.queued ? { queued: true } : {}),
+        ...(o.via ? { via: o.via } : {}),
+      },
     });
     const rsId = await this.runStepOf(goal);
     const rs = rsId ? await this.store.getStep(rsId) : undefined;
@@ -6168,6 +6271,211 @@ export class HubService {
       }
     }
     return slot;
+  }
+
+  /**
+   * RL-3/RL-15: the running goal of a pulse: the first open, non-trial goal of a `fired` slot other
+   * than `exceptSlot`, in slot order, that has machine work (`overlapBusy`).
+   */
+  private async runningGoal(p: Pulse, exceptSlot: string): Promise<string | undefined> {
+    for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
+      if (s.slot === exceptSlot || s.goal === undefined) continue;
+      const g = await this.store.getGoal(s.goal);
+      // RL-11: a trial goal never blocks a slot.
+      if (!g || g.state === "done" || g.state === "dropped" || g.trial === true) continue;
+      // Only machine work blocks: a goal parked on its owner (a debrief, an interactive step) does not.
+      if (overlapBusy(await this.store.listSteps({ goal: g.id }), await this.runStepOf(g)) !== undefined) return g.id;
+    }
+    return undefined;
+  }
+
+  /** RL-15: an open goal (trial or not) with no machine work and no held step: it only waits on people. */
+  private async waitingGoal(g: Goal): Promise<boolean> {
+    if (g.state === "done" || g.state === "dropped") return false;
+    const steps = await this.store.listSteps({ goal: g.id });
+    if (steps.some((x) => x.state === "claimed" || x.state === "paused")) return false;
+    return overlapBusy(steps, await this.runStepOf(g)) === undefined;
+  }
+
+  /** RL-15: the queued slots of a pulse other than `except` become `skipped` (reason overlap). */
+  private async replaceQueued(p: Pulse, except: string | undefined, now: number, replacedBy: string | undefined): Promise<void> {
+    for (const q of await this.store.listSlots({ pulse: p.id, state: "queued" })) {
+      if (q.slot === except) continue;
+      await this.store.saveSlot({ ...q, state: "skipped", reason: "overlap", decidedAt: now });
+      await this.emit({
+        type: "pulse.skipped",
+        payload: { pulse: p.id, slot: q.slot, reason: "overlap", ...(q.running !== undefined ? { running: q.running } : {}), ...(replacedBy !== undefined ? { replacedBy } : {}) },
+      });
+    }
+  }
+
+  /**
+   * RL-15 supersede (inside the pulse's transaction): every waiting goal of a fired slot of the pulse
+   * other than `slotId` carries its undecided debrief items, sinks what it filed, and is dropped.
+   */
+  private async supersede(p: Pulse, slotId: string, now: number): Promise<{ goals: string[]; carry: Carry[] }> {
+    const goals: string[] = [];
+    const carry = new Map<string, { step: string; lineage: string; rows: Map<string, ItemRow> }>();
+    for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
+      if (s.slot === slotId || s.goal === undefined) continue;
+      const g = await this.store.getGoal(s.goal);
+      if (!g || !(await this.waitingGoal(g))) continue;
+      const steps = await this.store.listSteps({ goal: g.id });
+      for (const d of steps) {
+        if (!isDebrief(d.policy) || d.state === "done" || d.state === "skipped" || d.state === "dropped") continue;
+        const set = await this.debriefSet(d, g, steps);
+        if (!set.lineage) continue;
+        const consumes: readonly ItemState[] = d.policy?.consumes ?? DEBRIEF_CONSUMES;
+        const key = `${local(d)}\n${set.lineage}`;
+        const entry = carry.get(key) ?? { step: local(d), lineage: set.lineage, rows: new Map<string, ItemRow>() };
+        for (const fp of set.fps) {
+          const row = await this.store.getItem(set.lineage, fp);
+          if (row && consumes.includes(row.state)) entry.rows.set(fp, row);
+        }
+        carry.set(key, entry);
+      }
+      for (const x of steps) {
+        if (!x.policy?.sink || x.state === "done" || x.state === "skipped" || x.state === "dropped" || x.state === "failed") continue;
+        await this.runSink(g, x, steps, now);
+      }
+      await this.dropGoal(g.id, "superseded", now);
+      await this.emit({ type: "pulse.superseded", goal: g.id, payload: { pulse: p.id, slot: slotId, goal: g.id, from: s.slot } });
+      goals.push(g.id);
+    }
+    const out: Carry[] = [];
+    for (const e of carry.values()) {
+      const fps = [...e.rows.values()].sort(byItemOrder).slice(0, 1000).map((r) => r.fp).sort();
+      if (fps.length) out.push({ step: e.step, lineage: e.lineage, fps });
+    }
+    return { goals, carry: out };
+  }
+
+  /**
+   * RL-15: the SLA debriefs (debriefs with `sla` in open, non-trial goals) that are breached at `now`,
+   * with the assignee and the escalation user (the pulse owner, else the goal owner).
+   */
+  private async overdueDebriefs(goals: readonly Goal[], now: number): Promise<{ goal: Goal; step: Step; sla: NonNullable<ReturnType<typeof slaState>>; assignee: string; owner: string }[]> {
+    const out: { goal: Goal; step: Step; sla: NonNullable<ReturnType<typeof slaState>>; assignee: string; owner: string }[] = [];
+    const byGoal = new Map(goals.map((g) => [g.id, g] as const));
+    for (const state of ["ready", "claimed", "paused"] as const) {
+      for (const st of await this.store.listSteps({ state })) {
+        if (!isDebrief(st.policy) || st.policy?.sla === undefined) continue;
+        const goal = byGoal.get(st.goal) ?? (await this.store.getGoal(st.goal));
+        if (!goal || goal.state === "done" || goal.state === "dropped" || goal.trial === true) continue;
+        const steps = await this.store.listSteps({ goal: goal.id });
+        const sla = slaState(st, new Map(steps.map((x) => [x.id, x] as const)), await this.store.listPlans(goal.id), now);
+        if (!sla?.breached) continue;
+        out.push({ goal, step: st, sla, assignee: debriefAssignee(st.policy, goal.ownerId), owner: await this.escalationUser(goal) });
+      }
+    }
+    return out;
+  }
+
+  /** RL-15: who an overdue debrief escalates to: its goal's pulse owner, else the goal owner. */
+  private async escalationUser(goal: Goal): Promise<string> {
+    const pulse = goal.refs?.pulse !== undefined ? await this.store.getPulse(goal.refs.pulse) : undefined;
+    return pulse?.owner ?? goal.ownerId;
+  }
+
+  /** RL-15 tick: `debrief.overdue` once per cycle and level, and the auto-accept of ready debriefs. */
+  private async debriefSlaTick(now: number): Promise<void> {
+    const ids: string[] = [];
+    for (const state of ["ready", "claimed", "paused"] as const) {
+      for (const st of await this.store.listSteps({ state })) if (isDebrief(st.policy) && st.policy?.sla !== undefined) ids.push(st.id);
+    }
+    for (const id of ids) {
+      try {
+        await this.goalTx(async () => {
+          const step = await this.store.getStep(id);
+          if (!step || !isDebrief(step.policy) || step.policy?.sla === undefined) return;
+          const goal = await this.store.getGoal(step.goal);
+          if (!goal || goal.state === "done" || goal.state === "dropped" || goal.trial === true) return;
+          const steps = await this.store.listSteps({ goal: goal.id });
+          const sla = slaState(step, new Map(steps.map((x) => [x.id, x] as const)), await this.store.listPlans(goal.id), now);
+          if (!sla) return;
+          const prev = step.overdue;
+          let next = prev?.since === sla.since ? { ...prev } : { since: sla.since };
+          const round = (step.rounds?.length ?? 0) + 1;
+          const assignee = debriefAssignee(step.policy, goal.ownerId);
+          const owner = await this.escalationUser(goal);
+          const base = { round, since: sla.since, slaMs: sla.slaMs };
+          if (sla.breached && next.assigneeAt === undefined) {
+            next = { ...next, assigneeAt: now };
+            await this.emit({ type: "debrief.overdue", goal: goal.id, step: step.id, payload: { to: "assignee", user: assignee, ...base, dueAt: sla.dueAt } });
+          }
+          if (sla.escalated && next.ownerAt === undefined && owner !== assignee) {
+            next = { ...next, ownerAt: now };
+            await this.emit({ type: "debrief.overdue", goal: goal.id, step: step.id, payload: { to: "owner", user: owner, ...base, dueAt: sla.escalateAt } });
+          }
+          if (sla.breached && step.state === "ready" && step.policy.auto_accept?.length) {
+            if ((await this.autoAccept(step, goal, steps, now)) > 0) next = { ...next, autoAt: now };
+          }
+          if (JSON.stringify(next) !== JSON.stringify(prev)) {
+            const cur = (await this.store.getStep(id)) ?? step;
+            await this.store.saveStepIf({ ...cur, overdue: next }, cur);
+          }
+        });
+      } catch (e) {
+        process.stderr.write(`hub tick failed: ${errorText(e)}\n`);
+      }
+    }
+  }
+
+  /**
+   * RL-15 auto-accept (inside `goalTx`): accept each debrief item that is `confirmed`, at a severity of
+   * `auto_accept`, whose latest disposition is an agent's `confirmed`, and that this step never
+   * auto-accepted before. Returns how many were accepted.
+   */
+  private async autoAccept(step: Step, goal: Goal, steps: readonly Step[], now: number): Promise<number> {
+    const p = step.policy;
+    const severities: readonly string[] = p?.auto_accept ?? [];
+    const set = await this.debriefSet(step, goal, steps);
+    if (!set.lineage) return 0;
+    const lineage = set.lineage;
+    const consumes: readonly ItemState[] = p?.consumes ?? DEBRIEF_CONSUMES;
+    const rows = (await this.rowsOf(lineage, set.fps)).filter((r) => consumes.includes(r.state)).sort(byItemOrder);
+    const round = (step.rounds?.length ?? 0) + 1;
+    let n = 0;
+    for (const row of rows) {
+      if (row.state !== "confirmed" || !severities.includes(row.severity)) continue;
+      const history = await this.store.itemHistory(lineage, row.fp);
+      if (history.some((e) => e.kind === "disposition" && e.via === "auto-accept" && e.step === step.id)) continue;
+      const last = history.filter((e) => e.kind === "disposition").at(-1);
+      if (last?.kind !== "disposition" || last.disposition !== "confirmed" || last.decider.kind !== "agent") continue;
+      const reason = `accepted after the debrief SLA (${p?.sla ?? ""}): confirmed by ${last.decider.key} at ${row.severity}`;
+      await this.applyDisposition(lineage, row, { fingerprint: row.fp, disposition: "accepted", reason }, SLA_DECIDER, "auto-accept", { goal: goal.id, step: step.id, round, at: now });
+      await this.store.addNote({ step: step.id, user: goal.ownerId, text: `auto-accept: accepted ${row.fp} "${row.title}": ${reason}`, at: now });
+      await this.emit({ at: now, type: "step.noted", user: goal.ownerId, goal: goal.id, step: step.id });
+      await this.emit({ at: now, type: "item.disposed", goal: goal.id, step: step.id, payload: { lineage, fp: row.fp, disposition: "accepted", from: row.state, decider: "agent", via: "auto-accept", round } });
+      n++;
+    }
+    if (n > 0) await this.emit({ at: now, type: "debrief.auto_accepted", goal: goal.id, step: step.id, payload: { round, items: n } });
+    return n;
+  }
+
+  /** RL-15 release (one transaction per slot): a queued slot fires once no goal of its pulse is running. */
+  private async releaseQueued(now: number): Promise<void> {
+    for (const seen of await this.store.listSlots({ state: "queued" })) {
+      try {
+        await this.goalTx(async () => {
+          const s = await this.store.getSlot(seen.pulse, seen.slot);
+          if (!s || s.state !== "queued") return;
+          const p = await this.store.getPulse(s.pulse);
+          if (!p || p.deletedAt !== undefined || p.overlap !== "queue") {
+            const fake = p ?? ({ id: s.pulse } as Pulse);
+            await this.replaceQueued(fake, undefined, now, undefined);
+            return;
+          }
+          const owner = await this.store.getUser(p.owner);
+          if (!owner || !owner.roles.some((r) => r === "member" || r === "approver" || r === "admin")) return;
+          if (!p.enabled) return;
+          if ((await this.runningGoal(p, s.slot)) !== undefined) return;
+          await this.slotGoal(p, s, now, { manual: s.manual === true, ...(s.by !== undefined ? { by: s.by } : {}), queued: true, from: now });
+        });
+      } catch (e) {
+        process.stderr.write(`hub tick failed: ${errorText(e)}\n`);
+      }
+    }
   }
 
   /** The due slot times `nextAt <= t <= now`, the latest 11 of them, ascending. */
@@ -6600,8 +6908,11 @@ export class HubService {
         await this.reportBack(s, o, "offer_expired", `MESH: the offer of ${s.id} "${s.title}" to ${name} expired (not accepted within ${Math.round(expiry / 60_000)} min). It is ready again.`);
       }
     });
-    // RL-3: end or retry pending pulse slots first, then fire due pulses.
+    // RL-15: debrief SLAs.
+    await this.debriefSlaTick(now);
+    // RL-3: end or retry pending pulse slots first, then fire due pulses. RL-15: queued slots in between.
     await this.advancePending(now);
+    await this.releaseQueued(now);
     await this.fireDue(now);
   }
 
