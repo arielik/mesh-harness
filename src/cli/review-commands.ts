@@ -33,7 +33,10 @@ async function lineageOfStep(hub: HubClient, id: string): Promise<string | undef
 }
 
 /** RL-4: the prompt a debrief session starts with. */
-export function debriefPrompt(step: string): string {
+export function debriefPrompt(step: string, spotCheck = false): string {
+  // RL-18: a spot-check step goes through sampled decisions, not items.
+  if (spotCheck)
+    return `You hold the mesh spot-check step ${step}. Use the mesh-debrief skill, section Spot checks: call mesh_context, then go through the sampled decisions with me one at a time. Record each verdict with mesh_spot_check, then submit the review record with mesh_review and finish with mesh_done.`;
   return `You hold the mesh debrief step ${step}. Use the mesh-debrief skill: call mesh_context, then go through the items with me one at a time, highest severity first. Record each decision with mesh_dispose, then submit the debrief's review record with mesh_review and finish with mesh_done.`;
 }
 
@@ -59,6 +62,7 @@ export function debriefCommand(c: CliEnv, run: (args: string[]) => Promise<numbe
       let view: DebriefView;
       let me: string;
       let current: number;
+      let spotCheck: boolean;
       try {
         const hub = HubClient.from(c.paths);
         view = await hub.get<DebriefView>(`/v1/steps/${encodeURIComponent(step)}/debrief`);
@@ -71,7 +75,9 @@ export function debriefCommand(c: CliEnv, run: (args: string[]) => Promise<numbe
           c.io.err(`${view.step} is ${view.state}; a debrief starts when it is ready`);
           return 1;
         }
-        current = ((await hub.get<StepView>(`/v1/steps/${encodeURIComponent(view.step)}`)).context.step.rounds?.length ?? 0) + 1;
+        const sv = (await hub.get<StepView>(`/v1/steps/${encodeURIComponent(view.step)}`)).context.step;
+        current = (sv.rounds?.length ?? 0) + 1;
+        spotCheck = sv.policy?.inputs?.includes("spot-check") === true;
       } catch (e) {
         if (!(e instanceof HubCallError)) throw e;
         c.io.err(e.message);
@@ -86,7 +92,7 @@ export function debriefCommand(c: CliEnv, run: (args: string[]) => Promise<numbe
         "--step",
         view.step,
         "--prompt",
-        debriefPrompt(view.step),
+        debriefPrompt(view.step, spotCheck),
         ...(session ? ["--session", session] : []),
         ...(socket ? ["--socket-name", socket] : []),
         ...(a.has("no-tui") ? ["--no-tui"] : []),

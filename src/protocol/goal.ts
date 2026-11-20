@@ -95,8 +95,39 @@ export const GoalCalibration = z.object({
   hash: z.string(),
   threshold: z.number().int().min(1),
   dismissals: z.array(DismissalRef),
+  /** RL-18: counted disagreements (a person's `disagree` verdict on a spot-checked decision); present when non-empty. */
+  disagreements: z.array(DismissalRef).optional(),
 });
 export type GoalCalibration = z.infer<typeof GoalCalibration>;
+
+/** RL-18: a person's verdict on a spot-checked decision. */
+export const SpotVerdict = z.object({
+  verdict: z.enum(["agree", "disagree"]),
+  reason: z.string(),
+  answer: z.string(),
+  /** With `disagree`: the decision the person would have taken. */
+  expected: Disposition.optional(),
+  by: z.string(),
+  at: z.number(),
+});
+export type SpotVerdict = z.infer<typeof SpotVerdict>;
+
+/** RL-18: one sampled agent decision (its history entry's ref, its value, why and when it was sampled). */
+export const SpotSample = DismissalRef.extend({
+  disposition: Disposition,
+  why: z.enum(["rate", "minimum"]),
+  sampledAt: z.number(),
+  verdict: SpotVerdict.optional(),
+});
+export type SpotSample = z.infer<typeof SpotSample>;
+
+/** RL-18: what a spot-check goal checks: the deciding agent key and hash and its samples. */
+export const GoalSpotCheck = z.object({
+  key: z.string(),
+  hash: z.string(),
+  samples: z.array(SpotSample).min(1).max(50),
+});
+export type GoalSpotCheck = z.infer<typeof GoalSpotCheck>;
 
 export const Goal = z.object({
   id: z.string(),
@@ -124,6 +155,8 @@ export const Goal = z.object({
   agents: z.record(z.string(), AgentDef).optional(),
   /** RL-6: set only on calibration goals (opened by the hub when an agent hash reaches the threshold). */
   calibration: GoalCalibration.optional(),
+  /** RL-18: set only on spot-check goals (opened by the hub when `spot_checks` samples an agent decision). */
+  spotCheck: GoalSpotCheck.optional(),
   /** RL-9: set only on clean-audit goals (opened by the hub for a sink stage's repo and topic). */
   sink: z.object({ repo: z.string(), topic: z.string() }).optional(),
   /** RL-11: made by a trial fire of a pulse (left out of statistics, calibration and runs by default). */

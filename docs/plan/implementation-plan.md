@@ -396,6 +396,7 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `GET /v1/steps/:id/debrief` | Debriefs (v0.1.18): a debrief's pre-read: assignee, run, report, the items to decide (evidence locations, near-matches) and the decisions made (scope `goals:read`) |
 | `GET /v1/debriefs` | Debriefs (v0.1.18): the caller's debriefs (ready, claimed, paused) and their revertable debrief decisions of the last 7 days |
 | `POST /v1/steps/:id/dispositions` | Debriefs (v0.1.18): one decision of the person in a held debrief (`mesh_dispose`, `via: debrief-session`, with the person's `answer`); 201 |
+| `POST /v1/steps/:id/spot-checks` | Spot checks (0.1.35): a person's verdict (agree or disagree) on one sampled agent decision in a held spot-check step (`mesh_spot_check`) |
 | `POST /v1/steps/:id/dispositions/revert` | Debriefs (v0.1.18): revert a debrief decision while it is the item's latest change (the decider, the goal owner or an admin) |
 | `GET /v1/pulses?mine=1`, `GET /v1/pulses/:id` | Pulses (v0.1.17): pulses by number (no preset text); one pulse with its 50 newest slots and their goals' states (scope `goals:read`) |
 | `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 (v0.1.22: the reply carries `warnings` for agents flagged invalid) |

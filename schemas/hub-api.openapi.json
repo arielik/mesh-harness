@@ -3084,6 +3084,29 @@
                               "accepted"
                             ],
                             "additionalProperties": false
+                          },
+                          "decisions": {
+                            "type": "object",
+                            "properties": {
+                              "total": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "byPeople": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "total",
+                              "byPeople"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "humanDecisionShare": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -3098,7 +3121,8 @@
                           "goals",
                           "accepted",
                           "debriefs",
-                          "findings"
+                          "findings",
+                          "decisions"
                         ],
                         "additionalProperties": false
                       }
@@ -3366,6 +3390,58 @@
                             "open"
                           ],
                           "additionalProperties": false
+                        },
+                        "decisions": {
+                          "type": "object",
+                          "properties": {
+                            "total": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "byPeople": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "total",
+                            "byPeople"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "humanDecisionShare": {
+                          "type": "number"
+                        },
+                        "spotChecks": {
+                          "type": "object",
+                          "properties": {
+                            "open": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "oldestMs": {
+                              "type": "number"
+                            },
+                            "decided": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "disagreed": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "open",
+                            "decided",
+                            "disagreed"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -3377,7 +3453,9 @@
                         "accepted",
                         "debriefs",
                         "findings",
-                        "calibrations"
+                        "calibrations",
+                        "decisions",
+                        "spotChecks"
                       ],
                       "additionalProperties": false
                     }
@@ -9414,6 +9492,107 @@
                 "required": [
                   "fingerprint",
                   "disposition",
+                  "reason",
+                  "answer"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/spot-checks": {
+      "post": {
+        "operationId": "postVStepsIdSpotchecks",
+        "summary": "Record a person's verdict (agree or disagree) on one sampled decision in a held spot-check step (mesh_spot_check).",
+        "description": "Any logged-in user (bearer token or web session).",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "sample": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "verdict": {
+                    "type": "string",
+                    "enum": [
+                      "agree",
+                      "disagree"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "answer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "expected": {
+                    "type": "string",
+                    "enum": [
+                      "confirmed",
+                      "dismissed",
+                      "deferred",
+                      "accepted"
+                    ]
+                  },
+                  "sid": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sample",
+                  "verdict",
                   "reason",
                   "answer"
                 ],

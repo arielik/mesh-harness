@@ -33,6 +33,8 @@ import {
   type AssignResult,
   type DisposeRequest,
   type DisposeResult,
+  type SpotCheckRequest,
+  type SpotCheckResult,
   type DoneResult,
   type FleetView,
   type GoalAssignResult,
@@ -152,7 +154,9 @@ export function brief(ctx: StepContext): string {
       "Search: if the Grep or Glob tool is not available, search with Bash: grep -rn, rg or find -name (your profile allows them; find -exec/-delete, rg --pre and output redirection are refused).",
     );
   }
-  if (p?.mode === "debrief") lines.push("", "This step is a debrief with your person: follow the mesh-debrief skill (mesh_dispose for each decision, then mesh_review, then mesh_done).");
+  if (p?.mode === "debrief" && p.inputs?.includes("spot-check")) {
+    lines.push("", "This step is a spot check with your person: follow the mesh-debrief skill, section Spot checks (mesh_spot_check for each sample, then mesh_review, then mesh_done).");
+  } else if (p?.mode === "debrief") lines.push("", "This step is a debrief with your person: follow the mesh-debrief skill (mesh_dispose for each decision, then mesh_review, then mesh_done).");
   if (ctx.acs?.length) {
     lines.push("", "Acceptance criteria:");
     for (const a of ctx.acs) lines.push(`- ${a.id}: ${a.text}${a.surface ? ` (surface: ${a.surface})` : ""}${a.fails_when ? ` — fails when: ${a.fails_when}` : ""}`);
@@ -525,6 +529,23 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
           ? ` ${r.left} item(s) left to decide.`
           : " No item left to decide: store the summary with mesh_artifact (kind transcript), submit the review record with mesh_review (its dispositions: your latest decision per item, or none), then call mesh_done.";
       return ok(`Recorded ${d.fp}: ${d.disposition} (was ${d.from}).${tail}`);
+    }
+    case "mesh_spot_check": {
+      if (!s.step) return fail("this session holds no step");
+      // Never queued: a verdict is a decision the person watches, so the hub is checked at once.
+      if (host.link.offline) await host.link.flush({ probeNow: true });
+      const a = args as unknown as Omit<SpotCheckRequest, "sid">;
+      const secrets = host.secrets?.() ?? [];
+      const body = { ...a, reason: redactSecrets(a.reason, secrets).text, answer: redactSecrets(a.answer, secrets).text, sid: s.sid };
+      let r: SpotCheckResult;
+      try {
+        r = await host.link.rpc<SpotCheckResult>("POST", `/v1/steps/${encodeURIComponent(s.step)}/spot-checks`, body, key);
+      } catch (e) {
+        if (isOffline(e)) return fail(`the hub is offline; the verdict was not recorded. ${OFFLINE_TAIL}`);
+        throw e;
+      }
+      const tail = r.left > 0 ? ` ${r.left} sample(s) left.` : " No sample left: submit the review record with mesh_review (items [], dispositions []), then call mesh_done.";
+      return ok(`Recorded sample ${r.sample.n}: ${r.sample.verdict?.verdict ?? a.verdict}.${tail}`);
     }
     case "mesh_ask": {
       const r = await orQueue(host, "/v1/questions", { text: args.question, sid: s.sid, ...(s.step ? { step: s.step } : {}) }, key, "mesh_ask", s.cwd);

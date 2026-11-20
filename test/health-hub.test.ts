@@ -434,6 +434,6 @@ describe("RL-12 AC-10 AC-11 filters, total, scopes", { timeout: 90_000 }, () => 
     }
     expect(JSON.stringify((await k.r.call(k.c.ann, "GET", "/v1/goals?pulses=1")).json)).toBe(goalsBefore);
     expect((await k.r.call(k.c.ann, "GET", "/v1/events?after=0&limit=1000")).json).toStrictEqual(evBefore);
-    expect((await k.w.call(undefined as never, "GET", "/healthz")).json.features).toStrictEqual(["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "trial"]);
+    expect((await k.w.call(undefined as never, "GET", "/healthz")).json.features).toStrictEqual(["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"]);
   });
 });

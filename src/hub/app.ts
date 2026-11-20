@@ -28,6 +28,7 @@ import {
   Decide,
   DevicePoll,
   DisposeRequest,
+  SpotCheckRequest,
   DoneRequest,
   IDEMPOTENCY_HEADER,
   ON_BEHALF_OF_HEADER,
@@ -475,6 +476,7 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/steps/:id/debrief", "member", async (c) => c.json(await svc.debriefView(param(c, "id"))), "goals:read"),
     r("GET", "/v1/debriefs", "member", async (c, a) => c.json(await svc.debriefs(a))),
     r("POST", "/v1/steps/:id/dispositions", "member", async (c, a) => c.json(await svc.disposeStep(a, param(c, "id"), await body(c, DisposeRequest)), 201)),
+    r("POST", "/v1/steps/:id/spot-checks", "member", async (c, a) => c.json(await svc.spotCheckVerdict(a, param(c, "id"), await body(c, SpotCheckRequest)), 201)),
     r("POST", "/v1/steps/:id/dispositions/revert", "member", async (c, a) => c.json(await svc.revertDisposition(a, param(c, "id"), await body(c, RevertRequest)))),
 
     // ---------- questions, messages ----------

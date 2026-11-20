@@ -41,7 +41,7 @@ describe("RL-4 AC-16 mesh-debrief skill text", () => {
 describe("RL-4 AC-21 tools", () => {
   it("test_AC21_tools_gain_mesh_dispose", () => {
     const names = Object.keys(TOOLS).sort();
-    expect(names).toStrictEqual([...RL3_TOOLS, "mesh_dispose"].sort());
+    expect(names.filter((n) => n !== "mesh_spot_check")).toStrictEqual([...RL3_TOOLS, "mesh_dispose"].sort());
     const t = (TOOLS as Record<string, { description: string; input?: unknown; inputSchema?: unknown }>).mesh_dispose;
     expect(t?.description).toMatch(/debrief/);
     expect(t?.description).toContain("answer");

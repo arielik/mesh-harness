@@ -1,7 +1,7 @@
 // Hub HTTP API request schemas and response shapes (plan §5.3–§5.6).
 
 import { z } from "zod";
-import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile } from "./goal.ts";
+import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile, SpotSample } from "./goal.ts";
 import { AcState, ArtifactKind, Commit, ArtifactMediaType, Failure, Findings, GoalState as GoalStateSchema, PlanInput, ProfileBase, ProfileName, RunExit, RunTelemetry, StepKind as StepKindSchema, StepState as StepStateSchema, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
@@ -360,6 +360,27 @@ export interface RevertResult {
   note: Note;
 }
 
+/** RL-18: body of `POST /v1/steps/:id/spot-checks` (a person's verdict on one sampled decision). */
+export const SpotCheckRequest = z
+  .object({
+    sample: z.number().int().min(1),
+    verdict: z.enum(["agree", "disagree"]),
+    reason: z.string().min(1).max(2000),
+    answer: z.string().min(1).max(4000),
+    /** Only with `disagree`: the decision the person would have taken. */
+    expected: Disposition.optional(),
+    sid: z.string().optional(),
+  })
+  .strict();
+export type SpotCheckRequest = z.infer<typeof SpotCheckRequest>;
+
+/** RL-18: reply of `POST /v1/steps/:id/spot-checks`. */
+export interface SpotCheckResult {
+  sample: SpotSample & { n: number };
+  /** Samples of the goal without a verdict. */
+  left: number;
+}
+
 /** RL-4: a debrief disposition as the lists show it. */
 export type DecidedView = DispositionRow & { title: string; revertable: boolean };
 
@@ -713,7 +734,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -860,6 +881,10 @@ const HealthRuns = z.object({
 const HealthGoals = z.object({ created: int, done: int, dropped: int, open: int });
 const Oldest = z.object({ open: int, oldestMs: z.number().optional() });
 const HealthFindings = z.object({ open: BySeverity, accepted: BySeverity });
+/** RL-18: item decisions (disposition history entries) in the window, and how many people took. */
+const HealthDecisions = z.object({ total: int, byPeople: int });
+/** RL-18: the hub's spot checks: open samples, the oldest one's wait, verdicts in the window. */
+const HealthSpotChecks = z.object({ open: int, oldestMs: z.number().optional(), decided: int, disagreed: int });
 
 /** RL-12: one pulse's scorecard over the window. */
 export const PulseHealth = z.object({
@@ -880,6 +905,9 @@ export const PulseHealth = z.object({
   costPerAcceptedUsd: z.number().optional(),
   debriefs: Oldest,
   findings: HealthFindings,
+  decisions: HealthDecisions,
+  /** RL-18: `decisions.byPeople / decisions.total`, 4 decimals; absent at 0 decisions. */
+  humanDecisionShare: z.number().optional(),
 });
 export type PulseHealth = z.infer<typeof PulseHealth>;
 
@@ -894,6 +922,9 @@ export const HealthTotal = z.object({
   debriefs: Oldest,
   findings: HealthFindings,
   calibrations: Oldest,
+  decisions: HealthDecisions,
+  humanDecisionShare: z.number().optional(),
+  spotChecks: HealthSpotChecks,
 });
 export type HealthTotal = z.infer<typeof HealthTotal>;
 

@@ -96,9 +96,19 @@ import {
   presetText,
   raisingAgents,
   uncalibrated,
+  openSpotChecks,
+  recentSamples,
+  SPOT_CHECK_PRESET,
+  SPOT_MAX_SAMPLES,
+  SPOT_WEEK_MS,
+  spotCheckGoals,
+  spotU,
+  spotWhy,
+  uncalibratedDisagreements,
   type AgentRef,
   type Counted,
   type Entry,
+  refKey,
   type Materialized,
   type Principal,
   type Role,
@@ -117,6 +127,12 @@ import type {
   ChangesPage,
   HashSide,
   GoalCalibration,
+  GoalSpotCheck,
+  SpotCheckRequest,
+  SpotCheckResult,
+  SpotSample,
+  DismissalRef,
+  Disposition,
   ItemHistoryEntry,
   AgentCopy,
   AgentDef,
@@ -1171,6 +1187,10 @@ export class HubService {
         // RL-6: the dismissals a calibration goal lists.
         const input = await this.calibrationInput(goal);
         if (input) push({ from: goal.id, artifact: "calibration", kind: "review", title: input.title }, input.content);
+      } else if (x === "spot-check") {
+        // RL-18: the samples of a spot-check goal.
+        const input = await this.spotCheckInput(goal);
+        if (input) push({ from: goal.id, artifact: "spot-check", kind: "review", title: input.title }, input.content);
       } else if (!INPUT_KEYWORDS.has(x)) {
         full = !(await fromSteps([`${step.goal}.${x}`]));
       }
@@ -1315,6 +1335,8 @@ export class HubService {
       const ignored: { fingerprint: string; reason: string }[] = [];
       const already: string[] = [];
       const toApply: RecordDisposition[] = [];
+      // RL-18: agent dispositions applied because they agree with a person (RL-6 rule 2) are never sampled.
+      const agreeing = new Set<string>();
       if (raising && fields.dispositions.length) problems.push(`dispositions need consumes; ${step.id} raises items`);
       if (!raising && fields.items.length) problems.push(`${step.id} consumes items; its record may not raise new ones`);
       // RL-10: one fingerprint listed for two repos (absent: the lineage repo) cannot be placed.
@@ -1351,8 +1373,10 @@ export class HubService {
             } else if (person?.decider.kind === "person") {
               // RL-6: an agent disposition agreeing with the person is applied while the item's state is consumed.
               const row = await this.store.getItem(lineage, fp);
-              if (person.disposition === d.disposition && row && consumes.includes(row.state)) toApply.push(d);
-              else ignored.push({ fingerprint: fp, reason: `decided by ${person.decider.user} in this goal` });
+              if (person.disposition === d.disposition && row && consumes.includes(row.state)) {
+                toApply.push(d);
+                agreeing.add(fp);
+              } else ignored.push({ fingerprint: fp, reason: `decided by ${person.decider.user} in this goal` });
             } else {
               const row = await this.store.getItem(lineage, fp);
               if (!row || !consumes.includes(row.state)) problem = `item ${fp} is ${row?.state ?? "unknown"}; ${step.id} acts on ${consumes.join(", ")}`;
@@ -1504,6 +1528,11 @@ export class HubService {
       }
       // RL-6: a recorded dismissal may open a calibration goal for the agent that raised the item.
       if (applied.some((a) => a.disposition === "dismissed")) await this.calibrationAfterDismissal(lineage, goal.id, now);
+      // RL-18: sample the record's eligible agent decisions for a person's spot check.
+      if (decider.kind === "agent" && decider.hash && goal.trial !== true && this.config.spotChecks) {
+        const eligible = applied.filter((a) => !agreeing.has(a.fp)).map((a) => ({ fp: a.fp, disposition: a.disposition as Disposition }));
+        if (eligible.length) await this.spotCheckSample({ key: decider.key, hash: decider.hash }, lineage, goal.id, step.id, n, now, eligible);
+      }
       return {
         review,
         items: fps.map((fp) => {
@@ -2794,6 +2823,11 @@ export class HubService {
       if (step.policy?.output && !rec && outcome === "done") {
         throw new HubError(409, `${step.id} needs a review record for round ${n} (output: review-record); submit it with mesh_review, then call mesh_done`);
       }
+      // RL-18: a spot check is done only when every sample has a verdict.
+      if (goal.spotCheck && step.id === `${goal.id}.check` && outcome === "done" && input.closeAsFail !== true) {
+        const k = goal.spotCheck.samples.filter((x) => !x.verdict).length;
+        if (k > 0) throw new HubError(409, `${step.id} has ${k} sample(s) without a verdict; record each with mesh_spot_check, then mesh_done`);
+      }
       // RL-1: the daemon's close-as-fail (a run that ended without mesh_done) fails the step even
       // with a record in the round: the run never said it was done.
       const closing = input.closeAsFail === true;
@@ -3722,6 +3756,8 @@ export class HubService {
       extra: Record<string, unknown>;
       /** RL-6: set on calibration goals only. */
       calibration?: GoalCalibration | undefined;
+      /** RL-18: set on spot-check goals only. */
+      spotCheck?: GoalSpotCheck | undefined;
       /** RL-11: a trial fire's goal. */
       trial?: boolean | undefined;
     },
@@ -3740,6 +3776,7 @@ export class HubService {
       profiles: o.profiles,
       ...(Object.keys(o.agents).length ? { agents: o.agents } : {}),
       ...(o.calibration ? { calibration: o.calibration } : {}),
+      ...(o.spotCheck ? { spotCheck: o.spotCheck } : {}),
       ...(o.trial ? { trial: true as const } : {}),
       createdAt: now,
       updatedAt: now,
@@ -3825,10 +3862,9 @@ export class HubService {
   /** Who calibrates an agent hash, and the repo of its calibration goal. */
   private async calibratorFor(
     agent: AgentRef,
-    list: readonly Counted[],
+    newest: { ref: DismissalRef } | undefined,
     scan: { steps: readonly Step[]; goals: readonly Goal[] },
   ): Promise<{ user: string; repo: string } | undefined> {
-    const newest = list.at(-1);
     if (!newest) return undefined;
     const found = await this.catalogDefOf(agent);
     const lineage = newest.ref.lineage;
@@ -3864,10 +3900,13 @@ export class HubService {
     const scan = await this.calibrationScan();
     if (openCalibration(scan.goals, agent)) return;
     const list = uncalibrated(scan.counted, scan.status, agent);
+    // RL-18: a person's disagreement with the agent's decision counts like a dismissal.
+    const dis = uncalibratedDisagreements(scan.goals, agent);
     const t = this.config.calibration.threshold;
-    if (list.length < t) return;
-    const who = await this.calibratorFor(agent, list, scan);
+    if (list.length + dis.length < t) return;
+    const who = await this.calibratorFor(agent, list.at(-1) ?? dis.at(-1), scan);
     if (!who) return;
+    const m = dis.length;
     const hash12 = agent.hash.slice(0, 12);
     const text = presetText(CALIBRATE_PRESET);
     const goal = await this.createWithPlan(
@@ -3880,9 +3919,9 @@ export class HubService {
         agents: {},
         topics: [],
         priority: 3,
-        comment: `calibration of ${agent.key}@${hash12} (${list.length} dismissals, threshold ${t})`,
+        comment: `calibration of ${agent.key}@${hash12} (${list.length} dismissals, ${m > 0 ? `${m} disagreements, ` : ""}threshold ${t})`,
         extra: {},
-        calibration: { key: agent.key, hash: agent.hash, threshold: t, dismissals: list.map((c) => c.ref) },
+        calibration: { key: agent.key, hash: agent.hash, threshold: t, dismissals: list.map((c) => c.ref), ...(m > 0 ? { disagreements: dis.map((d) => d.ref) } : {}) },
       },
       now,
     );
@@ -3891,7 +3930,7 @@ export class HubService {
       type: "calibration.opened",
       user: who.user,
       goal: goal.id,
-      payload: { key: agent.key, hash: agent.hash, dismissals: list.length, threshold: t, calibrator: who.user },
+      payload: { key: agent.key, hash: agent.hash, dismissals: list.length, ...(m > 0 ? { disagreements: m } : {}), threshold: t, calibrator: who.user },
     });
   }
 
@@ -3906,7 +3945,7 @@ export class HubService {
       ...(at !== undefined ? { at } : {}),
       type: "calibration.done",
       goal: goal.id,
-      payload: { key: c.key, hash: c.hash, dismissals: c.dismissals.length, outcome },
+      payload: { key: c.key, hash: c.hash, dismissals: c.dismissals.length, ...(c.disagreements?.length ? { disagreements: c.disagreements.length } : {}), outcome },
     });
     await this.calibrationTrigger({ key: c.key, hash: c.hash }, at ?? this.now());
   }
@@ -4283,6 +4322,7 @@ export class HubService {
         const lineages = new Set<string>();
         for (const id of goalIds) for (const l of lineagesOf.get(id) ?? []) lineages.add(l);
         let accepted = 0;
+        const decisions = { total: 0, byPeople: 0 };
         const findings = emptyFindings();
         for (const lineage of [...lineages].sort()) {
           totalLineages.add(lineage);
@@ -4290,6 +4330,11 @@ export class HubService {
           const latestAccepted = new Map<string, { goal: string; at: number }>();
           for (const { fp, entry: e } of await ctx.history(this.store, lineage)) {
             if (e.kind === "disposition" && e.disposition === "accepted") latestAccepted.set(fp, { goal: e.goal, at: e.at });
+            // RL-18: decisions in the pulse's goals in the window, and those a person took.
+            if (e.kind === "disposition" && goalIds.has(e.goal) && inWindow(e.at)) {
+              decisions.total++;
+              if (e.decider.kind === "person") decisions.byPeople++;
+            }
           }
           for (const row of items.values()) {
             if (row.state === "open" || row.state === "confirmed") findings.open[row.severity]++;
@@ -4334,6 +4379,8 @@ export class HubService {
           ...perAccepted(runs.costUsd, accepted),
           debriefs,
           findings,
+          decisions,
+          ...decisionShare(decisions),
         });
       }
       // Total.
@@ -4347,6 +4394,8 @@ export class HubService {
         debriefs: { open: 0 },
         findings: emptyFindings(),
         calibrations: { open: 0 },
+        decisions: { total: 0, byPeople: 0 },
+        spotChecks: { open: 0, decided: 0, disagreed: 0 },
       };
       for (const h of out) {
         for (const k of ["due", "fired", "started", "skipped", "abandoned"] as const) total.slots[k] += h.slots[k];
@@ -4357,6 +4406,8 @@ export class HubService {
         for (const k of ["created", "done", "dropped", "open"] as const) total.goals[k] += h.goals[k];
         total.accepted += h.accepted;
         total.debriefs.open += h.debriefs.open;
+        total.decisions.total += h.decisions.total;
+        total.decisions.byPeople += h.decisions.byPeople;
         if (h.debriefs.oldestMs !== undefined) total.debriefs.oldestMs = Math.max(total.debriefs.oldestMs ?? 0, h.debriefs.oldestMs);
       }
       Object.assign(total, perAccepted(total.runs.costUsd, total.accepted));
@@ -4370,6 +4421,19 @@ export class HubService {
         if (!g.calibration || g.state === "done" || g.state === "dropped") continue;
         total.calibrations.open++;
         total.calibrations.oldestMs = Math.max(total.calibrations.oldestMs ?? 0, now - g.createdAt);
+      }
+      // RL-18: the share of decisions people took, and the hub's spot checks (whatever the filters say).
+      Object.assign(total, decisionShare(total.decisions));
+      for (const x of openSpotChecks(allGoals)) {
+        total.spotChecks.open++;
+        total.spotChecks.oldestMs = Math.max(total.spotChecks.oldestMs ?? 0, Math.max(0, now - x.sampledAt));
+      }
+      for (const g of allGoals) {
+        for (const x of g.spotCheck?.samples ?? []) {
+          if (!x.verdict || !inWindow(x.verdict.at)) continue;
+          total.spotChecks.decided++;
+          if (x.verdict.verdict === "disagree") total.spotChecks.disagreed++;
+        }
       }
       return { window: { since, until: now, days }, pulses: out, total };
     });
@@ -4678,7 +4742,207 @@ export class HubService {
       });
     }
     const agent = { key: c.key, hash: c.hash, ...(found ? { text: found.def.text } : {}) };
-    return { title: `dismissals of ${c.key}@${c.hash.slice(0, 12)} (${c.dismissals.length})`, content: JSON.stringify({ agent, dismissals }) };
+    // RL-18: the disagreements it lists, with the agent's decision and the person's verdict.
+    const listed = c.disagreements ?? [];
+    if (!listed.length) return { title: `dismissals of ${c.key}@${c.hash.slice(0, 12)} (${c.dismissals.length})`, content: JSON.stringify({ agent, dismissals }) };
+    const samples = new Map<string, SpotSample>();
+    for (const g of spotCheckGoals(await this.store.listGoals(), { key: c.key, hash: c.hash })) for (const x of g.spotCheck?.samples ?? []) samples.set(refKey(x), x);
+    const disagreements: Record<string, unknown>[] = [];
+    for (const ref of listed) {
+      const sample = samples.get(refKey(ref));
+      const d = await this.decisionDetail(ref);
+      const v = sample?.verdict;
+      disagreements.push({
+        ...ref,
+        disposition: sample?.disposition ?? d.entry?.disposition,
+        reason: d.entry?.reason ?? "",
+        ...(v ? { verdict: { reason: v.reason, answer: v.answer, ...(v.expected !== undefined ? { expected: v.expected } : {}), by: v.by, at: v.at } } : {}),
+        ...d.item,
+      });
+    }
+    return {
+      title: `dismissals of ${c.key}@${c.hash.slice(0, 12)} (${c.dismissals.length}), disagreements (${listed.length})`,
+      content: JSON.stringify({ agent, dismissals, disagreements }),
+    };
+  }
+
+  /** RL-18: a decision's history entry and its item's fields (title … evidence) as the inputs show them. */
+  private async decisionDetail(ref: DismissalRef): Promise<{ entry: DispositionRow | undefined; item: Record<string, unknown>; state: ItemState | undefined }> {
+    const entry = (await this.store.listDispositions({ lineage: ref.lineage, fp: ref.fp, goal: ref.goal })).find((d) => d.step === ref.step && d.round === ref.round && d.at === ref.at);
+    const row = await this.store.getItem(ref.lineage, ref.fp);
+    const rec = (await this.store.listReviews({ lineage: ref.lineage, raising: true })).filter((r) => r.goal === ref.goal).at(-1);
+    const evidence = rec?.record.items.find((i) => i.fp === ref.fp)?.evidence ?? [];
+    return {
+      entry,
+      state: row?.state,
+      item: {
+        title: row?.title ?? "",
+        severity: row?.severity,
+        category: row?.category,
+        rule: row?.rule,
+        ...(row?.path !== undefined ? { path: row.path } : {}),
+        ...(row?.symbol !== undefined ? { symbol: row.symbol } : {}),
+        evidence,
+      },
+    };
+  }
+
+  // ---------- spot checks (RL-18) ----------
+
+  /**
+   * Inside the review record's transaction: sample the record's eligible decisions of a deciding agent
+   * (record order) by the rate, else the per-week minimum, into its spot-check goal.
+   */
+  private async spotCheckSample(
+    agent: AgentRef,
+    lineage: string,
+    goalId: string,
+    step: string,
+    round: number,
+    now: number,
+    decisions: readonly { fp: string; disposition: Disposition }[],
+  ): Promise<void> {
+    const cfg = this.config.spotChecks;
+    if (!cfg) return;
+    let goals = await this.store.listGoals();
+    const dispositions = await this.store.listDispositions({ lineage, goal: goalId });
+    for (const d of decisions) {
+      const why = spotWhy(spotU({ lineage, fp: d.fp, step, round }), cfg, recentSamples(goals, agent, now - SPOT_WEEK_MS));
+      if (!why) continue;
+      const entry = dispositions.filter((x) => x.fp === d.fp && x.step === step && x.round === round && x.decider.kind === "agent").at(-1);
+      if (!entry) continue;
+      const sample: SpotSample = { lineage, fp: d.fp, goal: entry.goal, step, round, at: entry.at, disposition: d.disposition, why, sampledAt: now };
+      const target = await this.spotCheckTarget(goals, agent);
+      let g: Goal | undefined;
+      let created = false;
+      if (target) {
+        g = { ...target, spotCheck: { ...(target.spotCheck as GoalSpotCheck), samples: [...(target.spotCheck as GoalSpotCheck).samples, sample] }, updatedAt: now };
+        await this.store.saveGoal(g);
+      } else {
+        const who = await this.calibratorFor(agent, { ref: sample }, { steps: await this.store.listSteps({}), goals });
+        if (!who) continue;
+        const hash12 = agent.hash.slice(0, 12);
+        const text = presetText(SPOT_CHECK_PRESET);
+        g = await this.createWithPlan(
+          {
+            owner: who.user,
+            title: `Spot-check ${agent.key}@${hash12}`,
+            preset: { name: SPOT_CHECK_PRESET.name, text, sha256: createHash("sha256").update(text, "utf8").digest("hex") },
+            params: { repo: who.repo, agent: agent.key, hash: hash12 },
+            profiles: {},
+            agents: {},
+            topics: [],
+            priority: 3,
+            comment: `spot checks of ${agent.key}@${hash12} (rate ${cfg.rate}, at least ${cfg.minPerWeek} per week)`,
+            extra: {},
+            spotCheck: { key: agent.key, hash: agent.hash, samples: [sample] },
+          },
+          now,
+        );
+        created = true;
+      }
+      goals = created ? [...goals, g] : goals.map((x) => (x.id === g?.id ? g : x));
+      const n = (g.spotCheck as GoalSpotCheck).samples.length;
+      await this.emit({
+        at: now,
+        type: "spot-check.opened",
+        user: g.ownerId,
+        goal: g.id,
+        step: `${g.id}.check`,
+        payload: { key: agent.key, hash: agent.hash, sample: n, lineage, fp: d.fp, decisionGoal: entry.goal, decisionStep: step, round, disposition: d.disposition, why },
+      });
+    }
+  }
+
+  /** The oldest open spot-check goal of an agent hash whose check step is ready and that has room. */
+  private async spotCheckTarget(goals: readonly Goal[], agent: AgentRef): Promise<Goal | undefined> {
+    const open = spotCheckGoals(goals, agent)
+      .filter((g) => g.state !== "done" && g.state !== "dropped" && (g.spotCheck?.samples.length ?? 0) < SPOT_MAX_SAMPLES)
+      .sort((a, b) => a.createdAt - b.createdAt || cmp(a.id, b.id));
+    for (const g of open) {
+      if ((await this.store.getStep(`${g.id}.check`))?.state === "ready") return g;
+    }
+    return undefined;
+  }
+
+  /** The check step of a spot-check goal, or a 409. */
+  private spotCheckOf(step: Step, goal: Goal): GoalSpotCheck {
+    if (!goal.spotCheck || step.id !== `${goal.id}.check`) throw new HubError(409, `${step.id} is not a spot-check step`);
+    return goal.spotCheck;
+  }
+
+  /** `POST /v1/steps/:id/spot-checks`: a person's verdict on one sampled decision. */
+  async spotCheckVerdict(actor: Actor, id: string, b: SpotCheckRequest): Promise<SpotCheckResult> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(id);
+      const goal = await this.goalOr404(step.goal);
+      const c = this.spotCheckOf(step, goal);
+      if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; only a held spot check takes verdicts`);
+      if (step.holderUser !== actor.userId) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      if (b.sid) this.refuseForeign(await this.callerMachine(actor, b.sid), b.sid);
+      const sample = c.samples[b.sample - 1];
+      if (!sample) throw new HubError(404, `${step.id} has no sample ${b.sample}`);
+      if (sample.verdict) throw new HubError(409, `sample ${b.sample} of ${step.id} already has a verdict`);
+      if (b.expected !== undefined && b.verdict === "agree") throw new HubError(422, "expected is only for disagree");
+      if (b.expected !== undefined && b.expected === sample.disposition) throw new HubError(422, `expected ${b.expected} is the agent's decision; record agree`);
+      const now = this.now();
+      const decided: SpotSample = {
+        ...sample,
+        verdict: { verdict: b.verdict, reason: b.reason, answer: b.answer, ...(b.expected !== undefined ? { expected: b.expected } : {}), by: actor.userId, at: now },
+      };
+      const samples = c.samples.map((x, i) => (i === b.sample - 1 ? decided : x));
+      await this.store.saveGoal({ ...goal, spotCheck: { ...c, samples }, updatedAt: now });
+      await this.saveStepFrom({ ...step, updatedAt: now }, step);
+      await this.emit({
+        at: now,
+        type: "spot-check.decided",
+        user: actor.userId,
+        sid: b.sid,
+        goal: goal.id,
+        step: step.id,
+        payload: {
+          key: c.key,
+          hash: c.hash,
+          sample: b.sample,
+          lineage: sample.lineage,
+          fp: sample.fp,
+          verdict: b.verdict,
+          ...(b.expected !== undefined ? { expected: b.expected } : {}),
+        },
+      });
+      if (b.verdict === "disagree") await this.calibrationTrigger({ key: c.key, hash: c.hash }, now);
+      return { sample: { ...decided, n: b.sample }, left: samples.filter((x) => !x.verdict).length };
+    });
+  }
+
+  /** The `spot-check` input of a spot-check goal's step: its samples with the decisions and items. */
+  private async spotCheckInput(goal: Goal): Promise<{ title: string; content: string } | undefined> {
+    const c = goal.spotCheck;
+    if (!c) return undefined;
+    const found = await this.catalogDefOf({ key: c.key, hash: c.hash });
+    const samples: Record<string, unknown>[] = [];
+    for (const [i, x] of c.samples.entries()) {
+      const d = await this.decisionDetail(x);
+      samples.push({
+        sample: i + 1,
+        lineage: x.lineage,
+        fp: x.fp,
+        goal: x.goal,
+        step: x.step,
+        round: x.round,
+        at: x.at,
+        disposition: x.disposition,
+        why: x.why,
+        reason: d.entry?.reason ?? "",
+        ...(d.entry?.link !== undefined ? { link: d.entry.link } : {}),
+        ...(d.entry?.until !== undefined ? { until: d.entry.until } : {}),
+        ...d.item,
+        state: d.state,
+        ...(x.verdict ? { verdict: x.verdict } : {}),
+      });
+    }
+    const agent = { key: c.key, hash: c.hash, ...(found ? { text: found.def.text } : {}) };
+    return { title: `spot checks of ${c.key}@${c.hash.slice(0, 12)} (${c.samples.length})`, content: JSON.stringify({ agent, samples }) };
   }
 
   /** The run step of a pulse goal: plan v1's step without deps. */
@@ -6329,6 +6593,11 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `opened calibration of ${String(payload.key)}@${String(payload.hash ?? "").slice(0, 12)} (${String(payload.dismissals)} dismissals)`;
     case "calibration.done":
       return `calibration of ${String(payload.key)}@${String(payload.hash ?? "").slice(0, 12)} done: ${String(payload.outcome)}`;
+    // RL-18: spot checks (key, hash12, sample number, fp and values only).
+    case "spot-check.opened":
+      return `opened spot check ${String(payload.sample)} of ${String(payload.key)}@${String(payload.hash ?? "").slice(0, 12)} (${String(payload.disposition)} ${String(payload.fp)})`;
+    case "spot-check.decided":
+      return `spot check ${String(payload.sample)} of ${String(payload.key)}@${String(payload.hash ?? "").slice(0, 12)}: ${String(payload.verdict)}`;
     default:
       return `${type.replace(".", " ")} ${s}`.trim();
   }
@@ -6447,6 +6716,11 @@ function cardDelta(cur: RunCard, prev: RunCard): NonNullable<RunCard["delta"]> {
 
 function emptyFindings(): PulseHealth["findings"] {
   return { open: { S1: 0, S2: 0, S3: 0, S4: 0 }, accepted: { S1: 0, S2: 0, S3: 0, S4: 0 } };
+}
+
+/** RL-18: `byPeople / total`, 4 decimals; absent at 0 decisions. */
+function decisionShare(d: { total: number; byPeople: number }): { humanDecisionShare?: number } {
+  return d.total > 0 ? { humanDecisionShare: Math.round((d.byPeople / d.total) * 10_000) / 10_000 } : {};
 }
 
 function perAccepted(costUsd: number | undefined, accepted: number): { costPerAcceptedUsd?: number } {

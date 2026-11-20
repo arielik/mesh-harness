@@ -716,6 +716,48 @@ enough new dismissals wait opens the next one. A dropped calibration goal releas
 (uncalibrated again, picked up at the next dismissal). A listed dismissal reverted later leaves the
 goal and its list unchanged and counts in no bucket.
 
+**Disagreements.** With spot checks on (below), a person's `disagree` verdict on a decision of an
+agent hash counts toward that hash's threshold like a dismissal: the hub opens a calibration goal when
+its uncalibrated dismissals plus its uncalibrated disagreements reach the threshold, and the goal lists
+them apart (`calibration.disagreements`; its input gives the agent's decision and the person's
+verdict). So a validator or a filer is calibrated with the same machinery as an auditor.
+
+## Spot checks
+
+Calibration counts dismissals against the agent that **raised** an item, so nothing looks at the
+agents that **decide** items: a validator that confirms or dismisses, a filer that files. Spot checks
+send a small share of those decisions to a person.
+
+**Config.** `spot_checks: {rate, min_per_week}` in `mesh-hub.yaml` (defaults `0.05` and `1`). Without
+the key nothing is sampled: spot checks add work for people, so a hub opts in. The setting is hub-wide,
+because the sampled unit is an agent hash, which may decide in several pulses.
+
+**What is sampled.** A decision is one disposition an agent's record applied (`via: stage`) for an
+agent hash (not one without a hash), in a goal that is not a trial goal, and not one applied only
+because it agrees with a person's decision in the same goal. When the hub records it, it computes
+`u` = the first 8 hex digits of `sha256(JSON.stringify([lineage, fp, step, round]))` / 2^32. The
+decision is sampled when `u < rate` (`why: rate`), else when the agent hash has fewer than
+`min_per_week` samples taken in the last 7 days (`why: minimum`). `u` depends only on the decision,
+so anyone can recompute which decisions the rate picks.
+
+**The spot-check goal.** Samples of an agent hash go to its oldest open spot-check goal whose step is
+still `ready` (at most 50 samples), else to a new goal from the built-in `spot-check` preset, owned by
+the **checker** (chosen as the calibrator is), title `Spot-check <key>@<hash12>`. Its one step,
+`check`, is a debrief for the owner: never offered, listed in their debriefs, started with
+`mesh debrief <step>`. Its input `spot-check` lists the samples with the agent's decision, reason and
+link, and the item with its evidence. Event `spot-check.opened` per sample.
+
+**Verdicts.** For each sample the person says whether they agree; the session records it with
+`mesh_spot_check` (`POST /v1/steps/:id/spot-checks`): `agree` or `disagree`, the reason, the person's
+words, and with `disagree` optionally `expected`, the decision they would have taken. A verdict is
+final and never changes the item. Event `spot-check.decided`. The step finishes with an empty review
+record (`items: []`, `dispositions: []`) and `mesh_done`, which is refused while a sample has no
+verdict. A `disagree` counts toward calibration (above).
+
+**Health.** `GET /v1/health` shows `decisions` (`total`, `byPeople`) and `humanDecisionShare` per
+pulse and in the total, and `spotChecks` (`open`, `oldestMs`, `decided`, `disagreed`) in the total;
+see Pulse health.
+
 ## Clean-audit goals
 
 **Sink.** A relay stage that may set `accepted` can carry `sink: { topic: <topic> }` (the topic must
@@ -880,8 +922,15 @@ the repo the pulse runs in; `topic`) returns one entry per pulse and a `total`:
 - `debriefs`: open debriefs of open goals and the oldest wait;
 - `findings`: the items of the pulse's lineages by severity, `open` (open or confirmed) and
   `accepted`;
-- the `total` sums the pulses, counts each item of a shared lineage once, and adds `calibrations`
-  (open calibration goals, whatever the filters say).
+- `decisions`: the item decisions (disposition history entries; one reverted later still counts) in
+  the pulse's goals in the window, `total` and `byPeople` (a person's debrief or stage record);
+  `humanDecisionShare` = `byPeople / total` (4 decimals), absent at 0 decisions. It counts decisions,
+  not their weight. A share of 0 is a warning that no person decided anything, not a goal;
+- the `total` sums the pulses (its `humanDecisionShare` from the summed parts), counts each item of a
+  shared lineage once, and adds `calibrations` (open calibration goals) and `spotChecks` (`open`
+  samples without a verdict in open spot-check goals, `oldestMs` since the oldest was sampled,
+  `decided` and `disagreed` verdicts in the window; zeros when spot checks are off), whatever the
+  filters say.
 
 **Trial.** `trial=exclude` (default), `include`, and for run cards `only`, choose the slots and goals
 that count. Item states, `items`, `sinks` and `findings` are about lineages, which trial runs share:

@@ -34,6 +34,23 @@ describe("artifacts", () => {
   });
 });
 
+// RL-18 AC-01: hub YAML `spot_checks: {rate, min_per_week}` gives `HubConfig.spotChecks` (off when absent).
+describe("RL-18 spot checks config", () => {
+  const raw = { auth: { providers: [{ kind: "none" }] } };
+  const build = (spot_checks: unknown) => buildHubConfig({ ...raw, spot_checks }, { baseDir: "/srv", env: {} });
+
+  it("test_AC01_spot_checks_config", () => {
+    expect("spotChecks" in buildHubConfig(raw, { baseDir: "/srv", env: {} })).toBe(false);
+    expect(build({}).spotChecks).toStrictEqual({ rate: 0.05, minPerWeek: 1 });
+    expect(build(null).spotChecks).toStrictEqual({ rate: 0.05, minPerWeek: 1 });
+    expect(build({ rate: 0.2, min_per_week: 3 }).spotChecks).toStrictEqual({ rate: 0.2, minPerWeek: 3 });
+    expect(build({ rate: 0, min_per_week: 2 }).spotChecks).toStrictEqual({ rate: 0, minPerWeek: 2 });
+    expect(build({ rate: 1, min_per_week: 0 }).spotChecks).toStrictEqual({ rate: 1, minPerWeek: 0 });
+    for (const bad of [{ rate: 1.5 }, { rate: -0.1 }, { min_per_week: 1.5 }, { min_per_week: 101 }, { min_per_week: -1 }]) expect(() => build(bad), JSON.stringify(bad)).toThrow();
+    expect(() => build({ rate: 0, min_per_week: 0 })).toThrow("spot_checks needs rate > 0 or min_per_week > 0");
+  });
+});
+
 // RL-6 AC-01 (config): hub YAML `calibration: { threshold: <int ≥ 1> }` gives
 // `HubConfig.calibration.threshold` (default 5). Written from the spec's contracts only (docs/specs/RL-6.md).
 describe("RL-6 calibration threshold", () => {

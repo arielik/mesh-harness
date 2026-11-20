@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanAc, PlanStep, Verdict } from "./goal.ts";
-import { DisposeRequest } from "./hub.ts";
+import { DisposeRequest, SpotCheckRequest } from "./hub.ts";
 import { ReviewRecord } from "./review.ts";
 
 export const TOOLS = {
@@ -109,6 +109,11 @@ export const TOOLS = {
     description:
       "For a debrief step only: record one decision of your person on one item at once. answer is the person's own words, verbatim; reason is the decision's reason. deferred needs until (YYYY-MM-DD); accepted may carry requires (fingerprints of findings this fix cannot land before). Call it once per decision, never deciding for the person; the debrief still ends with mesh_review and mesh_done.",
     input: DisposeRequest.omit({ sid: true }).shape,
+  },
+  mesh_spot_check: {
+    description:
+      "For a spot-check step only (a debrief whose context has a spot-check input): record your person's verdict on one sampled decision at once. sample is its number; verdict agree or disagree; answer is the person's own words, verbatim; reason is the verdict's reason; expected (with disagree) is the decision the person would have taken. Never decide for the person; the step still ends with mesh_review and mesh_done.",
+    input: SpotCheckRequest.omit({ sid: true }).shape,
   },
 } as const;
 

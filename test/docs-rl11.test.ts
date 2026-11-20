@@ -47,7 +47,7 @@ describe("RL-11 AC-15 docs", () => {
     const probes = section(o, "Probes", "###");
     expect(probes).toContain("version");
     expect(probes).toContain("features");
-    expect(section(o, "Upgrading to 0.1.34")).toContain("0.1.30 adds `GET /v1/runs`");
+    expect(section(o, "Upgrading to 0.1.35")).toContain("0.1.30 adds `GET /v1/runs`");
   });
 
   it("test_AC15_events_api_skill", () => {

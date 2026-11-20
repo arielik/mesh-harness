@@ -37,7 +37,7 @@ export function debriefAssignee(policy: StepPolicy | undefined, ownerId: string)
 }
 
 /** RL-1: words of `inputs` that are never step ids (the keyword wins over a step of that id). */
-export const INPUT_KEYWORDS: ReadonlySet<string> = new Set(["previous", "dispositions", "artifacts", "calibration"]);
+export const INPUT_KEYWORDS: ReadonlySet<string> = new Set(["previous", "dispositions", "artifacts", "calibration", "spot-check"]);
 
 /** Plan checks for the optional rules; phrased so an agent can fix them. */
 export function validatePolicies(planSteps: readonly PlanStep[], acs: readonly PlanAc[] | undefined): string[] {
@@ -92,7 +92,9 @@ export function validatePolicies(planSteps: readonly PlanStep[], acs: readonly P
     if (s.may_set && !s.consumes) errors.push(`step "${s.id}": may_set needs consumes`);
     if (s.when && !s.consumes) errors.push(`step "${s.id}": when needs consumes (the item states it looks at)`);
     if (s.when && !s.when.open && !s.when.min_severity) errors.push(`step "${s.id}": when needs open: true or min_severity`);
-    if (s.consumes && !runOf(s, steps, (x) => x)) errors.push(`step "${s.id}": consumes needs an earlier step with output: review-record that raises items (through deps)`);
+    // RL-18: a spot-check debrief has no run by design (its default consumes is never used).
+    const spotCheck = s.mode === "debrief" && s.inputs?.includes("spot-check") === true;
+    if (s.consumes && !spotCheck && !runOf(s, steps, (x) => x)) errors.push(`step "${s.id}": consumes needs an earlier step with output: review-record that raises items (through deps)`);
   }
   return errors;
 }

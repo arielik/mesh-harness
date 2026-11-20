@@ -153,6 +153,15 @@ calibration:
   threshold: 5           # uncalibrated dismissals of one agent hash that open a calibration goal (whole number ≥ 1)
 ```
 
+`spot_checks` turns on spot checks of deciding agents (0.1.35; off when the key is absent, see
+[concepts](concepts.md#spot-checks)). An empty value takes the defaults:
+
+```yaml
+spot_checks:
+  rate: 0.05             # share of eligible agent decisions sampled (0 to 1)
+  min_per_week: 1        # samples per agent hash per 7 days, at least (0 to 100); rate and min_per_week can't both be 0
+```
+
 ## Hooks
 
 | Hook | Kind | Why |

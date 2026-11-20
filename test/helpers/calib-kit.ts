@@ -75,9 +75,11 @@ export class Ck {
   }
 
   /** ann, bob (daemons, share `me`), carol (login), root (admin); `threshold` omitted → no `calibration` key. */
-  static async start(o: { threshold?: number; clock?: number } = {}): Promise<Ck> {
+  static async start(o: { threshold?: number; clock?: number; spotChecks?: Record<string, unknown> } = {}): Promise<Ck> {
     const hubYaml: Record<string, unknown> = { auth: { session: { device_max_age: "60d", device_idle: "30d" } } };
     if (o.threshold !== undefined) hubYaml.calibration = { threshold: o.threshold };
+    // RL-18: `spot_checks` in the hub YAML (omitted → off).
+    if (o.spotChecks !== undefined) hubYaml.spot_checks = o.spotChecks;
     const { k, c } = await Rk.start({ hubYaml, clock: o.clock ?? NOV19 });
     const carol = (await k.r.w.login("carol", { hostname: "carol-box" })).token;
     return new Ck(k, { ...c, carol });

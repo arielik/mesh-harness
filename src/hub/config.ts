@@ -103,6 +103,13 @@ export const HubConfigFile = z.object({
   calibration: z
     .object({ threshold: z.number().int().min(1).default(5) })
     .default({ threshold: 5 }),
+  /** RL-18: spot checks of deciding agents (off when absent; an empty value means the defaults). */
+  spot_checks: z
+    .object({ rate: z.number().min(0).max(1).default(0.05), min_per_week: z.number().int().min(0).max(100).default(1) })
+    .nullable()
+    .optional()
+    .transform((v) => (v === null ? { rate: 0.05, min_per_week: 1 } : v))
+    .refine((v) => v === undefined || v.rate > 0 || v.min_per_week > 0, { message: "spot_checks needs rate > 0 or min_per_week > 0" }),
 });
 
 export interface HubConfig {
@@ -121,6 +128,8 @@ export interface HubConfig {
   artifacts: { maxBytes: number; perRound: number; retentionDays: number };
   /** RL-6: uncalibrated dismissals of an agent hash that open a calibration goal. */
   calibration: { threshold: number };
+  /** RL-18: the share of eligible agent decisions sampled and the samples per agent hash per 7 days, at least; absent = off. */
+  spotChecks?: { rate: number; minPerWeek: number } | undefined;
 }
 
 export function isLoopback(host: string): boolean {
@@ -190,6 +199,7 @@ export function buildHubConfig(raw: unknown, opts: { baseDir: string; env: Recor
     blindGuard: file.blind_guard,
     artifacts: { maxBytes: file.artifacts.max_bytes, perRound: file.artifacts.per_round, retentionDays: file.artifacts.retention_days },
     calibration: { threshold: file.calibration.threshold },
+    ...(file.spot_checks ? { spotChecks: { rate: file.spot_checks.rate, minPerWeek: file.spot_checks.min_per_week } } : {}),
   };
 }
 

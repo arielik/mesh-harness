@@ -16,6 +16,7 @@ import {
   DeclineRequest,
   DevicePoll,
   DisposeRequest,
+  SpotCheckRequest,
   DoneRequest,
   GateDecision,
   GoalDrop,
@@ -376,6 +377,15 @@ export const HUB_API: readonly HubApiRoute[] = [
     body: DisposeRequest,
     status: 201,
     summary: "Record one decision of the person in a held debrief step (mesh_dispose).",
+  },
+  {
+    method: "POST",
+    path: "/v1/steps/:id/spot-checks",
+    rule: "member",
+    tag: "steps",
+    body: SpotCheckRequest,
+    status: 201,
+    summary: "Record a person's verdict (agree or disagree) on one sampled decision in a held spot-check step (mesh_spot_check).",
   },
   {
     method: "POST",

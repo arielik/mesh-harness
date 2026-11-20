@@ -152,7 +152,29 @@ export const CALIBRATE_PRESET: Preset = {
   },
 };
 
-export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDIT_RELAY, CALIBRATE_PRESET];
+/** RL-18: the spot check of a deciding agent hash, opened by the hub (a person's debrief, no run). */
+export const SPOT_CHECK_PRESET: Preset = {
+  name: "spot-check",
+  description: "Spot-check the item decisions of a validating or filing agent (opened by the hub when spot_checks samples one).",
+  plan: {
+    steps: [
+      s({
+        id: "check",
+        kind: "review",
+        mode: "debrief",
+        assignee: "@owner",
+        output: "review-record",
+        may_set: ["confirmed"],
+        inputs: ["spot-check"],
+        title: "Spot-check {agent}@{hash}",
+        brief:
+          'Read the input "spot-check" from mesh_context: decisions of {agent}@{hash} sampled for a person to check. Go through them with your person one at a time (the mesh-debrief skill, section Spot checks): show the item, its evidence read from the repo, the agent\'s decision and reason; ask whether they agree; record each answer with mesh_spot_check. Then submit a review record with no items and no dispositions (mesh_review): assessment "clean" when every verdict is agree, else "issues", with a summary; then mesh_done.',
+      }),
+    ],
+  },
+};
+
+export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDIT_RELAY, CALIBRATE_PRESET, SPOT_CHECK_PRESET];
 
 /** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, steps}. */
 export function parsePreset(name: string, text: string): Preset {

@@ -90,7 +90,7 @@ describe("AC-03 presets with placeholders", () => {
     // The built-ins instantiate as before: no throw, no headless field appears, every placeholder filled.
     // RL-3: `audit-relay` needs params and is headless by design (its own tests below).
     // RL-6: `calibrate` needs params (agent, hash) and has `inputs` (its own tests below).
-    for (const p of BUILTIN_PRESETS.filter((x) => x.name !== "audit-relay" && x.name !== "calibrate")) {
+    for (const p of BUILTIN_PRESETS.filter((x) => x.name !== "audit-relay" && x.name !== "calibrate" && x.name !== "spot-check")) {
       const a = instantiate(p, { repo: "frr", goal: "G7" });
       const b = inst(p, { repo: "frr", goal: "G7", params: { unused: "z" } });
       expect(b, p.name).toStrictEqual(a);
@@ -162,7 +162,7 @@ describe("RL-6 AC-03 calibrate", () => {
   it("test_AC03_builtin_order", () => {
     const names = BUILTIN_PRESETS.map((p) => p.name);
     // The RL-5 list with `calibrate` inserted right after `audit-relay`.
-    expect(names).toStrictEqual(["sdd-split", "sdd-collapse", "audit-relay", "calibrate"]);
+    expect(names).toStrictEqual(["sdd-split", "sdd-collapse", "audit-relay", "calibrate", "spot-check"]);
     expect(cal().description).toBe(DESCRIPTION);
   });
 
