@@ -3,7 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import { PROFILE_ENV_MAX, PROFILE_ENV_VALUE_MAX } from "../core/index.ts";
-import { PROFILE_LIMITS, type ProfileView, type StoredArtifact } from "../protocol/index.ts";
+import { PROFILE_FIT, PROFILE_LIMITS, type ProfileFit, type ProfileView, type StoredArtifact } from "../protocol/index.ts";
 import type { Command } from "./commands.ts";
 import { parseArgs, type CliEnv } from "./context.ts";
 import { HubCallError, HubClient } from "./hub-client.ts";
@@ -26,6 +26,9 @@ export function profileCommand(c: CliEnv): Command {
     "  mesh profile ls [--json]",
     "  mesh profile show <name>",
     "  mesh profile add <name> --file <profile.yaml>",
+    "  mesh profile fit <name> [--days N] [--include-trial] [--json]",
+    "                                    denied commands and unused tools of the profile's runs, as a",
+    "                                    proposed change (nothing is saved; default 14 days)",
     "",
     "profile.yaml keys (all optional):",
     "  extends: read-only | read-only+checks | propose-via-branch   (default read-only)",
@@ -38,14 +41,14 @@ export function profileCommand(c: CliEnv): Command {
   return {
     name: "profile",
     help: usage,
-    summary: "permission profiles for headless steps: ls | show <name> | add <name> --file F",
+    summary: "permission profiles for headless steps: ls | show <name> | add <name> --file F | fit <name>",
     async run(args) {
       const [sub, ...rest] = args;
       if (sub === "--help" || sub === "-h" || sub === "help") {
         c.io.out(usage);
         return 0;
       }
-      const a = parseArgs(rest, ["file"]);
+      const a = parseArgs(rest, ["file", "days"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "ls":
@@ -64,6 +67,20 @@ export function profileCommand(c: CliEnv): Command {
           return orRefused(c, async () => {
             const p = await hub().get<ProfileView>(`/v1/profiles/${encodeURIComponent(name)}`);
             c.io.out(JSON.stringify(p.settings, null, 2));
+            return 0;
+          });
+        }
+        case "fit": {
+          const name = a.positional[0];
+          if (!name) break;
+          return orRefused(c, async () => {
+            const qs = new URLSearchParams();
+            const days = a.has("days") ? (a.str("days") ?? "") : undefined;
+            if (days !== undefined) qs.set("days", days);
+            if (a.has("include-trial")) qs.set("trial", "include");
+            const query = qs.size ? `?${qs.toString()}` : "";
+            const fit = await hub().get<ProfileFit>(`/v1/profiles/${encodeURIComponent(name)}/fit${query}`);
+            c.io.out(a.has("json") ? JSON.stringify(fit, null, 2) : formatProfileFit(fit).join("\n"));
             return 0;
           });
         }
@@ -89,6 +106,51 @@ export function profileCommand(c: CliEnv): Command {
       return 2;
     },
   };
+}
+
+const runsWord = (n: number) => (n === 1 ? "1 run" : `${n} runs`);
+const verdict = (x: { suggest: boolean; held?: string | undefined; refusal?: string | undefined }, yes: string) =>
+  x.suggest ? yes : `held: ${x.held ?? "?"}${x.refusal !== undefined ? `: ${x.refusal}` : ""}`;
+
+/** RL-16: the text of `mesh profile fit` (docs/specs/RL-16.md, "CLI"). */
+export function formatProfileFit(f: ProfileFit): string[] {
+  const out: string[] = [];
+  const h12 = (h: string) => h.slice(0, 12);
+  out.push(
+    `Profile ${f.profile} (sha256 ${h12(f.sha256)}): ${f.sample.runs} runs in the last ${f.window.days} days at this hash, ${f.sample.toolRuns} with tool data.${f.trial === "include" ? " Trial runs included." : ""}`,
+  );
+  const others = f.hashes.filter((h) => !h.current && h.runs > 0);
+  if (others.length) out.push(`Other hashes: ${others.map((h) => `${h12(h.sha256)} ${runsWord(h.runs)}`).join(", ")}.`);
+  const min = f.thresholds.minRuns ?? PROFILE_FIT.minRuns;
+  if (f.sample.runs < min) out.push(`Fewer than ${min} runs: no allow rule is suggested from a small sample.`);
+  if (f.sample.toolRuns < min) out.push(`Fewer than ${min} runs with tool data: no tool is suggested for dropping.`);
+  if (f.denied.length === 0) out.push("Denied: none.");
+  else {
+    out.push("Denied:");
+    for (const d of f.denied) {
+      const label = d.command !== undefined ? `${d.tool} ${d.command}` : d.tool;
+      out.push(`  ${label}  ${d.runs}/${f.sample.runs} runs, ${d.count} denials  ${verdict(d, `→ allow ${d.rule ?? ""}`)}`);
+    }
+  }
+  if (f.sample.toolRuns === 0) out.push("Offered, never used: no runs with tool data.");
+  else if (f.unused.length === 0) out.push("Offered, never used: none.");
+  else {
+    out.push("Offered, never used:");
+    for (const u of f.unused) out.push(`  ${u.tool}  ${u.offeredRuns}/${f.sample.toolRuns} runs  ${verdict(u, `→ drop (deny ${u.tool})`)}`);
+  }
+  if (f.truncated) out.push(`(${f.truncated.denied} more denied and ${f.truncated.unused} more unused entries not shown)`);
+  if (f.diff.allow.length === 0 && f.diff.deny.length === 0) out.push("Proposed change: none.");
+  else {
+    out.push("Proposed change:");
+    for (const r of f.diff.allow) out.push(`  allow: + ${r}`);
+    for (const t of f.diff.deny) out.push(`  deny:  + ${t}`);
+    out.push(
+      f.builtIn
+        ? `Nothing was saved. ${f.profile} is built in: register a profile with "extends: ${f.profile}" and these rules (mesh profile add <new name> --file <profile.yaml>) and use it in the step.`
+        : `Nothing was saved. Narrow the Bash rules if you can, add them to the profile's YAML and run: mesh profile add ${f.profile} --file <profile.yaml>`,
+    );
+  }
+  return out;
 }
 
 export function artifactCommand(c: CliEnv): Command {

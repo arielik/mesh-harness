@@ -177,7 +177,7 @@ your person.
 | `mesh offers` | steps offered to your machines; `mesh accept <step>` / `mesh decline <step>` |
 | `mesh withdraw <goal\|step>` | withdraw an offer, or end a goal's stick |
 | `mesh session accept <session> --from <rules>` | whose offers a session accepts automatically (`--off`, `--clear`) |
-| `mesh profile ls` | permission profiles for headless steps; `mesh profile add <name> --file F` registers one |
+| `mesh profile ls` | permission profiles for headless steps; `mesh profile add <name> --file F` registers one; `mesh profile fit <name>` proposes rules from the runs' denials and unused tools (saves nothing) |
 | `mesh artifact ls <goal>` | reports stored on the hub; `mesh artifact show <id>` prints one |
 | `mesh pulse add --preset <name> --repo <repo> --every 7d` | run a preset on a schedule (`--cron "<5 fields>" --tz <zone>`); `mesh pulse ls`, `show`, `fire` (`--trial` while tuning an agent: left out of statistics and calibration, never blocks a slot), `pause`, `rm`; `add` and `update` warn (stderr, still saved) when a named agent is flagged invalid in the roster |
 | `mesh goal ls --pulses` | goal lists including goals made by pulses |

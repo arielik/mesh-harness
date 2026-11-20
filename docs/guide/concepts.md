@@ -322,6 +322,48 @@ raising step, how many items its record listed (`raised`) and how many of them a
 - A run whose `mesh_done` was refused (the step was released or taken) closes no round and has no
   row; it is still a `run.finished` event.
 
+## Profile fitting
+
+`GET /v1/profiles/:name/fit` (0.1.33; scope `goals:read`, read only) and `mesh profile fit <name>
+[--days N] [--include-trial] [--json]` read the headless runs of one permission profile over a
+window (`days` 1-90, default 14) and propose a change: the denied commands to allow and the tools
+offered but never used to drop. **Nothing is saved.** The person edits the profile's YAML and saves
+it with `mesh profile add`; the change shows up as `profile.saved` with a new hash.
+
+- **Which runs.** Rounds with telemetry whose `telemetry.profile` is the profile and whose
+  `finishedAt` is in the window. `hashes` lists the runs per profile hash (the current hash first,
+  then older ones): `runs`, `toolRuns`, `deniedRuns`, `denials`, `firstAt`, `lastAt`, so the effect
+  of the last save shows as a before and after. Suggestions use only the runs at the **current
+  hash** (`sample`): a run under older rules may have hit a denial that is already fixed. `trial`
+  is `exclude` by default; `trial=include` (`--include-trial`) adds trial runs while tuning.
+- **Tool runs.** `unused` uses only the runs that report both `tools` (offered) and `toolsUsed`
+  (0.1.30 daemons); an older run says nothing about which tools it used.
+- **Thresholds** (`thresholds` in the reply): at least `minRuns` (5) runs, else no entry is suggested
+  (held `few-runs` unless an earlier reason holds it); and a denial is suggested only when it is **frequent**, denied in at least half the
+  runs (`minShare` 0.5). A rare denial is the profile doing its job, not a gap. A tool is dropped
+  only when at least 5 tool runs offered it and none used it.
+- **Rules.** A denied `Bash` command word `w` becomes `allow: Bash(w *)`; another denied tool
+  becomes `allow: <tool>`. An unused tool becomes `deny: <tool>` (a bare-name deny takes it off the
+  run's tool list).
+- **Held, with a reason** (`held`): `no-command` (a Bash denial without a word), `not-a-word` (the
+  word or tool cannot be a plain rule), `runs-anything` (shells, `env`, `sudo`, `xargs`,
+  interpreters and other words that run any command: their rule would be as wide as `Bash(*)`),
+  `already-allowed`, `denied-by-profile` (a built-in or the profile's own deny rule covers it, such
+  as the `git` and `find` denies or `WebFetch` in `read-only`; the test is conservative, so even an
+  exact deny such as `Bash(make lint)` holds `Bash(make *)`), `few-runs`, `rare`, `refused` (the
+  profile with the rule added fails the same check `mesh profile add` applies; `refusal` gives the
+  text), and for unused tools `mesh-tool` (mesh's tools and `Skill` are never dropped), `allowed`
+  (the profile allows the tool) and `already-denied`. `diff` holds the suggested rules together,
+  and the profile with all of them still passes the check.
+- **Narrow before saving.** The telemetry keeps only a command's first word, so `Bash(cargo *)` is
+  the widest form; prefer `Bash(cargo test *)`. The word may not match the command as typed: it
+  drops a directory and leading `NAME=value` words (`./gradlew ...` and `FOO=1 cargo ...` need their
+  own rule), and `cd x && cargo test` is recorded as `cd`. Build tools run what the repo or the
+  arguments say (`make --eval`, `cargo --config`, `npm run`), so an allow for them is a starting
+  point, not a safe rule.
+- No score: the reply carries counts, and the thresholds only decide `suggest`. A built-in profile
+  cannot be changed; register one with `extends: <built-in>` and the rules.
+
 ## Review records
 
 **Review record.** A step with `output: review-record` (a review stage) records its findings as

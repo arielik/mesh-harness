@@ -103,9 +103,12 @@ import {
   type Principal,
   type Role,
   stageTimes,
+  fitProfile,
+  type FitRun,
 } from "../core/index.ts";
 import type {
   AcState,
+  ProfileFit,
   AgentStats,
   GoalCalibration,
   ItemHistoryEntry,
@@ -824,6 +827,41 @@ export class HubService {
     const p = await this.store.getProfile(name);
     if (!p) throw new HubError(404, `no profile ${name}`);
     return this.profileView(p);
+  }
+
+  /** RL-16 `GET /v1/profiles/:name/fit`: denied commands and unused tools of a profile's runs, read only. */
+  async profileFit(name: string, q: { days?: string | undefined; trial?: string | undefined }): Promise<ProfileFit> {
+    let days = 14;
+    if (q.days !== undefined) {
+      days = /^\d{1,2}$/.test(q.days) ? Number(q.days) : NaN;
+      if (!Number.isInteger(days) || days < 1 || days > 90) throw new HubError(400, "days must be a whole number from 1 to 90");
+    }
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    return this.store.tx(async () => {
+      const view = await this.getProfileView(name);
+      const until = this.now();
+      const since = until - days * 86_400_000;
+      const goals = new Map<string, Goal | undefined>();
+      const runs: FitRun[] = [];
+      // A step's updatedAt is at least the finishedAt of each of its rounds (as GET /v1/runs).
+      for (const step of await this.store.listSteps({ updatedSince: since })) {
+        for (const round of step.rounds ?? []) {
+          const t = round.telemetry;
+          if (!t || t.profile !== name || round.finishedAt < since || round.finishedAt > until) continue;
+          if (!goals.has(step.goal)) goals.set(step.goal, await this.store.getGoal(step.goal));
+          const goal = goals.get(step.goal);
+          if (!goal || (trial === "exclude" && goal.trial === true)) continue;
+          runs.push({ finishedAt: round.finishedAt, telemetry: t });
+        }
+      }
+      return fitProfile({
+        profile: { name: view.name, builtIn: view.builtIn, base: view.base, sha256: view.sha256, settings: view.settings, text: view.text },
+        runs,
+        window: { since, until, days },
+        trial,
+      });
+    });
   }
 
   /** `POST /v1/profiles`: register or replace (its creator or an admin). */

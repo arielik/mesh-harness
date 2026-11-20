@@ -25,3 +25,4 @@ export * from "./pulse.ts";
 export * from "./calibration.ts";
 export * from "./finding-step.ts";
 export * from "./stage-times.ts";
+export * from "./profile-fit.ts";

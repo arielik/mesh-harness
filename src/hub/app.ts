@@ -300,6 +300,8 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/artifacts/:id", "member", async (c) => c.json(await svc.getArtifact(param(c, "id"))), "goals:read"),
     r("GET", "/v1/profiles", "member", async (c) => c.json({ profiles: await svc.listProfiles() }), "goals:read"),
     r("GET", "/v1/profiles/:name", "member", async (c) => c.json(await svc.getProfileView(param(c, "name"))), "goals:read"),
+    // RL-16: profile fitting from denials and tool use (read only).
+    r("GET", "/v1/profiles/:name/fit", "member", async (c) => c.json(await svc.profileFit(param(c, "name"), { days: c.req.query("days"), trial: c.req.query("trial") })), "goals:read"),
     forPerson(
       r(
         "POST",

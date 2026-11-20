@@ -5306,6 +5306,355 @@
         }
       }
     },
+    "/v1/profiles/{name}/fit": {
+      "get": {
+        "operationId": "getVProfilesNameFit",
+        "summary": "Profile fit over a window: runs per profile hash, denied tools and Bash command words, tools offered but never used, each suggested as an allow or deny rule or held with a reason, and the proposed diff. Read only; nothing is saved.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "analysis"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "1-90, default 14",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trial",
+            "in": "query",
+            "required": false,
+            "description": "exclude (default) or include",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "profile": {
+                      "type": "string"
+                    },
+                    "builtIn": {
+                      "type": "boolean"
+                    },
+                    "base": {
+                      "type": "string",
+                      "enum": [
+                        "read-only",
+                        "read-only+checks",
+                        "propose-via-branch"
+                      ]
+                    },
+                    "sha256": {
+                      "type": "string"
+                    },
+                    "window": {
+                      "type": "object",
+                      "properties": {
+                        "since": {
+                          "type": "number"
+                        },
+                        "until": {
+                          "type": "number"
+                        },
+                        "days": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "since",
+                        "until",
+                        "days"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "trial": {
+                      "type": "string",
+                      "enum": [
+                        "exclude",
+                        "include"
+                      ]
+                    },
+                    "thresholds": {
+                      "type": "object",
+                      "properties": {
+                        "minRuns": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "minShare": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "minRuns",
+                        "minShare"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "hashes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sha256": {
+                            "type": "string"
+                          },
+                          "current": {
+                            "type": "boolean"
+                          },
+                          "runs": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "toolRuns": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "deniedRuns": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "denials": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "firstAt": {
+                            "type": "number"
+                          },
+                          "lastAt": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "sha256",
+                          "current",
+                          "runs",
+                          "toolRuns",
+                          "deniedRuns",
+                          "denials"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "sample": {
+                      "type": "object",
+                      "properties": {
+                        "runs": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "toolRuns": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "runs",
+                        "toolRuns"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "denied": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tool": {
+                            "type": "string"
+                          },
+                          "command": {
+                            "type": "string"
+                          },
+                          "runs": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "rule": {
+                            "type": "string"
+                          },
+                          "suggest": {
+                            "type": "boolean"
+                          },
+                          "held": {
+                            "type": "string",
+                            "enum": [
+                              "no-command",
+                              "not-a-word",
+                              "runs-anything",
+                              "already-allowed",
+                              "denied-by-profile",
+                              "few-runs",
+                              "rare",
+                              "refused",
+                              "mesh-tool",
+                              "allowed",
+                              "already-denied"
+                            ]
+                          },
+                          "refusal": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "tool",
+                          "runs",
+                          "count",
+                          "suggest"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "unused": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tool": {
+                            "type": "string"
+                          },
+                          "offeredRuns": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "suggest": {
+                            "type": "boolean"
+                          },
+                          "held": {
+                            "type": "string",
+                            "enum": [
+                              "no-command",
+                              "not-a-word",
+                              "runs-anything",
+                              "already-allowed",
+                              "denied-by-profile",
+                              "few-runs",
+                              "rare",
+                              "refused",
+                              "mesh-tool",
+                              "allowed",
+                              "already-denied"
+                            ]
+                          },
+                          "refusal": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "tool",
+                          "offeredRuns",
+                          "suggest"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "truncated": {
+                      "type": "object",
+                      "properties": {
+                        "denied": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "unused": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "denied",
+                        "unused"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "diff": {
+                      "type": "object",
+                      "properties": {
+                        "allow": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "deny": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "allow",
+                        "deny"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "profile",
+                    "builtIn",
+                    "base",
+                    "sha256",
+                    "window",
+                    "trial",
+                    "thresholds",
+                    "hashes",
+                    "sample",
+                    "denied",
+                    "unused",
+                    "diff"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
     "/v1/catalog-sources": {
       "post": {
         "operationId": "postVCatalogsources",

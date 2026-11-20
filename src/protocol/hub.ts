@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile } from "./goal.ts";
-import { AcState, ArtifactKind, Commit, ArtifactMediaType, Failure, Findings, GoalState as GoalStateSchema, PlanInput, ProfileName, RunExit, RunTelemetry, StepKind as StepKindSchema, StepState as StepStateSchema, Verdict } from "./goal.ts";
+import { AcState, ArtifactKind, Commit, ArtifactMediaType, Failure, Findings, GoalState as GoalStateSchema, PlanInput, ProfileBase, ProfileName, RunExit, RunTelemetry, StepKind as StepKindSchema, StepState as StepStateSchema, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
 import { AgentReport } from "./roster.ts";
@@ -713,7 +713,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["commits", "health", "pulse-runs", "runs", "trial"];
+export const HUB_FEATURES: readonly string[] = ["commits", "health", "profile-fit", "pulse-runs", "runs", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -904,3 +904,60 @@ export const Health = z.object({
   total: HealthTotal,
 });
 export type Health = z.infer<typeof Health>;
+
+// ---------- RL-16: profile fitting ----------
+
+/** RL-16: the thresholds of a profile fit (reported in the reply). */
+export const PROFILE_FIT = { minRuns: 5, minShare: 0.5 } as const;
+
+/** RL-16: why a denial or an unused tool is not suggested. */
+export const FitHeld = z.enum(["no-command", "not-a-word", "runs-anything", "already-allowed", "denied-by-profile", "few-runs", "rare", "refused", "mesh-tool", "allowed", "already-denied"]);
+export type FitHeld = z.infer<typeof FitHeld>;
+
+/** RL-16: the runs of a profile at one hash. */
+export const ProfileFitHash = z.object({
+  sha256: z.string(),
+  current: z.boolean(),
+  runs: int,
+  toolRuns: int,
+  deniedRuns: int,
+  denials: int,
+  firstAt: z.number().optional(),
+  lastAt: z.number().optional(),
+});
+export type ProfileFitHash = z.infer<typeof ProfileFitHash>;
+
+/** RL-16: one denied tool (and Bash command word) over the sample. */
+export const FitDenied = z.object({
+  tool: z.string(),
+  command: z.string().optional(),
+  runs: int,
+  count: int,
+  rule: z.string().optional(),
+  suggest: z.boolean(),
+  held: FitHeld.optional(),
+  refusal: z.string().optional(),
+});
+export type FitDenied = z.infer<typeof FitDenied>;
+
+/** RL-16: one tool offered in the sample's tool runs and used in none. */
+export const FitUnused = z.object({ tool: z.string(), offeredRuns: int, suggest: z.boolean(), held: FitHeld.optional(), refusal: z.string().optional() });
+export type FitUnused = z.infer<typeof FitUnused>;
+
+/** RL-16: `GET /v1/profiles/:name/fit`. */
+export const ProfileFit = z.object({
+  profile: z.string(),
+  builtIn: z.boolean(),
+  base: ProfileBase,
+  sha256: z.string(),
+  window: z.object({ since: z.number(), until: z.number(), days: int }),
+  trial: z.enum(["exclude", "include"]),
+  thresholds: z.object({ minRuns: int, minShare: z.number() }),
+  hashes: z.array(ProfileFitHash),
+  sample: z.object({ runs: int, toolRuns: int }),
+  denied: z.array(FitDenied),
+  unused: z.array(FitUnused),
+  truncated: z.object({ denied: int, unused: int }).optional(),
+  diff: z.object({ allow: z.array(z.string()), deny: z.array(z.string()) }),
+});
+export type ProfileFit = z.infer<typeof ProfileFit>;
