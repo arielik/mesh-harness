@@ -58,6 +58,15 @@ Sessions already recorded keep their labels when the file or the remembered list
 - per-criterion results (met, not_met, unrun), and the criteria the round addressed;
 - a reconcile miss, a gate decision, and the rule that parked the step.
 
+From 0.1.32 a round also keeps its **commit**: the head commit of the step's work when the round
+closed (a full id). The daemon reads it in `mesh_done` from the session's checkout, only when that
+checkout is the step's repo, and from the head of `branch` when the agent passes one; an agent passes
+`commit` only for work in a checkout mesh cannot see. A headless run's round gets its commit from
+the run's `finished` report: the commit it pushed (`propose-via-branch`), else the commit it started
+from (a commit only the run's discarded worktree had is never recorded). CI systems and analysis
+servers key their results by commit, so a client joins them to mesh work on `commit`, not by repo
+and time window. The hub stores no CI data.
+
 **Segment.** One session's stretch of work on a step, with its provenance:
 - model and effort, permission mode, Claude Code version;
 - the **harness hash** (repo `CLAUDE.md` + `.claude/**`, your `~/.claude` `CLAUDE.md`/agents/skills, plugins, mesh version; hashes only);
@@ -290,7 +299,8 @@ and `profileHash`, `sessionId`, `turns`, `tokensIn`, `tokensOut`, `cacheRead`, `
 ## Runs
 
 `GET /v1/runs` (0.1.30; scope `goals:read`) lists headless runs that closed a round, newest first:
-one row per round with telemetry, joined to its step (`kind`, `repo`, `branch`), its goal (`owner`,
+one row per round with telemetry, joined to its step (`kind`, `repo`, `branch`, the round's `commit`
+from 0.1.32), its goal (`owner`,
 `pulse`, `slot`, `trial`), the person it ran as (`user`), the machine, `startedAt`, `finishedAt`,
 `outcome`, the stored `telemetry`, the round's `fold`, the round's `artifacts`, and `items`: for a
 raising step, how many items its record listed (`raised`) and how many of them are in each state
@@ -785,6 +795,7 @@ with another `trial`). A card has the slot as stored (`state`, `reason`, `runnin
 marks `manual`, `trial`, `catchUp`), `startWaitMs` (from the due time, or from the fire time of a
 manual or catch-up slot, to the run's start) and, when the slot made a goal:
 - `stages`: each step in goal order with `mode`, `state`, `holder`, `agent`, `rounds`, `outcome`,
+  `commit` (of its newest round, from 0.1.32),
   `runs`, `durationMs`, `turns`, `costUsd`, `exit`, and its times (below);
 - `totals`: runs, duration, turns and cost over the stages;
 - `fold`: the sums of each step's newest folded round (a retried raising round counts once);

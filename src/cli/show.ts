@@ -56,7 +56,7 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
       const parked = s.state === "parked" ? `parked: ${s.parkedReason ?? ""} (mesh step resume ${s.id})` : "";
       const role = s.policy?.role ? `[${s.policy.role}]` : "";
       const offer = d.offers?.[s.id];
-      const extras = [s.finding ? s.title : "", role, who(s, d), offer ? offerText(offer) : "", gate, parked, s.fixCycles ? `fix cycle ${s.fixCycles}` : "", s.mr ?? "", s.state === "done" && s.summary ? `— ${s.summary}` : ""].filter(Boolean).join("  ");
+      const extras = [s.finding ? s.title : "", role, who(s, d), offer ? offerText(offer) : "", gate, parked, s.fixCycles ? `fix cycle ${s.fixCycles}` : "", s.mr ?? "", s.rounds?.at(-1)?.commit?.slice(0, 9) ?? "", s.state === "done" && s.summary ? `— ${s.summary}` : ""].filter(Boolean).join("  ");
       lines.push(`  ${paint(color, mark)} ${local(s.id).padEnd(idW)}  ${s.kind.padEnd(9)} ${(s.repo || "-").padEnd(16)} ${s.state.padEnd(8)} ${extras}`.trimEnd());
     }
   });

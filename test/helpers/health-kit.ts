@@ -12,6 +12,8 @@ export interface StageOpts {
   started?: boolean;
   outcome?: "done" | "fail";
   reopen?: string[];
+  /** RL-13: the round's commit, sent with the close. */
+  commit?: string;
 }
 
 /** Claim a step, optionally start a run, upload a report, submit a record, close it, report telemetry. */
@@ -29,7 +31,7 @@ export async function stage(k: Ck, who: Person, id: string, o: StageOpts = {}): 
     const res = await k.k.review(who, id, rec({ items: o.items ?? [], dispositions: o.dispositions ?? [], ...(o.agent ? { agent: o.agent } : {}) } as never));
     expect(res.status, `review ${id}: ${JSON.stringify(res.json)}`).toBe(201);
   }
-  const d = await k.k.close(who, id, { outcome: o.outcome ?? "done", summary: "ok", ...(o.reopen ? { reopen: o.reopen } : {}), ...(o.outcome === "fail" && (o.items || o.dispositions) ? { closeAsFail: true } : {}) });
+  const d = await k.k.close(who, id, { outcome: o.outcome ?? "done", summary: "ok", ...(o.reopen ? { reopen: o.reopen } : {}), ...(o.commit ? { commit: o.commit } : {}), ...(o.outcome === "fail" && (o.items || o.dispositions) ? { closeAsFail: true } : {}) });
   expect(d.status, `close ${id}: ${JSON.stringify(d.json)}`).toBe(200);
   const st = await k.r.stepOf(id);
   const round = (st.rounds as Json[]).at(-1) as Json;

@@ -954,8 +954,10 @@ export class HubService {
   async runReport(
     actor: Actor,
     id: string,
-    b: { state: "started" | "finished"; runId: string; round?: number | undefined; telemetry?: RunTelemetry | undefined; branch?: string | undefined },
+    b: { state: "started" | "finished"; runId: string; round?: number | undefined; telemetry?: RunTelemetry | undefined; branch?: string | undefined; commit?: string | undefined },
   ): Promise<Step> {
+    // RL-13: a commit belongs to a round, set by the report of a finished run.
+    if (b.commit !== undefined && (b.state !== "finished" || b.round === undefined)) throw new HubError(400, "commit needs a finished report with a round");
     return await this.goalTx(async () => {
       const step = await this.stepOr404(id);
       const admin = actor.roles.includes("admin");
@@ -979,12 +981,13 @@ export class HubService {
         const r = step.rounds?.find((x) => x.n === b.round);
         if (!r) throw new HubError(404, `${step.id} has no round ${b.round}`);
         if (r.user !== actor.userId && !admin) throw new HubError(403, `round ${b.round} of ${step.id} is by ${r.user}`);
-        if (b.telemetry || b.branch) {
+        if (b.telemetry || b.branch || b.commit) {
           const now = this.now();
           const round: Round = {
             ...r,
             ...(b.telemetry ? { telemetry: b.telemetry } : {}),
             ...(b.branch ? { branch: b.branch } : {}),
+            ...(b.commit ? { commit: b.commit } : {}),
             // RL-11: the machine that ran it.
             ...(b.telemetry && actor.machineId ? { machine: actor.machineId } : {}),
           };
@@ -997,7 +1000,7 @@ export class HubService {
         user: actor.userId,
         goal: step.goal,
         step: step.id,
-        payload: { runId: b.runId, ...(b.round !== undefined ? { round: b.round } : {}), ...(b.branch ? { branch: b.branch } : {}), ...(b.telemetry ?? {}) },
+        payload: { runId: b.runId, ...(b.round !== undefined ? { round: b.round } : {}), ...(b.branch ? { branch: b.branch } : {}), ...(b.commit ? { commit: b.commit } : {}), ...(b.telemetry ?? {}) },
       });
       return out;
     });
@@ -2665,6 +2668,7 @@ export class HubService {
       outcome: "done" | "fail";
       branch?: string | undefined;
       mr?: string | undefined;
+      commit?: string | undefined;
       reopen: string[];
       sid?: string | undefined;
       model?: string | undefined;
@@ -2733,6 +2737,7 @@ export class HubService {
         ...(input.artifacts?.length ? { artifacts: input.artifacts.map((a) => ({ path: a.path, ...(a.sha ? { sha: a.sha } : {}) })) } : {}),
         ...(input.branch ? { branch: input.branch } : {}),
         ...(input.mr ? { mr: input.mr } : {}),
+        ...(input.commit ? { commit: input.commit } : {}),
         ...(input.verdict ? { verdict: input.verdict } : {}),
         ...(input.findings ? { findings: input.findings } : {}),
         ...(input.blockers !== undefined ? { blockers: input.blockers } : {}),
@@ -2796,7 +2801,7 @@ export class HubService {
         sid: input.sid,
         goal: step.goal,
         step: step.id,
-        payload: { summary: input.summary, mr: input.mr, reopen: toReopen, round: round.n, ...(input.model ? { model: input.model } : {}), ...(input.verdict ? { verdict: input.verdict } : {}), ...(input.failures?.length ? { buckets: input.failures.map((f) => f.bucket) } : {}) },
+        payload: { summary: input.summary, mr: input.mr, reopen: toReopen, round: round.n, ...(input.commit ? { commit: input.commit } : {}), ...(input.model ? { model: input.model } : {}), ...(input.verdict ? { verdict: input.verdict } : {}), ...(input.failures?.length ? { buckets: input.failures.map((f) => f.bucket) } : {}) },
       });
       if (step.offer?.state === "accepted") {
         const name = await this.machineNameOf(step.offer.to.machine);
@@ -3906,6 +3911,7 @@ export class HubService {
       kind: step.kind,
       repo: step.repo,
       ...(round.branch !== undefined ? { branch: round.branch } : {}),
+      ...(round.commit !== undefined ? { commit: round.commit } : {}),
       user: round.user,
       owner: goal.ownerId,
       ...(round.machine !== undefined ? { machine: round.machine } : {}),
@@ -6106,6 +6112,7 @@ function stageCard(step: Step, byId: ReadonlyMap<string, Step>, plans: readonly 
     turns: runs.reduce((n, r) => n + (r.telemetry?.turns ?? 0), 0),
     ...(costUsd !== undefined ? { costUsd } : {}),
     ...(newestRun ? { exit: newestRun.exit } : {}),
+    ...(last?.commit !== undefined ? { commit: last.commit } : {}),
   };
 }
 

@@ -17,6 +17,7 @@ import {
   MESH_TOOL_RULES,
   ProfileSettings,
   ProfileSnapshot,
+  COMMIT_RE,
   RunFile,
   writeFileAtomic,
   type InboxMessage,
@@ -108,6 +109,8 @@ interface RunEnd {
   doneDone?: boolean;
   pushDone?: boolean;
   branch?: string;
+  /** RL-13: the commit `push()` pushed; unset when nothing was pushed (the report then sends `baseCommit`). */
+  pushedCommit?: string;
   finishedDone?: boolean;
   releaseDone?: boolean;
 }
@@ -894,14 +897,24 @@ export class HeadlessRuns {
     }
 
     if ((e.decided === "closed" || e.decided === "own-round") && !e.pushDone) {
-      const branch = await this.push(run);
-      if (branch === "retry") return;
-      e = { ...e, pushDone: true, ...(branch ? { branch } : {}) };
+      const pushed = await this.push(run);
+      if (pushed === "retry") return;
+      e = { ...e, pushDone: true, ...(pushed ? { branch: pushed.branch, pushedCommit: pushed.commit } : {}) };
       this.saveEnd(run, e);
     }
 
     if (!e.finishedDone) {
-      const body = { state: "finished", runId: run.runId, ...(e.round !== undefined ? { round: e.round } : {}), telemetry, ...(e.branch ? { branch: e.branch } : {}) };
+      // RL-13: the run's result commit: what it pushed, else the commit it started from. Both are
+      // fixed once the push step is done, so a retried report sends the same value.
+      const commit = e.round !== undefined ? (e.pushedCommit ?? run.baseCommit) : undefined;
+      const body = {
+        state: "finished",
+        runId: run.runId,
+        ...(e.round !== undefined ? { round: e.round } : {}),
+        telemetry,
+        ...(e.branch ? { branch: e.branch } : {}),
+        ...(commit && COMMIT_RE.test(commit) ? { commit } : {}),
+      };
       const r = await this.call(run, "finished", "POST", this.stepPath(run.step, "/run"), body);
       if (!r.ok && r.retry) return;
       e = { ...e, finishedDone: true };
@@ -921,14 +934,15 @@ export class HeadlessRuns {
     this.deps.log(`run ${run.runId}: finished (${exit})`);
   }
 
-  /** `propose-via-branch` only: push the worktree's commits to mesh/<slug>. Returns the branch, or undefined. */
-  private async push(run: RunFile): Promise<string | undefined | "retry"> {
+  /** `propose-via-branch` only: push the worktree's commits to mesh/<slug>. Returns the branch and the pushed commit, or undefined. */
+  private async push(run: RunFile): Promise<{ branch: string; commit: string } | undefined | "retry"> {
     if (run.profile.base !== "propose-via-branch" || !run.worktree || !run.baseCommit || !existsSync(run.worktree)) return undefined;
     const head = await this.deps.runner.git(run.worktree, ["rev-parse", "HEAD"]);
-    if (head.code !== 0 || head.stdout.trim() === run.baseCommit) return undefined;
+    const commit = head.stdout.trim();
+    if (head.code !== 0 || commit === run.baseCommit) return undefined;
     const branch = `mesh/${stepSlug(run.step)}`;
     const p = await this.deps.runner.git(run.worktree, ["push", "origin", `HEAD:refs/heads/${branch}`]);
-    if (p.code === 0) return branch;
+    if (p.code === 0) return { branch, commit };
     const note = await this.call(run, "note", "POST", this.stepPath(run.step, "/note"), { text: `headless run: could not push ${branch}: ${gitError(p)}` });
     if (!note.ok && note.retry) return "retry";
     return undefined;

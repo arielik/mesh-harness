@@ -1101,6 +1101,7 @@ export class Daemon {
       reviewStored: (sid, n) => this.runs?.reviewStored(sid, n),
       isRunSession: (sid) => this.runs?.isRunSession(sid) ?? false,
       doneAccepted: (sid, step) => this.runs?.doneAccepted(sid, step),
+      repoForCwd: (cwd) => this.deps.repoForCwd(cwd),
     };
   }
 

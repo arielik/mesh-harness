@@ -22,7 +22,9 @@ Each step is held by one session at a time. The mesh MCP server gives you thirte
    - `summary`: what you did, in a few sentences;
    - `model`: the model you are running as;
    - `artifacts`: repo-relative paths of the files you produced (spec, review, evidence);
-   - `branch` and `mr` when you have them.
+   - `branch` and `mr` when you have them. mesh records the commit your work ends on from this
+     checkout (the head of `branch` when you pass it); pass `commit` only when the work is in a
+     checkout mesh cannot see.
 
    A review or test step that finds a problem in earlier steps uses `outcome: "fail"` and lists
    those step ids in `reopen`. Reviews add `verdict`, `findings` and `blockers`; test runs add

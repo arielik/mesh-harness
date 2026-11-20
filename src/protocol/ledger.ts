@@ -2,6 +2,7 @@
 // hand-written. Readers accept unknown fields: new fields are always optional (additive evolution).
 
 import { z } from "zod";
+import { Commit } from "./goal.ts";
 
 export const LEDGER_SCHEMA = "mesh.ledger.v1";
 export const LedgerRecordKind = z.enum(["goal", "plan", "step", "agent-step"]);
@@ -113,6 +114,7 @@ const round = z.looseObject({
   reconcile: z.object({ missing: z.array(z.string()) }).optional(),
   gate: z.looseObject({ by: z.string(), rule: z.string().optional(), comment: z.string().optional() }).optional(),
   parked: z.string().optional().describe("the rule that parked the step after this round"),
+  commit: Commit.optional().describe("the head commit of the step's work when the round closed"),
 });
 
 export const LedgerStep = z.looseObject({

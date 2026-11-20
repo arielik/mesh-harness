@@ -42,6 +42,7 @@ export const TOOLS = {
       summary: z.string().min(1).describe("what you did, in a few sentences"),
       branch: z.string().optional(),
       mr: z.string().optional().describe("merge request or pull request reference, e.g. !88"),
+      commit: z.string().optional().describe("the commit your work ends on, only when it is not in this session's checkout (mesh reads it from the checkout otherwise)"),
       outcome: z.enum(["done", "fail"]).optional(),
       reopen: z.array(z.string()).optional().describe("step ids to reopen when outcome is fail, e.g. ['dplane']"),
       model: z.string().optional().describe("the model you are running as, e.g. claude-opus-5-5"),

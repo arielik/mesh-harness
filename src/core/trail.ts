@@ -256,6 +256,7 @@ export function stepRecord(
             ...(r.parked ? { parked: r.parked } : {}),
             ...(r.reopen?.length ? { reopen: r.reopen } : {}),
             ...(r.artifacts?.length ? { artifacts: r.artifacts } : {}),
+            ...(r.commit ? { commit: r.commit } : {}),
             ...(r.summary ? { summary: r.summary.length > 300 ? `${r.summary.slice(0, 297)}...` : r.summary } : {}),
           })),
         }

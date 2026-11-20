@@ -25,6 +25,7 @@ import {
   type FactEvent,
 } from "../core/index.ts";
 import {
+  COMMIT_RE,
   PlanStep,
   TOOLS,
   type ArtifactKind,
@@ -36,6 +37,7 @@ import {
   type FleetView,
   type GoalAssignResult,
   type OfferView,
+  type Repo,
   type ReviewRecord,
   type ReviewResult,
   type Session,
@@ -85,6 +87,8 @@ export interface ToolHost {
   isRunSession?(sid: string): boolean;
   /** RL-7: a mesh_done of `step` from this session was accepted by the hub or queued offline. */
   doneAccepted?(sid: string, step: string): void;
+  /** RL-13: the repo of a checkout folder (the daemon's own reader). */
+  repoForCwd?(cwd: string): Repo | undefined;
 }
 
 /**
@@ -227,6 +231,73 @@ async function contextOf(host: ToolHost, step: string): Promise<{ ctx: StepConte
   }
 }
 
+/** RL-13: the time budget of the commit resolution in mesh_done. */
+const DONE_COMMIT_BUDGET_MS = 5_000;
+
+/**
+ * RL-13: the commit a mesh_done sends. An explicit `commit` wins (lower-cased; a malformed one is an
+ * error). A headless run's session sends none (its `finished` report sets it). Otherwise the head of
+ * the session's checkout, only when that checkout is the step's repo; with `branch`, that branch's
+ * head (local, then origin). Any git or hub failure means no commit.
+ */
+async function doneCommit(host: ToolHost, s: Session, step: string, args: Record<string, unknown>): Promise<{ commit?: string } | { error: string }> {
+  // One time budget for the git and hub reads: a hung git never holds mesh_done up for long. Reads
+  // still running when it fires end on their own (git's own timeout); their result is ignored.
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<{ commit?: string }>((res) => {
+    timer = setTimeout(() => res({}), DONE_COMMIT_BUDGET_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([resolveCommit(host, s, step, args), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function resolveCommit(host: ToolHost, s: Session, step: string, args: Record<string, unknown>): Promise<{ commit?: string } | { error: string }> {
+  if (typeof args.commit === "string" && args.commit.trim()) {
+    const c = args.commit.trim().toLowerCase();
+    return COMMIT_RE.test(c) ? { commit: c } : { error: "commit must be a full commit id (40 or 64 hex characters)" };
+  }
+  if (host.runOf?.(s.sid) !== undefined || host.isRunSession?.(s.sid) === true) return {};
+  const root = findRepoRoot(s.cwd);
+  if (!root || !host.git || !host.repoForCwd) return {};
+  const repo = host.repoForCwd(root);
+  if (!repo) return {};
+  let stepRepo = host.local.cached(step)?.ctx.step.repo;
+  if (stepRepo === undefined) {
+    try {
+      stepRepo = (await contextOf(host, step)).ctx.step.repo;
+    } catch {
+      return {};
+    }
+  }
+  if (!stepRepo || !repoMatches(repo, stepRepo)) return {};
+  const git = host.git;
+  const rev = async (ref: string): Promise<string | undefined> => {
+    try {
+      const r = await git(root, ["rev-parse", "--verify", "-q", ref]);
+      const out = r.stdout.trim();
+      return r.code === 0 && COMMIT_RE.test(out) ? out : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const branch = typeof args.branch === "string" ? args.branch : "";
+  if (!branch) {
+    const head = await rev("HEAD^{commit}");
+    return head ? { commit: head } : {};
+  }
+  try {
+    if ((await git(root, ["check-ref-format", "--branch", branch])).code !== 0) return {};
+  } catch {
+    return {};
+  }
+  const c = (await rev(`refs/heads/${branch}^{commit}`)) ?? (await rev(`refs/remotes/origin/${branch}^{commit}`));
+  return c ? { commit: c } : {};
+}
+
 /** Artifacts as given by the agent, with their git blob ids when the files exist. */
 function artifactsOf(cwd: string, paths: unknown): { path: string; sha?: string }[] | undefined {
   if (!Array.isArray(paths) || paths.length === 0) return undefined;
@@ -336,10 +407,13 @@ async function dispatch(host: ToolHost, s: Session, tool: ToolName, rawArgs: Rec
       const outcome = (args.outcome as "done" | "fail" | undefined) ?? "done";
       const now = host.local.now();
       const artifacts = artifactsOf(s.cwd, args.artifacts);
+      const resolved = await doneCommit(host, s, s.step, args);
+      if ("error" in resolved) return fail(resolved.error);
       const body = {
         summary: args.summary,
         branch: args.branch,
         mr: args.mr,
+        ...(resolved.commit ? { commit: resolved.commit } : {}),
         outcome,
         reopen: args.reopen ?? [],
         sid: s.sid,
@@ -639,6 +713,7 @@ function doneOffline(host: ToolHost, s: Session, stepId: string, body: Record<st
     outcome,
     summary: String(body.summary),
     ...(typeof body.model === "string" ? { model: body.model } : {}),
+    ...(typeof body.commit === "string" ? { commit: body.commit } : {}),
     ...(Array.isArray(body.artifacts) ? { artifacts: body.artifacts as { path: string; sha?: string }[] } : {}),
   };
   const step: Step = {

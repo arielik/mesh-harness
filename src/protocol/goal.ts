@@ -294,6 +294,10 @@ export const Findings = z.object({ new: z.number().int().min(0), repeat: z.numbe
 export const Failure = z.object({ test: z.string().max(300).optional(), ac: AcId.optional(), bucket: Bucket, assertion: z.string().max(1000).optional() });
 export type Failure = z.infer<typeof Failure>;
 
+/** RL-13: a full git object name, lower-case hex (SHA-1 or SHA-256). */
+export const COMMIT_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+export const Commit = z.string().regex(COMMIT_RE, "a full commit id (40 or 64 lower-case hex characters)");
+
 /** One mesh_done on a step: a step reopened for fixing has several rounds (M4, R3). */
 export const Round = z.object({
   n: z.number().int().positive(),
@@ -309,6 +313,8 @@ export const Round = z.object({
   reopen: z.array(z.string()).optional(),
   branch: z.string().optional(),
   mr: z.string().optional(),
+  /** RL-13: the head commit of the step's work when the round closed. */
+  commit: Commit.optional(),
   // M4.5 (all optional): what the round found.
   verdict: Verdict.optional(),
   findings: Findings.optional(),

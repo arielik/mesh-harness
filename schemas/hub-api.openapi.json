@@ -2379,6 +2379,10 @@
                                 "exit": {
                                   "type": "string",
                                   "pattern": "^(success|error_[a-z_]+|killed_budget|crashed|no_result)$"
+                                },
+                                "commit": {
+                                  "type": "string",
+                                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
                                 }
                               },
                               "required": [
@@ -5776,6 +5780,10 @@
                           "branch": {
                             "type": "string"
                           },
+                          "commit": {
+                            "type": "string",
+                            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                          },
                           "user": {
                             "type": "string"
                           },
@@ -6545,6 +6553,10 @@
                   "mr": {
                     "type": "string",
                     "maxLength": 200
+                  },
+                  "commit": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
                   },
                   "reopen": {
                     "default": [],
@@ -7649,6 +7661,10 @@
                   "branch": {
                     "type": "string",
                     "maxLength": 200
+                  },
+                  "commit": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
                   }
                 },
                 "required": [

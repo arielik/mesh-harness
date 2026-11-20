@@ -498,6 +498,11 @@
           "parked": {
             "description": "the rule that parked the step after this round",
             "type": "string"
+          },
+          "commit": {
+            "description": "the head commit of the step's work when the round closed",
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
           }
         },
         "required": [

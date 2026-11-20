@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile } from "./goal.ts";
-import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, GoalState as GoalStateSchema, PlanInput, ProfileName, RunExit, RunTelemetry, StepKind as StepKindSchema, StepState as StepStateSchema, Verdict } from "./goal.ts";
+import { AcState, ArtifactKind, Commit, ArtifactMediaType, Failure, Findings, GoalState as GoalStateSchema, PlanInput, ProfileName, RunExit, RunTelemetry, StepKind as StepKindSchema, StepState as StepStateSchema, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
 import { AgentReport } from "./roster.ts";
@@ -204,6 +204,8 @@ export const DoneRequest = z.object({
   outcome: z.enum(["done", "fail"]).default("done"),
   branch: z.string().max(200).optional(),
   mr: z.string().max(200).optional(),
+  /** RL-13: the head commit of the step's work. */
+  commit: Commit.optional(),
   reopen: z.array(z.string()).default([]),
   sid: z.string().optional(),
   model: z.string().max(100).optional(),
@@ -420,6 +422,8 @@ export const RunReport = z.object({
   round: z.number().int().positive().optional(),
   telemetry: RunTelemetry.optional(),
   branch: z.string().max(200).optional(),
+  /** RL-13: the run's result commit (finished reports with a round only). */
+  commit: Commit.optional(),
 });
 export const GateDecision = z.object({ comment: z.string().max(4000).optional(), rule: z.string().max(60).optional(), inputs: z.record(z.string(), z.unknown()).optional(), reopen: z.array(z.string()).max(50).optional() });
 export const ResumeRequest = z.object({ comment: z.string().max(4000).optional() });
@@ -709,7 +713,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["health", "pulse-runs", "runs", "trial"];
+export const HUB_FEATURES: readonly string[] = ["commits", "health", "pulse-runs", "runs", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -744,6 +748,8 @@ export const RunRow = z.object({
   kind: StepKindSchema,
   repo: z.string(),
   branch: z.string().optional(),
+  /** RL-13: the round's commit. */
+  commit: Commit.optional(),
   user: z.string(),
   owner: z.string(),
   machine: z.string().optional(),
@@ -793,6 +799,8 @@ export const StageCard = z.object({
   turns: int,
   costUsd: z.number().optional(),
   exit: RunExit.optional(),
+  /** RL-13: the commit of the step's newest round. */
+  commit: Commit.optional(),
 });
 export type StageCard = z.infer<typeof StageCard>;
 
