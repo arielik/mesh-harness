@@ -772,6 +772,71 @@ steps are dropped (offers withdrawn), event `goal.dropped` with reason `person`.
 be dropped this way (its slot keeps its outcome), and a calibration goal (its dismissals are
 released). After a clean-audit goal is dropped, the next sink opens a new one.
 
+## Pulse health
+
+Two read-only routes (0.1.31, scope `goals:read`; a service reads with its own token, and
+`X-Mesh-On-Behalf-Of` is refused with 400) give a dashboard what it needs in one call each.
+`/healthz` lists `pulse-runs` and `health` in `features`. Not to be confused with `GET /health`, the
+public liveness probe.
+
+**Run cards.** `GET /v1/pulses/:id/runs` returns one card per slot of the pulse, newest first
+(`limit` 1-100, default 20; `cursor` the `next` of the previous page, a position that stays valid
+with another `trial`). A card has the slot as stored (`state`, `reason`, `running`, `until`, `tries`,
+marks `manual`, `trial`, `catchUp`), `startWaitMs` (from the due time, or from the fire time of a
+manual or catch-up slot, to the run's start) and, when the slot made a goal:
+- `stages`: each step in goal order with `mode`, `state`, `holder`, `agent`, `rounds`, `outcome`,
+  `runs`, `durationMs`, `turns`, `costUsd`, `exit`, and its times (below);
+- `totals`: runs, duration, turns and cost over the stages;
+- `fold`: the sums of each step's newest folded round (a retried raising round counts once);
+- `items`: the distinct items the goal's raising records listed (`raised`, new and repeated alike) and
+  how many are in each state now;
+- `dispositions`: the decisions recorded in the goal by disposition, `byPeople`, and `reverted`.
+  Every recorded decision counts, also one reverted later, and a decision can be about an item an
+  earlier goal raised, so these need not match `items`;
+- `reports`: the ids of the goal's `report` artifacts;
+- `sinks`: the clean-audit goals (not dropped) that hold a live finding step for an item filed in
+  this goal, with the number of such steps; an item filed here and reverted, or filed again in a later
+  goal, is not listed;
+- `delta`: for a done goal, the change against the previous done run of the same kind (trial or
+  not, among the next 50 slots): `durationMs`, `turns`, `costUsd` (when both have one), `raised`,
+  `new`, `regression`.
+
+**Stage times.** `readyAt` is when a step could first start: the latest first end of its deps (the
+first `done` round; for a `skipped` or `dropped` dep its last change, which a replan moves), or for a
+step without deps the approval of the plan that added it. `startedAt` is its first round's start
+(or the claim while it has no rounds). `waitMs` = `startedAt − readyAt`, the first cycle's wait. A
+step that is open again after a later cycle (reopened, waiting for a reopened dep, or behind a dep
+done again) has `cycleReadyAt`, the latest of those ends, when it is later than `readyAt`; a step held
+through a rejected or parked round also gets it, at that round's end, although it did not wait.
+`waitingMs` is how long a `ready` step has been waiting now.
+
+**Scorecard.** `GET /v1/health` (`days` 1-90, default 7; the window is `[now − days, now]`; `repo`
+the repo the pulse runs in; `topic`) returns one entry per pulse and a `total`:
+- `slots`: of the scheduled slots in the window, `due`, `fired`, `skipped`, `abandoned` (states now),
+  `missed` by reason, and `started` (whatever their state now); `manual` counts manual fires;
+- `lastSlot`, and `blockedBy`: with `overlap: skip`, the goal and step that would make a slot fired
+  now be skipped, as the fire itself would decide (a goal the fire would retire or abandon does not
+  block, nor does a trial goal), with its age;
+- `runs`: the runs that finished in the window, with duration, turns, cost and the waste parts
+  (`failed`, `overBudget`, `denials`, `allDismissed`, counted as `GET /v1/runs` computes them);
+- `goals`: the goals of the window's slots, by state now;
+- `accepted`: items accepted now whose latest acceptance was recorded in the pulse's goals in the
+  window (an item accepted by a debrief and linked by a filer counts once); `costPerAcceptedUsd` =
+  runs' cost / `accepted`, both by time in the window, absent at 0. It is the only ratio the hub
+  computes; it has no composite score;
+- `debriefs`: open debriefs of open goals and the oldest wait;
+- `findings`: the items of the pulse's lineages by severity, `open` (open or confirmed) and
+  `accepted`;
+- the `total` sums the pulses, counts each item of a shared lineage once, and adds `calibrations`
+  (open calibration goals, whatever the filters say).
+
+**Trial.** `trial=exclude` (default), `include`, and for run cards `only`, choose the slots and goals
+that count. Item states, `items`, `sinks` and `findings` are about lineages, which trial runs share:
+they include what trial runs did to the items.
+
+**Cost.** A health call reads every raising record and the items and history of each lineage it
+names; it is meant for a page load, not a poll every few seconds.
+
 ## Agent statistics
 
 `GET /v1/agents/:key/stats?days=30` (scope `goals:read`; the key `<repo>/<name>` with `/` encoded as

@@ -1,6 +1,6 @@
 // RL-11 AC-15: the docs cover the RL-11 changes (docs/specs/RL-11.md, "Docs, events, schemas"):
 // concepts (Telemetry, Runs, Pulses, Calibration, Agent statistics), the scheduled-reviews guide
-// (trials while tuning), operations (Probes, Upgrading to 0.1.30), the events catalog, the API table
+// (trials while tuning), operations (Probes, the upgrade section), the events catalog, the API table
 // and the mesh skill. The OpenAPI document and the route table are checked in test/schemas.test.ts.
 
 import { readFileSync } from "node:fs";
@@ -47,7 +47,7 @@ describe("RL-11 AC-15 docs", () => {
     const probes = section(o, "Probes", "###");
     expect(probes).toContain("version");
     expect(probes).toContain("features");
-    expect(section(o, "Upgrading to 0.1.30")).toContain("0.1.30 adds `GET /v1/runs`");
+    expect(section(o, "Upgrading to 0.1.31")).toContain("0.1.30 adds `GET /v1/runs`");
   });
 
   it("test_AC15_events_api_skill", () => {

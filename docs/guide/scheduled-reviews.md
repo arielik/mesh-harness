@@ -59,7 +59,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.30](operations.md#upgrading-to-0130).
+  describes; see [Upgrading to 0.1.31](operations.md#upgrading-to-0131).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else
@@ -543,6 +543,15 @@ Per-run numbers (`round.telemetry`: model, agent key and hash, profile, turns, t
 duration, exit, permission denials, tools used, redactions) and fold counts are in the goal's JSON
 (`GET /v1/goals/G7`) and in the `run.finished` and `review.recorded` events.
 
+**A dashboard of your pulses** (0.1.31). Two read-only routes give a page in one call each (scope
+`goals:read`, so a service token can show them): `GET /v1/pulses/p-2/runs` returns one card per slot
+(what each stage waited, ran and cost, what the run raised and what was decided, its report, the
+clean-audit goals its filed items went to, and the change against the previous complete run), and
+`GET /v1/health?days=7` a scorecard per pulse and a total (slots due, started, skipped and missed
+by reason, what holds a pulse, runs with their cost and waste parts, items accepted, open debriefs,
+open calibrations, and open and accepted findings by severity). Trial fires are left out unless you
+ask with `trial=include`. See [concepts](concepts.md#pulse-health).
+
 ## Debrief: decide the findings yourself
 
 A `mode: debrief` step (the `debrief` step of the preset above) is yours: it is never offered to a
@@ -605,7 +614,7 @@ Define the topic once (`mesh topic add ci`) and add `sink` to the stage that rec
 ```
 
 `sink` needs mesh 0.1.27 on the hub: an older hub refuses the preset with 422. See
-[Upgrading to 0.1.30](operations.md#upgrading-to-0130).
+[Upgrading to 0.1.31](operations.md#upgrading-to-0131).
 
 The stage needs `accepted` in `may_set`, and the topic must exist (`mesh pulse add` and `mesh goal
 plan` refuse the preset otherwise). When `file` is done, or skipped because you filed everything in
@@ -656,7 +665,7 @@ steps start in the right checkout:
 
   The sink then files each item in `Clean audits: ci on api`, `… on web` or `… on demo`, and
   `mesh items` shows `api/.ci.yml → api` for it. `repo` needs mesh 0.1.28 on the hub and on the
-  daemon of the machine that runs the auditor (see [Upgrading to 0.1.30](operations.md#upgrading-to-0130)).
+  daemon of the machine that runs the auditor (see [Upgrading to 0.1.31](operations.md#upgrading-to-0131)).
 - **When an auditor starts sending `repo`**, the next record moves the open steps of the items it
   now places elsewhere: the old step is dropped with `moved to <new id>`, the new one has `moved from
   <old id>`. A claimed (or paused, parked, failed) step stays where it is with a note; release it and

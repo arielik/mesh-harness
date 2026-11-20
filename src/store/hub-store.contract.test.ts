@@ -1255,6 +1255,23 @@ function contract(d: Driver) {
       expect(slotIds(await X(s).listSlots({}))).toStrictEqual([se, sd, sc, sb, sa]);
     });
 
+    it("test_RL12_listSlots_before_since", async () => {
+      const s = await store();
+      const [sa, sb, sc, sd] = [0, 1, 2, 3].map((i) => new Date(T0 + i * 1000).toISOString()) as [string, string, string, string];
+      // Two slots share `at`; "manual:…" sorts after an ISO time as a binary string ("m" > "2").
+      const m = "manual:01ARZ3NDEKTSV4RRFFQ69G5FAV";
+      await X(s).addSlot(slot("p-1", sa, T0));
+      await X(s).addSlot(slot("p-1", sb, T0 + 1));
+      await X(s).addSlot(slot("p-1", sc, T0 + 2));
+      await X(s).addSlot(slot("p-1", m, T0 + 2, { manual: true }));
+      await X(s).addSlot(slot("p-1", sd, T0 + 3));
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1" }))).toStrictEqual([sd, m, sc, sb, sa]);
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1", before: { at: T0 + 2, slot: m } }))).toStrictEqual([sc, sb, sa]);
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1", before: { at: T0 + 2, slot: sc } }))).toStrictEqual([sb, sa]);
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1", before: { at: T0 + 3, slot: sd }, limit: 2 }))).toStrictEqual([m, sc]);
+      expect(slotIds(await X(s).listSlots({ pulse: "p-1", since: T0 + 2 }))).toStrictEqual([sd, m, sc]);
+    });
+
     it("test_AC05_pending", async () => {
       const s = await store();
       const [sa, sb, sc, sd] = [0, 1, 2, 3].map((i) => new Date(T0 + i * 1000).toISOString()) as [string, string, string, string];

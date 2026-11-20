@@ -266,6 +266,21 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/pulses", "member", async (c, a) => c.json({ pulses: await svc.listPulsesView(a, c.req.query("mine") === "1") }), "goals:read"),
     forPerson(r("POST", "/v1/pulses", "member", async (c, a) => c.json(await svc.createPulse(a, await body(c, PulseCreate)), 201), "pulses:write")),
     r("GET", "/v1/pulses/:id", "member", async (c) => c.json(await svc.pulseDetail(param(c, "id"))), "goals:read"),
+    // RL-12: run cards of a pulse and the health scorecard.
+    r(
+      "GET",
+      "/v1/pulses/:id/runs",
+      "member",
+      async (c) => c.json(await svc.pulseRuns(param(c, "id"), { trial: c.req.query("trial"), limit: c.req.query("limit"), cursor: c.req.query("cursor") })),
+      "goals:read",
+    ),
+    r(
+      "GET",
+      "/v1/health",
+      "member",
+      async (c) => c.json(await svc.health({ days: c.req.query("days"), repo: c.req.query("repo"), topic: c.req.query("topic"), trial: c.req.query("trial") })),
+      "goals:read",
+    ),
     forPerson(r("POST", "/v1/pulses/:id/update", "member", async (c, a) => c.json(await svc.updatePulse(a, param(c, "id"), await body(c, PulseUpdate))), "pulses:write")),
     forPerson(r("POST", "/v1/pulses/:id/pause", "member", async (c, a) => c.json(await svc.pausePulse(a, param(c, "id"))), "pulses:write")),
     forPerson(r("POST", "/v1/pulses/:id/resume", "member", async (c, a) => c.json(await svc.resumePulse(a, param(c, "id"))), "pulses:write")),

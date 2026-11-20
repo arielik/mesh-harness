@@ -987,6 +987,12 @@ export class HubStore {
     return rows.map((r) => ItemHistoryEntry.parse(JSON.parse(r.value)));
   }
 
+  /** RL-12: the history of a lineage with each entry's fingerprint, in insertion order (indexed). */
+  async lineageHistory(lineage: string): Promise<{ fp: string; entry: ItemHistoryEntry }[]> {
+    const rows = await this.db.all<{ fp: string; value: string }>("SELECT fp, value FROM item_history WHERE lineage = ? ORDER BY seq", lineage);
+    return rows.map((r) => ({ fp: r.fp, entry: ItemHistoryEntry.parse(JSON.parse(r.value)) }));
+  }
+
   /** RL-6: the whole item history (every lineage and item) in one ordered read, insertion order. */
   async listItemHistory(): Promise<{ lineage: string; fp: string; entry: ItemHistoryEntry }[]> {
     const rows = await this.db.all<{ lineage: string; fp: string; value: string }>("SELECT lineage, fp, value FROM item_history ORDER BY seq");
@@ -1140,12 +1146,32 @@ export class HubStore {
   }
 
   /** Slots, newest first (`at`, then `slot`, descending). `pending` = fired and not started. */
-  async listSlots(f: { pulse?: string | undefined; state?: SlotState | undefined; pending?: true | undefined; limit?: number | undefined } = {}): Promise<PulseSlot[]> {
+  async listSlots(
+    f: {
+      pulse?: string | undefined;
+      state?: SlotState | undefined;
+      pending?: true | undefined;
+      limit?: number | undefined;
+      /** RL-12: only slots after this position in the order below (`at` descending, then `slot` descending). */
+      before?: { at: number; slot: string } | undefined;
+      /** RL-12: only slots with `at ≥ since`. */
+      since?: number | undefined;
+    } = {},
+  ): Promise<PulseSlot[]> {
     const where: string[] = [];
     const args: SqlValue[] = [];
     if (f.pulse !== undefined) {
       where.push("pulse = ?");
       args.push(f.pulse);
+    }
+    if (f.before !== undefined) {
+      const slot = this.db.dialect.binary("slot");
+      where.push(`(at < ? OR (at = ? AND ${slot} < ?))`);
+      args.push(f.before.at, f.before.at, f.before.slot);
+    }
+    if (f.since !== undefined) {
+      where.push("at >= ?");
+      args.push(f.since);
     }
     if (f.pending) where.push("state = 'fired' AND started_at IS NULL");
     if (f.state !== undefined) {

@@ -102,6 +102,7 @@ import {
   type Materialized,
   type Principal,
   type Role,
+  stageTimes,
 } from "../core/index.ts";
 import type {
   AcState,
@@ -162,9 +163,15 @@ import type {
   ProfileSnapshot,
   ProfileView,
   RunTelemetry,
+  Health,
+  HealthTotal,
+  PulseHealth,
+  RunCard,
+  RunCardsPage,
   RunItems,
   RunRow,
   RunsPage,
+  StageCard,
   StepInput,
   StoredArtifact,
   ArtifactKind,
@@ -213,6 +220,7 @@ import type {
   PulseWhenInput,
   SlotReason,
 } from "../protocol/index.ts";
+import { PulseSlot as PulseSlotSchema } from "../protocol/index.ts";
 import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
@@ -3920,6 +3928,385 @@ export class HubService {
     };
   }
 
+  // ---------- RL-12: pulse run cards and the health scorecard ----------
+
+  /** `GET /v1/pulses/:id/runs`: one card per slot, newest first. */
+  async pulseRuns(id: string, q: { trial?: string | undefined; limit?: string | undefined; cursor?: string | undefined }): Promise<RunCardsPage> {
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include" && trial !== "only") throw new HubError(400, "trial must be exclude, include or only");
+    let limit = 20;
+    if (q.limit !== undefined) {
+      limit = /^\d{1,3}$/.test(q.limit) ? Number(q.limit) : NaN;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new HubError(400, "limit must be a whole number from 1 to 100");
+    }
+    const after = q.cursor === undefined ? undefined : slotCursor.decode(q.cursor);
+    if (q.cursor !== undefined && after === undefined) throw new HubError(400, "cursor is not valid");
+    return this.store.tx(async () => {
+      const p = await this.pulseOr404(id);
+      const passes = (s: PulseSlot) => (trial === "exclude" ? s.trial !== true : trial === "only" ? s.trial === true : true);
+      // Read in batches until the page is full (the trial filter may skip slots).
+      const page: PulseSlot[] = [];
+      let pos = after;
+      let more = false;
+      for (;;) {
+        const batch = await this.store.listSlots({ pulse: p.id, limit: limit + 1, ...(pos ? { before: pos } : {}) });
+        for (const s of batch) {
+          if (!passes(s)) continue;
+          if (page.length === limit) {
+            more = true;
+            break;
+          }
+          page.push(s);
+        }
+        const last = batch.at(-1);
+        if (more || batch.length < limit + 1 || !last) break;
+        pos = { at: last.at, slot: last.slot };
+      }
+      const ctx = new CardCtx();
+      const cards: RunCard[] = [];
+      for (const s of page) {
+        const card = await this.runCard(s, ctx);
+        if (card.goalState === "done") {
+          const prev = await this.previousComplete(p.id, s, ctx);
+          if (prev) card.delta = cardDelta(card, prev);
+        }
+        cards.push(card);
+      }
+      const last = page.at(-1);
+      return { pulse: p.id, cards, ...(more && last ? { next: slotCursor.encode({ at: last.at, slot: last.slot }) } : {}) };
+    });
+  }
+
+  /** The previous complete run of a slot: among the 50 slots after it, the first done goal of the same trial class. */
+  private async previousComplete(pulse: string, s: PulseSlot, ctx: CardCtx): Promise<RunCard | undefined> {
+    for (const o of await this.store.listSlots({ pulse, limit: 50, before: { at: s.at, slot: s.slot } })) {
+      if ((o.trial === true) !== (s.trial === true) || o.goal === undefined) continue;
+      const g = await ctx.goal(this.store, o.goal);
+      if (g?.state !== "done") continue;
+      return this.runCard(o, ctx);
+    }
+    return undefined;
+  }
+
+  /** One run card (inside a transaction). */
+  private async runCard(s: PulseSlot, ctx: CardCtx): Promise<RunCard> {
+    const cached = ctx.cards.get(`${s.pulse}\n${s.slot}`);
+    if (cached) return { ...cached };
+    const now = this.now();
+    const goal = s.goal === undefined ? undefined : await ctx.goal(this.store, s.goal);
+    const card: RunCard = {
+      slot: s.slot,
+      at: s.at,
+      state: s.state,
+      ...(s.reason !== undefined ? { reason: s.reason } : {}),
+      ...(s.by !== undefined ? { by: s.by } : {}),
+      ...(s.running !== undefined ? { running: s.running } : {}),
+      ...(s.error !== undefined ? { error: s.error } : {}),
+      ...(s.firedAt !== undefined ? { firedAt: s.firedAt } : {}),
+      ...(s.until !== undefined ? { until: s.until } : {}),
+      ...(s.startedAt !== undefined ? { startedAt: s.startedAt } : {}),
+      decidedAt: s.decidedAt,
+      ...(s.goal !== undefined ? { goal: s.goal } : {}),
+      manual: s.manual === true,
+      trial: s.trial === true,
+      catchUp: s.catchUp === true,
+      tries: s.tried.length,
+      ...(s.startedAt !== undefined ? { startWaitMs: Math.max(0, s.startedAt - ((s.manual || s.catchUp) && s.firedAt !== undefined ? s.firedAt : s.at)) } : {}),
+      stages: [],
+      totals: { runs: 0, durationMs: 0, turns: 0 },
+      dispositions: { confirmed: 0, dismissed: 0, deferred: 0, accepted: 0, byPeople: 0, reverted: 0 },
+      reports: [],
+      sinks: [],
+    };
+    if (goal) {
+      card.goalTitle = goal.title;
+      card.goalState = goal.state;
+      card.goalCreatedAt = goal.createdAt;
+      const all = await this.store.listSteps({ goal: goal.id });
+      const byId = new Map(all.map((x) => [x.id, x] as const));
+      const plans = await this.store.listPlans(goal.id);
+      let fold: Fold | undefined;
+      for (const step of all) {
+        if (isMovedAway(step)) continue;
+        const stage = stageCard(step, byId, plans, now);
+        card.stages.push(stage);
+        card.totals.runs += stage.runs;
+        card.totals.durationMs += stage.durationMs;
+        card.totals.turns += stage.turns;
+        if (stage.costUsd !== undefined) card.totals.costUsd = (card.totals.costUsd ?? 0) + stage.costUsd;
+        const f = (step.rounds ?? []).filter((r) => r.fold).at(-1)?.fold;
+        if (f) {
+          fold ??= { new: 0, repeat: 0, regression: 0, resolved: 0, carried: 0 };
+          for (const k of ["new", "repeat", "regression", "resolved", "carried"] as const) fold[k] += f[k];
+        }
+      }
+      if (fold) card.fold = fold;
+      // Raising records, their lineages and items.
+      const pairs = new Map<string, { lineage: string; fp: string }>();
+      const lineages = new Set<string>();
+      for (const step of all) {
+        for (const rec of await this.store.listReviews({ step: step.id, raising: true })) {
+          lineages.add(rec.lineage);
+          for (const it of rec.record.items) pairs.set(`${rec.lineage}\n${it.fp}`, { lineage: rec.lineage, fp: it.fp });
+        }
+      }
+      if (lineages.size) {
+        const items: RunItems = { raised: 0, open: 0, confirmed: 0, accepted: 0, dismissed: 0, deferred: 0, resolved: 0 };
+        for (const { lineage, fp } of pairs.values()) {
+          items.raised++;
+          const row = (await ctx.items(this.store, lineage)).get(fp);
+          if (row) items[row.state]++;
+        }
+        card.items = items;
+      }
+      for (const lineage of [...lineages].sort()) {
+        for (const { entry: e } of await ctx.history(this.store, lineage)) {
+          if (e.goal !== goal.id) continue;
+          if (e.kind === "disposition") {
+            card.dispositions[e.disposition]++;
+            if (e.decider.kind === "person") card.dispositions.byPeople++;
+          } else if (e.kind === "revert") card.dispositions.reverted++;
+        }
+      }
+      card.reports = (await this.store.listArtifacts({ goal: goal.id })).filter((a) => a.kind === "report").map((a) => a.id);
+      // Sinks: the live finding steps of the items filed in this goal.
+      const sinks = new Map<string, { goal: string; repo: string; topic: string; steps: number }>();
+      for (const lineage of [...lineages].sort()) {
+        for (const filed of await this.filedItems(lineage, goal.id)) {
+          for (const c of await ctx.cleanGoals(this.store)) {
+            // The live finding step of the item in `c` (as findingStepsOf finds it).
+            const step = await this.store.getStep(`${c.id}.${findingStepId(lineage, filed.row.fp)}`);
+            if (!c.sink || step?.finding?.lineage !== lineage || step.finding.fp !== filed.row.fp || isMovedAway(step)) continue;
+            const cur = sinks.get(c.id) ?? { goal: c.id, repo: c.sink.repo, topic: c.sink.topic, steps: 0 };
+            cur.steps++;
+            sinks.set(c.id, cur);
+          }
+        }
+      }
+      card.sinks = [...sinks.values()].sort((a, b) => goalSeq(a.goal) - goalSeq(b.goal) || cmp(a.goal, b.goal));
+    }
+    ctx.cards.set(`${s.pulse}\n${s.slot}`, card);
+    return { ...card };
+  }
+
+  /** `GET /v1/health`: a scorecard per pulse and a total. */
+  async health(q: { days?: string | undefined; repo?: string | undefined; topic?: string | undefined; trial?: string | undefined }): Promise<Health> {
+    let days = 7;
+    if (q.days !== undefined) {
+      days = /^\d{1,2}$/.test(q.days) ? Number(q.days) : NaN;
+      if (!Number.isInteger(days) || days < 1 || days > 90) throw new HubError(400, "days must be a whole number from 1 to 90");
+    }
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    const withTrial = trial === "include";
+    const topic = q.topic === undefined ? undefined : q.topic.trim().toLowerCase();
+    return this.store.tx(async () => {
+      const now = this.now();
+      const since = now - days * 86_400_000;
+      const inWindow = (t: number) => t >= since && t <= now;
+      const pulses = (await this.store.listPulses({}))
+        .filter((p) => p.deletedAt === undefined)
+        .filter((p) => q.repo === undefined || p.params.repo === q.repo)
+        .filter((p) => topic === undefined || topic === ALL_TOPIC || p.topics.includes(topic))
+        .sort((a, b) => Number(a.id.slice(2)) - Number(b.id.slice(2)));
+      const allGoals = await this.store.listGoals();
+      const goalById = new Map(allGoals.map((g) => [g.id, g] as const));
+      const counted = (g: Goal) => withTrial || g.trial !== true;
+      // Runs in the window: steps updated since the window opened (a step's updatedAt ≥ each round's finishedAt).
+      const recent = await this.store.listSteps({ updatedSince: since });
+      // Raising records once: the lineages each goal names.
+      const lineagesOf = new Map<string, Set<string>>();
+      for (const r of await this.store.listReviews({ raising: true })) {
+        const set = lineagesOf.get(r.goal) ?? new Set<string>();
+        set.add(r.lineage);
+        lineagesOf.set(r.goal, set);
+      }
+      const ctx = new CardCtx();
+      const out: PulseHealth[] = [];
+      const totalLineages = new Set<string>();
+      for (const p of pulses) {
+        const goals = allGoals.filter((g) => g.refs?.pulse === p.id && counted(g));
+        const goalIds = new Set(goals.map((g) => g.id));
+        const slotsIn = await this.store.listSlots({ pulse: p.id, since });
+        const windowSlots = slotsIn.filter((s) => inWindow(s.at));
+        const slots: PulseHealth["slots"] = { due: 0, fired: 0, started: 0, skipped: 0, missed: {}, abandoned: 0 };
+        let manual = 0;
+        const slotGoals = new Set<string>();
+        for (const s of windowSlots) {
+          if (s.manual) {
+            if (withTrial || s.trial !== true) {
+              manual++;
+              if (s.goal !== undefined) slotGoals.add(s.goal);
+            }
+            continue;
+          }
+          slots.due++;
+          if (s.startedAt !== undefined) slots.started++;
+          if (s.state === "missed") {
+            const r = s.reason ?? "error";
+            slots.missed[r] = (slots.missed[r] ?? 0) + 1;
+          } else slots[s.state]++;
+          if (s.goal !== undefined) slotGoals.add(s.goal);
+        }
+        // lastSlot: the newest slot that passes trial.
+        let lastSlot: PulseHealth["lastSlot"];
+        let pos: { at: number; slot: string } | undefined;
+        for (let guard = 0; guard < 100 && !lastSlot; guard++) {
+          const batch = await this.store.listSlots({ pulse: p.id, limit: 20, ...(pos ? { before: pos } : {}) });
+          const hit = batch.find((s) => withTrial || s.trial !== true);
+          if (hit) lastSlot = { slot: hit.slot, at: hit.at, state: hit.state, ...(hit.reason !== undefined ? { reason: hit.reason } : {}) };
+          const last = batch.at(-1);
+          if (hit || batch.length < 20 || !last) break;
+          pos = { at: last.at, slot: last.slot };
+        }
+        const blockedBy = await this.blockedBy(p, now);
+        // Runs.
+        const runs: PulseHealth["runs"] = { count: 0, durationMs: 0, turns: 0, failed: 0, overBudget: 0, denials: 0, allDismissed: 0 };
+        for (const step of recent) {
+          if (!goalIds.has(step.goal)) continue;
+          const g = goalById.get(step.goal) as Goal;
+          for (const round of step.rounds ?? []) {
+            const t = round.telemetry;
+            if (!t || !inWindow(round.finishedAt)) continue;
+            const row = await this.runRow(step, g, round as Round & { telemetry: RunTelemetry });
+            runs.count++;
+            runs.durationMs += t.durationMs;
+            runs.turns += t.turns;
+            if (t.costUsdEstimate !== undefined) runs.costUsd = (runs.costUsd ?? 0) + t.costUsdEstimate;
+            if (row.waste.failed) runs.failed++;
+            if (row.waste.overBudget) runs.overBudget++;
+            runs.denials += row.waste.denials;
+            if (row.waste.allDismissed) runs.allDismissed++;
+          }
+        }
+        // Goals of the window's slots.
+        const gs: PulseHealth["goals"] = { created: 0, done: 0, dropped: 0, open: 0 };
+        for (const id of slotGoals) {
+          const g = goalById.get(id);
+          if (!g || !counted(g)) continue;
+          gs.created++;
+          if (g.state === "done") gs.done++;
+          else if (g.state === "dropped") gs.dropped++;
+          else gs.open++;
+        }
+        // Lineages of the pulse's goals; accepted items and findings.
+        const lineages = new Set<string>();
+        for (const id of goalIds) for (const l of lineagesOf.get(id) ?? []) lineages.add(l);
+        let accepted = 0;
+        const findings = emptyFindings();
+        for (const lineage of [...lineages].sort()) {
+          totalLineages.add(lineage);
+          const items = await ctx.items(this.store, lineage);
+          const latestAccepted = new Map<string, { goal: string; at: number }>();
+          for (const { fp, entry: e } of await ctx.history(this.store, lineage)) {
+            if (e.kind === "disposition" && e.disposition === "accepted") latestAccepted.set(fp, { goal: e.goal, at: e.at });
+          }
+          for (const row of items.values()) {
+            if (row.state === "open" || row.state === "confirmed") findings.open[row.severity]++;
+            else if (row.state === "accepted") {
+              findings.accepted[row.severity]++;
+              const last = latestAccepted.get(row.fp);
+              if (last && goalIds.has(last.goal) && inWindow(last.at)) accepted++;
+            }
+          }
+        }
+        // Open debriefs of open goals.
+        const debriefs: PulseHealth["debriefs"] = { open: 0 };
+        for (const g of goals) {
+          if (g.state === "done" || g.state === "dropped") continue;
+          const steps = await this.store.listSteps({ goal: g.id });
+          const byId = new Map(steps.map((x) => [x.id, x] as const));
+          let plans: Plan[] | undefined;
+          for (const st of steps) {
+            if (st.policy?.mode !== "debrief" || (st.state !== "ready" && st.state !== "claimed" && st.state !== "paused")) continue;
+            debriefs.open++;
+            plans ??= await this.store.listPlans(g.id);
+            const t = stageTimes(st, byId, plans, now);
+            const from = t.cycleReadyAt ?? t.readyAt;
+            if (from !== undefined) debriefs.oldestMs = Math.max(debriefs.oldestMs ?? 0, Math.max(0, now - from));
+          }
+        }
+        out.push({
+          pulse: p.id,
+          title: p.title,
+          owner: p.owner,
+          enabled: p.enabled,
+          schedule: scheduleText(p.when),
+          ...(p.pausedReason !== undefined ? { pausedReason: p.pausedReason } : {}),
+          ...(p.nextAt !== undefined ? { nextAt: p.nextAt } : {}),
+          slots,
+          manual,
+          ...(lastSlot ? { lastSlot } : {}),
+          ...(blockedBy ? { blockedBy } : {}),
+          runs,
+          goals: gs,
+          accepted,
+          ...perAccepted(runs.costUsd, accepted),
+          debriefs,
+          findings,
+        });
+      }
+      // Total.
+      const total: HealthTotal = {
+        pulses: out.length,
+        slots: { due: 0, fired: 0, started: 0, skipped: 0, missed: {}, abandoned: 0 },
+        manual: 0,
+        runs: { count: 0, durationMs: 0, turns: 0, failed: 0, overBudget: 0, denials: 0, allDismissed: 0 },
+        goals: { created: 0, done: 0, dropped: 0, open: 0 },
+        accepted: 0,
+        debriefs: { open: 0 },
+        findings: emptyFindings(),
+        calibrations: { open: 0 },
+      };
+      for (const h of out) {
+        for (const k of ["due", "fired", "started", "skipped", "abandoned"] as const) total.slots[k] += h.slots[k];
+        for (const [r, n] of Object.entries(h.slots.missed)) total.slots.missed[r] = (total.slots.missed[r] ?? 0) + n;
+        total.manual += h.manual;
+        for (const k of ["count", "durationMs", "turns", "failed", "overBudget", "denials", "allDismissed"] as const) total.runs[k] += h.runs[k];
+        if (h.runs.costUsd !== undefined) total.runs.costUsd = (total.runs.costUsd ?? 0) + h.runs.costUsd;
+        for (const k of ["created", "done", "dropped", "open"] as const) total.goals[k] += h.goals[k];
+        total.accepted += h.accepted;
+        total.debriefs.open += h.debriefs.open;
+        if (h.debriefs.oldestMs !== undefined) total.debriefs.oldestMs = Math.max(total.debriefs.oldestMs ?? 0, h.debriefs.oldestMs);
+      }
+      Object.assign(total, perAccepted(total.runs.costUsd, total.accepted));
+      for (const lineage of totalLineages) {
+        for (const row of (await ctx.items(this.store, lineage)).values()) {
+          if (row.state === "open" || row.state === "confirmed") total.findings.open[row.severity]++;
+          else if (row.state === "accepted") total.findings.accepted[row.severity]++;
+        }
+      }
+      for (const g of allGoals) {
+        if (!g.calibration || g.state === "done" || g.state === "dropped") continue;
+        total.calibrations.open++;
+        total.calibrations.oldestMs = Math.max(total.calibrations.oldestMs ?? 0, now - g.createdAt);
+      }
+      return { window: { since, until: now, days }, pulses: out, total };
+    });
+  }
+
+  /** RL-12: what `fireSlot` would find blocking at `now` (read only); undefined when nothing blocks. */
+  private async blockedBy(p: Pulse, now: number): Promise<{ goal: string; step: string; ageMs: number } | undefined> {
+    if (p.overlap !== "skip") return undefined;
+    for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
+      if (s.goal === undefined) continue;
+      const g = await this.store.getGoal(s.goal);
+      if (!g || g.state === "done" || g.state === "dropped" || g.trial === true) continue;
+      // Started: marked, or advanceSlot would mark it before retiring.
+      let started = s.startedAt !== undefined;
+      if (!started) {
+        const rsId = await this.runStepOf(g);
+        started = await this.slotStarted(g, rsId ? await this.store.getStep(rsId) : undefined);
+      }
+      // Retired (not started, window over) or abandoned (started, too old) by the fire.
+      if (!started && s.until !== undefined && now >= s.until) continue;
+      if (started && now - g.createdAt >= p.maxGoalAgeMs) continue;
+      const step = overlapBusy(await this.store.listSteps({ goal: g.id }), await this.runStepOf(g));
+      if (step !== undefined) return { goal: g.id, step, ageMs: now - g.createdAt };
+    }
+    return undefined;
+  }
+
   /** `GET /v1/agents/:key/stats`: an agent key's statistics per hash. */
   async agentStats(key: string, daysRaw: string | undefined, trialRaw?: string | undefined): Promise<AgentStats> {
     if (trialRaw !== undefined && trialRaw !== "exclude" && trialRaw !== "include") throw new HubError(400, "trial must be exclude or include");
@@ -5642,4 +6029,104 @@ function topicName(raw: string): string {
 /** The sequence number of a goal id (`G<n>`); goals created later have higher numbers. */
 function goalSeq(id: string): number {
   return Number(/^G(\d+)$/.exec(id)?.[1] ?? 0);
+}
+
+/** RL-12: the opaque cursor of a run card page: the position `(at, slot)` of the last card. */
+const slotCursor = {
+  encode: (k: { at: number; slot: string }): string => Buffer.from(JSON.stringify([k.at, k.slot]), "utf8").toString("base64url"),
+  decode(s: string): { at: number; slot: string } | undefined {
+    try {
+      const v: unknown = JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
+      if (!Array.isArray(v) || v.length !== 2) return undefined;
+      const [at, slot] = v as unknown[];
+      // Only values a slot can hold reach SQL (an `at` that is not a whole number fails on Postgres).
+      if (typeof at !== "number" || !Number.isSafeInteger(at) || at < 0 || typeof slot !== "string" || !PulseSlotSchema.shape.slot.safeParse(slot).success) return undefined;
+      return { at, slot };
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+/** RL-12: per-request caches of the reads cards and health repeat (goals, items, history, cards). */
+class CardCtx {
+  private goals = new Map<string, Goal | undefined>();
+  private itemRows = new Map<string, Map<string, ItemRow>>();
+  private hist = new Map<string, { fp: string; entry: ItemHistoryEntry }[]>();
+  cards = new Map<string, RunCard>();
+  private clean: Goal[] | undefined;
+  /** Clean-audit goals that are not dropped (as `cleanAuditGoals`), read once. */
+  async cleanGoals(store: HubStore): Promise<Goal[]> {
+    this.clean ??= (await store.listGoals()).filter((g) => g.sink !== undefined && g.state !== "dropped");
+    return this.clean;
+  }
+  async goal(store: HubStore, id: string): Promise<Goal | undefined> {
+    if (!this.goals.has(id)) this.goals.set(id, await store.getGoal(id));
+    return this.goals.get(id);
+  }
+  async items(store: HubStore, lineage: string): Promise<Map<string, ItemRow>> {
+    let m = this.itemRows.get(lineage);
+    if (!m) {
+      m = new Map((await store.listItems(lineage)).map((r) => [r.fp, r] as const));
+      this.itemRows.set(lineage, m);
+    }
+    return m;
+  }
+  async history(store: HubStore, lineage: string): Promise<{ fp: string; entry: ItemHistoryEntry }[]> {
+    let h = this.hist.get(lineage);
+    if (!h) {
+      h = await store.lineageHistory(lineage);
+      this.hist.set(lineage, h);
+    }
+    return h;
+  }
+}
+
+/** RL-12: one stage of a run card. */
+function stageCard(step: Step, byId: ReadonlyMap<string, Step>, plans: readonly Plan[], now: number): StageCard {
+  const rounds = step.rounds ?? [];
+  const runs = rounds.filter((r) => r.telemetry);
+  const newestRun = runs.at(-1)?.telemetry;
+  const agent = newestRun?.agentKey ?? step.policy?.agent;
+  const last = rounds.at(-1);
+  let costUsd: number | undefined;
+  for (const r of runs) if (r.telemetry?.costUsdEstimate !== undefined) costUsd = (costUsd ?? 0) + r.telemetry.costUsdEstimate;
+  return {
+    step: step.id,
+    kind: step.kind,
+    mode: step.policy?.mode ?? "interactive",
+    state: step.state,
+    ...(step.holderUser !== undefined && (step.state === "claimed" || step.state === "paused") ? { holder: step.holderUser } : {}),
+    ...(agent !== undefined ? { agent } : {}),
+    rounds: rounds.length,
+    ...(last ? { outcome: last.outcome, finishedAt: last.finishedAt } : {}),
+    ...stageTimes(step, byId, plans, now),
+    runs: runs.length,
+    durationMs: runs.reduce((n, r) => n + (r.telemetry?.durationMs ?? 0), 0),
+    turns: runs.reduce((n, r) => n + (r.telemetry?.turns ?? 0), 0),
+    ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(newestRun ? { exit: newestRun.exit } : {}),
+  };
+}
+
+/** RL-12: a card's change against the previous complete run. */
+function cardDelta(cur: RunCard, prev: RunCard): NonNullable<RunCard["delta"]> {
+  return {
+    slot: prev.slot,
+    goal: prev.goal as string,
+    durationMs: cur.totals.durationMs - prev.totals.durationMs,
+    turns: cur.totals.turns - prev.totals.turns,
+    ...(cur.totals.costUsd !== undefined && prev.totals.costUsd !== undefined ? { costUsd: cur.totals.costUsd - prev.totals.costUsd } : {}),
+    raised: (cur.items?.raised ?? 0) - (prev.items?.raised ?? 0),
+    new: (cur.fold?.new ?? 0) - (prev.fold?.new ?? 0),
+    regression: (cur.fold?.regression ?? 0) - (prev.fold?.regression ?? 0),
+  };
+}
+
+function emptyFindings(): PulseHealth["findings"] {
+  return { open: { S1: 0, S2: 0, S3: 0, S4: 0 }, accepted: { S1: 0, S2: 0, S3: 0, S4: 0 } };
+}
+
+function perAccepted(costUsd: number | undefined, accepted: number): { costPerAcceptedUsd?: number } {
+  return costUsd !== undefined && accepted > 0 ? { costPerAcceptedUsd: Math.round((costUsd / accepted) * 10_000) / 10_000 } : {};
 }

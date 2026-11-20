@@ -2,11 +2,11 @@
 
 import { z } from "zod";
 import type { Goal, Note, OfferState, Plan, PlanAc, Question, Step, StepFacts, StepKind, StepState, StoredArtifact, TrailFile } from "./goal.ts";
-import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, PlanInput, ProfileName, RunTelemetry, StepKind as StepKindSchema, Verdict } from "./goal.ts";
+import { AcState, ArtifactKind, ArtifactMediaType, Failure, Findings, GoalState as GoalStateSchema, PlanInput, ProfileName, RunExit, RunTelemetry, StepKind as StepKindSchema, StepState as StepStateSchema, Verdict } from "./goal.ts";
 import { AcceptPolicy, ShareLevel } from "./config.ts";
 import { Repo, Session } from "./session.ts";
 import { AgentReport } from "./roster.ts";
-import { PresetSnapshot, PulseParams } from "./pulse.ts";
+import { PresetSnapshot, PulseParams, SlotReason, SlotState } from "./pulse.ts";
 import {
   Disposition,
   Fold,
@@ -709,7 +709,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["runs", "trial"];
+export const HUB_FEATURES: readonly string[] = ["health", "pulse-runs", "runs", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -763,3 +763,136 @@ export type RunRow = z.infer<typeof RunRow>;
 
 export const RunsPage = z.object({ runs: z.array(RunRow), next: z.string().optional() });
 export type RunsPage = z.infer<typeof RunsPage>;
+
+// ---------- RL-12: pulse run cards and the health scorecard ----------
+
+const int = z.number().int();
+
+/** RL-12: one step of a run card's goal, with its times, runs and cost. */
+export const StageCard = z.object({
+  step: z.string(),
+  kind: StepKindSchema,
+  mode: z.enum(["interactive", "headless", "debrief"]),
+  state: StepStateSchema,
+  holder: z.string().optional(),
+  agent: z.string().optional(),
+  rounds: int,
+  outcome: z.enum(["done", "fail"]).optional(),
+  /** When the step could first start: the latest first end of its deps, or the plan approval. */
+  readyAt: z.number().optional(),
+  startedAt: z.number().optional(),
+  finishedAt: z.number().optional(),
+  /** The first cycle's wait: `startedAt − readyAt`. */
+  waitMs: z.number().optional(),
+  /** A reopened step that is open again: when the round that reopened it finished. */
+  cycleReadyAt: z.number().optional(),
+  /** A ready step: how long it has been waiting now. */
+  waitingMs: z.number().optional(),
+  runs: int,
+  durationMs: int,
+  turns: int,
+  costUsd: z.number().optional(),
+  exit: RunExit.optional(),
+});
+export type StageCard = z.infer<typeof StageCard>;
+
+const FoldSums = Fold;
+const CardItems = z.object({ raised: int, open: int, confirmed: int, accepted: int, dismissed: int, deferred: int, resolved: int });
+
+/** RL-12: one slot of a pulse with what its goal did. */
+export const RunCard = z.object({
+  slot: z.string(),
+  at: z.number(),
+  state: SlotState,
+  reason: SlotReason.optional(),
+  by: z.string().optional(),
+  running: z.string().optional(),
+  error: z.string().optional(),
+  firedAt: z.number().optional(),
+  until: z.number().optional(),
+  startedAt: z.number().optional(),
+  decidedAt: z.number(),
+  goal: z.string().optional(),
+  manual: z.boolean(),
+  trial: z.boolean(),
+  catchUp: z.boolean(),
+  tries: int,
+  startWaitMs: z.number().optional(),
+  goalTitle: z.string().optional(),
+  goalState: GoalStateSchema.optional(),
+  goalCreatedAt: z.number().optional(),
+  stages: z.array(StageCard),
+  totals: z.object({ runs: int, durationMs: int, turns: int, costUsd: z.number().optional() }),
+  fold: FoldSums.optional(),
+  items: CardItems.optional(),
+  dispositions: z.object({ confirmed: int, dismissed: int, deferred: int, accepted: int, byPeople: int, reverted: int }),
+  reports: z.array(z.string()),
+  sinks: z.array(z.object({ goal: z.string(), repo: z.string(), topic: z.string(), steps: int })),
+  delta: z
+    .object({ slot: z.string(), goal: z.string(), durationMs: int, turns: int, costUsd: z.number().optional(), raised: int, new: int, regression: int })
+    .optional(),
+});
+export type RunCard = z.infer<typeof RunCard>;
+
+export const RunCardsPage = z.object({ pulse: z.string(), cards: z.array(RunCard), next: z.string().optional() });
+export type RunCardsPage = z.infer<typeof RunCardsPage>;
+
+const BySeverity = z.object({ S1: int, S2: int, S3: int, S4: int });
+const HealthSlots = z.object({ due: int, fired: int, started: int, skipped: int, missed: z.record(z.string(), int), abandoned: int });
+const HealthRuns = z.object({
+  count: int,
+  durationMs: int,
+  turns: int,
+  costUsd: z.number().optional(),
+  failed: int,
+  overBudget: int,
+  denials: int,
+  allDismissed: int,
+});
+const HealthGoals = z.object({ created: int, done: int, dropped: int, open: int });
+const Oldest = z.object({ open: int, oldestMs: z.number().optional() });
+const HealthFindings = z.object({ open: BySeverity, accepted: BySeverity });
+
+/** RL-12: one pulse's scorecard over the window. */
+export const PulseHealth = z.object({
+  pulse: z.string(),
+  title: z.string(),
+  owner: z.string(),
+  enabled: z.boolean(),
+  schedule: z.string(),
+  pausedReason: z.string().optional(),
+  nextAt: z.number().optional(),
+  slots: HealthSlots,
+  manual: int,
+  lastSlot: z.object({ slot: z.string(), at: z.number(), state: SlotState, reason: SlotReason.optional() }).optional(),
+  blockedBy: z.object({ goal: z.string(), step: z.string(), ageMs: z.number() }).optional(),
+  runs: HealthRuns,
+  goals: HealthGoals,
+  accepted: int,
+  costPerAcceptedUsd: z.number().optional(),
+  debriefs: Oldest,
+  findings: HealthFindings,
+});
+export type PulseHealth = z.infer<typeof PulseHealth>;
+
+export const HealthTotal = z.object({
+  pulses: int,
+  slots: HealthSlots,
+  manual: int,
+  runs: HealthRuns,
+  goals: HealthGoals,
+  accepted: int,
+  costPerAcceptedUsd: z.number().optional(),
+  debriefs: Oldest,
+  findings: HealthFindings,
+  calibrations: Oldest,
+});
+export type HealthTotal = z.infer<typeof HealthTotal>;
+
+/** RL-12: `GET /v1/health`. */
+export const Health = z.object({
+  window: z.object({ since: z.number(), until: z.number(), days: int }),
+  pulses: z.array(PulseHealth),
+  total: HealthTotal,
+});
+export type Health = z.infer<typeof Health>;
