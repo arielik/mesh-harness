@@ -1454,6 +1454,21 @@ export class HubStore {
     return rows.map(eventFrom);
   }
 
+  /** RL-17: every event of these types, in log order (a scan of the event table in the database). */
+  async eventsOfTypes(types: readonly string[]): Promise<EventRow[]> {
+    if (types.length === 0) return [];
+    const rows = await this.db.all<EventDbRow>(`SELECT * FROM event WHERE type IN (${types.map(() => "?").join(", ")}) ORDER BY seq`, ...types);
+    return rows.map(eventFrom);
+  }
+
+  /** RL-17: the events of one type about a goal or a step (indexed on `goal` / `step`), in log order. */
+  async eventsOf(f: { type: string; goal?: string | undefined; step?: string | undefined }): Promise<EventRow[]> {
+    const rows = f.step !== undefined
+      ? await this.db.all<EventDbRow>("SELECT * FROM event WHERE step = ? AND type = ? ORDER BY seq", f.step, f.type)
+      : await this.db.all<EventDbRow>("SELECT * FROM event WHERE goal = ? AND type = ? ORDER BY seq", f.goal ?? "", f.type);
+    return rows.map(eventFrom);
+  }
+
   async pruneEvents(before: number): Promise<number> {
     return (await this.db.run("DELETE FROM event WHERE at < ?", before)).changes;
   }

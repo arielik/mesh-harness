@@ -195,8 +195,14 @@ export function agentStats(o: {
   /** RL-11: ids of trial goals. Their runs, records and dispositions count only with `includeTrial`; the no-window calibration counts never count them. */
   trialGoals?: ReadonlySet<string> | undefined;
   includeTrial?: boolean | undefined;
+  /** RL-17: an exclusive upper bound on the windowed times (none when absent). */
+  until?: number | undefined;
+  /** RL-17: keep only the windowed counts of things recorded by these steps (all when absent). */
+  keepStep?: ((step: string) => boolean) | undefined;
 }): AgentStats {
   const { key, since } = o;
+  /** Outside the window's end or the step filter (RL-17; the stats route passes neither). */
+  const beyond = (at: number, step: string) => (o.until !== undefined && at >= o.until) || (o.keepStep !== undefined && !o.keepStep(step));
   const trial = o.trialGoals ?? new Set<string>();
   /** Left out of the windowed counts. */
   const out = (goal: string) => !o.includeTrial && trial.has(goal);
@@ -238,7 +244,7 @@ export function agentStats(o: {
     if (s.policy?.mode !== "headless" || out(s.goal)) continue;
     for (const r of s.rounds ?? []) {
       const t = r.telemetry;
-      if (!t || t.agentKey !== key || r.finishedAt < since) continue;
+      if (!t || t.agentKey !== key || r.finishedAt < since || beyond(r.finishedAt, s.id)) continue;
       const a = of(t.agentHash ?? "");
       a.runs++;
       if (r.outcome === "fail") a.failures++;
@@ -250,7 +256,7 @@ export function agentStats(o: {
 
   // Raising records of this agent key.
   for (const r of o.reviews) {
-    if (!r.raising || r.decider.kind !== "agent" || r.decider.key !== key || r.at < since || out(r.goal)) continue;
+    if (!r.raising || r.decider.kind !== "agent" || r.decider.key !== key || r.at < since || beyond(r.at, r.step) || out(r.goal)) continue;
     const a = of(r.decider.hash ?? "");
     a.raised += new Set(r.record.items.map((i) => i.fp)).size;
     a.new += r.fold?.new ?? 0;
@@ -263,7 +269,7 @@ export function agentStats(o: {
   // Accepted: distinct (goal, lineage, fp) of non-reverted acceptances of items this key raised.
   const accepted = new Set<string>();
   for (const e of o.entries) {
-    if (e.disposition !== "accepted" || e.reverted || e.at < since || out(e.goal)) continue;
+    if (e.disposition !== "accepted" || e.reverted || e.at < since || beyond(e.at, e.step) || out(e.goal)) continue;
     const agent = raisingAgentOf(o.raising, e.goal, e.lineage);
     if (!agent || agent.key !== key) continue;
     const k = `${agent.hash}\n${e.goal}\n${e.lineage}\n${e.fp}`;
@@ -288,7 +294,7 @@ export function agentStats(o: {
       else if (st === "calibrating") a.calibrating++;
       else a.calibrated++;
     }
-    if (c.ref.at < since) continue;
+    if (c.ref.at < since || beyond(c.ref.at, c.ref.step)) continue;
     if (c.decider.kind === "agent") a.dismissedByAgents++;
     else a.dismissedByPeople++;
     seenAt(a, c.ref.at);
@@ -307,7 +313,7 @@ export function agentStats(o: {
   for (const e of live) {
     if (e.disposition !== "dismissed" || e.decider.kind !== "agent" || e.decider.key !== key || out(e.goal)) continue;
     const n = nextOf.get(e.ord);
-    if (!n || n.decider.kind !== "person" || n.disposition === "dismissed" || n.at < since) continue;
+    if (!n || n.decider.kind !== "person" || n.disposition === "dismissed" || n.at < since || beyond(n.at, n.step)) continue;
     const a = of(e.decider.hash ?? "");
     a.reinstated++;
     seenAt(a, n.at);

@@ -341,6 +341,54 @@ export function buildRoutes(svc: HubService): Route[] {
       "goals:read",
     ),
 
+    // RL-17: two hashes of an agent key side by side (the key's / percent-encoded).
+    r(
+      "GET",
+      "/v1/agents/:key/compare",
+      "member",
+      async (c) => {
+        let key = "";
+        try {
+          key = param(c, "key");
+        } catch {
+          // A malformed escape: the service answers the key error.
+        }
+        return c.json(
+          await svc.agentCompare(key, {
+            from: c.req.query("from"),
+            to: c.req.query("to"),
+            since: c.req.query("since"),
+            until: c.req.query("until"),
+            repo: c.req.query("repo"),
+            trial: c.req.query("trial"),
+          }),
+        );
+      },
+      "goals:read",
+    ),
+    // RL-17: when each agent, profile and preset hash first appeared.
+    r(
+      "GET",
+      "/v1/changes",
+      "member",
+      async (c) =>
+        c.json(
+          await svc.changes({
+            kind: c.req.query("kind"),
+            agent: c.req.query("agent"),
+            profile: c.req.query("profile"),
+            preset: c.req.query("preset"),
+            repo: c.req.query("repo"),
+            since: c.req.query("since"),
+            until: c.req.query("until"),
+            trial: c.req.query("trial"),
+            limit: c.req.query("limit"),
+            cursor: c.req.query("cursor"),
+          }),
+        ),
+      "goals:read",
+    ),
+
     // RL-11: headless runs that closed a round, newest first.
     r(
       "GET",

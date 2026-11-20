@@ -350,6 +350,12 @@ function contract(d: Driver) {
       expect((await s.eventsFor({ step: "G1.a" })).map((e) => e.seq)).toEqual([b]);
       expect((await s.eventsFor({ goal: "G1" })).map((e) => e.seq)).toEqual([a, b, c]);
       expect((await s.recentEvents(2)).map((e) => e.seq)).toEqual([b, c]);
+      // RL-17: by type, and by type about a goal or a step.
+      expect((await s.eventsOfTypes(["session.stop", "goal.created"])).map((e) => e.seq)).toEqual([a, c]);
+      expect(await s.eventsOfTypes([])).toEqual([]);
+      expect((await s.eventsOf({ type: "goal.created", goal: "G1" })).map((e) => e.seq)).toEqual([a]);
+      expect((await s.eventsOf({ type: "step.claimed", step: "G1.a" })).map((e) => e.seq)).toEqual([b]);
+      expect(await s.eventsOf({ type: "step.claimed", step: "G1.b" })).toEqual([]);
       expect(await s.pruneEvents(T0 + 1)).toBe(1);
       expect((await s.events(0, 10)).map((e) => e.seq)).toEqual([b, c]);
     });

@@ -104,12 +104,18 @@ import {
   type Role,
   stageTimes,
   fitProfile,
+  timeline as changeTimeline,
   type FitRun,
+  type Sighting,
 } from "../core/index.ts";
 import type {
   AcState,
+  AgentCompare,
   ProfileFit,
   AgentStats,
+  ChangeEntry,
+  ChangesPage,
+  HashSide,
   GoalCalibration,
   ItemHistoryEntry,
   AgentCopy,
@@ -225,7 +231,7 @@ import type {
 } from "../protocol/index.ts";
 import { PulseSlot as PulseSlotSchema } from "../protocol/index.ts";
 import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
-import { HubStore, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
+import { HubStore, type EventRow, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
@@ -253,6 +259,39 @@ const runCursor = {
   },
 };
 
+/** RL-17: the position of a change entry (`firstSeen` descending, then kind, key, hash). */
+interface ChangeKey {
+  at: number;
+  kind: string;
+  key: string;
+  hash: string;
+}
+const changeCursor = {
+  encode: (k: ChangeKey): string => Buffer.from(JSON.stringify([k.at, k.kind, k.key, k.hash]), "utf8").toString("base64url"),
+  decode(s: string): ChangeKey | undefined {
+    try {
+      const v: unknown = JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
+      if (!Array.isArray(v) || v.length !== 4) return undefined;
+      const [at, kind, key, hash] = v as unknown[];
+      if (typeof at !== "number" || !Number.isFinite(at) || typeof kind !== "string" || typeof key !== "string" || typeof hash !== "string") return undefined;
+      return { at, kind, key, hash };
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+/** RL-11/RL-17: a `since`/`until` query value: milliseconds or an ISO time (400 otherwise). */
+function queryTime(name: string, v: string | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  const bad = () => new HubError(400, `${name} must be milliseconds since the epoch or an ISO time`);
+  if (/^\d{1,15}$/.test(v)) return Number(v);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(v)) throw bad();
+  const t = Date.parse(v);
+  if (Number.isNaN(t)) throw bad();
+  return t;
+}
+
 export class HubError extends Error {
   status: number;
   details?: unknown;
@@ -273,6 +312,14 @@ export interface Actor extends Principal {
 
 /** The event payload field naming the service that acted for the person (mesh-ai B-178). */
 const viaOf = (actor: Actor): { via?: string } => (actor.via ? { via: actor.via } : {});
+
+/** RL-17: a pulse's roster pins as event payload (`agents`: `{key, hash}` sorted and distinct), or nothing. */
+const pinsOf = (p: Pulse): { agents?: { key: string; hash: string }[] } => {
+  const seen = new Map<string, { key: string; hash: string }>();
+  for (const d of Object.values(p.agents ?? {})) seen.set(`${d.key}\n${d.hash}`, { key: d.key, hash: d.hash });
+  const agents = [...seen.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0));
+  return agents.length ? { agents } : {};
+};
 
 interface LoginAttempt {
   provider: string;
@@ -3436,7 +3483,7 @@ export class HubService {
         createdAt: now,
         updatedAt: now,
       });
-      await this.emit({ type: "pulse.created", user: actor.userId, payload: { pulse: p.id, title: p.title, preset: p.preset.name, sha256: p.preset.sha256, schedule: scheduleText(p.when), ...viaOf(actor) } });
+      await this.emit({ type: "pulse.created", user: actor.userId, payload: { pulse: p.id, title: p.title, preset: p.preset.name, sha256: p.preset.sha256, schedule: scheduleText(p.when), ...pinsOf(p), ...viaOf(actor) } });
       return { view: await this.pulseView(p), pulse: p };
     });
     return { ...view, warnings: await this.pulseWarnings(actor, pulse, body.checkedAgents) };
@@ -3541,7 +3588,15 @@ export class HubService {
       const t = HubService.timings(next.when, next.window, next.maxGoalAge, now);
       next = { ...next, windowMs: t.windowMs, maxGoalAgeMs: t.maxGoalAgeMs, updatedAt: now };
       await this.store.savePulse(next);
-      await this.emit({ type: "pulse.updated", user: actor.userId, payload: { pulse: p.id, version: next.version, fields: Object.keys(body).filter((f) => f !== "checkedAgents").sort(), ...viaOf(actor) } });
+      await this.emit({ type: "pulse.updated", user: actor.userId, payload: {
+          pulse: p.id,
+          version: next.version,
+          fields: Object.keys(body).filter((f) => f !== "checkedAgents").sort(),
+          // RL-17: a re-snapshot names the preset hash and the pins it introduced.
+          ...(body.preset !== undefined || body.params !== undefined ? { preset: next.preset.name, sha256: next.preset.sha256, ...pinsOf(next) } : {}),
+          ...viaOf(actor),
+        },
+      });
       return { view: await this.pulseView(next), pulse: next };
     });
     // RL-8: warnings on every update, from the resulting preset, params and pins.
@@ -3869,17 +3924,8 @@ export class HubService {
     limit?: string | undefined;
     cursor?: string | undefined;
   }): Promise<RunsPage> {
-    const time = (name: string, v: string | undefined): number | undefined => {
-      if (v === undefined) return undefined;
-      const bad = () => new HubError(400, `${name} must be milliseconds since the epoch or an ISO time`);
-      if (/^\d{1,15}$/.test(v)) return Number(v);
-      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(v)) throw bad();
-      const t = Date.parse(v);
-      if (Number.isNaN(t)) throw bad();
-      return t;
-    };
-    const sinceGiven = time("since", q.since);
-    const until = time("until", q.until);
+    const sinceGiven = queryTime("since", q.since);
+    const until = queryTime("until", q.until);
     if (sinceGiven !== undefined && until !== undefined && sinceGiven >= until) throw new HubError(400, "since must be before until");
     const trial = q.trial ?? "exclude";
     if (trial !== "exclude" && trial !== "include" && trial !== "only") throw new HubError(400, "trial must be exclude, include or only");
@@ -4365,6 +4411,237 @@ export class HubService {
       const since = this.now() - days * 86_400_000;
       const { countedAll, trialGoals, ...rest } = scan;
       return computeAgentStats({ key, days, since, threshold: this.config.calibration.threshold, ...rest, counted: countedAll, trialGoals, includeTrial: trialRaw === "include" });
+    });
+  }
+
+  /** `GET /v1/changes` (RL-17): when each agent, profile and preset hash first appeared. */
+  async changes(q: {
+    kind?: string | undefined;
+    agent?: string | undefined;
+    profile?: string | undefined;
+    preset?: string | undefined;
+    repo?: string | undefined;
+    since?: string | undefined;
+    until?: string | undefined;
+    trial?: string | undefined;
+    limit?: string | undefined;
+    cursor?: string | undefined;
+  }): Promise<ChangesPage> {
+    if (q.kind !== undefined && q.kind !== "agent" && q.kind !== "profile" && q.kind !== "preset") throw new HubError(400, "kind must be agent, profile or preset");
+    const since = queryTime("since", q.since);
+    const until = queryTime("until", q.until);
+    if (since !== undefined && until !== undefined && since >= until) throw new HubError(400, "since must be before until");
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    let limit = 100;
+    if (q.limit !== undefined) {
+      limit = /^\d{1,4}$/.test(q.limit) ? Number(q.limit) : NaN;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new HubError(400, "limit must be a whole number from 1 to 500");
+    }
+    const after = q.cursor === undefined ? undefined : changeCursor.decode(q.cursor);
+    if (q.cursor !== undefined && after === undefined) throw new HubError(400, "cursor is not valid");
+    const keyFilters = { agent: q.agent, profile: q.profile, preset: q.preset };
+    const anyKey = q.agent !== undefined || q.profile !== undefined || q.preset !== undefined;
+    const wanted = (kind: "agent" | "profile" | "preset", key: string) =>
+      (q.kind === undefined || q.kind === kind) && (!anyKey || (keyFilters[kind] !== undefined && keyFilters[kind] === key));
+    return await this.store.tx(async () => {
+      const goals = await this.store.listGoals();
+      const goalById = new Map(goals.map((g) => [g.id, g]));
+      const counts = (g: Goal | undefined, repo: string) => (trial === "include" || g?.trial !== true) && (q.repo === undefined || repo === q.repo);
+      const sightings: Sighting[] = [];
+      const add = (s: Sighting) => {
+        if (wanted(s.kind, s.key)) sightings.push(s);
+      };
+      // Goals: the preset each goal was made from.
+      for (const g of goals) {
+        if (!g.preset || !counts(g, g.primaryRepo ?? "")) continue;
+        const hash = createHash("sha256").update(g.preset.text, "utf8").digest("hex");
+        add({ kind: "preset", key: g.preset.name, hash, at: g.createdAt, source: "goal", goal: g.id });
+      }
+      // Runs: every round with telemetry.
+      for (const st of await this.store.listSteps({})) {
+        const g = goalById.get(st.goal);
+        if (!counts(g, st.repo)) continue;
+        for (const r of st.rounds ?? []) {
+          const t = r.telemetry;
+          if (!t) continue;
+          const ref = { at: r.finishedAt, source: "run" as const, goal: st.goal, step: st.id, round: r.n, runId: t.runId };
+          if (t.agentKey !== undefined && t.agentHash !== undefined) add({ kind: "agent", key: t.agentKey, hash: t.agentHash, ...ref });
+          add({ kind: "profile", key: t.profile, hash: t.profileHash, ...ref });
+        }
+      }
+      // Registration events (no repo: left out when a repo is asked for).
+      if (q.repo === undefined) {
+        const defs = await this.store.listCatalogDefs({});
+        const firstPush = new Set<string>();
+        const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+        for (const e of await this.store.eventsOfTypes(["profile.saved", "pulse.created", "pulse.updated", "catalog.pushed"])) {
+          const p = e.payload;
+          const pulse = str(p.pulse);
+          const ev = { seq: e.seq, id: e.id, type: e.type, at: e.at, user: e.user, ...(pulse !== undefined && e.type.startsWith("pulse.") ? { pulse } : {}) };
+          const base = { at: e.at, source: "event" as const, event: ev };
+          if (e.type === "profile.saved") {
+            const name = str(p.name);
+            const sha = str(p.sha256);
+            if (name !== undefined && sha !== undefined) add({ kind: "profile", key: name, hash: sha, ...base });
+          } else if (e.type === "catalog.pushed") {
+            const repo = str(p.repo);
+            const commit = str(p.commit);
+            if (repo === undefined || commit === undefined) continue;
+            for (const d of defs) {
+              const k = `${d.source}\n${d.name}\n${d.hash}`;
+              if (d.source !== repo || !d.commits.includes(commit) || firstPush.has(k)) continue;
+              firstPush.add(k);
+              add({ kind: "agent", key: d.key, hash: d.hash, ...base });
+            }
+          } else {
+            const name = str(p.preset);
+            const sha = str(p.sha256);
+            if (name !== undefined && sha !== undefined) add({ kind: "preset", key: name, hash: sha, ...base });
+            if (sha !== undefined && Array.isArray(p.agents))
+              for (const a of p.agents as unknown[]) {
+                const o = a as { key?: unknown; hash?: unknown } | null;
+                if (o && typeof o.key === "string" && typeof o.hash === "string") add({ kind: "agent", key: o.key, hash: o.hash, ...base });
+              }
+          }
+        }
+      }
+      const all = changeTimeline(sightings);
+      const keyOf = (e: (typeof all)[number]): ChangeKey => ({ at: e.firstSeen, kind: e.kind, key: e.key, hash: e.hash });
+      const cmpKey = (a: ChangeKey, b: ChangeKey) => b.at - a.at || textCmp(a.kind, b.kind) || textCmp(a.key, b.key) || textCmp(a.hash, b.hash);
+      const inWindow = all.filter((e) => (since === undefined || e.firstSeen >= since) && (until === undefined || e.firstSeen < until));
+      const rest = after === undefined ? inWindow : inWindow.filter((e) => cmpKey(keyOf(e), after) > 0);
+      const page = rest.slice(0, limit);
+      const view = (x: { id: string; seq: number; type: string; at: number; user?: string | undefined }) => ({
+        id: x.id,
+        seq: x.seq,
+        type: x.type,
+        at: x.at,
+        ...(x.user !== undefined ? { user: x.user } : {}),
+      });
+      const changes: ChangeEntry[] = [];
+      for (const e of page) {
+        const f = e.first;
+        let event: ChangeEntry["event"];
+        if (f.source === "event" && f.event) event = view(f.event);
+        else if (f.source === "goal" && f.goal !== undefined) {
+          const x: EventRow | undefined = (await this.store.eventsOf({ type: "goal.created", goal: f.goal }))[0];
+          if (x) event = view(x);
+        } else if (f.source === "run" && f.step !== undefined) {
+          const x: EventRow | undefined = (await this.store.eventsOf({ type: "run.finished", step: f.step })).find((y) => y.payload.runId === f.runId);
+          if (x) event = view(x);
+        }
+        changes.push({
+          kind: e.kind,
+          key: e.key,
+          hash: e.hash,
+          firstSeen: e.firstSeen,
+          ...(e.previous !== undefined ? { previous: e.previous } : {}),
+          source: f.source,
+          ...(f.source === "event" ? {} : { goal: f.goal }),
+          ...(f.source === "run" ? { step: f.step, round: f.round, runId: f.runId } : {}),
+          ...(f.event?.pulse !== undefined ? { pulse: f.event.pulse } : {}),
+          ...(event ? { event } : {}),
+          sightings: e.sightings,
+        });
+      }
+      const last = page.at(-1);
+      return { changes, ...(rest.length > limit && last ? { next: changeCursor.encode(keyOf(last)) } : {}) };
+    });
+  }
+
+  /** `GET /v1/agents/:key/compare` (RL-17): the runs and item counts of two hashes of an agent key. */
+  async agentCompare(
+    key: string,
+    q: { from?: string | undefined; to?: string | undefined; since?: string | undefined; until?: string | undefined; repo?: string | undefined; trial?: string | undefined },
+  ): Promise<AgentCompare> {
+    if (!key || key.length > 330 || !key.includes("/")) throw new HubError(400, "an agent key is <repo>/<name>");
+    for (const name of ["from", "to"] as const) {
+      const v = q[name];
+      if (v === undefined || v === "") throw new HubError(400, `${name} is required`);
+      if (v.length > 200) throw new HubError(400, `${name} must be at most 200 characters`);
+    }
+    const since = queryTime("since", q.since);
+    const until = queryTime("until", q.until);
+    if (since !== undefined && until !== undefined && since >= until) throw new HubError(400, "since must be before until");
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    const from = q.from as string;
+    const to = q.to as string;
+    return await this.store.tx(async () => {
+      const scan = await this.calibrationScan();
+      const { countedAll, trialGoals, ...rest } = scan;
+      const stepRepo = new Map(scan.steps.map((s) => [s.id, s.repo]));
+      const goalById = new Map(scan.goals.map((g) => [g.id, g]));
+      const stats = computeAgentStats({
+        key,
+        days: 0,
+        since: since ?? 0,
+        threshold: this.config.calibration.threshold,
+        ...rest,
+        counted: countedAll,
+        trialGoals,
+        includeTrial: trial === "include",
+        ...(until !== undefined ? { until } : {}),
+        ...(q.repo !== undefined ? { keepStep: (id: string) => stepRepo.get(id) === q.repo } : {}),
+      });
+      const side = async (hash: string): Promise<HashSide> => {
+        const runs: HashSide["runs"] = { count: 0, durationMs: 0, turns: 0, costRuns: 0, failed: 0, overBudget: 0, denials: 0, allDismissed: 0 };
+        const picked: { step: Step; goal: Goal; round: Round & { telemetry: RunTelemetry } }[] = [];
+        for (const st of scan.steps) {
+          if (q.repo !== undefined && st.repo !== q.repo) continue;
+          const g = goalById.get(st.goal);
+          if (!g || (trial === "exclude" && g.trial === true)) continue;
+          for (const r of st.rounds ?? []) {
+            const t = r.telemetry;
+            if (!t || t.agentKey !== key || t.agentHash !== hash) continue;
+            if ((since !== undefined && r.finishedAt < since) || (until !== undefined && r.finishedAt >= until)) continue;
+            picked.push({ step: st, goal: g, round: r as Round & { telemetry: RunTelemetry } });
+          }
+        }
+        // The order of `GET /v1/runs` (newest first), so the sums add up the same way.
+        const posOf = (x: (typeof picked)[number]) => ({ at: x.round.finishedAt, goal: x.goal.id, step: x.step.id, round: x.round.n });
+        picked.sort((a, b) => runCursor.cmp(posOf(a), posOf(b)));
+        let firstAt: number | undefined;
+        let lastAt: number | undefined;
+        for (const x of picked) {
+          const row = await this.runRow(x.step, x.goal, x.round);
+          const t = x.round.telemetry;
+          runs.count++;
+          runs.durationMs += t.durationMs;
+          runs.turns += t.turns;
+          if (t.costUsdEstimate !== undefined) {
+            runs.costUsd = (runs.costUsd ?? 0) + t.costUsdEstimate;
+            runs.costRuns++;
+          }
+          if (row.waste.failed) runs.failed++;
+          if (row.waste.overBudget) runs.overBudget++;
+          runs.denials += row.waste.denials;
+          if (row.waste.allDismissed) runs.allDismissed++;
+          firstAt = firstAt === undefined ? row.finishedAt : Math.min(firstAt, row.finishedAt);
+          lastAt = lastAt === undefined ? row.finishedAt : Math.max(lastAt, row.finishedAt);
+        }
+        const h = stats.hashes.find((x) => x.hash === hash);
+        const items: HashSide["items"] = {
+          raised: h?.raised ?? 0,
+          new: h?.new ?? 0,
+          regressions: h?.regressions ?? 0,
+          carried: h?.carried ?? 0,
+          accepted: h?.accepted ?? 0,
+          dismissedByAgents: h?.dismissedByAgents ?? 0,
+          dismissedByPeople: h?.dismissedByPeople ?? 0,
+        };
+        return { hash, runs, items, ...(firstAt !== undefined ? { firstAt } : {}), ...(lastAt !== undefined ? { lastAt } : {}) };
+      };
+      return {
+        key,
+        ...(since !== undefined ? { since } : {}),
+        ...(until !== undefined ? { until } : {}),
+        ...(q.repo !== undefined ? { repo: q.repo } : {}),
+        trial,
+        from: await side(from),
+        to: await side(to),
+      };
     });
   }
 

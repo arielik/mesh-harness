@@ -49,7 +49,7 @@ describe("RL-16 AC-09 docs", () => {
   });
 
   it("test_AC09_guides_api_skill", () => {
-    expect(section(read("docs/guide/operations.md"), "Upgrading to 0.1.33")).toContain("0.1.33 (RL-16)");
+    expect(section(read("docs/guide/operations.md"), "Upgrading to 0.1.34")).toContain("0.1.33 (RL-16)");
     expect(read("docs/plan/implementation-plan.md")).toContain("| `GET /v1/profiles/:name/fit` |");
     const r = HUB_API.find((x) => x.path === "/v1/profiles/:name/fit" && x.method === "GET");
     expect(r?.scope).toBe("goals:read");

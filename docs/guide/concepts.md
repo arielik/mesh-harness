@@ -922,6 +922,52 @@ trial goals is not shown by default.
 Hashes with nothing to show are left out; the newest activity comes first. Goals are team-visible,
 so the statistics count every goal.
 
+## Changes and before/after
+
+Every run carries the hash of its agent definition and of its permission profile, and every goal
+made from a preset keeps the preset text. Two read-only routes (0.1.34, scope `goals:read`, not
+for a service acting for a person) turn that into change markers and a before/after view. Both are
+meant for a page load, not a poll every few seconds: they read every step and goal.
+
+**`GET /v1/changes`** lists one entry per `(kind, key, hash)`, newest first:
+
+- `kind` `agent` (key: the agent key, `<repo>/<name>`), `profile` (key: the profile name) or
+  `preset` (key: the preset name; hash: the SHA-256 of its text).
+- A hash is **sighted** by a run (a round with telemetry: agent and profile), a goal (its preset, at
+  its creation) or a registration event: `profile.saved`, `pulse.created`, `pulse.updated` (with
+  `sha256`, from 0.1.34), and `catalog.pushed` (the first push of a catalog definition; an
+  unchanged re-push is not a sighting). Repo agent files machines report are sighted by their first
+  run.
+- `firstSeen` is the earliest sighting; `source` (`event`, `goal`, `run`) and the refs (`goal`,
+  `step`, `round`, `runId`, `pulse`) say which; `event` is the introducing event (`id`, `seq`,
+  `type`, `at`, `user`): the registration event itself, the goal's `goal.created` or the run's
+  `run.finished`.
+- `previous` is the hash of the same key first seen just before; `sightings` counts the entry's
+  sightings over all time.
+- `repo` counts only runs and goals of that repo (registration events have no repo and drop out);
+  `trial=exclude` (default) leaves out trial goals; `since`/`until` select by `firstSeen` (no
+  default); `kind`, `agent`, `profile`, `preset` filter; `limit` (1-500, default 100) and `cursor`
+  page.
+- **Retention:** events older than the hub's event retention are gone, and so are their sightings
+  and `event` links. Runs and goals are kept, so every hash a run or goal used stays listed; an entry
+  whose introducing event was pruned has no `event`.
+- A hash that changes and later changes back is listed once, at its first sighting.
+
+**`GET /v1/agents/:key/compare?from=<hash>&to=<hash>`** shows two hashes of one agent key side by
+side, each with:
+
+- `runs`: `count`, `durationMs`, `turns`, `costUsd` (absent when no run has a cost), `costRuns` (the
+  runs that have one), `failed`, `overBudget`, `denials` and `allDismissed`: the sums and counts of
+  the rows `GET /v1/runs?agent=<key>` returns for that hash under the same `since`, `until`, `repo`
+  and `trial`;
+- `items`: `raised`, `new`, `regressions`, `carried`, `accepted`, `dismissedByAgents`,
+  `dismissedByPeople`, defined as in [agent statistics](#agent-statistics); with `since = now −
+  days` and no `until` or `repo` they equal the stats route's numbers;
+- `firstAt`, `lastAt`: the first and last run's `finishedAt`.
+
+There is **no score** and no significance test: the counts are there so that small samples are
+visible, and a reader divides and judges. Without `since`, the route reads the key's whole history.
+
 ## Offers and accept policy
 
 **Offer.** Someone hands a ready step to a machine, or to a session on it: `mesh assign G7.api --to build-box` or `--to build-box/perf`. An offer is an overlay on a `ready` step: `offered`, then `accepted`, `declined`, `expired` or `withdrawn`. The step keeps its last offer (the goal page and `mesh show` show it). A goal is assigned through its ready steps (in a new goal: its design step).

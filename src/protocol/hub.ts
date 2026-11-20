@@ -713,7 +713,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["commits", "health", "profile-fit", "pulse-runs", "runs", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -961,3 +961,55 @@ export const ProfileFit = z.object({
   diff: z.object({ allow: z.array(z.string()), deny: z.array(z.string()) }),
 });
 export type ProfileFit = z.infer<typeof ProfileFit>;
+
+/** RL-17: the event that introduced a change (`GET /v1/changes`). */
+export const ChangeEvent = z.object({ id: z.string(), seq: int, type: z.string(), at: z.number(), user: z.string().optional() });
+export type ChangeEvent = z.infer<typeof ChangeEvent>;
+
+/** RL-17: one `(kind, key, hash)` of the change timeline with its first sighting. */
+export const ChangeEntry = z.object({
+  kind: z.enum(["agent", "profile", "preset"]),
+  key: z.string(),
+  hash: z.string(),
+  firstSeen: z.number(),
+  previous: z.string().optional(),
+  source: z.enum(["event", "goal", "run"]),
+  goal: z.string().optional(),
+  step: z.string().optional(),
+  round: int.optional(),
+  runId: z.string().optional(),
+  pulse: z.string().optional(),
+  event: ChangeEvent.optional(),
+  sightings: int,
+});
+export type ChangeEntry = z.infer<typeof ChangeEntry>;
+
+/** RL-17: `GET /v1/changes`. */
+export const ChangesPage = z.object({ changes: z.array(ChangeEntry), next: z.string().optional() });
+export type ChangesPage = z.infer<typeof ChangesPage>;
+
+/** RL-17: the run aggregate of one hash: the RL-12 health `runs` plus the number of runs with a cost. */
+export const CompareRuns = HealthRuns.extend({ costRuns: int });
+export type CompareRuns = z.infer<typeof CompareRuns>;
+
+/** RL-17: one hash of `GET /v1/agents/:key/compare`: the RL-12 run aggregate and the RL-6 item counts. */
+export const HashSide = z.object({
+  hash: z.string(),
+  runs: CompareRuns,
+  items: z.object({ raised: int, new: int, regressions: int, carried: int, accepted: int, dismissedByAgents: int, dismissedByPeople: int }),
+  firstAt: z.number().optional(),
+  lastAt: z.number().optional(),
+});
+export type HashSide = z.infer<typeof HashSide>;
+
+/** RL-17: `GET /v1/agents/:key/compare`. */
+export const AgentCompare = z.object({
+  key: z.string(),
+  since: z.number().optional(),
+  until: z.number().optional(),
+  repo: z.string().optional(),
+  trial: z.enum(["exclude", "include"]),
+  from: HashSide,
+  to: HashSide,
+});
+export type AgentCompare = z.infer<typeof AgentCompare>;

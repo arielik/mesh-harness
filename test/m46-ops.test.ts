@@ -67,7 +67,7 @@ describe("probes", () => {
   it("/healthz and /readyz answer without auth when the database is up and migrated", async () => {
     const hub = await start(":memory:");
     // RL-11 AC-14: the probes carry the hub's version; /healthz its schema and features too.
-    const live = { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["commits", "health", "profile-fit", "pulse-runs", "runs", "trial"] };
+    const live = { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "trial"] };
     expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: live });
     expect(await call(hub, "GET", "/health")).toEqual({ status: 200, json: live });
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION, version: pkg.version } });
@@ -105,7 +105,7 @@ describe("probes", () => {
     expect(r.json.error).toMatch(/database unreachable/);
     expect(r.json.version).toBe(pkg.version);
     // RL-11 AC-14: liveness reads nothing from the database.
-    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["commits", "health", "profile-fit", "pulse-runs", "runs", "trial"] } });
+    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "health", "profile-fit", "pulse-runs", "runs", "trial"] } });
   });
 
   it.skipIf(!PG_URL)("/readyz on Postgres", async () => {
