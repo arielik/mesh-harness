@@ -20,3 +20,4 @@ These items are deliberately left out of [the implementation plan](plan/implemen
 | A real-Kanidm test in CI | The mock issuer covers the protocol; verify against a lab Kanidm manually |
 | Goal model and goal identity (backlog, capabilities, use cases in git, in owner or dedicated repos; see `architecture-and-standards`) | Owner decision 15: debate separately; until then programme records are keyed by the team's own ids and Solo goals stay local |
 | Publishing goals created offline to the team hub | Depends on the goal model |
+| RL-19 (queued 2026-11-20): findings roll-up per preset and repo, `open`/`accepted` by severity S1-S4 with the latest report artifact (a `GET /v1/findings/rollup?days=` route, or a repo breakdown in `GET /v1/health` findings), its own `/healthz` feature; optionally a `kind` per preset | Requested by a dashboard client that today makes 2 + 2·pulses + lineages calls per page; not started, waits for the owner's go |
