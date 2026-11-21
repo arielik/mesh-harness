@@ -757,7 +757,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({

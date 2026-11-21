@@ -41,6 +41,7 @@ import {
   NewGoal,
   NewTopic,
   GoalFromPreset,
+  PresetCheck,
   PulseCreate,
   PulseUpdate,
   GoalTopicsChange,
@@ -73,6 +74,8 @@ export interface Route {
   scope?: ServiceScope | undefined;
   /** A service token with `scope` may act for a person here (ON_BEHALF_OF_HEADER). */
   onBehalfOf?: boolean | undefined;
+  /** RL-20: a `POST` that only reads: the idempotency key is ignored (nothing is stored). */
+  read?: true | undefined;
   handler: Handler;
 }
 
@@ -267,6 +270,8 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/pulses", "member", async (c, a) => c.json({ pulses: await svc.listPulsesView(a, c.req.query("mine") === "1") }), "goals:read"),
     forPerson(r("POST", "/v1/pulses", "member", async (c, a) => c.json(await svc.createPulse(a, await body(c, PulseCreate)), 201), "pulses:write")),
     r("GET", "/v1/pulses/:id", "member", async (c) => c.json(await svc.pulseDetail(param(c, "id"))), "goals:read"),
+    // RL-20: a read sent as a POST (the preset text is up to 20 000 characters); writes nothing.
+    { ...r("POST", "/v1/presets/check", "member", async (c, a) => c.json(await svc.checkPreset(a, await body(c, PresetCheck))), "goals:read"), read: true },
     // RL-12: run cards of a pulse and the health scorecard.
     r(
       "GET",
@@ -579,7 +584,7 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
       const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: route.method === "POST" }) : caller;
       // Retries of a service acting for a person never replay another caller's answer.
       const idemUser = actor?.via ? `${actor.via}>${actor.userId}` : actor?.userId;
-      const key = route.method === "POST" && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;
+      const key = route.method === "POST" && route.read !== true && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;
       if (key && idemUser) {
         const prior = (await svc.store.getIdem(key, idemUser)) as { status: number; body: unknown } | undefined;
         if (prior) return c.json(prior.body as object, prior.status as 200);

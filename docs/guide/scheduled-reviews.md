@@ -59,7 +59,7 @@ Nothing here needs an API key: runs use the Claude Code login of the person whos
 - **mesh 0.1.22 on the hub and on every machine that runs or debriefs steps.** Upgrade the hub
   first, then the daemons, then run `mesh setup` on each machine (it installs the `mesh-debrief`
   skill). Older daemons can talk to the new hub but cannot run, or run worse, what this guide
-  describes; see [Upgrading to 0.1.38](operations.md#upgrading-to-0138).
+  describes; see [Upgrading to 0.1.39](operations.md#upgrading-to-0139).
 - **A team hub** you are logged in to (`mesh login`). In Solo mode the same commands go to the local hub,
   and your own machine is the only runner.
 - **The repo has a git remote** on the runner. mesh names repos by their remote (`origin`, else
@@ -644,7 +644,7 @@ Define the topic once (`mesh topic add ci`) and add `sink` to the stage that rec
 ```
 
 `sink` needs mesh 0.1.27 on the hub: an older hub refuses the preset with 422. See
-[Upgrading to 0.1.38](operations.md#upgrading-to-0138).
+[Upgrading to 0.1.39](operations.md#upgrading-to-0139).
 
 The stage needs `accepted` in `may_set`, and the topic must exist (`mesh pulse add` and `mesh goal
 plan` refuse the preset otherwise). When `file` is done, or skipped because you filed everything in
@@ -695,7 +695,7 @@ steps start in the right checkout:
 
   The sink then files each item in `Clean audits: ci on api`, `… on web` or `… on demo`, and
   `mesh items` shows `api/.ci.yml → api` for it. `repo` needs mesh 0.1.28 on the hub and on the
-  daemon of the machine that runs the auditor (see [Upgrading to 0.1.38](operations.md#upgrading-to-0138)).
+  daemon of the machine that runs the auditor (see [Upgrading to 0.1.39](operations.md#upgrading-to-0139)).
 - **When an auditor starts sending `repo`**, the next record moves the open steps of the items it
   now places elsewhere: the old step is dropped with `moved to <new id>`, the new one has `moved from
   <old id>`. A claimed (or paused, parked, failed) step stays where it is with a note; release it and

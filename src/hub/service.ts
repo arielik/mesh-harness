@@ -244,6 +244,8 @@ import type {
   GoalFromPreset,
   GoalState,
   Pulse,
+  PresetCheck,
+  PresetCheckResult,
   PulseCreate,
   PulseFire,
   PulseDetail,
@@ -3477,11 +3479,20 @@ export class HubService {
    * as instantiated for "this goal".
    */
   private async presetChecks(preset: { name: string; text: string; sha256: string }, params: Record<string, string>, o: { kind?: boolean } = {}): Promise<PlanInput> {
+    const { plan, problems } = await this.presetProblems(preset, params, o);
+    if (problems.length || !plan) throw new HubError(422, `the preset has ${problems.length} problem(s): ${problems.join("; ")}`, problems);
+    // RL-9: sink topics must be defined topics.
+    await this.checkSinkTopics(plan.steps);
+    return plan;
+  }
+
+  /**
+   * RL-20: the problems of `presetChecks` before its sink-topic check (400 when the sha256 does not
+   * match), with the plan when the preset instantiated (also when it has problems).
+   */
+  private async presetProblems(preset: { name: string; text: string; sha256: string }, params: Record<string, string>, o: { kind?: boolean } = {}): Promise<{ plan?: PlanInput | undefined; problems: string[] }> {
     if (createHash("sha256").update(preset.text, "utf8").digest("hex") !== preset.sha256) throw new HubError(400, "preset.sha256 is not the SHA-256 of preset.text");
     const problems: string[] = [];
-    const fail = (): never => {
-      throw new HubError(422, `the preset has ${problems.length} problem(s): ${problems.join("; ")}`, problems);
-    };
     const repo = params.repo;
     if (!repo) problems.push("params.repo is required (the repo the preset's steps work in)");
     // RL-19: a preset sent in the request must have a valid kind (a stored one is not re-checked).
@@ -3497,12 +3508,12 @@ export class HubService {
         plan = instantiate(parsed, { repo: repo || "repo", goal: "this goal", params });
       } catch (e) {
         problems.push(errorText(e));
-        return fail();
+        return { problems };
       }
     } catch (e) {
       if (e instanceof HubError) throw e;
       problems.push(`preset ${preset.name}: ${errorText(e)}`);
-      return fail();
+      return { problems };
     }
     problems.push(...validatePlan(plan.steps), ...validatePolicies(plan.steps, plan.acs));
     const first = plan.steps.filter((s) => s.deps.length === 0);
@@ -3514,10 +3525,34 @@ export class HubService {
     }
     // RL-5: roster keys must resolve to a catalog definition.
     problems.push(...(await this.pinAgents(plan.steps)).problems);
-    if (problems.length) fail();
-    // RL-9: sink topics must be defined topics.
-    await this.checkSinkTopics(plan.steps);
-    return plan;
+    return { plan, problems };
+  }
+
+  /**
+   * RL-20 `POST /v1/presets/check`: the preset checks of pulse create, writing nothing. `problems`
+   * are create's 422 `details`, then one per distinct sink-topic 400 (create stops at the first).
+   */
+  async checkPreset(actor: Actor, body: PresetCheck): Promise<PresetCheckResult> {
+    return await this.store.tx(async () => {
+      const { plan, problems } = await this.presetProblems(body.preset, body.params, { kind: true });
+      if (plan) {
+        const steps = plan.steps.map((s) => ({ ...s }));
+        for (const s of steps) {
+          if (!s.sink) continue;
+          try {
+            s.sink = { topic: await this.sinkTopic(s.sink.topic) };
+          } catch (e) {
+            if (!(e instanceof HubError) || e.status !== 400) throw e;
+            if (!problems.includes(e.message)) problems.push(e.message);
+          }
+        }
+        plan.steps = steps;
+      }
+      const { agents } = plan ? await this.pinAgents(plan.steps) : { agents: {} };
+      const warnings = await this.pulseWarnings(actor, { preset: body.preset, params: body.params, agents }, body.checkedAgents);
+      if (problems.length || !plan) return { ok: false, problems, warnings };
+      return { ok: true, problems: [], warnings, steps: plan.steps, agents };
+    });
   }
 
   /** R-6: every profile a plan's steps run with, resolved now. */
@@ -3623,7 +3658,7 @@ export class HubService {
    * source checkout, which the roster's copies may not match). Never fails (a plan that cannot be
    * instantiated gives none).
    */
-  private async pulseWarnings(actor: Actor, p: Pulse, checked: readonly string[] = []): Promise<string[]> {
+  private async pulseWarnings(actor: Actor, p: Pick<Pulse, "preset" | "params" | "agents">, checked: readonly string[] = []): Promise<string[]> {
     let plan: PlanInput;
     try {
       plan = instantiate(parsePreset(p.preset.name, p.preset.text), { repo: p.params.repo ?? "repo", goal: "this goal", params: p.params });
@@ -3681,7 +3716,14 @@ export class HubService {
         const g = await this.store.getGoal(s.goal);
         if (g) goals[s.goal] = g.state;
       }
-      return { pulse, schedule: scheduleText(pulse.when), slots, goals };
+      // RL-20: the plan of the stored snapshot (no state read); absent when it no longer instantiates.
+      let steps: PlanStep[] | undefined;
+      try {
+        steps = instantiate(parsePreset(pulse.preset.name, pulse.preset.text), { repo: pulse.params.repo ?? "repo", goal: "this goal", params: pulse.params }).steps;
+      } catch {
+        steps = undefined;
+      }
+      return { pulse, schedule: scheduleText(pulse.when), slots, goals, ...(steps ? { steps } : {}) };
     });
   }
 

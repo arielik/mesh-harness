@@ -398,7 +398,8 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/steps/:id/dispositions` | Debriefs (v0.1.18): one decision of the person in a held debrief (`mesh_dispose`, `via: debrief-session`, with the person's `answer`); 201 |
 | `POST /v1/steps/:id/spot-checks` | Spot checks (0.1.35): a person's verdict (agree or disagree) on one sampled agent decision in a held spot-check step (`mesh_spot_check`) |
 | `POST /v1/steps/:id/dispositions/revert` | Debriefs (v0.1.18): revert a debrief decision while it is the item's latest change (the decider, the goal owner or an admin) |
-| `GET /v1/pulses?mine=1`, `GET /v1/pulses/:id` | Pulses (v0.1.17): pulses by number (no preset text); one pulse with its 50 newest slots and their goals' states (scope `goals:read`) |
+| `GET /v1/pulses?mine=1`, `GET /v1/pulses/:id` | Pulses (v0.1.17): pulses by number (no preset text); one pulse with its 50 newest slots and their goals' states, and (0.1.39, RL-20) `steps`, the plan its snapshot instantiates (scope `goals:read`) |
+| `POST /v1/presets/check` | Preset check (0.1.39, RL-20), a read sent as a POST: body `{preset: {name, text, sha256}, params, checkedAgents?}`; answers `{ok, problems, warnings, steps?, agents?}` with the texts `POST /v1/pulses` refuses with; writes nothing, emits no event, ignores the idempotency key (scope `goals:read`, no on-behalf) |
 | `POST /v1/pulses` | Pulses (v0.1.17): create a pulse (a preset snapshot on a schedule); preset problems 422 (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
 | `POST /v1/pulses/:id/{update,pause,resume,delete}` | Pulses (v0.1.17): change, pause, resume or remove a pulse (its owner or an admin) (v0.1.22: the reply carries `warnings` for agents flagged invalid) |
 | `POST /v1/pulses/:id/fire` | Pulses (v0.1.17): fire a manual slot now (also while paused); body `{trial: true}` (v0.1.30) fires a trial |

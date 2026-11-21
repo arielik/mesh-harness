@@ -3,7 +3,7 @@
   "info": {
     "title": "mesh hub API",
     "version": "1",
-    "description": "The HTTP API of `mesh hub`. Errors are JSON: { error, details? }. POST routes accept an idempotency key header for safe retries."
+    "description": "The HTTP API of `mesh hub`. Errors are JSON: { error, details? }. POST routes that write accept an idempotency key header for safe retries."
   },
   "servers": [
     {
@@ -2169,7 +2169,7 @@
     "/v1/pulses/{id}": {
       "get": {
         "operationId": "getVPulsesId",
-        "summary": "One pulse with its 50 newest slots and the state of their goals.",
+        "summary": "One pulse with its 50 newest slots, the state of their goals and the plan its snapshot instantiates (steps).",
         "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "goals"
@@ -2194,6 +2194,509 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/presets/check": {
+      "post": {
+        "operationId": "postVPresetsCheck",
+        "summary": "Check a preset and params as pulse create would (a read: a POST only because the preset text is long; it writes nothing, takes no idempotency key and emits no event): ok, the problems with create's texts, the warnings, and when ok the instantiated steps and the roster pins.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "analysis"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "preset": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      "source": {
+                        "type": "object",
+                        "properties": {
+                          "repo": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 300
+                          },
+                          "commit": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          }
+                        },
+                        "required": [
+                          "repo",
+                          "commit"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "text",
+                      "sha256"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "params": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 300
+                    }
+                  },
+                  "checkedAgents": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
+                  }
+                },
+                "required": [
+                  "preset",
+                  "params"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "problems": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "steps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+                          },
+                          "repo": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "spec",
+                              "plan",
+                              "implement",
+                              "test",
+                              "verify",
+                              "review",
+                              "merge",
+                              "gate",
+                              "docs"
+                            ]
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "brief": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 8000
+                          },
+                          "deps": {
+                            "default": [],
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "role": {
+                            "type": "string",
+                            "maxLength": 60
+                          },
+                          "acs": {
+                            "maxItems": 100,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,39}$"
+                            }
+                          },
+                          "blind": {
+                            "maxItems": 20,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+                            }
+                          },
+                          "reads": {
+                            "maxItems": 20,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+                            }
+                          },
+                          "forbid": {
+                            "maxItems": 20,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            }
+                          },
+                          "contract": {
+                            "type": "string",
+                            "maxLength": 300
+                          },
+                          "max_rounds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20
+                          },
+                          "park_on": {
+                            "maxItems": 2,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "churn",
+                                "stall"
+                              ]
+                            }
+                          },
+                          "route": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string",
+                              "enum": [
+                                "spec-gap",
+                                "impl-bug",
+                                "test-bug",
+                                "infra",
+                                "unclear"
+                              ]
+                            },
+                            "additionalProperties": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "park"
+                                }
+                              ]
+                            }
+                          },
+                          "target": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+                          },
+                          "must_cover": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "all"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,39}$"
+                                }
+                              }
+                            ]
+                          },
+                          "worktree": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "string",
+                                "const": "base"
+                              }
+                            ]
+                          },
+                          "reworks": {
+                            "type": "string",
+                            "maxLength": 100
+                          },
+                          "gate": {
+                            "type": "string",
+                            "maxLength": 20
+                          },
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "interactive",
+                              "headless",
+                              "debrief"
+                            ]
+                          },
+                          "agent": {
+                            "type": "string"
+                          },
+                          "profile": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9+._-]{0,39}$"
+                          },
+                          "budget": {
+                            "type": "object",
+                            "properties": {
+                              "turns": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 500
+                              },
+                              "minutes": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 1440
+                              },
+                              "usd": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 1000
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "inputs": {
+                            "maxItems": 20,
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "previous",
+                                    "dispositions",
+                                    "artifacts",
+                                    "calibration"
+                                  ]
+                                },
+                                {
+                                  "type": "string",
+                                  "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+                                }
+                              ]
+                            }
+                          },
+                          "output": {
+                            "type": "string",
+                            "enum": [
+                              "review-record"
+                            ]
+                          },
+                          "when": {
+                            "type": "object",
+                            "properties": {
+                              "open": {
+                                "type": "boolean",
+                                "const": true
+                              },
+                              "min_severity": {
+                                "type": "string",
+                                "enum": [
+                                  "S1",
+                                  "S2",
+                                  "S3",
+                                  "S4"
+                                ]
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "consumes": {
+                            "minItems": 1,
+                            "maxItems": 5,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "open",
+                                "confirmed",
+                                "dismissed",
+                                "deferred",
+                                "accepted"
+                              ]
+                            }
+                          },
+                          "may_set": {
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "confirmed",
+                                "dismissed",
+                                "deferred",
+                                "accepted"
+                              ]
+                            }
+                          },
+                          "assignee": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "@owner"
+                              },
+                              {
+                                "type": "string",
+                                "pattern": "^[^@\\s]\\S{0,99}$"
+                              }
+                            ]
+                          },
+                          "sink": {
+                            "type": "object",
+                            "properties": {
+                              "topic": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 40
+                              }
+                            },
+                            "required": [
+                              "topic"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "sla": {
+                            "type": "string",
+                            "pattern": "^[1-9][0-9]{0,5}(m|h|d)$"
+                          },
+                          "auto_accept": {
+                            "minItems": 1,
+                            "maxItems": 2,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "S3",
+                                "S4"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "repo",
+                          "kind",
+                          "title",
+                          "brief",
+                          "deps"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "agents": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+                          },
+                          "hash": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$"
+                          },
+                          "commit": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{40}$"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "source",
+                          "name",
+                          "hash",
+                          "commit"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "problems",
+                    "warnings"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
           },
           "401": {
             "description": "Login required."

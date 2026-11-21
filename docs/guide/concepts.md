@@ -584,6 +584,22 @@ create-with-plan for another system: a goal owned by the caller, with an approve
 profile snapshot, and no design step. Ingest goals are listed as usual and are not offered by
 themselves.
 
+**Check a preset** (0.1.39, `/healthz` feature `preset-check`). `POST /v1/presets/check` with
+`{"preset": {"name", "text", "sha256"}, "params": {…}}` (as `POST /v1/pulses` takes them, plus an
+optional `checkedAgents`) runs the preset checks of a pulse create against the hub's state now and
+writes nothing: no pulse, pin, event or idempotency record. It is a `POST` only because a preset
+text runs up to 20 000 characters; it needs the scope `goals:read` (no `X-Mesh-On-Behalf-Of`). A
+`sha256` that is not the SHA-256 of the UTF-8 text, or a malformed body, is a 400 as on create. Else
+it answers 200 `{ok, problems, warnings, steps?, agents?}`: `problems` holds exactly the texts a
+create would refuse with (its 422 `details` in the same order, then one line per refused sink topic,
+where create stops at the first 400), so `ok: true` means a create with these preset and params
+passes its preset checks. `warnings` are the invalid-agent warnings above; they never make `ok`
+false. When `ok`, `steps` is the plan a slot's goal gets (params substituted, `{goal}` left as
+`this goal`, sink topics normalised) and `agents` the roster keys pinned as the create would pin
+them (repo agents are not pinned and appear only in `steps`). The target machines, schedule and
+topics of a pulse are not part of the check. `GET /v1/pulses/:id` also carries `steps`, the plan of
+the stored snapshot (absent if it no longer parses).
+
 **Built-in `audit-relay`.** Three headless review stages: `audit` (`{agent}`, profile
 `read-only`) raises findings; `validate` (`{validator}`) runs only when items are open and confirms
 or dismisses them; `file` (`{filer}`, profile `propose-via-branch`) runs only when items are

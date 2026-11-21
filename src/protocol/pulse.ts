@@ -1,6 +1,6 @@
 // RL-3: pulses (hub schedules that create goals from a preset snapshot) and their slots.
 import { z } from "zod";
-import { type GoalState, ProfileSnapshot } from "./goal.ts";
+import { type GoalState, PlanStep, ProfileSnapshot } from "./goal.ts";
 import { AgentDef } from "./roster.ts";
 import { DurationSpec, durationMs } from "./duration.ts";
 import { Label } from "./session.ts";
@@ -235,7 +235,37 @@ export interface PulseDetail {
   slots: PulseSlot[];
   /** State of each goal named by those slots. */
   goals: Record<string, GoalState>;
+  /**
+   * RL-20: the stored snapshot's plan, instantiated with the pulse's params and `{goal}` = "this goal"
+   * (a slot's goal gets its own id); absent when the snapshot no longer parses or instantiates.
+   */
+  steps?: PlanStep[] | undefined;
 }
+
+/** RL-20: body of `POST /v1/presets/check` (a read): the preset and params as `PulseCreate` takes them. */
+export const PresetCheck = z
+  .object({
+    preset: PresetSnapshot,
+    params: PulseParams,
+    checkedAgents: z.array(z.string().min(1).max(100)).max(50).optional(),
+  })
+  .strict();
+export type PresetCheck = z.infer<typeof PresetCheck>;
+
+/** RL-20: the answer of `POST /v1/presets/check`. */
+export const PresetCheckResult = z.object({
+  /** No problems: pulse create passes its preset checks against the hub's state now. */
+  ok: z.boolean(),
+  /** What makes pulse create refuse, with create's texts (its 422 `details`, then sink-topic 400s). */
+  problems: z.array(z.string()),
+  /** RL-8: invalid agents of the plan; never make `ok` false. */
+  warnings: z.array(z.string()),
+  /** Only when `ok`: the plan as a slot's goal gets it, `{goal}` = "this goal". */
+  steps: z.array(PlanStep).optional(),
+  /** Only when `ok`: the roster keys pinned as pulse create pins them (repo agents are not pinned). */
+  agents: z.record(z.string(), AgentDef).optional(),
+});
+export type PresetCheckResult = z.infer<typeof PresetCheckResult>;
 
 /** RL-11: the optional body of `POST /v1/pulses/:id/fire`. */
 export const PulseFire = z.object({ trial: z.boolean().optional() }).strict();

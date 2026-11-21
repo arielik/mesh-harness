@@ -56,7 +56,7 @@ import {
   SESSION_COOKIE,
 } from "./hub.ts";
 import { HubEvent } from "./json-schema.ts";
-import { PulseCreate, PulseFire, PulseUpdate } from "./pulse.ts";
+import { PresetCheck, PresetCheckResult, PulseCreate, PulseFire, PulseUpdate } from "./pulse.ts";
 import { CatalogPush, CatalogSourceSave } from "./roster.ts";
 
 /** RL-11: the probe bodies. */
@@ -89,6 +89,8 @@ export interface HubApiRoute {
   sse?: boolean;
   /** A service token with the route's scope may act for a person (the `x-mesh-on-behalf-of` header). */
   onBehalfOf?: boolean;
+  /** RL-20: a `POST` that only reads: no idempotency key (nothing is stored), no write. */
+  read?: true;
 }
 
 const TOPIC_QUERY = "topic names, repeated or comma-separated: only goals with every one (`all`: every goal)";
@@ -158,7 +160,19 @@ export const HUB_API: readonly HubApiRoute[] = [
   },
   { method: "GET", path: "/v1/pulses", rule: "member", scope: "goals:read", tag: "goals", query: { mine: "1: only the caller's pulses" }, summary: "Pulses (schedules that create goals from a preset), by number." },
   { method: "POST", path: "/v1/pulses", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", body: PulseCreate, status: 201, summary: "Create a pulse: a preset snapshot run on a schedule." },
-  { method: "GET", path: "/v1/pulses/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "One pulse with its 50 newest slots and the state of their goals." },
+  { method: "GET", path: "/v1/pulses/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "One pulse with its 50 newest slots, the state of their goals and the plan its snapshot instantiates (steps)." },
+  {
+    method: "POST",
+    path: "/v1/presets/check",
+    rule: "member",
+    scope: "goals:read",
+    tag: "analysis",
+    body: PresetCheck,
+    response: PresetCheckResult,
+    read: true,
+    summary:
+      "Check a preset and params as pulse create would (a read: a POST only because the preset text is long; it writes nothing, takes no idempotency key and emits no event): ok, the problems with create's texts, the warnings, and when ok the instantiated steps and the roster pins.",
+  },
   {
     method: "GET",
     path: "/v1/pulses/:id/runs",
@@ -485,7 +499,7 @@ export function hubOpenApi(version = "1"): Record<string, unknown> {
     const path = r.path.replace(/:([a-zA-Z]+)/g, "{$1}");
     const params: unknown[] = [...r.path.matchAll(/:([a-zA-Z]+)/g)].map((m) => ({ name: m[1], in: "path", required: true, schema: { type: "string" } }));
     for (const [name, description] of Object.entries(r.query ?? {})) params.push({ name, in: "query", required: false, description, schema: { type: "string" } });
-    if (r.method === "POST" && r.rule !== "public") {
+    if (r.method === "POST" && r.rule !== "public" && r.read !== true) {
       params.push({ name: IDEMPOTENCY_HEADER, in: "header", required: false, description: "Repeat-safe retries: a repeated key returns the first response.", schema: { type: "string" } });
     }
     if (r.onBehalfOf) {
@@ -519,7 +533,7 @@ export function hubOpenApi(version = "1"): Record<string, unknown> {
     info: {
       title: "mesh hub API",
       version,
-      description: "The HTTP API of `mesh hub`. Errors are JSON: { error, details? }. POST routes accept an idempotency key header for safe retries.",
+      description: "The HTTP API of `mesh hub`. Errors are JSON: { error, details? }. POST routes that write accept an idempotency key header for safe retries.",
     },
     servers: [{ url: "https://mesh.example", description: "your hub (placeholder)" }],
     security: [{ bearer: [] }, { session: [] }],
