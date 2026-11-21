@@ -407,6 +407,9 @@ const machineFrom = (r: MachineDbRow): MachineRow => {
  * Every method is async (the `Db` may be SQLite or, from M4.6, Postgres). Methods that issue more
  * than one statement run them in one transaction, so callers never see a half-written row.
  */
+/** RL-19: the most values of one `IN (…)` list. */
+const IN_CHUNK = 500;
+
 export class HubStore {
   readonly db: Db;
 
@@ -913,8 +916,22 @@ export class HubStore {
   }
 
   /** Artifacts (metadata only), ordered by `createdAt`, then `id`. */
-  async listArtifacts(f: { goal?: string | undefined; step?: string | undefined; round?: number | undefined }): Promise<StoredArtifact[]> {
-    const where: string[] = [];
+  async listArtifacts(f: { goal?: string | undefined; step?: string | undefined; round?: number | undefined; steps?: readonly string[] | undefined }): Promise<StoredArtifact[]> {
+    // RL-19: the artifacts of several steps, in chunks of 500 (on the step index), merged in order.
+    if (f.steps !== undefined) {
+      const { steps, ...rest } = f;
+      const out: StoredArtifact[] = [];
+      for (let i = 0; i < steps.length; i += IN_CHUNK) {
+        const chunk = steps.slice(i, i + IN_CHUNK);
+        out.push(...(await this.listArtifactsWhere(rest, `step IN (${chunk.map(() => "?").join(", ")})`, chunk)));
+      }
+      return out.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    }
+    return this.listArtifactsWhere(f);
+  }
+
+  private async listArtifactsWhere(f: { goal?: string | undefined; step?: string | undefined; round?: number | undefined }, extra?: string, extraArgs: readonly string[] = []): Promise<StoredArtifact[]> {
+    const where: string[] = extra ? [extra] : [];
     const args: SqlValue[] = [];
     if (f.goal !== undefined) {
       where.push("goal = ?");
@@ -928,6 +945,7 @@ export class HubStore {
       where.push("round = ?");
       args.push(f.round);
     }
+    args.unshift(...extraArgs);
     const sql = `SELECT value FROM artifact ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, id`;
     return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => StoredArtifact.parse(JSON.parse(r.value)));
   }
@@ -997,7 +1015,7 @@ export class HubStore {
   }
 
   /** Review records in insertion order (never by `at`). */
-  async listReviews(f: { step?: string | undefined; lineage?: string | undefined; raising?: boolean | undefined; complete?: boolean | undefined }): Promise<StoredReview[]> {
+  async listReviews(f: { step?: string | undefined; lineage?: string | undefined; raising?: boolean | undefined; complete?: boolean | undefined; since?: number | undefined }): Promise<StoredReview[]> {
     const where: string[] = [];
     const args: SqlValue[] = [];
     if (f.step !== undefined) {
@@ -1016,6 +1034,11 @@ export class HubStore {
       where.push("complete = ?");
       args.push(f.complete ? 1 : 0);
     }
+    // RL-19: records at or after `since` (`created_at` is the record's `at`; not indexed).
+    if (f.since !== undefined) {
+      where.push("created_at >= ?");
+      args.push(f.since);
+    }
     const sql = `SELECT value FROM review_record ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${this.db.dialect.stepOrder}`;
     return (await this.db.all<{ value: string }>(sql, ...args)).map((r) => StoredReview.parse(JSON.parse(r.value)));
   }
@@ -1030,6 +1053,18 @@ export class HubStore {
     return (await this.db.all<{ value: string }>(`SELECT value FROM review_item WHERE lineage = ? ORDER BY fp`, lineage)).map((r) =>
       ItemRow.parse(JSON.parse(r.value)),
     );
+  }
+
+  /** RL-19: the item rows of several lineages, in chunks of 500, ordered by lineage, then fingerprint. */
+  async listItemsIn(lineages: readonly string[]): Promise<ItemRow[]> {
+    const out: ItemRow[] = [];
+    for (let i = 0; i < lineages.length; i += IN_CHUNK) {
+      const chunk = lineages.slice(i, i + IN_CHUNK);
+      const rows = await this.db.all<{ value: string }>(`SELECT value FROM review_item WHERE lineage IN (${chunk.map(() => "?").join(", ")})`, ...chunk);
+      out.push(...rows.map((r) => ItemRow.parse(JSON.parse(r.value))));
+    }
+    const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    return out.sort((a, b) => cmp(a.lineage, b.lineage) || cmp(a.fp, b.fp));
   }
 
   /** Insert or replace an item row. */

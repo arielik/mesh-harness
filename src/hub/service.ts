@@ -27,6 +27,8 @@ import {
   profileSha256,
   profileSnapshot,
   parsePreset,
+  presetKind,
+  presetKindProblem,
   presetWarnings,
   blindSeparated,
   canApprove,
@@ -190,6 +192,8 @@ import type {
   ProfileView,
   RunTelemetry,
   Health,
+  FindingsRollup,
+  RollupRow,
   EfficiencyWindow,
   GoalEfficiency,
   StepWindowRow,
@@ -3472,7 +3476,7 @@ export class HubService {
    * ingest): 400 when the sha256 does not match, else 422 listing every problem. Returns the plan
    * as instantiated for "this goal".
    */
-  private async presetChecks(preset: { name: string; text: string; sha256: string }, params: Record<string, string>): Promise<PlanInput> {
+  private async presetChecks(preset: { name: string; text: string; sha256: string }, params: Record<string, string>, o: { kind?: boolean } = {}): Promise<PlanInput> {
     if (createHash("sha256").update(preset.text, "utf8").digest("hex") !== preset.sha256) throw new HubError(400, "preset.sha256 is not the SHA-256 of preset.text");
     const problems: string[] = [];
     const fail = (): never => {
@@ -3480,6 +3484,11 @@ export class HubService {
     };
     const repo = params.repo;
     if (!repo) problems.push("params.repo is required (the repo the preset's steps work in)");
+    // RL-19: a preset sent in the request must have a valid kind (a stored one is not re-checked).
+    if (o.kind) {
+      const problem = presetKindProblem(preset.text);
+      if (problem) problems.push(problem);
+    }
     let plan: PlanInput;
     try {
       const parsed = parsePreset(preset.name, preset.text);
@@ -3571,7 +3580,7 @@ export class HubService {
     const { view, pulse } = await this.goalTx(async () => {
       const now = this.now();
       await this.checkTargetForPerson(actor, body.target);
-      const plan = await this.presetChecks(body.preset, body.params);
+      const plan = await this.presetChecks(body.preset, body.params, { kind: true });
       const topics = await this.knownTopics(body.topics ?? []);
       const when = this.scheduleOf(body.when, now);
       const profiles = await this.snapshotProfiles(plan.steps);
@@ -3686,7 +3695,7 @@ export class HubService {
       if (body.preset !== undefined || body.params !== undefined) {
         const preset = body.preset ?? p.preset;
         const params = body.params ?? p.params;
-        const plan = await this.presetChecks(preset, params);
+        const plan = await this.presetChecks(preset, params, { kind: body.preset !== undefined });
         next = { ...next, preset, params, profiles: await this.snapshotProfiles(plan.steps), agents: (await this.pinAgents(plan.steps)).agents, version: p.version + 1 };
       }
       if (body.topics !== undefined) next.topics = await this.knownTopics(body.topics);
@@ -3795,7 +3804,7 @@ export class HubService {
     if (b.refs && (Object.hasOwn(b.refs, "pulse") || Object.hasOwn(b.refs, "slot"))) throw new HubError(400, "refs.pulse and refs.slot are set by pulses only");
     const id = await this.goalTx(async () => {
       const now = this.now();
-      const plan = await this.presetChecks(b.preset, b.params);
+      const plan = await this.presetChecks(b.preset, b.params, { kind: true });
       const topics = await this.knownTopics(b.topics ?? []);
       const profiles = await this.snapshotProfiles(plan.steps);
       const { agents } = await this.pinAgents(plan.steps);
@@ -4473,6 +4482,140 @@ export class HubService {
         repos: repoNames.map((repo) => ({ repo, sessions: sessions.filter((x) => x.repo === repo).length, steps: steps.filter((x) => x.repo === repo).length })),
         unmeasured,
       };
+    });
+  }
+
+  /**
+   * RL-19: `GET /v1/findings/rollup`: open and accepted items by severity per (preset, repo) over the
+   * lineages with a raising record in the window, with the newest report, the pulse and the kind.
+   */
+  async findingsRollup(q: { days?: string | undefined; repo?: string | undefined; preset?: string | undefined; trial?: string | undefined }): Promise<FindingsRollup> {
+    let days = 30;
+    if (q.days !== undefined) {
+      days = /^\d{1,3}$/.test(q.days) ? Number(q.days) : NaN;
+      if (!Number.isInteger(days) || days < 1 || days > 365) throw new HubError(400, "days must be a whole number from 1 to 365");
+    }
+    const trial = q.trial ?? "exclude";
+    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    const withTrial = trial === "include";
+    return this.store.tx(async () => {
+      const now = this.now();
+      const since = now - days * 86_400_000;
+      const goals = new Map((await this.store.listGoals()).map((g) => [g.id, g] as const));
+      const livePulses = new Set((await this.store.listPulses({})).filter((p) => p.deletedAt === undefined).map((p) => p.id));
+      // Counted records, in insertion order (a later one wins a tie on `at`).
+      const counted: StoredReview[] = [];
+      for (const r of await this.store.listReviews({ raising: true, since })) {
+        if (r.at > now) continue;
+        const g = goals.get(r.goal);
+        if (!g || g.calibration !== undefined || g.spotCheck !== undefined) continue;
+        if (g.trial === true && !withTrial) continue;
+        counted.push(r);
+      }
+      const recordsOf = new Map<string, StoredReview[]>();
+      for (const r of counted) {
+        const list = recordsOf.get(r.lineage) ?? [];
+        list.push(r);
+        recordsOf.set(r.lineage, list);
+      }
+      const lineages = [...recordsOf.keys()].sort(cmp);
+      const presetOf = (l: string) => {
+        const i = l.indexOf("|");
+        return i < 0 ? l : l.slice(0, i);
+      };
+      // Rows: the lineage repo of each selected lineage, and the target repo of each counted item.
+      interface Acc {
+        preset: string;
+        repo: string;
+        contributing: Set<string>;
+        open: RollupRow["open"];
+        accepted: RollupRow["accepted"];
+      }
+      const rows = new Map<string, Acc>();
+      const rowOf = (preset: string, repo: string): Acc => {
+        const key = JSON.stringify([preset, repo]);
+        let a = rows.get(key);
+        if (!a) {
+          a = { preset, repo, contributing: new Set(), ...emptyFindings() };
+          rows.set(key, a);
+        }
+        return a;
+      };
+      for (const l of lineages) rowOf(presetOf(l), lineageRepo(l)).contributing.add(l);
+      for (const item of await this.store.listItemsIn(lineages)) {
+        const open = item.state === "open" || item.state === "confirmed";
+        if (!open && item.state !== "accepted") continue;
+        const a = rowOf(presetOf(item.lineage), targetRepo(item));
+        a.contributing.add(item.lineage);
+        (open ? a.open : a.accepted)[item.severity]++;
+      }
+      const picked = [...rows.values()]
+        .filter((a) => (q.repo === undefined || a.repo === q.repo) && (q.preset === undefined || a.preset === q.preset))
+        .sort((a, b) => cmp(a.repo, b.repo) || cmp(a.preset, b.preset));
+      // Source records of each row; the report artifacts of their steps in one read.
+      const sourcesOf = new Map<Acc, StoredReview[]>();
+      const steps = new Set<string>();
+      const order = new Map(counted.map((r, i) => [r, i] as const));
+      for (const a of picked) {
+        const home = [...a.contributing].filter((l) => lineageRepo(l) === a.repo);
+        const src = (home.length ? home : [...a.contributing]).flatMap((l) => recordsOf.get(l) ?? []);
+        // Newest first: larger `at`, then later insertion.
+        src.sort((x, y) => y.at - x.at || (order.get(y) ?? 0) - (order.get(x) ?? 0));
+        sourcesOf.set(a, src);
+        for (const r of src) steps.add(r.step);
+      }
+      const reportsOf = new Map<string, StoredArtifact[]>();
+      for (const art of await this.store.listArtifacts({ steps: [...steps].sort(cmp) })) {
+        if (art.kind !== "report") continue;
+        const list = reportsOf.get(art.step) ?? [];
+        list.push(art);
+        reportsOf.set(art.step, list);
+      }
+      const out: RollupRow[] = [];
+      for (const a of picked) {
+        const src = sourcesOf.get(a) ?? [];
+        const newest = src[0] as StoredReview;
+        const kindGoal = goals.get(newest.goal);
+        const kind = kindGoal?.preset ? presetKind(kindGoal.preset.text) : undefined;
+        let pulse: string | undefined;
+        for (const r of src) {
+          const p = goals.get(r.goal)?.refs?.pulse;
+          if (p !== undefined && livePulses.has(p)) {
+            pulse = p;
+            break;
+          }
+        }
+        let latest: StoredArtifact | undefined;
+        for (const step of new Set(src.map((r) => r.step))) {
+          for (const art of reportsOf.get(step) ?? []) {
+            if (!latest || art.createdAt > latest.createdAt || (art.createdAt === latest.createdAt && art.id > latest.id)) latest = art;
+          }
+        }
+        out.push({
+          preset: a.preset,
+          repo: a.repo,
+          ...(kind !== undefined ? { kind } : {}),
+          ...(pulse !== undefined ? { pulse } : {}),
+          lineages: a.contributing.size,
+          lastRaisedAt: newest.at,
+          open: a.open,
+          accepted: a.accepted,
+          ...(latest
+            ? {
+                latestReport: {
+                  ref: latest.id,
+                  at: latest.createdAt,
+                  goal: latest.goal,
+                  step: latest.step,
+                  round: latest.round,
+                  ...(latest.title !== undefined ? { title: latest.title } : {}),
+                  ...(latest.prunedAt !== undefined ? { pruned: true as const } : {}),
+                },
+              }
+            : {}),
+        });
+      }
+      return { window: { since, until: now, days }, rows: out };
     });
   }
 

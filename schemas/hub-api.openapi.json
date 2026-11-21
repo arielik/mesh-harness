@@ -3643,6 +3643,240 @@
         }
       }
     },
+    "/v1/findings/rollup": {
+      "get": {
+        "operationId": "getVFindingsRollup",
+        "summary": "Findings roll-up per preset and repo: items open (open or confirmed) and accepted now by severity S1-S4, over the lineages audited in the window, with the newest report artifact, the pulse and the preset's kind.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "analysis"
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "1-365, default 30: lineages with a raising record in [now - days, now]",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": false,
+            "description": "only rows of this repo (the items' target repo)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "preset",
+            "in": "query",
+            "required": false,
+            "description": "only rows of this preset",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trial",
+            "in": "query",
+            "required": false,
+            "description": "exclude (default) or include",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "window": {
+                      "type": "object",
+                      "properties": {
+                        "since": {
+                          "type": "number"
+                        },
+                        "until": {
+                          "type": "number"
+                        },
+                        "days": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "since",
+                        "until",
+                        "days"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "preset": {
+                            "type": "string"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "pulse": {
+                            "type": "string"
+                          },
+                          "lineages": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "lastRaisedAt": {
+                            "type": "number"
+                          },
+                          "open": {
+                            "type": "object",
+                            "properties": {
+                              "S1": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "S2": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "S3": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "S4": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "S1",
+                              "S2",
+                              "S3",
+                              "S4"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "accepted": {
+                            "type": "object",
+                            "properties": {
+                              "S1": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "S2": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "S3": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "S4": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "S1",
+                              "S2",
+                              "S3",
+                              "S4"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "latestReport": {
+                            "type": "object",
+                            "properties": {
+                              "ref": {
+                                "type": "string"
+                              },
+                              "at": {
+                                "type": "number"
+                              },
+                              "goal": {
+                                "type": "string"
+                              },
+                              "step": {
+                                "type": "string"
+                              },
+                              "round": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "pruned": {
+                                "type": "boolean",
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "ref",
+                              "at",
+                              "goal",
+                              "step",
+                              "round"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "preset",
+                          "repo",
+                          "lineages",
+                          "lastRaisedAt",
+                          "open",
+                          "accepted"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "window",
+                    "rows"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
     "/v1/goals/{id}/efficiency": {
       "get": {
         "operationId": "getVGoalsIdEfficiency",

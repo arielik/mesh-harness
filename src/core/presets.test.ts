@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { validatePlan } from "./dag.ts";
 import { validatePolicies } from "./policy.ts";
-import { BUILTIN_PRESETS, instantiate, parsePreset, presetText } from "./presets.ts";
+import { BUILTIN_PRESETS, instantiate, parsePreset, presetKind, presetKindProblem, presetText } from "./presets.ts";
 
 // `params` is new in RL-1: passed loosely so the file compiles before it exists.
 type Opts = Parameters<typeof instantiate>[1] & { params?: Record<string, string> };
@@ -246,5 +246,41 @@ describe("RL-7 params", () => {
     const split = BUILTIN_PRESETS.find((x) => x.name === "sdd-split");
     if (!split) throw new Error("sdd-split missing");
     expect(presetText(split)).not.toMatch(/^params:/m);
+  });
+});
+
+describe("RL-19 AC-08 preset kind", () => {
+  const T = (kind: string) => `description: K\nkind: ${kind}\nsteps:\n  - id: s\n    kind: implement\n    title: S\n    brief: b\n`;
+  const RULE = "kind must match ^[a-z][a-z0-9-]{0,39}$";
+  const BROKEN = "a: [unclosed\n  - : :";
+
+  it("test_AC08_parse_and_text", () => {
+    const p = parsePreset("k", T("code-audit"));
+    expect(p.kind).toBe("code-audit");
+    // A step's own `kind` is untouched.
+    expect(p.plan.steps[0]?.kind).toBe("implement");
+    for (const bad of ["Code Audit", "5", "-x", `a${"b".repeat(40)}`]) expect(parsePreset("k", T(bad)).kind, bad).toBeUndefined();
+    const text = presetText(p);
+    expect(text).toMatch(/^kind: code-audit$/m);
+    expect(text.indexOf("kind: code-audit")).toBeGreaterThan(text.indexOf("description:"));
+    expect(parsePreset("k", text).kind).toBe("code-audit");
+    expect(presetText(parsePreset("k", T("Code Audit")))).not.toMatch(/^kind:/m);
+    for (const b of BUILTIN_PRESETS) expect(b.kind, b.name).toBeUndefined();
+  });
+
+  it("test_AC08_presetKind", () => {
+    expect(presetKind(T("code-audit"))).toBe("code-audit");
+    expect(presetKind(T("a"))).toBe("a");
+    expect(presetKind(T("Code Audit"))).toBeUndefined();
+    expect(presetKind(T("5"))).toBeUndefined();
+    expect(presetKind("description: none\nsteps: []\n")).toBeUndefined();
+    expect(() => presetKind(BROKEN)).not.toThrow();
+    expect(presetKind(BROKEN)).toBeUndefined();
+    expect(presetKind("")).toBeUndefined();
+    expect(presetKindProblem(T("Code Audit"))).toBe(RULE);
+    expect(presetKindProblem(T("5"))).toBe(RULE);
+    expect(presetKindProblem(T("code-audit"))).toBeUndefined();
+    expect(presetKindProblem("description: none\n")).toBeUndefined();
+    expect(() => presetKindProblem(BROKEN)).not.toThrow();
   });
 });

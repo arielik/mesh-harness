@@ -282,6 +282,14 @@ export function buildRoutes(svc: HubService): Route[] {
       async (c) => c.json(await svc.health({ days: c.req.query("days"), repo: c.req.query("repo"), topic: c.req.query("topic"), trial: c.req.query("trial") })),
       "goals:read",
     ),
+    // RL-19: open and accepted findings by severity per preset and repo, with the newest report.
+    r(
+      "GET",
+      "/v1/findings/rollup",
+      "member",
+      async (c) => c.json(await svc.findingsRollup({ days: c.req.query("days"), repo: c.req.query("repo"), preset: c.req.query("preset"), trial: c.req.query("trial") })),
+      "goals:read",
+    ),
     // RL-14: efficiency cards, figures over a window and the stuck signal.
     r("GET", "/v1/goals/:id/efficiency", "member", async (c) => c.json(await svc.goalEfficiency(param(c, "id"))), "goals:read"),
     r(

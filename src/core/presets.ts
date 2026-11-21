@@ -36,6 +36,8 @@ const PARAMS_RULE = "params must map names (a-z, 0-9, _) to values";
 export interface Preset {
   name: string;
   description: string;
+  /** RL-19: the kind of routine, for a client (a slug; the hub never interprets it). */
+  kind?: string | undefined;
   /** RL-7: default values of parameters (an explicit param beats a default). */
   params?: Record<string, string> | undefined;
   /** RL-15: the SLA and auto-accept of every debrief step that sets none itself. */
@@ -182,13 +184,45 @@ export const SPOT_CHECK_PRESET: Preset = {
 
 export const BUILTIN_PRESETS: readonly Preset[] = [SDD_SPLIT, SDD_COLLAPSE, AUDIT_RELAY, CALIBRATE_PRESET, SPOT_CHECK_PRESET];
 
-/** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, steps}. */
+/** RL-19: a preset's `kind`. */
+export const PRESET_KIND_RE = /^[a-z][a-z0-9-]{0,39}$/;
+export const PRESET_KIND_RULE = "kind must match ^[a-z][a-z0-9-]{0,39}$";
+
+/** RL-19: the problem of a preset text's top-level `kind`, if any (none for unparsable YAML). */
+export function presetKindProblem(text: string): string | undefined {
+  let doc: unknown;
+  try {
+    doc = parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!doc || typeof doc !== "object" || !Object.hasOwn(doc, "kind")) return undefined;
+  const k = (doc as { kind?: unknown }).kind;
+  return typeof k === "string" && PRESET_KIND_RE.test(k) ? undefined : PRESET_KIND_RULE;
+}
+
+/** RL-19: the valid top-level `kind` of a preset text; never throws. */
+export function presetKind(text: string): string | undefined {
+  let doc: unknown;
+  try {
+    doc = parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!doc || typeof doc !== "object") return undefined;
+  const k = (doc as { kind?: unknown }).kind;
+  return typeof k === "string" && PRESET_KIND_RE.test(k) ? k : undefined;
+}
+
+/** A template from YAML text (a repo's .mesh/presets/<name>.yaml): {description?, kind?, steps}. */
 export function parsePreset(name: string, text: string): Preset {
-  const doc = parse(text) as { description?: string; params?: unknown; steps?: unknown; debrief?: unknown };
+  const doc = parse(text) as { description?: string; kind?: unknown; params?: unknown; steps?: unknown; debrief?: unknown };
   const plan = z.object({ steps: z.array(PresetStep) }).parse({ steps: (doc.steps as unknown[] | undefined)?.map((x) => ({ repo: "{repo}", ...(x as object) })) ?? [] });
   const params = doc.params === undefined ? undefined : parseParams(doc.params);
   const debrief = doc.debrief === undefined ? undefined : PresetDebrief.parse(doc.debrief);
-  return { name, description: doc.description ?? "", ...(params ? { params } : {}), ...(debrief ? { debrief } : {}), plan: { steps: plan.steps } };
+  // RL-19: an invalid kind is left out (stored snapshots are re-parsed when a pulse fires).
+  const kind = typeof doc.kind === "string" && PRESET_KIND_RE.test(doc.kind) ? doc.kind : undefined;
+  return { name, description: doc.description ?? "", ...(kind ? { kind } : {}), ...(params ? { params } : {}), ...(debrief ? { debrief } : {}), plan: { steps: plan.steps } };
 }
 
 /** RL-7: a `params:` mapping; numbers become their decimal string. */
@@ -207,7 +241,8 @@ function parseParams(v: unknown): Record<string, string> {
 export function presetText(p: Preset): string {
   const params = p.params && Object.keys(p.params).length > 0 ? { params: p.params } : {};
   const debrief = p.debrief && Object.keys(p.debrief).length > 0 ? { debrief: p.debrief } : {};
-  return stringify({ preset: p.name, description: p.description, ...params, ...debrief, steps: p.plan.steps }, { lineWidth: 0 });
+  const kind = p.kind !== undefined ? { kind: p.kind } : {};
+  return stringify({ preset: p.name, description: p.description, ...kind, ...params, ...debrief, steps: p.plan.steps }, { lineWidth: 0 });
 }
 
 /** RL-7: the largest `budget.turns` / `budget.minutes` a filled placeholder may give. */

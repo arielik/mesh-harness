@@ -8,7 +8,7 @@ import { createInterface } from "node:readline/promises";
 import { stringify, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { sha256 } from "../auth/index.ts";
-import { BUILTIN_PRESETS, instantiate, parsePreset, presetText, repoMatches, type Preset } from "../core/index.ts";
+import { BUILTIN_PRESETS, instantiate, parsePreset, presetKindProblem, presetText, repoMatches, type Preset } from "../core/index.ts";
 import { PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type Step, type TopicView, type TrailFile } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
@@ -120,7 +120,13 @@ export function findPreset(cwd: string, name: string): Preset {
 export function findPresetSource(cwd: string, name: string): { preset: Preset; root?: string | undefined } {
   for (const dir of presetDirs(cwd)) {
     const f = join(dir, ".mesh", "presets", `${name}.yaml`);
-    if (existsSync(f)) return { preset: parsePreset(name, readFileSync(f, "utf8")), root: gitRootOf(dir) };
+    if (existsSync(f)) {
+      const text = readFileSync(f, "utf8");
+      // RL-19: a bad kind is refused here; parsePreset would drop it without a word.
+      const problem = presetKindProblem(text);
+      if (problem) throw new Error(`.mesh/presets/${name}.yaml: ${problem}`);
+      return { preset: parsePreset(name, text), root: gitRootOf(dir) };
+    }
   }
   const b = BUILTIN_PRESETS.find((p) => p.name === name);
   if (!b) throw new Error(`no template "${name}" (built in: ${BUILTIN_PRESETS.map((p) => p.name).join(", ")}; or .mesh/presets/${name}.yaml in this repo)`);
@@ -568,7 +574,10 @@ export function presetCommand(c: CliEnv): Command {
           const rel = relative(c.cwd, t.file).split(sep).join("/");
           let line: string;
           try {
-            const p = parsePreset(t.name, readFileSync(t.file, "utf8"));
+            const text = readFileSync(t.file, "utf8");
+            const problem = presetKindProblem(text);
+            if (problem) throw new Error(problem);
+            const p = parsePreset(t.name, text);
             const builtin = BUILTIN_PRESETS.some((b) => b.name === t.name);
             line = `${t.name.padEnd(14)} ${p.description || "-"}  [${rel}]${builtin ? "  (replaces the built-in)" : ""}`;
           } catch (e) {

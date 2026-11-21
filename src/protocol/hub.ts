@@ -757,7 +757,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "health", "overlap-policy", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -893,7 +893,9 @@ export type RunCard = z.infer<typeof RunCard>;
 export const RunCardsPage = z.object({ pulse: z.string(), cards: z.array(RunCard), next: z.string().optional() });
 export type RunCardsPage = z.infer<typeof RunCardsPage>;
 
-const BySeverity = z.object({ S1: int, S2: int, S3: int, S4: int });
+/** Counts by severity (RL-12; exported by RL-19). */
+export const BySeverity = z.object({ S1: int, S2: int, S3: int, S4: int });
+export type BySeverity = z.infer<typeof BySeverity>;
 const HealthSlots = z.object({ due: int, fired: int, started: int, skipped: int, missed: z.record(z.string(), int), abandoned: int, queued: int });
 const HealthRuns = z.object({
   count: int,
@@ -982,6 +984,52 @@ export const Health = z.object({
   total: HealthTotal,
 });
 export type Health = z.infer<typeof Health>;
+
+// ---------- RL-19: findings roll-up per preset and repo ----------
+
+/** RL-19: the newest report artifact of a roll-up row. */
+export const RollupReport = z.object({
+  /** The artifact id; its content is at `GET /v1/artifacts/<ref>`. */
+  ref: z.string(),
+  /** The artifact's `createdAt` (ms). */
+  at: z.number(),
+  goal: z.string(),
+  step: z.string(),
+  round: int,
+  title: z.string().optional(),
+  /** The content was pruned. */
+  pruned: z.literal(true).optional(),
+});
+export type RollupReport = z.infer<typeof RollupReport>;
+
+/** RL-19: one row of `GET /v1/findings/rollup`: a (preset, repo). */
+export const RollupRow = z.object({
+  /** The lineage preset (`-` for goals without a preset). */
+  preset: z.string(),
+  /** The repo: the target repo of the items, or the audited repo. */
+  repo: z.string(),
+  /** The `kind` the preset declares (from the goal of the newest source record). */
+  kind: z.string().optional(),
+  /** The pulse of the newest source record that names an existing pulse. */
+  pulse: z.string().optional(),
+  /** The number of contributing lineages. */
+  lineages: int,
+  /** The `at` of the newest source record (ms). */
+  lastRaisedAt: z.number(),
+  /** Items in state open or confirmed now. */
+  open: BySeverity,
+  /** Items in state accepted now. */
+  accepted: BySeverity,
+  latestReport: RollupReport.optional(),
+});
+export type RollupRow = z.infer<typeof RollupRow>;
+
+/** RL-19: `GET /v1/findings/rollup`. */
+export const FindingsRollup = z.object({
+  window: z.object({ since: z.number(), until: z.number(), days: int }),
+  rows: z.array(RollupRow),
+});
+export type FindingsRollup = z.infer<typeof FindingsRollup>;
 
 // ---------- RL-16: profile fitting ----------
 

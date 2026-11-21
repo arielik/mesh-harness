@@ -1567,6 +1567,92 @@ function contract(d: Driver) {
       expect(await s.eventsBetween(0, 100, [])).toStrictEqual([]);
     });
   });
+
+  describe("RL-19 roll-up reads", () => {
+    const rv = (stepId: string, round: number, at: number, over: Record<string, unknown> = {}) =>
+      ({
+        goal: stepId.split(".")[0] as string,
+        step: stepId,
+        round,
+        lineage: "L",
+        raising: true,
+        complete: true,
+        record: { subject: {}, coverage: "complete", assessment: "clean", items: [], dispositions: [], summary: "s" },
+        artifact: "a-R",
+        undeclaredRules: 0,
+        decider: { kind: "agent", key: "svc/auditor" },
+        by: "ada",
+        at,
+        ...over,
+      }) as Parameters<HubStore["addReview"]>[0];
+    const item = (lineage: string, fp: string) =>
+      ({
+        lineage,
+        fp,
+        state: "open",
+        rule: "R",
+        title: "T",
+        severity: "S2",
+        category: "c",
+        raisedBy: { key: "svc/auditor" },
+        first: { goal: "G1", step: "G1.audit", round: 1, at: T0 },
+        last: { goal: "G1", step: "G1.audit", round: 1, at: T0 },
+      }) as Parameters<HubStore["saveItem"]>[0];
+    const art = (id: string, step: string, createdAt: number, kind = "report") =>
+      ({ id, goal: step.split(".")[0] as string, step, round: 1, kind, mediaType: "text/markdown", bytes: 1, sha256: "0".repeat(64), redactions: 0, createdAt, by: "ada" }) as Parameters<HubStore["addArtifact"]>[0];
+
+    it("test_AC10_listReviews_since", async () => {
+      const s = await store();
+      await s.addReview(rv("G3.audit", 1, T0 + 20));
+      await s.addReview(rv("G1.audit", 1, T0));
+      await s.addReview(rv("G2.audit", 1, T0 + 10));
+      await s.addReview(rv("G2.validate", 1, T0 + 30, { raising: false }));
+      await s.addReview(rv("G4.audit", 1, T0 + 9));
+      const steps = async (f: Parameters<HubStore["listReviews"]>[0]) => (await s.listReviews(f)).map((r) => r.step);
+      // At or after `since`, insertion order kept (not by `at`).
+      expect(await steps({ raising: true, since: T0 + 10 })).toStrictEqual(["G3.audit", "G2.audit"]);
+      expect(await steps({ raising: true, since: T0 })).toStrictEqual(["G3.audit", "G1.audit", "G2.audit", "G4.audit"]);
+      expect(await steps({ raising: true, since: T0 + 21 })).toStrictEqual([]);
+      expect(await steps({ since: T0 + 10 })).toStrictEqual(["G3.audit", "G2.audit", "G2.validate"]);
+    });
+
+    it("test_AC10_listItemsIn", async () => {
+      const s = await store();
+      expect(await s.listItemsIn([])).toStrictEqual([]);
+      for (const [l, fp] of [
+        ["b|r|a", "fp2"],
+        ["a|r|a", "fp9"],
+        ["b|r|a", "fp1"],
+        ["c|r|a", "fp1"],
+        ["a|r|a", "fp0"],
+      ] as const)
+        await s.saveItem(item(l, fp));
+      const got = (await s.listItemsIn(["b|r|a", "a|r|a"])).map((r) => `${r.lineage}/${r.fp}`);
+      expect(got).toStrictEqual(["a|r|a/fp0", "a|r|a/fp9", "b|r|a/fp1", "b|r|a/fp2"]);
+      expect(await s.listItemsIn(["zz"])).toStrictEqual([]);
+      // More than 500 lineages: chunks, merged in order.
+      const many = Array.from({ length: 1203 }, (_, i) => `x${String(i).padStart(5, "0")}`);
+      for (const l of [many[0], many[600], many[1202]] as string[]) await s.saveItem(item(l, "f"));
+      const big = (await s.listItemsIn([...many].reverse().concat(["c|r|a"]))).map((r) => r.lineage);
+      expect(big).toStrictEqual(["c|r|a", many[0], many[600], many[1202]]);
+    });
+
+    it("test_AC10_listArtifacts_steps", async () => {
+      const s = await store();
+      await s.addArtifact(art("a-3", "G1.audit", T0 + 3), Buffer.from("x"));
+      await s.addArtifact(art("a-B", "G2.audit", T0 + 1), Buffer.from("x"));
+      await s.addArtifact(art("a-A", "G2.audit", T0 + 1, "review"), Buffer.from("x"));
+      await s.addArtifact(art("a-0", "G9.other", T0), Buffer.from("x"));
+      const ids = async (steps: string[]) => (await s.listArtifacts({ steps })).map((a) => a.id);
+      expect(await ids(["G2.audit", "G1.audit"])).toStrictEqual(["a-A", "a-B", "a-3"]);
+      expect(await ids([])).toStrictEqual([]);
+      const many = Array.from({ length: 1100 }, (_, i) => `G${i}.s`);
+      // Matches in the first and the third chunk, in an order that plain concatenation gets wrong.
+      await s.addArtifact(art("a-far", "G1099.s", T0 - 1), Buffer.from("x"));
+      await s.addArtifact(art("a-late", "G0.s", T0 + 100), Buffer.from("x"));
+      expect(await ids([...many, "G2.audit"])).toStrictEqual(["a-far", "a-A", "a-B", "a-late"]);
+    });
+  });
 }
 
 describe("store contract: sqlite", () => contract(sqlite));

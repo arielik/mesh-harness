@@ -975,6 +975,42 @@ they include what trial runs did to the items.
 **Cost.** A health call reads every raising record and the items and history of each lineage it
 names; it is meant for a page load, not a poll every few seconds.
 
+### Findings roll-up
+
+From 0.1.38 (`/healthz` feature `findings-rollup`), `GET /v1/findings/rollup` gives one row per
+preset and repo: how many items are open and accepted now, by severity, over the audits that ran in
+a window, with the newest report. Scope `goals:read`, read-only, no paging (one row per preset and
+repo audited in the window); a service reads with its own token (`x-mesh-on-behalf-of` is refused).
+
+- **Which lineages.** The window is `[now − days, now]` (`days` 1-365, default 30). A lineage is in
+  the table when a raising review record of it was submitted in the window, in a goal that exists and
+  is not a calibration or spot-check goal (those raise no findings), and not a trial goal unless
+  `trial=include`. Any goal counts, not only pulse goals. An audit that stopped running drops off
+  once its last record leaves the window.
+- **Which row.** An item counts under the preset of its lineage and its **target repo**: its `repo`
+  when the auditor or `mesh items retarget` set one, else the lineage repo. Each audited repo also has
+  its row, with zeros when nothing is open or accepted. Several agents of one preset and repo add up
+  in one row; `lineages` says how many lineages fed it.
+- **Counts.** `open` = items in state `open` or `confirmed` now, `accepted` = items in state
+  `accepted` now (with or without a link), each `{S1, S2, S3, S4}`. Dismissed, deferred and resolved
+  items are not counted. The counts are current states: the window picks the lineages, not the item
+  changes. Like `findings` in health, they include what trial runs did to a lineage's items.
+- **The rest of a row** comes from the row's own audits (the lineages whose repo is the row's repo),
+  or from the audits that retargeted items to it when it has none: `lastRaisedAt` (the newest record),
+  `pulse` (the pulse of the newest record made by a pulse that still exists), `kind` (the `kind:` the
+  preset of the newest record declares) and `latestReport` (`{ref, at, goal, step, round, title?,
+  pruned?}`, the newest `report` artifact of the steps of those records; its content is at `GET
+  /v1/artifacts/<ref>`).
+- **Filters.** `repo` and `preset` (exact) pick rows; they never change a row's counts. `repo` is the
+  row's repo, not a pulse's `params.repo`.
+- **Kind.** A preset may declare a top-level `kind:` (lower-case letters, digits and dashes, up to 40,
+  e.g. `kind: code-audit`); the hub keeps it in the preset text and never interprets it. `mesh pulse
+  add` refuses a preset file with another value, and the hub answers 422 to a pulse or ingest that
+  sends one.
+- **Cost of a call.** It reads the window's raising records (one scan of the record table), the
+  items of their lineages and the metadata of their steps' artifacts, in a fixed number of queries;
+  it is meant for a page load, not a poll every few seconds.
+
 ## Debrief SLA
 
 From 0.1.37 (`/healthz` feature `debrief-sla`) a debrief step may have an SLA: `sla: 48h` (1h to

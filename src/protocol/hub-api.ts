@@ -41,6 +41,7 @@ import {
   RunReport,
   RunsPage,
   Health,
+  FindingsRollup,
   ProfileFit,
   ChangesPage,
   AgentCompare,
@@ -177,6 +178,22 @@ export const HUB_API: readonly HubApiRoute[] = [
     query: { days: "1-90, default 7", repo: "only pulses that run in this repo", topic: "only pulses with this topic", trial: "exclude (default) or include" },
     response: Health,
     summary: "Health scorecard per pulse and a total over a window: slots, blockedBy, runs and waste parts, goals, accepted items, cost per accepted item, open debriefs and calibrations, findings by severity.",
+  },
+  {
+    method: "GET",
+    path: "/v1/findings/rollup",
+    rule: "member",
+    scope: "goals:read",
+    tag: "analysis",
+    query: {
+      days: "1-365, default 30: lineages with a raising record in [now - days, now]",
+      repo: "only rows of this repo (the items' target repo)",
+      preset: "only rows of this preset",
+      trial: "exclude (default) or include",
+    },
+    response: FindingsRollup,
+    summary:
+      "Findings roll-up per preset and repo: items open (open or confirmed) and accepted now by severity S1-S4, over the lineages audited in the window, with the newest report artifact, the pulse and the preset's kind.",
   },
   {
     method: "GET",
