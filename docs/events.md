@@ -38,7 +38,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `message.delivered` | the daemon delivered or failed a message | `id`, `state`, `method` |
 | `machine.named` | a machine was named or its name cleared | `machine`, `nickname` (null when cleared) |
 | `machine.labelled` | a machine's labels changed | `machine`, `labels` |
-| `step.offered` | a step was offered to a machine (`mesh assign`, `mesh_assign`, a goal's stick); `user` = the offerer, `sid` = the offering session | `machine` (target machine id), `sid` (target session, when named), `auto`, `note`, `stick` |
+| `step.offered` | a step was offered to a machine (`mesh assign`, `mesh_assign`, a goal's stick); `user` = the offerer, `sid` = the offering session | `machine` (target machine id), `sid` (target session, when named), `auto`, `note`, `stick`; `via` (the service that offered for `user`, 0.1.40); `mode: "headless"` and `profile` (name) on a headless offer (0.1.40) |
 | `step.accepted` | the target machine accepted the offer (an accept, or a claim from that machine); `user`, `sid` = the accepting session | `machine`, `sid` |
 | `step.declined` | the offer was declined | `machine`, `note` |
 | `step.offer_expired` | the offer was not accepted within `thresholds.offer_expiry` | `machine` |

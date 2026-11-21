@@ -515,7 +515,7 @@ describe("RL-14 AC-11 scopes", () => {
       expect((await w.call(withScope, "GET", path)).status, path).toBe(200);
       expect((await w.call(without, "GET", path)).status, path).toBe(403);
       expect((await w.call(undefined, "GET", path)).status, path).toBe(401);
-      expect(await w.call(withScope, "GET", path, undefined, { "x-mesh-on-behalf-of": "alice" }), path).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route" } });
+      expect(await w.call(withScope, "GET", path, undefined, { "x-mesh-on-behalf-of": "alice" }), path).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route", code: "on-behalf-of-not-accepted" } });
     }
     expect(await w.call(withScope, "GET", "/v1/goals/G999/efficiency")).toStrictEqual({ status: 404, json: { error: "no goal G999" } });
     expect((await w.hubStore.events(0, 100_000)).length).toBe(evBefore);

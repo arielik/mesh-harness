@@ -22,6 +22,7 @@ import {
   AnswerRequest,
   AskRequest,
   AssignRequest,
+  StepAssignRequest,
   ClaimRequest,
   DeclineRequest,
   CliExchange,
@@ -76,6 +77,8 @@ export interface Route {
   onBehalfOf?: boolean | undefined;
   /** RL-20: a `POST` that only reads: the idempotency key is ignored (nothing is stored). */
   read?: true | undefined;
+  /** RL-21: a service token must send the header here, also on a read. */
+  onBehalfOfRequired?: boolean | undefined;
   handler: Handler;
 }
 
@@ -128,7 +131,7 @@ export function buildRoutes(svc: HubService): Route[] {
 
   const r = (method: Route["method"], path: string, rule: RouteRule, handler: Handler, scope?: ServiceScope): Route => ({ method, path, rule, handler, scope });
   /** A route a service token may call for a person (mesh-ai B-178). */
-  const forPerson = (route: Route): Route => ({ ...route, onBehalfOf: true });
+  const forPerson = (route: Route, o: { required?: boolean } = {}): Route => ({ ...route, onBehalfOf: true, ...(o.required ? { onBehalfOfRequired: true } : {}) });
   return [
     // RL-11: the probes say which hub this is (version, the schema it migrates to, its features).
     r("GET", "/health", "public", (c) => c.json(liveness())),
@@ -482,8 +485,9 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false }))),
     r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(await svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
     r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(await svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
-    r("POST", "/v1/steps/:id/assign", "member", async (c, a) => c.json(await svc.assignStep(a, param(c, "id"), await body(c, AssignRequest)))),
-    r("GET", "/v1/steps/:id/suggest", "member", async (c, a) => c.json(await svc.suggestStep(a, param(c, "id"), suggestFlags(c)))),
+    // RL-21: a service with steps:assign assigns and ranks for a person (header required on both).
+    forPerson(r("POST", "/v1/steps/:id/assign", "member", async (c, a) => c.json(await svc.assignStep(a, param(c, "id"), await body(c, StepAssignRequest))), "steps:assign")),
+    forPerson(r("GET", "/v1/steps/:id/suggest", "member", async (c, a) => c.json(await svc.suggestStep(a, param(c, "id"), suggestFlags(c))), "steps:assign"), { required: true }),
     r("POST", "/v1/steps/:id/accept", "member", async (c, a) => c.json(await svc.acceptStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     r("POST", "/v1/steps/:id/decline", "member", async (c, a) => c.json(await svc.declineStep(a, param(c, "id"), (await body(c, DeclineRequest)).note))),
     r("POST", "/v1/steps/:id/withdraw", "member", async (c, a) => c.json(await svc.withdrawStep(a, param(c, "id")))),
@@ -548,7 +552,7 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
   const routes = buildRoutes(svc);
 
   app.onError((err, c) => {
-    if (err instanceof HubError) return c.json({ error: err.message, ...(err.details ? { details: err.details } : {}) }, err.status as 400);
+    if (err instanceof HubError) return c.json({ error: err.message, ...(err.code ? { code: err.code } : {}), ...(err.details ? { details: err.details } : {}) }, err.status as 400);
     if (err instanceof AuthError) return c.json({ error: err.message }, err.status as 401);
     if (err instanceof ZodError) return c.json({ error: "invalid request", details: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`) }, 400);
     process.stderr.write(`hub error: ${String(err)}\n`);
@@ -579,9 +583,9 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
   for (const route of routes) {
     app.on(route.method, route.path, async (c) => {
       const caller = c.get("actor");
-      if (!allowed(route.rule, caller, route.scope)) return c.json({ error: caller ? "forbidden" : "login required" }, caller ? 403 : 401);
+      if (!allowed(route.rule, caller, route.scope)) return c.json(caller ? { error: "forbidden", code: "forbidden" } : { error: "login required", code: "login-required" }, caller ? 403 : 401);
       // mesh-ai B-178: a service token acts for a person on the routes that allow it.
-      const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: route.method === "POST" }) : caller;
+      const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: route.method === "POST" || route.onBehalfOfRequired === true }) : caller;
       // Retries of a service acting for a person never replay another caller's answer.
       const idemUser = actor?.via ? `${actor.via}>${actor.userId}` : actor?.userId;
       const key = route.method === "POST" && route.read !== true && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;

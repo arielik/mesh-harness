@@ -39,7 +39,7 @@ describe("RL-14 AC-13 docs", () => {
       expect(s, w).toContain(w);
     expect(s).toMatch(/no score/);
     const o = read("docs/guide/operations.md");
-    expect(section(o, "Upgrading to 0.1.39")).toContain("0.1.36 (RL-14) adds time per session state");
+    expect(section(o, "Upgrading to 0.1.40")).toContain("0.1.36 (RL-14) adds time per session state");
     expect(o).toContain("`efficiency`");
     const plan = read("docs/plan/implementation-plan.md");
     expect(plan).toContain("| `GET /v1/goals/:id/efficiency`, `GET /v1/efficiency`, `GET /v1/stuck` |");

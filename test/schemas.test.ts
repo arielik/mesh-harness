@@ -198,6 +198,7 @@ describe("AC-22 version and placement", () => {
 });
 
 // MM-3 (AC-33, AC-34).
+const RL21_SCOPED = new Set(["/v1/steps/:id/assign", "/v1/steps/:id/suggest"]);
 const MM3_ROUTES: [string, string, string][] = [
   ["POST", "/v1/steps/:id/assign", "steps"],
   ["POST", "/v1/steps/:id/accept", "steps"],
@@ -228,7 +229,8 @@ describe("AC-33 OpenAPI, route table, docs and skill (offers)", () => {
     const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
     const documented = HUB_API.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
     for (const [method, path, tag] of MM3_ROUTES) {
-      expect(documented, `${method} ${path}`).toContain(`${method} ${path} member -`);
+      // RL-21: the step assign and suggest routes carry the scope steps:assign.
+      expect(documented, `${method} ${path}`).toContain(`${method} ${path} member ${RL21_SCOPED.has(path) ? "steps:assign" : "-"}`);
       expect(HUB_API.find((r) => r.method === method && r.path === path)?.tag, `${method} ${path}`).toBe(tag);
     }
     expect(documented).toEqual(served);
@@ -314,7 +316,8 @@ describe("AC-17 OpenAPI and route table (suggest)", () => {
     const served = createApp(svc).routes.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
     const documented = HUB_API.map((r) => `${r.method} ${r.path} ${r.rule} ${r.scope ?? "-"}`).sort();
     for (const [method, path, tag] of MM4_ROUTES) {
-      expect(documented, `${method} ${path}`).toContain(`${method} ${path} member -`);
+      // RL-21: the step assign and suggest routes carry the scope steps:assign.
+      expect(documented, `${method} ${path}`).toContain(`${method} ${path} member ${RL21_SCOPED.has(path) ? "steps:assign" : "-"}`);
       expect(HUB_API.find((r) => r.method === method && r.path === path)?.tag, `${method} ${path}`).toBe(tag);
     }
     expect(documented).toEqual(served);
@@ -684,7 +687,7 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
 
   it("test_AC16_version", () => {
     // RL-12 AC-12: the release is v0.1.31 (was v0.1.30).
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.39");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.40");
   });
 
   it("test_AC07_route_table", () => {
@@ -780,7 +783,7 @@ describe("RL-9 AC-18/AC-19 routes and schema", () => {
   });
 
   it("test_AC19_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.39"); // RL-12 AC-12 (was 0.1.30)
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.40"); // RL-12 AC-12 (was 0.1.30)
   });
 
   it("test_AC19_schema_version", () => {
@@ -819,7 +822,7 @@ describe("RL-10 AC-12/AC-13 routes and schema", () => {
   });
 
   it("test_AC13_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.39"); // RL-12 AC-12 (was 0.1.30)
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.40"); // RL-12 AC-12 (was 0.1.30)
   });
 
   it("test_AC13_schema_version", () => {

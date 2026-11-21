@@ -527,7 +527,7 @@ describe("RL-17 AC-10 scopes", { timeout: 60_000 }, () => {
       expect((await k.w.call(without, "GET", path)).status, path).toBe(403);
       expect((await k.w.call(undefined as never, "GET", path)).status, path).toBe(401);
       const ob = await k.w.call(withScope, "GET", path, undefined, { "x-mesh-on-behalf-of": "ann" });
-      expect(ob, path).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route" } });
+      expect(ob, path).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route", code: "on-behalf-of-not-accepted" } });
     }
     expect(JSON.stringify((await k.r.call(k.c.ann, "GET", "/v1/goals?pulses=1")).json)).toBe(goalsBefore);
     expect(JSON.stringify((await k.r.call(k.c.ann, "GET", "/v1/steps")).json)).toBe(stepsBefore);

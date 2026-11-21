@@ -30,7 +30,7 @@ describe("RL-13 AC-10 docs", () => {
 
   it("test_AC10_operations_events_plan", () => {
     const o = read("docs/guide/operations.md");
-    expect(section(o, "Upgrading to 0.1.39")).toContain("0.1.32 records the commit of each step round");
+    expect(section(o, "Upgrading to 0.1.40")).toContain("0.1.32 records the commit of each step round");
     expect(section(o, "Probes", "###")).toContain("`commits`");
     const ev = read("docs/events.md");
     expect(ev.split("\n").some((l) => l.includes("`step.done`") && l.includes("`commit`"))).toBe(true);
@@ -42,6 +42,6 @@ describe("RL-13 AC-10 docs", () => {
   it("test_AC10_skill_and_version", () => {
     expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
     expect(MESH_SKILL).toContain("pass `commit` only when the work is in a");
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.39");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.40");
   });
 });

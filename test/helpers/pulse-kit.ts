@@ -126,6 +126,8 @@ export interface SyncFacts {
   accept?: string[];
   headless?: boolean;
   sessions?: Session[];
+  /** RL-21: the machine's share level (default `me`). */
+  share?: "steps" | "me" | "all";
 }
 
 export class Pk {
@@ -260,7 +262,7 @@ export class Pk {
   async sync(m: Bare): Promise<void> {
     const f = m.facts;
     const machine = {
-      share: "me",
+      share: f.share ?? "me",
       ...(f.repos ? { repos: f.repos.map((id) => ({ id, name: id.slice(id.lastIndexOf("/") + 1) })) } : {}),
       ...(f.accept ? { accept: f.accept } : {}),
       ...(f.headless !== undefined ? { headless: f.headless } : {}),

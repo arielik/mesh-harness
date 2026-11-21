@@ -353,7 +353,7 @@ describe("AC-07 POST /v1/steps/:id/assign", () => {
   it("test_AC07_no_step_404", async () => {
     const k = await cast();
     const G = await goal(k.A1, ["a"]);
-    expect(await assign(k.A1, `${G}.nope`, { to: "m1" })).toEqual({ status: 404, json: { error: `no step ${G}.nope` } });
+    expect(await assign(k.A1, `${G}.nope`, { to: "m1" })).toEqual({ status: 404, json: { error: `no step ${G}.nope`, code: "step-unknown" } });
     expect((await assign(k.A1, `${G}.a`, { to: "m1" })).status).toBe(200);
   });
 
@@ -361,7 +361,7 @@ describe("AC-07 POST /v1/steps/:id/assign", () => {
     const k = await cast();
     const G = await goal(k.A1, ["a", { id: "g", kind: "gate" }]);
     expect((await stepOf(`${G}.g`)).state).toBe("ready");
-    expect(await assign(k.A1, `${G}.g`, { to: "m1" })).toEqual({ status: 409, json: { error: `${G}.g is a gate: a person decides it` } });
+    expect(await assign(k.A1, `${G}.g`, { to: "m1" })).toEqual({ status: 409, json: { error: `${G}.g is a gate: a person decides it`, code: "step-gate" } });
     expect((await stepOf(`${G}.g`)).offer).toBeUndefined();
     expect((await assign(k.A1, `${G}.a`, { to: "m1" })).status).toBe(200);
   });
@@ -369,7 +369,7 @@ describe("AC-07 POST /v1/steps/:id/assign", () => {
   it("test_AC07_not_ready_409", async () => {
     const k = await cast();
     const G = await goal(k.A1, ["a", { id: "z", deps: ["a"] }]);
-    expect(await assign(k.A1, `${G}.z`, { to: "m1" })).toEqual({ status: 409, json: { error: `${G}.z is blocked, not ready` } });
+    expect(await assign(k.A1, `${G}.z`, { to: "m1" })).toEqual({ status: 409, json: { error: `${G}.z is blocked, not ready`, code: "step-not-ready" } });
     expect((await assign(k.A1, `${G}.a`, { to: "m1" })).status).toBe(200);
   });
 
@@ -378,7 +378,7 @@ describe("AC-07 POST /v1/steps/:id/assign", () => {
     const G = await goal(k.A1, ["a"]);
     const id = `${G}.a`;
     expect((await assign(k.A1, id, { to: "bob/m2" })).status).toBe(200);
-    expect(await assign(k.A1, id, { to: "m1" })).toEqual({ status: 409, json: { error: `${id} is already offered to m2; withdraw it first (mesh withdraw ${id})` } });
+    expect(await assign(k.A1, id, { to: "m1" })).toEqual({ status: 409, json: { error: `${id} is already offered to m2; withdraw it first (mesh withdraw ${id})`, code: "step-offered" } });
     expect((await stepOf(id)).offer.to).toStrictEqual({ machine: w.machineOf(k.B) });
     expect(await events("step.offered", id)).toHaveLength(1);
   });
@@ -386,14 +386,14 @@ describe("AC-07 POST /v1/steps/:id/assign", () => {
   it("test_AC07_no_machine_404", async () => {
     const k = await cast();
     const G = await goal(k.A1, ["a"]);
-    expect(await assign(k.A1, `${G}.a`, { to: "x" })).toEqual({ status: 404, json: { error: "no machine x" } });
+    expect(await assign(k.A1, `${G}.a`, { to: "x" })).toEqual({ status: 404, json: { error: "no machine x", code: "machine-unknown" } });
     await stillOfferable(k, `${G}.a`);
   });
 
   it("test_AC07_no_session_404", async () => {
     const k = await cast();
     const G = await goal(k.A1, ["a"]);
-    expect(await assign(k.A1, `${G}.a`, { to: "bob/m2/nosuch" })).toEqual({ status: 404, json: { error: "no session nosuch on m2" } });
+    expect(await assign(k.A1, `${G}.a`, { to: "bob/m2/nosuch" })).toEqual({ status: 404, json: { error: "no session nosuch on m2", code: "session-unknown" } });
     await stillOfferable(k, `${G}.a`);
   });
 
@@ -402,7 +402,7 @@ describe("AC-07 POST /v1/steps/:id/assign", () => {
     await namedSession(k.B2, 211, "secret");
     await w.flush();
     const G = await goal(k.A1, ["a", "b"]);
-    expect(await assign(k.A1, `${G}.a`, { to: "bob/b2/secret" })).toEqual({ status: 404, json: { error: "no session secret on b2" } });
+    expect(await assign(k.A1, `${G}.a`, { to: "bob/b2/secret" })).toEqual({ status: 404, json: { error: "no session secret on b2", code: "session-unknown" } });
     // Positive control: bob himself may name his own session.
     expect((await assign(k.B, `${G}.b`, { to: "b2/secret" })).status).toBe(200);
     await stillOfferable(k, `${G}.a`);
@@ -426,7 +426,7 @@ describe("AC-07 POST /v1/steps/:id/assign", () => {
     await w.hubStore.upsertSession(rec("pfx1-aaaa"), "bob", w.machineOf(k.B), w.clock);
     await w.hubStore.upsertSession(rec("pfx1-bbbb"), "bob", w.machineOf(k.B), w.clock);
     const G = await goal(k.A1, ["a"]);
-    expect(await assign(k.A1, `${G}.a`, { to: "bob/m2/pfx1" })).toEqual({ status: 409, json: { error: '"pfx1" matches several sessions on m2' } });
+    expect(await assign(k.A1, `${G}.a`, { to: "bob/m2/pfx1" })).toEqual({ status: 409, json: { error: '"pfx1" matches several sessions on m2', code: "session-ambiguous" } });
     // Positive control: a longer, unique prefix resolves.
     const ok = await assign(k.A1, `${G}.a`, { to: "bob/m2/pfx1-a" });
     expect(ok.status, JSON.stringify(ok.json)).toBe(200);
@@ -486,7 +486,7 @@ describe("AC-08 target resolution", () => {
     const k = await cast();
     const G = await goal(k.A1, ["a"]);
     const p3 = k.bench.slice(0, 3);
-    expect(await assign(k.B, `${G}.a`, { to: `m2/${p3}` })).toEqual({ status: 404, json: { error: `no session ${p3} on m2` } });
+    expect(await assign(k.B, `${G}.a`, { to: `m2/${p3}` })).toEqual({ status: 404, json: { error: `no session ${p3} on m2`, code: "session-unknown" } });
     expect(await toOf(k.B, `${G}.a`, `m2/${k.bench.slice(0, 4)}`)).toStrictEqual({ machine: w.machineOf(k.B), sid: k.bench });
   });
 
@@ -499,7 +499,7 @@ describe("AC-08 target resolution", () => {
   it("test_AC08_own_machine_no_session", async () => {
     const k = await cast();
     const G = await goal(k.A1, ["a"]);
-    expect(await assign(k.B, `${G}.a`, { to: "m2/x" })).toEqual({ status: 404, json: { error: "no session x on m2" } });
+    expect(await assign(k.B, `${G}.a`, { to: "m2/x" })).toEqual({ status: 404, json: { error: "no session x on m2", code: "session-unknown" } });
     expect(await toOf(k.B, `${G}.a`, "m2/perf")).toStrictEqual({ machine: w.machineOf(k.B), sid: k.perf });
   });
 

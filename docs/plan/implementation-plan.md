@@ -371,14 +371,14 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 | `POST /v1/messages` | Messages (`toSid`, `toStep`, or `to`: `<machine>/<session>`, resolved like an assign target, v0.1.13) |
 | `GET /v1/fleet`, `POST /v1/machines/:id/name` | My mesh (v0.1.10): the caller's machines and their sessions; name a machine |
 | `POST /v1/machines/:id/labels` | Machine labels (v0.1.11): replace, or add/remove, the labels of one of the caller's machines |
-| `POST /v1/steps/:id/assign` | Assign (v0.1.12): offer a ready step to a machine or `<machine>/<session>`; the target's accept policy decides `auto` |
+| `POST /v1/steps/:id/assign` | Assign (v0.1.12): offer a ready step to a machine or `<machine>/<session>`; the target's accept policy decides `auto`. RL-21 (0.1.40): scope `steps:assign` for a service acting for a person (own machines and sessions only), `mode`/`profile` for a headless run on the caller's own machine, `code` on refusals, `message` in the reply |
 | `POST /v1/steps/:id/accept` | Assign (v0.1.12): accept an offer from the target machine (claims the step for a session) |
 | `POST /v1/steps/:id/decline` | Assign (v0.1.12): decline an offer (the target machine's owner or a policy match) |
 | `POST /v1/steps/:id/withdraw` | Assign (v0.1.12): withdraw an open offer (the offerer or an admin) |
 | `POST /v1/goals/:id/assign` | Assign (v0.1.12): offer every ready step of a goal; `stick` offers its later ready steps too |
 | `POST /v1/goals/:id/withdraw` | Assign (v0.1.12): end a goal's stick and withdraw the caller's open offers on it |
 | `GET /v1/offers` | Assign (v0.1.12): open offers to the caller's machines |
-| `GET /v1/steps/:id/suggest` | Suggest (v0.1.13): machines to offer a ready step to, best first, each with a reason; `team=1`, `any=1` (read-only) |
+| `GET /v1/steps/:id/suggest` | Suggest (v0.1.13): machines to offer a ready step to, best first, each with a reason; `team=1`, `any=1` (read-only). RL-21: scope `steps:assign` for a service acting for a person (that person's machines only, no `team`) |
 | `GET /v1/goals/:id/suggest` | Suggest (v0.1.13): machines to offer a goal's offerable steps to, best first; `team=1`, `any=1` (read-only) |
 | `GET /v1/profiles`, `GET /v1/profiles/:name` | Headless steps (v0.1.15): permission profiles, the three built-ins first, then registered ones; one profile with its compiled settings |
 | `GET /v1/profiles/:name/fit` | Profile fitting (v0.1.33): denied commands and unused tools of a profile's runs per hash, each suggested as an allow or deny rule or held with a reason; read only |

@@ -255,7 +255,7 @@ describe("RL-19 roll-up", { timeout: 120_000 }, () => {
     expect((await k.w.call(withScope, "GET", path)).status).toBe(200);
     expect((await k.w.call(without, "GET", path)).status).toBe(403);
     expect((await k.w.call(undefined as never, "GET", path)).status).toBe(401);
-    expect(await k.w.call(withScope, "GET", path, undefined, { "x-mesh-on-behalf-of": "ann" })).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route" } });
+    expect(await k.w.call(withScope, "GET", path, undefined, { "x-mesh-on-behalf-of": "ann" })).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route", code: "on-behalf-of-not-accepted" } });
     expect(JSON.stringify((await k.r.call(k.c.ann, "GET", "/v1/goals?pulses=1")).json)).toBe(goalsBefore);
     expect(JSON.stringify((await storeOf(k).listSteps({})).map((s) => [s.id, s.updatedAt]))).toBe(stepsBefore);
     expect((await k.r.call(k.c.ann, "GET", "/v1/events?after=0&limit=1000")).json).toStrictEqual(evBefore);

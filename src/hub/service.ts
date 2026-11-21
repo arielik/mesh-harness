@@ -148,6 +148,7 @@ import type {
   CatalogSourceSave,
   CatalogSourceView,
   AssignRequest,
+  StepAssignRequest,
   AssignResult,
   GoalAssignResult,
   MessageResult,
@@ -323,12 +324,18 @@ function queryTime(name: string, v: string | undefined): number | undefined {
 export class HubError extends Error {
   status: number;
   details?: unknown;
-  constructor(status: number, message: string, details?: unknown) {
+  /** RL-21: a stable refusal code beside the message (`code` in the error body), where one is defined. */
+  code?: string | undefined;
+  constructor(status: number, message: string, details?: unknown, code?: string) {
     super(message);
     this.status = status;
     this.details = details;
+    this.code = code;
   }
 }
+
+/** RL-21: a refusal with a stable code and no details. */
+const refuse = (status: number, code: string, message: string) => new HubError(status, message, undefined, code);
 
 export interface Actor extends Principal {
   machineId?: string | undefined;
@@ -601,14 +608,14 @@ export class HubService {
     return undefined;
   }
 
-  private async machineOr404(actor: Actor, ref: string): Promise<MachineRow> {
+  private async machineOr404(actor: Actor, ref: string, coded = false): Promise<MachineRow> {
     const m = await this.findMachine(actor, ref);
-    if (!m) throw new HubError(404, `no machine ${ref}`);
+    if (!m) throw new HubError(404, `no machine ${ref}`, undefined, coded ? "machine-unknown" : undefined);
     return m;
   }
 
   /** A session reference on a machine, among the non-ended sessions the caller may see. */
-  private async findSessionOn(actor: Actor, m: MachineRow, ref: string): Promise<HubSession> {
+  private async findSessionOn(actor: Actor, m: MachineRow, ref: string, coded = false): Promise<HubSession> {
     const all = (await this.store.listSessions({ live: true })).filter(
       (hs) => hs.machineId === m.id && hs.session.state !== "ended" && sessionVisible(actor.userId, { userId: hs.userId, step: hs.session.step }, m.share),
     );
@@ -619,27 +626,41 @@ export class HubService {
     const byName = all.filter((hs) => hs.session.name === ref);
     const byShown = byName.length ? byName : all.filter((hs) => sessionName(hs.session) === ref);
     const hits = byShown.length ? byShown : ref.length >= 4 ? all.filter((hs) => hs.session.sid.startsWith(ref)) : [];
-    if (hits.length === 0) throw new HubError(404, `no session ${ref} on ${machineName(m)}`);
-    if (hits.length > 1) throw new HubError(409, `"${ref}" matches several sessions on ${machineName(m)}`);
+    if (hits.length === 0) throw new HubError(404, `no session ${ref} on ${machineName(m)}`, undefined, coded ? "session-unknown" : undefined);
+    if (hits.length > 1) throw new HubError(409, `"${ref}" matches several sessions on ${machineName(m)}`, undefined, coded ? "session-ambiguous" : undefined);
     return hits[0] as HubSession;
   }
 
-  /** `to` of an assign: `<machine>`, `<machine>/<session>`, `<user>/<nickname>` or `<user>/<nickname>/<session>`. */
-  private async resolveTarget(actor: Actor, to: string): Promise<{ machine: MachineRow; session?: HubSession | undefined }> {
+  /**
+   * `to` of an assign: `<machine>`, `<machine>/<session>`, `<user>/<nickname>` or `<user>/<nickname>/<session>`.
+   * RL-21: with `owner` (a service acting for that person), the resolved machine must be the owner's,
+   * checked before any session lookup, and the resolved session too; `coded` adds the refusal codes.
+   */
+  private async resolveTarget(actor: Actor, to: string, o: { owner?: string | undefined; coded?: boolean } = {}): Promise<{ machine: MachineRow; session?: HubSession | undefined }> {
+    const coded = o.coded === true;
+    const own = (m: MachineRow): MachineRow => {
+      if (o.owner !== undefined && m.userId !== o.owner) throw refuse(403, "machine-not-yours", `machine not yours: ${to}`);
+      return m;
+    };
+    const session = async (m: MachineRow, ref: string): Promise<HubSession> => {
+      const hs = await this.findSessionOn(actor, m, ref, coded);
+      if (o.owner !== undefined && hs.userId !== o.owner) throw refuse(403, "session-not-yours", `session not yours: ${to}`);
+      return hs;
+    };
     const parts = to.split("/");
-    if (parts.length === 1) return { machine: await this.machineOr404(actor, to) };
+    if (parts.length === 1) return { machine: own(await this.machineOr404(actor, to, coded)) };
     if (parts.length === 2) {
       const [a, b] = parts as [string, string];
       const m = a ? await this.findMachine(actor, a) : undefined;
-      if (m) return { machine: m, session: await this.findSessionOn(actor, m, b) };
-      return { machine: await this.machineOr404(actor, to) };
+      if (m) return { machine: own(m), session: await session(own(m), b) };
+      return { machine: own(await this.machineOr404(actor, to, coded)) };
     }
     if (parts.length === 3) {
       const [a, b, c] = parts as [string, string, string];
-      const m = await this.machineOr404(actor, `${a}/${b}`);
-      return { machine: m, session: await this.findSessionOn(actor, m, c) };
+      const m = own(await this.machineOr404(actor, `${a}/${b}`, coded));
+      return { machine: m, session: await session(m, c) };
     }
-    throw new HubError(404, `no machine ${to}`);
+    throw new HubError(404, `no machine ${to}`, undefined, coded ? "machine-unknown" : undefined);
   }
 
   private async machineNameOf(id: string): Promise<string> {
@@ -663,9 +684,10 @@ export class HubService {
   }
 
   /** Queue a machine-wide message (`toSid: ""`) and wake that machine's daemon. */
-  private async machineMessage(machine: string, fromUser: string, kind: string, text: string, data: Record<string, unknown>): Promise<void> {
-    await this.store.addMessage({ toMachine: machine, toSid: "", fromUser, kind, text, data }, this.now());
+  private async machineMessage(machine: string, fromUser: string, kind: string, text: string, data: Record<string, unknown>): Promise<number> {
+    const m = await this.store.addMessage({ toMachine: machine, toSid: "", fromUser, kind, text, data }, this.now());
     this.store.afterCommit(() => this.bus.publish({ type: "wake", machine }));
+    return m.id;
   }
 
   /** Offer a ready step (inside `goalTx`): set the offer, message the target machine, emit `step.offered`. */
@@ -683,11 +705,23 @@ export class HubService {
     by: { userId: string; sid?: string | undefined; machine?: MachineRow | undefined },
     opts: { note?: string | undefined; stick: boolean; goal: Goal; snapshot?: ProfileSnapshot | undefined; deadline?: number | undefined },
   ): Promise<Step> {
+    return (await this.offerStepMessage(step, target, by, opts)).step;
+  }
+
+  /** `offerStep`, also giving the id of the offer message (RL-21). */
+  private async offerStepMessage(
+    step: Step,
+    target: { machine: MachineRow; session?: HubSession | undefined },
+    by: { userId: string; sid?: string | undefined; machine?: MachineRow | undefined; via?: string | undefined },
+    opts: { note?: string | undefined; stick: boolean; goal: Goal; snapshot?: ProfileSnapshot | undefined; deadline?: number | undefined; headless?: boolean | undefined },
+  ): Promise<{ step: Step; message: number }> {
     const now = this.now();
     const auto = this.autoFor(target, by);
     const sid = target.session?.session.sid;
-    // RL-1: a headless offer carries the profile snapshot, budget, deadline and agent.
-    const snap = step.policy?.mode === "headless" ? opts.snapshot : undefined;
+    // RL-1: a headless offer carries the profile snapshot, budget, deadline and agent. RL-21: also
+    // a step run headless by the assign (`headless`).
+    const snap = step.policy?.mode === "headless" || opts.headless === true ? opts.snapshot : undefined;
+    const via = by.via;
     const headless: Record<string, unknown> = snap
       ? {
           mode: "headless",
@@ -708,16 +742,17 @@ export class HubService {
       auto,
       ...(opts.stick ? { stick: true } : {}),
       ...(opts.note ? { note: opts.note } : {}),
-      ...(snap ? { profile: { name: snap.name, sha256: snap.sha256 } } : {}),
+      ...(snap ? { profile: { name: snap.name, sha256: snap.sha256 }, mode: "headless" as const } : {}),
+      ...(via ? { via } : {}),
     };
     const next: Step = { ...step, offer, updatedAt: now };
     await this.saveStepFrom(next, step);
-    await this.machineMessage(
+    const message = await this.machineMessage(
       target.machine.id,
       by.userId,
       "offer",
-      `MESH: @${by.userId} offers step ${step.id} "${step.title}" (repo ${step.repo}) to this machine${opts.note ? `: ${opts.note}` : ""}`,
-      { step: step.id, goal: step.goal, repo: step.repo, topics: opts.goal.topics ?? [], auto, by: by.userId, ...(sid ? { sid } : {}), ...(opts.note ? { note: opts.note } : {}), ...headless },
+      `MESH: @${by.userId} offers step ${step.id} "${step.title}" (repo ${step.repo}) to this machine${opts.note ? `: ${opts.note}` : ""}${via ? ` (via ${via})` : ""}`,
+      { step: step.id, goal: step.goal, repo: step.repo, topics: opts.goal.topics ?? [], auto, by: by.userId, ...(via ? { via } : {}), ...(sid ? { sid } : {}), ...(opts.note ? { note: opts.note } : {}), ...headless },
     );
     await this.emit({
       type: "step.offered",
@@ -725,9 +760,17 @@ export class HubService {
       sid: by.sid,
       goal: step.goal,
       step: step.id,
-      payload: { machine: target.machine.id, ...(sid ? { sid } : {}), auto, ...(opts.note ? { note: opts.note } : {}), ...(opts.stick ? { stick: true } : {}) },
+      payload: {
+        machine: target.machine.id,
+        ...(sid ? { sid } : {}),
+        auto,
+        ...(opts.note ? { note: opts.note } : {}),
+        ...(opts.stick ? { stick: true } : {}),
+        ...(via ? { via } : {}),
+        ...(snap ? { mode: "headless", profile: snap.name } : {}),
+      },
     });
-    return next;
+    return { step: next, message };
   }
 
   /** A message to the offering session (none when it is absent, unknown or ended). */
@@ -803,23 +846,59 @@ export class HubService {
     return hs ? `${name}/${sessionName(hs.session)}` : name;
   }
 
-  async assignStep(actor: Actor, id: string, req: AssignRequest): Promise<AssignResult> {
+  /** RL-21: a step for the assign and suggest routes, or a coded 404. */
+  private async stepOrRefuse(id: string): Promise<Step> {
+    const s = await this.store.getStep(id);
+    if (!s) throw refuse(404, "step-unknown", `no step ${id}`);
+    return s;
+  }
+
+  async assignStep(actor: Actor, id: string, req: StepAssignRequest): Promise<AssignResult> {
     return await this.goalTx(async () => {
-      const step = await this.stepOr404(id);
-      if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it`);
-      if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}, not ready`);
-      if (isDebrief(step.policy)) throw new HubError(409, `${step.id} is a debrief step: only ${await this.assigneeOf(step)} runs it (mesh debrief ${step.id})`);
-      if (step.offer?.state === "offered") throw new HubError(409, `${step.id} is already offered to ${await this.targetText(step.offer.to)}; withdraw it first (mesh withdraw ${step.id})`);
-      const target = await this.resolveTarget(actor, req.to);
+      const step = await this.stepOrRefuse(id);
+      if (step.kind === "gate") throw refuse(409, "step-gate", `${step.id} is a gate: a person decides it`);
+      if (step.state !== "ready") throw refuse(409, "step-not-ready", `${step.id} is ${step.state}, not ready`);
+      if (isDebrief(step.policy)) throw refuse(409, "step-debrief", `${step.id} is a debrief step: only ${await this.assigneeOf(step)} runs it (mesh debrief ${step.id})`);
+      if (step.offer?.state === "offered") throw refuse(409, "step-offered", `${step.id} is already offered to ${await this.targetText(step.offer.to)}; withdraw it first (mesh withdraw ${step.id})`);
+      // RL-21: a service acting for a person names no session of its own and sets no stick.
+      if (actor.via) {
+        if (req.sid !== undefined) throw refuse(400, "on-behalf-of-option", "sid is not accepted when a service acts for a person");
+        if (req.stick) throw refuse(400, "on-behalf-of-option", "stick is not accepted when a service acts for a person");
+      }
+      const target = await this.resolveTarget(actor, req.to, { owner: actor.via ? actor.userId : undefined, coded: true });
       const goal = await this.goalOr404(step.goal);
-      const guard = await this.headlessGuard(step, target.machine, goal);
-      if (!guard.ok) throw new HubError(409, guard.error);
+      const run = await this.headlessRun(actor, step, target, req);
+      const guard = await this.headlessGuard(step, target.machine, goal, run);
+      if (!guard.ok) throw refuse(409, guard.code, guard.error);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
-      const next = await this.offerStep(step, target, { userId: actor.userId, sid: req.sid, machine: caller.machine }, { note: req.note, stick: false, goal, snapshot: guard.snapshot });
+      const by = { userId: actor.userId, sid: req.sid, machine: caller.machine, via: actor.via };
+      const { step: next, message } = await this.offerStepMessage(step, target, by, { note: req.note, stick: false, goal, snapshot: guard.snapshot, headless: run !== undefined });
       if (req.stick) await this.setStick(goal, next.offer as StepOffer);
-      return { step: next, auto: (next.offer as StepOffer).auto };
+      return { step: next, auto: (next.offer as StepOffer).auto, message };
     });
+  }
+
+  /**
+   * RL-21: the headless run an assign asks for (`mode`, `profile`), or undefined when it asks for
+   * none. Only on the caller's own machine, never into a session or with a stick; a service acting for
+   * a person names a built-in or a profile registered by that person.
+   */
+  private async headlessRun(actor: Actor, step: Step, target: { machine: MachineRow; session?: HubSession | undefined }, req: StepAssignRequest): Promise<{ profile: string } | undefined> {
+    if (req.mode === undefined && req.profile === undefined) return undefined;
+    const declared = step.policy?.mode === "headless";
+    if (target.machine.userId !== actor.userId) throw refuse(403, "machine-not-yours", `machine not yours: ${req.to}`);
+    if (target.session) throw refuse(400, "headless-session-target", `a headless run is never bound to a session; name the machine only (${machineName(target.machine)})`);
+    if (req.stick) throw refuse(400, "headless-stick", "stick cannot carry a headless mode or profile");
+    if (!declared && req.profile === undefined) throw refuse(400, "profile-required", `${step.id} is not headless: name the profile to run it with`);
+    if (!declared && req.mode === undefined) throw refuse(400, "profile-needs-headless", `${step.id} is not headless: a profile needs mode headless`);
+    const name = req.profile ?? step.policy?.profile ?? HEADLESS_DEFAULTS.profile;
+    if (declared && step.policy?.profile !== undefined && name !== step.policy.profile) throw refuse(409, "profile-mismatch", `${step.id} runs with profile ${step.policy.profile}, not ${name}`);
+    if (actor.via && req.profile !== undefined && !(declared && step.policy?.profile !== undefined) && !(await this.store.getGoal(step.goal))?.profiles && !builtinProfile(req.profile)) {
+      const p = await this.store.getProfile(req.profile);
+      if (p && p.createdBy !== actor.userId) throw refuse(403, "profile-not-yours", `profile ${req.profile} is not ${actor.userId}'s; name a built-in or one of theirs`);
+    }
+    return declared && req.profile === undefined ? undefined : { profile: name };
   }
 
   private async setStick(goal: Goal, o: Pick<StepOffer, "to" | "by" | "bySid" | "byMachine">): Promise<Goal> {
@@ -876,16 +955,22 @@ export class HubService {
    * machine that reports it can run one, with a profile that still resolves. RL-3: a goal with
    * `profiles` (made by a pulse or by ingest) offers only the profiles of its snapshot.
    */
-  private async headlessGuard(step: Step, machine: MachineRow, goal?: Goal): Promise<{ ok: true; snapshot?: ProfileSnapshot | undefined } | { ok: false; error: string }> {
-    if (step.policy?.mode !== "headless") return { ok: true };
-    if (machine.headless !== true) return { ok: false, error: `${machineName(machine)} cannot run headless steps (it needs mesh 0.1.15 with workspaceRoots set)` };
-    const name = step.policy.profile ?? HEADLESS_DEFAULTS.profile;
+  private async headlessGuard(
+    step: Step,
+    machine: MachineRow,
+    goal?: Goal,
+    /** RL-21: the assign's headless run (its profile name), also for a step that does not declare headless. */
+    run?: { profile: string },
+  ): Promise<{ ok: true; snapshot?: ProfileSnapshot | undefined } | { ok: false; error: string; code: string }> {
+    if (step.policy?.mode !== "headless" && !run) return { ok: true };
+    if (machine.headless !== true) return { ok: false, code: "headless-unsupported", error: `${machineName(machine)} cannot run headless steps (it needs mesh 0.1.15 with workspaceRoots set)` };
+    const name = run?.profile ?? step.policy?.profile ?? HEADLESS_DEFAULTS.profile;
     if (goal?.profiles) {
       const snap = goal.profiles[name];
-      return snap ? { ok: true, snapshot: snap } : { ok: false, error: `${step.id}: profile ${name} is not in the goal's snapshot` };
+      return snap ? { ok: true, snapshot: snap } : { ok: false, code: "headless-profile-not-pinned", error: `${step.id}: profile ${name} is not in the goal's snapshot` };
     }
     const snapshot = await this.resolveProfile(name);
-    if (!snapshot) return { ok: false, error: `${step.id}: unknown profile ${name}` };
+    if (!snapshot) return { ok: false, code: "headless-profile-unknown", error: `${step.id}: unknown profile ${name}` };
     return { ok: true, snapshot };
   }
 
@@ -1321,8 +1406,8 @@ export class HubService {
     return steps.length > 0 && steps.every((s) => s.state === "done" || s.state === "skipped" || s.state === "dropped") && steps.some((s) => s.kind !== "design");
   }
 
-  private deciderOf(step: Step, actor: Actor, agent: ReviewUpload["agent"]): Decider {
-    if (step.policy?.mode === "headless") return { kind: "agent", key: agent?.key ?? `${repoName(step.repo)}/${local(step)}`, ...(agent?.hash ? { hash: agent.hash } : {}) };
+  private async deciderOf(step: Step, actor: Actor, agent: ReviewUpload["agent"]): Promise<Decider> {
+    if (await this.runHeld(step)) return { kind: "agent", key: agent?.key ?? `${repoName(step.repo)}/${local(step)}`, ...(agent?.hash ? { hash: agent.hash } : {}) };
     return { kind: "person", user: actor.userId };
   }
 
@@ -1346,7 +1431,7 @@ export class HubService {
       const { run, record: runRecord } = raising ? { run: step, record: undefined } : await this.runRecordOf(step, steps);
       const lineage = lineageOf(goal, run ?? step);
       const now = this.now();
-      const decider = this.deciderOf(step, actor, b.agent);
+      const decider = await this.deciderOf(step, actor, b.agent);
       const { undeclaredRules, redactions, agent, sid, ...fields } = b;
       const items: StoredReviewItem[] = fields.items.map(({ eh, ...i }) => ({ ...i, fp: fingerprint(i.key), ...(eh ? { eh } : {}) }));
       const fps = uniqueFps(items);
@@ -1974,17 +2059,20 @@ export class HubService {
     const callerNicknames = new Set(mine.flatMap((m) => (m.nickname ? [m.nickname] : [])));
     const cm = actor.machineId ? await this.store.getMachine(actor.machineId) : undefined;
     const callerMachine = cm ? { id: cm.id, userId: cm.userId, ...(cm.nickname ? { nickname: cm.nickname } : {}) } : undefined;
-    const sessions = await this.store.listSessions({ live: true });
+    // RL-21: for a service acting for a person, only that person's own sessions.
+    const sessions = (await this.store.listSessions({ live: true })).filter((hs) => !actor.via || hs.userId === actor.userId);
     const suggestions = suggest({ caller: actor.userId, callerMachine, now: this.now(), onlineMs: ONLINE_MS, repos, topics, any: q.any, machines: all, callerNicknames, sessions });
     return { target, steps, repos, topics, team: q.team, any: q.any, suggestions };
   }
 
   /** `GET /v1/steps/:id/suggest`: read-only, no event. */
   async suggestStep(actor: Actor, id: string, q: { team: boolean; any: boolean }): Promise<SuggestView> {
+    // RL-21: a service acting for a person ranks that person's machines only.
+    if (actor.via && q.team) throw refuse(400, "on-behalf-of-option", "team is not accepted when a service acts for a person");
     return this.store.tx(async () => {
-      const step = await this.stepOr404(id);
-      if (step.kind === "gate") throw new HubError(409, `${step.id} is a gate: a person decides it`);
-      if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}, not ready`);
+      const step = await this.stepOrRefuse(id);
+      if (step.kind === "gate") throw refuse(409, "step-gate", `${step.id} is a gate: a person decides it`);
+      if (step.state !== "ready") throw refuse(409, "step-not-ready", `${step.id} is ${step.state}, not ready`);
       const topics = (await this.store.getGoal(step.goal))?.topics ?? [];
       return await this.suggestView(actor, step.id, [step.id], step.repo ? [step.repo] : [], [...topics], q);
     });
@@ -2013,9 +2101,28 @@ export class HubService {
       const caller = await this.callerMachine(actor, sid);
       this.refuseForeign(caller, sid);
       if (!caller.machine || caller.machine.id !== offer.to.machine) throw new HubError(403, `${step.id} is offered to ${await this.machineNameOf(offer.to.machine)}, not to this machine`);
+      if (sid !== undefined) HubService.refuseHeadlessAccept(step);
       const claimed = await this.claimInTx(actor, step, sid, caller.machine.id);
       return await this.markAccepted(actor, claimed, sid);
     });
+  }
+
+  /** RL-21: a headless offer is never accepted into a session (the machine's daemon runs it). */
+  private static refuseHeadlessAccept(step: Step): void {
+    if (step.offer?.mode === "headless" || step.policy?.mode === "headless") {
+      throw refuse(409, "offer-headless", `${step.id} is offered to run headless; the machine's daemon starts it, or withdraw it first (mesh withdraw ${step.id})`);
+    }
+  }
+
+  /**
+   * RL-21: is the step held by a headless run? Declared headless, or held through an accepted
+   * headless offer by a run's own session (`kind: "print"`).
+   */
+  private async runHeld(step: Step, holder?: HubSession | undefined): Promise<boolean> {
+    if (step.policy?.mode === "headless") return true;
+    if (step.offer?.state !== "accepted" || step.offer.mode !== "headless" || !step.holderSid) return false;
+    const hs = holder ?? (await this.store.getSession(step.holderSid));
+    return hs?.session.sid === step.holderSid && hs.session.kind === "print";
   }
 
   async declineStep(actor: Actor, id: string, note: string | undefined): Promise<Step> {
@@ -2107,6 +2214,7 @@ export class HubService {
           expiresAt: o.at + this.config.thresholds.offerExpiryMs,
           auto: o.auto,
           ...(o.note ? { note: o.note } : {}),
+          ...(o.via ? { via: o.via } : {}),
         });
       }
       return out.sort((a, b) => a.at - b.at || cmp(a.step, b.step));
@@ -2137,14 +2245,14 @@ export class HubService {
   async actingFor(caller: Actor, header: string | undefined, route: { allowed: boolean; write: boolean }): Promise<Actor> {
     const service = caller.roles.includes("service") && !caller.roles.includes("member");
     if (header === undefined) {
-      if (service && route.allowed && route.write) throw new HubError(400, "on-behalf-of required: a service writes for a person (x-mesh-on-behalf-of)");
+      if (service && route.allowed && route.write) throw refuse(400, "on-behalf-of-required", "on-behalf-of required: a service writes for a person (x-mesh-on-behalf-of)");
       return caller;
     }
-    if (!service) throw new HubError(403, "on-behalf-of is for service tokens only");
-    if (!route.allowed) throw new HubError(400, "on-behalf-of is not accepted on this route");
+    if (!service) throw refuse(403, "on-behalf-of-not-service", "on-behalf-of is for service tokens only");
+    if (!route.allowed) throw refuse(400, "on-behalf-of-not-accepted", "on-behalf-of is not accepted on this route");
     const id = header.trim();
     const user = id ? await this.store.getUser(id) : undefined;
-    if (!user || user.roles.includes("service")) throw new HubError(403, `unknown user ${JSON.stringify(id)}`);
+    if (!user || user.roles.includes("service")) throw refuse(403, "user-unknown", `unknown user ${JSON.stringify(id)}`);
     return { userId: user.id, roles: ["member"], tokenHash: caller.tokenHash, tokenKind: caller.tokenKind, via: caller.userId };
   }
 
@@ -2797,6 +2905,7 @@ export class HubService {
       const caller = await this.callerMachine(actor, sid);
       this.refuseForeign(caller, sid);
       if (caller.machine && caller.machine.id === offer.to.machine) {
+        HubService.refuseHeadlessAccept(step);
         const claimed = await this.claimInTx(actor, step, sid, caller.machine.id);
         return await this.markAccepted(actor, claimed, sid);
       }
@@ -7072,8 +7181,9 @@ export class HubService {
         const hs = s.holderSid ? await this.store.getSession(s.holderSid) : undefined;
         const machine = s.holderMachine ? await this.store.getMachine(s.holderMachine) : undefined;
         // RL-1: a headless step's run session ends when the run does; the daemon closes the step.
+        // RL-21: also a step run headless by the assign (run-held).
         const ended =
-          s.policy?.mode !== "headless" && hs?.session.state === "ended" && hs.session.endedReason !== "clear" && now - (hs.session.endedAt ?? 0) > this.config.thresholds.pauseGraceMs;
+          !(await this.runHeld(s, hs)) && hs?.session.state === "ended" && hs.session.endedReason !== "clear" && now - (hs.session.endedAt ?? 0) > this.config.thresholds.pauseGraceMs;
         const offline = machine !== undefined && now - machine.lastSeen > this.config.thresholds.machineOfflineMs;
         // Conditional: if another replica's tick (a leadership handover) or a request changed the
         // step since it was read, this tick leaves it alone. So running tick twice pauses once.

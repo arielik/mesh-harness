@@ -218,6 +218,12 @@ export const AssignRequest = z.object({
   note: z.string().max(2000).optional(),
 });
 export type AssignRequest = z.infer<typeof AssignRequest>;
+/**
+ * RL-21: body of `POST /v1/steps/:id/assign`: `mode: "headless"` with a `profile` runs a step
+ * headless that does not declare it (the caller's own machines only).
+ */
+export const StepAssignRequest = AssignRequest.extend({ mode: z.literal("headless").optional(), profile: ProfileName.optional() });
+export type StepAssignRequest = z.infer<typeof StepAssignRequest>;
 /** MM-3: body of `POST /v1/steps/:id/decline`. */
 export const DeclineRequest = z.object({ note: z.string().max(2000).optional() });
 export const ReleaseRequest = z.object({ note: z.string().max(4000).optional() });
@@ -583,6 +589,8 @@ export interface GoalDetail {
 export interface AssignResult {
   step: Step;
   auto: boolean;
+  /** RL-21: the id of the offer message to the target machine (its `message.delivered` event has it as `payload.id`). */
+  message?: number | undefined;
 }
 
 /** MM-3: reply of `POST /v1/goals/:id/assign`: the steps offered now, and the policy verdict. */
@@ -649,6 +657,8 @@ export interface OfferView {
   expiresAt: number;
   auto: boolean;
   note?: string | undefined;
+  /** RL-21: the service that made the offer for `by`. */
+  via?: string | undefined;
 }
 
 /** MM-3: a step's last offer on the goal page. `accepted` = `<machine name>/<session name>` once accepted. */
@@ -757,7 +767,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "runs", "spot-checks", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "runs", "spot-checks", "step-assign-for", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({

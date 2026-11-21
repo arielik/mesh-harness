@@ -54,7 +54,7 @@ describe("RL-20 AC-10 route, feature, docs", () => {
     const up = section(ops, "Upgrading to 0\\.1\\.\\d+");
     expect(up).toContain("0.1.39 (RL-20) adds a read-only preset check (`POST /v1/presets/check`");
     expect(up.indexOf("0.1.39 (RL-20)")).toBeLessThan(up.indexOf("0.1.23 has no release package."));
-    expect(up).toContain("no migration (schema 12), no daemon change. 0.1.23");
+    expect(up).toContain("no migration (schema 12), no daemon change.");
     expect(ops).toContain("`overlap-policy`, `preset-check`, `profile-fit`");
     expect(read("docs/plan/implementation-plan.md")).toContain("| `POST /v1/presets/check` |");
   });

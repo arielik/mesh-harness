@@ -309,6 +309,10 @@ export const StepOffer = z.object({
   decidedAt: z.number().optional(),
   /** RL-1: the profile snapshot a headless offer carried (the hub's record of what the run may do). */
   profile: z.object({ name: ProfileName, sha256: z.string() }).optional(),
+  /** RL-21: set on every headless offer (declared or chosen at assign); never accepted into a session. */
+  mode: z.literal("headless").optional(),
+  /** RL-21: the service that made the offer for `by`. */
+  via: z.string().optional(),
 });
 export type StepOffer = z.infer<typeof StepOffer>;
 

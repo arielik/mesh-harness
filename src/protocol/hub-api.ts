@@ -10,6 +10,7 @@ import {
   ArtifactUpload,
   AskRequest,
   AssignRequest,
+  StepAssignRequest,
   ClaimRequest,
   CliExchange,
   Decide,
@@ -66,7 +67,7 @@ const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -91,6 +92,8 @@ export interface HubApiRoute {
   onBehalfOf?: boolean;
   /** RL-20: a `POST` that only reads: no idempotency key (nothing is stored), no write. */
   read?: true;
+  /** RL-21: a service token must send the header here, also on a read. */
+  onBehalfOfRequired?: boolean;
 }
 
 const TOPIC_QUERY = "topic names, repeated or comma-separated: only goals with every one (`all`: every goal)";
@@ -385,8 +388,27 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/steps/:id/reject", rule: "member", tag: "steps", body: GateDecision, summary: "Reject a gate step (optionally reopening steps)." },
   { method: "POST", path: "/v1/steps/:id/resume", rule: "member", tag: "steps", body: ResumeRequest, summary: "Resume a parked step." },
   { method: "POST", path: "/v1/steps/:id/take", rule: "member", tag: "steps", body: ClaimRequest, summary: "Take over a step held by someone else (after the takeover threshold)." },
-  { method: "POST", path: "/v1/steps/:id/assign", rule: "member", tag: "steps", body: AssignRequest, summary: "Offer a ready step to a machine or session." },
-  { method: "GET", path: "/v1/steps/:id/suggest", rule: "member", tag: "steps", query: SUGGEST_QUERY, summary: "Machines to offer a ready step to, best first, each with a reason (read-only)." },
+  {
+    method: "POST",
+    path: "/v1/steps/:id/assign",
+    rule: "member",
+    scope: "steps:assign",
+    onBehalfOf: true,
+    tag: "steps",
+    body: StepAssignRequest,
+    summary: "Offer a ready step to a machine or session; `mode: headless` with a `profile` runs it headless on the caller's own machine. A service acts for a person (their own machines and sessions only).",
+  },
+  {
+    method: "GET",
+    path: "/v1/steps/:id/suggest",
+    rule: "member",
+    scope: "steps:assign",
+    onBehalfOf: true,
+    onBehalfOfRequired: true,
+    tag: "steps",
+    query: SUGGEST_QUERY,
+    summary: "Machines to offer a ready step to, best first, each with a reason (read-only). A service acts for a person: that person's machines only.",
+  },
   { method: "POST", path: "/v1/steps/:id/accept", rule: "member", tag: "steps", body: ClaimRequest, summary: "Accept a step offered to this machine: claim it for a session." },
   { method: "POST", path: "/v1/steps/:id/decline", rule: "member", tag: "steps", body: DeclineRequest, summary: "Decline an offer (the target machine's owner or a policy match)." },
   { method: "POST", path: "/v1/steps/:id/withdraw", rule: "member", tag: "steps", summary: "Withdraw an open offer (the offerer or an admin)." },
@@ -503,7 +525,8 @@ export function hubOpenApi(version = "1"): Record<string, unknown> {
       params.push({ name: IDEMPOTENCY_HEADER, in: "header", required: false, description: "Repeat-safe retries: a repeated key returns the first response.", schema: { type: "string" } });
     }
     if (r.onBehalfOf) {
-      params.push({ name: ON_BEHALF_OF_HEADER, in: "header", required: false, description: "Service tokens only: the user id of the person this request acts for (required for a service's writes).", schema: { type: "string" } });
+      const need = r.onBehalfOfRequired ? "required for a service on this route" : "required for a service's writes";
+      params.push({ name: ON_BEHALF_OF_HEADER, in: "header", required: false, description: `Service tokens only: the user id of the person this request acts for (${need}).`, schema: { type: "string" } });
     }
     const status = String(r.status ?? 200);
     const responses: Record<string, unknown> = {

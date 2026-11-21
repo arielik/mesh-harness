@@ -10311,8 +10311,8 @@
     "/v1/steps/{id}/assign": {
       "post": {
         "operationId": "postVStepsIdAssign",
-        "summary": "Offer a ready step to a machine or session.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "summary": "Offer a ready step to a machine or session; `mode: headless` with a `profile` runs it headless on the caller's own machine. A service acts for a person (their own machines and sessions only).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `steps:assign`.",
         "tags": [
           "steps"
         ],
@@ -10330,6 +10330,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service's writes).",
             "schema": {
               "type": "string"
             }
@@ -10358,6 +10367,14 @@
                   "note": {
                     "type": "string",
                     "maxLength": 2000
+                  },
+                  "mode": {
+                    "type": "string",
+                    "const": "headless"
+                  },
+                  "profile": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9+._-]{0,39}$"
                   }
                 },
                 "required": [
@@ -10383,6 +10400,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -10390,8 +10410,8 @@
     "/v1/steps/{id}/suggest": {
       "get": {
         "operationId": "getVStepsIdSuggest",
-        "summary": "Machines to offer a ready step to, best first, each with a reason (read-only).",
-        "description": "Any logged-in user (bearer token or web session).",
+        "summary": "Machines to offer a ready step to, best first, each with a reason (read-only). A service acts for a person: that person's machines only.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `steps:assign`.",
         "tags": [
           "steps"
         ],
@@ -10421,6 +10441,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10436,6 +10465,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }

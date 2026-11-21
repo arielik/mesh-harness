@@ -246,9 +246,9 @@ describe("RL-20 AC-07/AC-08 scopes and no writes", () => {
     const r = await check(reader, b);
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     expect(r.json.ok).toBe(true);
-    expect(await check(writer, b)).toStrictEqual({ status: 403, json: { error: "forbidden" } });
-    expect(await check(undefined, b)).toStrictEqual({ status: 401, json: { error: "login required" } });
-    expect(await check(reader, b, { "x-mesh-on-behalf-of": "ann" })).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route" } });
+    expect(await check(writer, b)).toStrictEqual({ status: 403, json: { error: "forbidden", code: "forbidden" } });
+    expect(await check(undefined, b)).toStrictEqual({ status: 401, json: { error: "login required", code: "login-required" } });
+    expect(await check(reader, b, { "x-mesh-on-behalf-of": "ann" })).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route", code: "on-behalf-of-not-accepted" } });
   });
 
   it("test_AC08_no_writes_no_events_no_replay", async () => {

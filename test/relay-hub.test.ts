@@ -585,7 +585,7 @@ describe("AC-20 headless offer data", () => {
     expect((await r.call(k.bob, "POST", "/v1/profiles", { name: "audit", text: "extends: read-only\n" })).status).toBe(201);
     const G = await r.goal(k.bob, [{ id: "h", mode: "headless", profile: "audit" }]);
     await r.w.hubStore.db.run("DELETE FROM profile WHERE name = ?", "audit");
-    expect(await r.assign(k.bob, `${G}.h`, { to: "ann/hl" })).toStrictEqual({ status: 409, json: { error: `${G}.h: unknown profile audit` } });
+    expect(await r.assign(k.bob, `${G}.h`, { to: "ann/hl" })).toStrictEqual({ status: 409, json: { error: `${G}.h: unknown profile audit`, code: "headless-profile-unknown" } });
   });
 });
 

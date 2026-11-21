@@ -933,18 +933,18 @@ describe("AC-08 step suggest errors, read-only", () => {
 
   it("test_AC08_unknown", async () => {
     const { caller, G } = await setup();
-    expect(await suggest(caller.token, `${G}.nope`)).toEqual({ status: 404, json: { error: `no step ${G}.nope` } });
+    expect(await suggest(caller.token, `${G}.nope`)).toEqual({ status: 404, json: { error: `no step ${G}.nope`, code: "step-unknown" } });
   });
 
   it("test_AC08_gate", async () => {
     const { caller, G } = await setup();
     expect((await stepOf(caller.token, `${G}.g`)).state).toBe("ready");
-    expect(await suggest(caller.token, `${G}.g`)).toEqual({ status: 409, json: { error: `${G}.g is a gate: a person decides it` } });
+    expect(await suggest(caller.token, `${G}.g`)).toEqual({ status: 409, json: { error: `${G}.g is a gate: a person decides it`, code: "step-gate" } });
   });
 
   it("test_AC08_blocked", async () => {
     const { caller, G } = await setup();
-    expect(await suggest(caller.token, `${G}.s3`)).toEqual({ status: 409, json: { error: `${G}.s3 is blocked, not ready` } });
+    expect(await suggest(caller.token, `${G}.s3`)).toEqual({ status: 409, json: { error: `${G}.s3 is blocked, not ready`, code: "step-not-ready" } });
   });
 
   it("test_AC08_claimed", async () => {
@@ -954,7 +954,7 @@ describe("AC-08 step suggest errors, read-only", () => {
     expect((await w.call(caller.token, "POST", `/v1/steps/${G}.s2/claim`, {})).status).toBe(200);
     const state = (await stepOf(caller.token, `${G}.s2`)).state as string;
     expect(state).not.toBe("ready");
-    expect(await suggest(caller.token, `${G}.s2`)).toEqual({ status: 409, json: { error: `${G}.s2 is ${state}, not ready` } });
+    expect(await suggest(caller.token, `${G}.s2`)).toEqual({ status: 409, json: { error: `${G}.s2 is ${state}, not ready`, code: "step-not-ready" } });
   });
 
   it("test_AC08_service_token", async () => {

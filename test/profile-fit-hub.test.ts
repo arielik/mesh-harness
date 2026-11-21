@@ -169,7 +169,7 @@ describe("RL-16 AC-05 AC-06 AC-07 profile fit route", { timeout: 120_000 }, () =
     expect((await k.w.call(withScope, "GET", path)).status).toBe(200);
     expect((await k.w.call(without, "GET", path)).status).toBe(403);
     expect((await k.w.call(undefined as never, "GET", path)).status).toBe(401);
-    expect(await k.w.call(withScope, "GET", path, undefined, { "x-mesh-on-behalf-of": "ann" })).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route" } });
+    expect(await k.w.call(withScope, "GET", path, undefined, { "x-mesh-on-behalf-of": "ann" })).toStrictEqual({ status: 400, json: { error: "on-behalf-of is not accepted on this route", code: "on-behalf-of-not-accepted" } });
     expect((await k.r.call(k.c.ann, "GET", "/v1/events?after=0&limit=1000")).json).toStrictEqual(evBefore);
     expect((await k.r.call(k.c.ann, "GET", "/v1/profiles/ci")).json).toStrictEqual(profBefore);
     const features = (await k.w.call(undefined as never, "GET", "/healthz")).json.features as string[];

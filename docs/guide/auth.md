@@ -42,7 +42,7 @@ Roles come from provider groups (`roles:` mappings) and `bootstrap_admins`.
 - Device tokens (CLI and daemon) and web sessions expire as configured.
 - `mesh hub revoke --user alice` or `--machine m-…` revokes them.
 - `mesh hub token --service analytics` mints a token for `GET /v1/events` and `mesh ledger export --events`.
-- `--scope` adds member routes to a service token, comma-separated. `goals:read` reads goals and steps (`GET /v1/goals`, `/v1/goals/:id` with its files and timeline, `GET /v1/steps`, `/v1/steps/:id`) and checks presets (`POST /v1/presets/check`, a read that writes nothing); `goals:write` creates goals (`POST /v1/goals`, owned by the service account); `live:read` reads `GET /v1/live`, `GET /v1/fleet` and `GET /v1/stream`; `pulses:write` creates and changes pulses (`POST /v1/pulses`, `/v1/pulses/:id/{update,pause,resume,fire,delete}`); `profiles:write` saves permission profiles (`POST /v1/profiles`). No scope approves, claims or answers. Example, for a dashboard that shows and adds goals: `mesh hub token --service mesh-ai --scope goals:read,goals:write,live:read`. A scope is fixed when the token is minted; to change it, revoke the token (`mesh hub revoke --user <service user>`) and mint another.
+- `--scope` adds member routes to a service token, comma-separated. `goals:read` reads goals and steps (`GET /v1/goals`, `/v1/goals/:id` with its files and timeline, `GET /v1/steps`, `/v1/steps/:id`) and checks presets (`POST /v1/presets/check`, a read that writes nothing); `goals:write` creates goals (`POST /v1/goals`, owned by the service account); `live:read` reads `GET /v1/live`, `GET /v1/fleet` and `GET /v1/stream`; `pulses:write` creates and changes pulses (`POST /v1/pulses`, `/v1/pulses/:id/{update,pause,resume,fire,delete}`); `profiles:write` saves permission profiles (`POST /v1/profiles`); `steps:assign` offers a ready step for a person and ranks that person's machines for it (`POST /v1/steps/:id/assign`, `GET /v1/steps/:id/suggest`, only with `X-Mesh-On-Behalf-Of`). No scope approves, claims or answers. Example, for a dashboard that shows and adds goals: `mesh hub token --service dash --scope goals:read,goals:write,live:read`. A scope is fixed when the token is minted; to change it, revoke the token (`mesh hub revoke --user <service user>`) and mint another.
 
 **A service acts for a person.** On `GET /v1/fleet`, `POST /v1/profiles`, `POST /v1/pulses` and `POST /v1/pulses/:id/{update,pause,resume,fire,delete}`, a service token with the route's scope may send `X-Mesh-On-Behalf-Of: <user id>`. The request then runs as that person, with the member role only (never their admin role): the pulse or profile is theirs, the fleet is theirs, and the events name them in `user` and the service in `payload.via`. A pulse made or changed this way must name the person's own machines in `target.machines` (by id, `<user>/<nickname>` or nickname); labels may narrow it. Refusals, each with its own `error`:
 
@@ -56,6 +56,46 @@ Roles come from provider groups (`roles:` mappings) and `bootstrap_admins`.
 | 403 | `machine not yours: <name>` | a target machine the person does not own |
 | 403 | `only @<owner> or an admin can change pulse <id>` | a pulse of another person |
 
-Example, for mesh-ai: `mesh hub token --service mesh-ai --scope goals:read,goals:write,live:read,pulses:write,profiles:write`.
+Since 0.1.40 these refusals carry a stable `code` beside `error` (`on-behalf-of-required`, `on-behalf-of-not-accepted`, `on-behalf-of-not-service`, `user-unknown`), and the route rule's refusals carry `forbidden` and `login-required`. The `error` texts are unchanged; a client may match on `code` instead.
+
+**A service assigns a step for a person** (0.1.40, feature `step-assign-for`). With the scope `steps:assign`, a service sends `POST /v1/steps/:id/assign` and `GET /v1/steps/:id/suggest` with `X-Mesh-On-Behalf-Of: <user id>`; the header is required on both, also on the read. The scope is separate from `goals:write` on purpose: `goals:write` creates goals the service owns, while an assign starts work on a person's machine under that person's name, so an existing token does not gain it; mint a new token to grant it. The rights:
+
+- The person is looked up exactly (no case folding, no nickname); a service account or an unknown id is `user-unknown`. The request runs with the member role only, never the person's admin role.
+- The target (`<machine>`, `<machine>/<session>`, `<user>/<nickname>`, `<user>/<nickname>/<session>`) is resolved as for the person, then the resolved machine must be the person's own (checked before any session part is looked up), and a named session must be a live session the person owns. Anything else is refused; no name form reaches another person's machine.
+- `sid` and `stick` are refused for a person (`on-behalf-of-option`); `note` is allowed. Suggest refuses `team=1` and ranks only the person's machines and sessions.
+- The offer's `by` is the person and its `via` the service: the target's `self` and `user:<person>` accept rules apply as if the person assigned it (so a `self` rule also auto-accepts offers a service makes for you), a `machine:<x>` rule never does. `step.offered` carries `user` = the person and `payload.via`; the offer message ends with `(via <service>)`; `GET /v1/offers` shows `via`.
+- Retries with the same `Idempotency-Key` replay the first answer per service and person, never across persons.
+
+Any caller may also send `mode: "headless"` and `profile` in the assign body to run a step headless that does not declare it (a fresh `claude -p` run under that profile): only on the caller's own machine (`machine-not-yours`), never into a session (`headless-session-target`) or with a stick (`headless-stick`), a profile is required (`profile-required`, `profile-needs-headless`), a step that declares a profile admits only that one (`profile-mismatch`), and the headless guard applies (`headless-unsupported`, `headless-profile-unknown`, `headless-profile-not-pinned` for a goal that pins its profiles). A service acting for a person may name a built-in profile or one registered for that person (`profile-not-yours` otherwise); note that this includes `propose-via-branch` (which edits, commits and pushes) and profiles a `profiles:write` service registered for the person, so with the person's `self` rule such an offer runs unattended. That is the reach an admin grants by minting both scopes, as for pulses. No budget is chosen here: the run gets the default turns and minutes.
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | `on-behalf-of-option` | `sid` or `stick` on assign, `team=1` on suggest, for a person |
+| 403 | `user-unknown` | no such user, or a service account |
+| 403 | `machine-not-yours` | the target machine is not the person's (or, with `mode`/`profile`, not the caller's) |
+| 403 | `session-not-yours` | the target session is not the person's |
+| 403 | `profile-not-yours` | a registered profile of someone else, for a person |
+| 404 | `step-unknown` / `machine-unknown` / `session-unknown` | no such step, machine, or live session on it |
+| 409 | `step-gate` / `step-not-ready` / `step-debrief` / `step-offered` | the step is a gate, not ready, a debrief, or already offered |
+| 409 | `session-ambiguous` | the session name matches several |
+| 400 | `profile-required` / `profile-needs-headless` / `headless-session-target` / `headless-stick` | a headless request that does not fit |
+| 409 | `profile-mismatch` / `headless-unsupported` / `headless-profile-unknown` / `headless-profile-not-pinned` | the headless guard |
+| 409 | `offer-headless` | accept with a `sid`, or claim, of a headless offer: the machine's daemon starts it |
+
+The assign answers `{step, auto, message}`; `message` is the id of the offer message to the machine. The hub does not know the outcome when it answers; read it from state and events:
+
+| Outcome | Where |
+|---|---|
+| listed (waits for the owner) | `message.delivered` with `payload.id` = `message` and `method: "listed"`; the offer stays `offered`. A headless offer is run only when auto-accepted, so a listed one waits until it is declined, withdrawn or expires |
+| accepted into a session | `step.accepted`; `offer.state` `accepted`; method `accepted` |
+| launched (a new interactive session) | method `launched` |
+| headless run started or queued | method `headless` or `queued`; `run.started` when it starts |
+| declined | `step.declined`; `offer.state` `declined`; method `declined` |
+| failed | `message.delivered` with `state: "failed"` and the reason as `method`; the offer stays `offered` until it expires |
+| expired or withdrawn | `step.offer_expired` or `step.offer_withdrawn`; `offer.state` |
+
+`GET /v1/steps/:id` gives `offer.state` (it needs `goals:read`); `GET /v1/events` gives the events (a service reads them). `message.delivered` names no step: the `message` of the reply is the join key.
+
+Example, for a dashboard that also starts steps for people: `mesh hub token --service dash --scope goals:read,goals:write,live:read,pulses:write,profiles:write,steps:assign`.
 
 A daemon whose token expired keeps working locally and shows "hub login expired"; `mesh login` again.

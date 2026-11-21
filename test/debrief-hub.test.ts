@@ -70,7 +70,7 @@ describe("AC-01 read route (World)", () => {
 describe("AC-03 never offered", () => {
   it("test_AC03_assign_409", async () => {
     const { D, G } = await fixture({ extra: [S.step("side")] });
-    expect(await k.r.assign(k.c.alice, D, { to: k.w.machineOf(k.c.bob) })).toStrictEqual({ status: 409, json: { error: `${D} is a debrief step: only alice runs it (mesh debrief ${D})` } });
+    expect(await k.r.assign(k.c.alice, D, { to: k.w.machineOf(k.c.bob) })).toStrictEqual({ status: 409, json: { error: `${D} is a debrief step: only alice runs it (mesh debrief ${D})`, code: "step-debrief" } });
     expect(await offered(D)).toBe(0);
     expect(await offerMsgs(D)).toStrictEqual([]);
     expect((await k.step(D)).offer).toBeUndefined();
