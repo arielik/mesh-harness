@@ -95,6 +95,7 @@ Someone runs the hub (see [11](#11-run-a-team-hub)) and gives you a token, or th
 ```bash
 mesh login --hub https://mesh.example --token 3f9a…      # token provider
 mesh login --hub https://mesh.example --provider kanidm  # OIDC in the browser (any OIDC issuer)
+mesh login --hub https://mesh.example --name auto        # also name this machine <os-user>-<host>, e.g. ghost2-arthas
 mesh status
 #   daemon on alice-laptop: team hub https://mesh.example as alice
 mesh logout                                              # back to Solo
@@ -133,6 +134,7 @@ mesh machines                      # or: mesh fleet; --json for the raw view
 mesh machine name laptop           # name this machine
 mesh machine name gpu --machine build-box   # name another one (id, nickname or hostname)
 mesh machine name --clear          # remove this machine's name
+mesh login --name laptop           # or name it when you log in (checked before the login)
 ```
 
 In the TUI, `m` opens the **My machines** panel (your other machines; `m` again goes back, `g`

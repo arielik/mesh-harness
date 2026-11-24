@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sha256 } from "../src/auth/index.ts";
 import { isRemoteShell, login, pastedCode } from "../src/cli/login.ts";
 import { hubCommands } from "../src/cli/hub-commands.ts";
+import { autoNickname } from "../src/cli/machine-commands.ts";
 import type { CliEnv } from "../src/cli/context.ts";
 import { buildHubConfig, startHub, type RunningHub } from "../src/hub/index.ts";
 import { resolvePaths } from "../src/protocol/index.ts";
@@ -238,6 +239,68 @@ describe("mesh login", () => {
     it("rejects a malformed installation id", async () => {
       const res = await fetch(`${hub.url}/auth/team/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "alice-token", install: "bad id!" }) });
       expect(res.status).toBe(400);
+    });
+
+    describe("mesh login --name", () => {
+      const withInstall = async (fn: (run: (a: string[]) => Promise<number>, out: string[], paths: ReturnType<typeof resolvePaths>) => Promise<void>) => {
+        const root = mkdtempSync(join(tmpdir(), "mesh-name-"));
+        try {
+          const paths = resolvePaths({ MESH_CONFIG_DIR: join(root, "cfg"), MESH_STATE_DIR: join(root, "st"), CLAUDE_CONFIG_DIR: join(root, "cl") }, root);
+          const out: string[] = [];
+          const c: CliEnv = { io: { out: (t) => out.push(t), err: (t) => out.push(t) }, paths, env: { DISPLAY: ":0" }, cwd: root, self: ["mesh"], version: "0" };
+          const cmd = hubCommands(c).find((x) => x.name === "login") as { run(a: string[]): Promise<number> };
+          await fn((a) => cmd.run(a), out, paths);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      };
+      const nickOf = async (token: string, id: string) => {
+        const res = await fetch(`${hub.url}/v1/fleet`, { headers: { authorization: `Bearer ${token}` } });
+        return ((await res.json()) as { machines: { id: string; nickname?: string }[] }).machines.find((m) => m.id === id)?.nickname;
+      };
+      const login = ["--provider", "team", "--token", "alice-token"];
+
+      it("names the machine after logging in", async () => {
+        await withInstall(async (run, out, paths) => {
+          expect(await run(["--hub", hub.url, ...login, "--name", "ghost2-arthas"])).toBe(0);
+          const creds = JSON.parse(readFileSync(paths.credentials, "utf8"));
+          expect(await nickOf(creds.token, creds.machine)).toBe("ghost2-arthas");
+          expect(out.at(-1)).toMatch(/^Named .+ \(m-[0-9a-f]{8}\) ghost2-arthas\.$/);
+        });
+      });
+
+      it("refuses a bad nickname before logging in", async () => {
+        for (const bad of ["Ghost2", "ghost2@arthas", "m-0123abcd", "-x"]) {
+          await withInstall(async (run, out, paths) => {
+            expect(await run(["--hub", hub.url, ...login, "--name", bad])).toBe(2);
+            expect(out.join("\n")).toMatch(/nickname must match/);
+            expect(() => readFileSync(paths.credentials)).toThrow();
+          });
+        }
+        await withInstall(async (run) => {
+          expect(await run(["--hub", hub.url, ...login, "--name"])).toBe(2);
+        });
+      });
+
+      it("stays logged in but exits 1 when the hub refuses the name", async () => {
+        await withInstall(async (run) => {
+          expect(await run(["--hub", hub.url, ...login, "--name", "taken-one"])).toBe(0);
+        });
+        await withInstall(async (run, out, paths) => {
+          expect(await run(["--hub", hub.url, ...login, "--name", "taken-one"])).toBe(1);
+          expect(out.join("\n")).toMatch(/logged in, but this machine was not named taken-one: .*already used/);
+          expect(JSON.parse(readFileSync(paths.credentials, "utf8")).user.id).toBe("alice");
+        });
+      });
+
+      it("--name auto is <os-user>-<host>", () => {
+        expect(autoNickname("ghost2", "arthas")).toBe("ghost2-arthas");
+        expect(autoNickname("Ghost.Two", "Arthas.lab.example")).toBe("ghost-two-arthas");
+        expect(autoNickname("a_b", "")).toBe("a-b");
+        expect(autoNickname("x".repeat(30), "host-name")).toBe(`${"x".repeat(30)}-h`);
+        expect(autoNickname("x".repeat(31), "host")).toBe("x".repeat(31));
+        expect(autoNickname("___", "...")).toBeUndefined();
+      });
     });
 
     it("mesh login sends this installation's id, made once and kept", async () => {

@@ -14,6 +14,26 @@ const MACHINE_USAGE = [
   "       mesh machine label --clear [--machine <id|nickname|hostname>]",
 ].join("\n");
 
+/**
+ * The nickname `mesh login --name auto` picks: `<os-user>-<host>` (the host's first label),
+ * lowercased, other characters turned into `-`, cut to 32. Undefined if nothing valid is left.
+ */
+export function autoNickname(user: string, host: string): string | undefined {
+  const clean = (x: string) => x.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  const n = [clean(user), clean(host.split(".")[0] ?? "")].filter(Boolean).join("-").slice(0, 32).replace(/-+$/, "");
+  return nicknameOk(n) ? n : undefined;
+}
+
+/** Set (or clear, with null) a machine's nickname on the hub; the hub's answer, or its refusal. */
+export async function setNickname(creds: Credentials, id: string, nickname: string | null): Promise<{ id: string; hostname: string; nickname?: string } | { error: string }> {
+  try {
+    return await new HubClient(creds).post(`/v1/machines/${encodeURIComponent(id)}/name`, { nickname });
+  } catch (e) {
+    if (!(e instanceof HubCallError)) throw e;
+    return { error: e.message };
+  }
+}
+
 /** `not a topic` warnings for labels the hub has no topic for (MM-2). */
 export function notATopic(unknown: readonly string[] | undefined): string[] {
   return (unknown ?? []).map((l) => `not a topic: ${l}; mesh topic add ${l}`);
@@ -140,12 +160,9 @@ export function machineCommand(c: CliEnv): Command {
       const t = await targetMachine(c, creds, a.str("machine"));
       if ("code" in t) return t.code;
       const id = t.id;
-      let res: { id: string; hostname: string; nickname?: string };
-      try {
-        res = await new HubClient(creds as NonNullable<typeof creds>).post(`/v1/machines/${encodeURIComponent(id)}/name`, { nickname: clear ? null : nickname });
-      } catch (e) {
-        if (!(e instanceof HubCallError)) throw e;
-        c.io.err(e.message);
+      const res = await setNickname(creds as NonNullable<typeof creds>, id, clear ? null : (nickname as string));
+      if ("error" in res) {
+        c.io.err(res.error);
         return 1;
       }
       c.io.out(res.nickname ? `Named ${res.hostname} (${res.id}) ${res.nickname}.` : `Cleared the nickname of ${res.hostname} (${res.id}).`);

@@ -2,6 +2,7 @@
 // and `mesh hub init` (writes a starter mesh-hub.yaml).
 
 import { randomBytes } from "node:crypto";
+import { hostname as osHostname, userInfo } from "node:os";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -9,7 +10,7 @@ import { stringify, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { sha256 } from "../auth/index.ts";
 import { BUILTIN_PRESETS, instantiate, parsePreset, presetKindProblem, presetText, repoMatches, type Preset } from "../core/index.ts";
-import { PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type Step, type TopicView, type TrailFile } from "../protocol/index.ts";
+import { NICKNAME_RULE, nicknameOk, PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type Step, type TopicView, type TrailFile } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
@@ -17,25 +18,48 @@ import { clearCredentials, HubClient, hubFetch, installId, loadCredentials, save
 import { isRemoteShell, login } from "./login.ts";
 import { artifactCommand, profileCommand } from "./artifact-commands.ts";
 import { itemsCommand } from "./review-commands.ts";
-import { machineCommand, machinesCommand } from "./machine-commands.ts";
+import { autoNickname, machineCommand, machinesCommand, setNickname } from "./machine-commands.ts";
 import { renderGoal } from "./show.ts";
 import { writeTrailHere } from "./trail-files.ts";
 
 const stepLine = (s: Step) => `${s.id.padEnd(20)} ${s.state.padEnd(8)} ${s.kind.padEnd(9)} ${(s.repo || "-").padEnd(18)} ${s.holderUser ? `@${s.holderUser} ` : ""}${s.title}`;
 
-const LOGIN_USAGE = "usage: mesh login --hub https://mesh.example [--provider ID] [--token T] [--device] [--no-browser | --local]";
+const LOGIN_USAGE = [
+  "usage: mesh login --hub https://mesh.example [--provider ID] [--token T] [--device] [--no-browser | --local] [--name <nickname>|auto]",
+  "  --name  also name this machine on the hub (as mesh machine name does); auto = <os-user>-<host>, e.g. ghost2-arthas",
+].join("\n");
 
 export function loginCommand(c: CliEnv): Command {
   return {
     name: "login",
     help: LOGIN_USAGE,
-    summary: "log in to a mesh hub: mesh login --hub URL [--provider ID] [--token T] [--device] [--no-browser | --local]",
+    summary: "log in to a mesh hub: mesh login --hub URL [--provider ID] [--token T] [--device] [--no-browser | --local] [--name <nickname>|auto]",
     async run(args) {
-      const a = parseArgs(args, ["hub", "provider", "token"]);
+      const a = parseArgs(args, ["hub", "provider", "token", "name"]);
       const hub = a.str("hub") ?? loadCredentials(c.paths)?.hub ?? c.env.MESH_HUB;
       if (!hub) {
         c.io.err(LOGIN_USAGE);
         return 2;
+      }
+      // Check the nickname before logging in, so a typo costs no login.
+      const rawName = a.str("name");
+      if (a.has("name") && rawName === undefined) {
+        c.io.err(LOGIN_USAGE);
+        return 2;
+      }
+      let nickname: string | undefined;
+      if (rawName === "auto") {
+        nickname = autoNickname(userInfo().username, osHostname());
+        if (!nickname) {
+          c.io.err("--name auto found no usable <os-user>-<host> here; give a nickname: --name <nickname>");
+          return 2;
+        }
+      } else if (rawName !== undefined) {
+        if (!nicknameOk(rawName)) {
+          c.io.err(NICKNAME_RULE);
+          return 2;
+        }
+        nickname = rawName;
       }
       const ask = async (q: string) => {
         const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -72,6 +96,17 @@ export function loginCommand(c: CliEnv): Command {
       });
       saveCredentials(c.paths, { hub: hub.replace(/\/+$/, ""), token: r.token, user: r.user, ...(r.machine ? { machine: r.machine } : {}) });
       c.io.out(`Logged in to ${hub} as ${r.user.id} (${r.user.roles.join(", ")}). Your running daemon picks this up by itself.`);
+      if (nickname === undefined) return 0;
+      if (!r.machine) {
+        c.io.err(`the hub registered no machine for this login, so it could not be named; once it has one, run: mesh machine name ${nickname}`);
+        return 1;
+      }
+      const named = await setNickname({ hub: hub.replace(/\/+$/, ""), token: r.token, user: r.user, machine: r.machine }, r.machine, nickname);
+      if ("error" in named) {
+        c.io.err(`logged in, but this machine was not named ${nickname}: ${named.error}`);
+        return 1;
+      }
+      c.io.out(`Named ${named.hostname} (${named.id}) ${named.nickname ?? nickname}.`);
       return 0;
     },
   };
