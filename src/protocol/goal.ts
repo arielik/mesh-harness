@@ -207,7 +207,7 @@ export const StoredArtifact = z.object({
 export type StoredArtifact = z.infer<typeof StoredArtifact>;
 
 /** RL-1: how a headless run ended (`error_*` = any error subtype of the CLI's result). */
-export const RunExit = z.string().regex(/^(success|error_[a-z_]+|killed_budget|crashed|no_result)$/);
+export const RunExit = z.string().regex(/^(success|error_[a-z_]+|killed_budget|killed_operator|crashed|no_result)$/);
 export type RunExit = z.infer<typeof RunExit>;
 
 /** RL-1: what a headless run did, from its stream (complete) or the daemon (partial). */
@@ -313,6 +313,8 @@ export const StepOffer = z.object({
   mode: z.literal("headless").optional(),
   /** RL-21: the service that made the offer for `by`. */
   via: z.string().optional(),
+  /** RL-26: an offer a service made for a person to a teammate's machine (never auto). */
+  team: z.literal(true).optional(),
 });
 export type StepOffer = z.infer<typeof StepOffer>;
 
@@ -425,6 +427,8 @@ export const Step = z.object({
    * when it emitted `debrief.overdue` to the assignee and to the owner, and when it last auto-accepted.
    */
   overdue: z.object({ since: z.number(), assigneeAt: z.number().optional(), ownerAt: z.number().optional(), autoAt: z.number().optional() }).optional(),
+  /** RL-26: the headless run a stop-run took the step from (removed by resume). */
+  stoppedRun: z.object({ machine: z.string(), holder: z.string(), at: z.number(), by: z.string(), runId: z.string().optional(), via: z.string().optional() }).optional(),
   updatedAt: z.number(),
 });
 export type Step = z.infer<typeof Step>;

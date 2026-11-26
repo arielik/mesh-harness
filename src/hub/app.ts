@@ -57,6 +57,7 @@ import {
   Replan,
   SESSION_COOKIE,
   SyncRequest,
+  StopRun,
   HUB_FEATURES,
   PulseFire,
   type LoginResult,
@@ -485,6 +486,8 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false }))),
     r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(await svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
     r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(await svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
+    // RL-26: park a step and stop the headless run that holds it.
+    forPerson(r("POST", "/v1/steps/:id/stop-run", "member", async (c, a) => c.json(await svc.stopRun(a, param(c, "id"), (await body(c, StopRun)).reason)), "goals:decide")),
     // RL-21: a service with steps:assign assigns and ranks for a person (header required on both).
     forPerson(r("POST", "/v1/steps/:id/assign", "member", async (c, a) => c.json(await svc.assignStep(a, param(c, "id"), await body(c, StepAssignRequest))), "steps:assign")),
     forPerson(r("GET", "/v1/steps/:id/suggest", "member", async (c, a) => c.json(await svc.suggestStep(a, param(c, "id"), suggestFlags(c))), "steps:assign"), { required: true }),

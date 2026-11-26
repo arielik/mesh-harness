@@ -1159,6 +1159,15 @@
                             "hash"
                           ]
                         }
+                      },
+                      "remoteStop": {
+                        "type": "boolean"
+                      },
+                      "teamOffers": {
+                        "type": "boolean"
+                      },
+                      "runStop": {
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -2966,7 +2975,7 @@
                                 },
                                 "exit": {
                                   "type": "string",
-                                  "pattern": "^(success|error_[a-z_]+|killed_budget|crashed|no_result)$"
+                                  "pattern": "^(success|error_[a-z_]+|killed_budget|killed_operator|crashed|no_result)$"
                                 },
                                 "commit": {
                                   "type": "string",
@@ -9171,7 +9180,7 @@
                               },
                               "exit": {
                                 "type": "string",
-                                "pattern": "^(success|error_[a-z_]+|killed_budget|crashed|no_result)$"
+                                "pattern": "^(success|error_[a-z_]+|killed_budget|killed_operator|crashed|no_result)$"
                               },
                               "permissionDenials": {
                                 "type": "object",
@@ -10245,6 +10254,87 @@
         }
       }
     },
+    "/v1/steps/{id}/stop-run": {
+      "post": {
+        "operationId": "postVStepsIdStoprun",
+        "summary": "Park a step held by a headless run (reason `stopped: <reason>`) and ask the run's machine to kill the run; the goal owner, approvers or admins, or the holder machine's owner with their own token. A service acts for a person with the member role only.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service's writes).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
     "/v1/steps/{id}/take": {
       "post": {
         "operationId": "postVStepsIdTake",
@@ -10881,7 +10971,7 @@
                       },
                       "exit": {
                         "type": "string",
-                        "pattern": "^(success|error_[a-z_]+|killed_budget|crashed|no_result)$"
+                        "pattern": "^(success|error_[a-z_]+|killed_budget|killed_operator|crashed|no_result)$"
                       },
                       "permissionDenials": {
                         "type": "object",

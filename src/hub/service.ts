@@ -1097,8 +1097,17 @@ export class HubService {
   ): Promise<StoredArtifact> {
     return await this.goalTx(async () => {
       const step = await this.stepOr404(id);
-      if (step.state !== "claimed" && step.state !== "paused") throw new HubError(409, `${step.id} is ${step.state}; only a held step takes artifacts`);
-      if (step.holderUser !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      const refused = new HubError(409, `${step.id} is ${step.state}; only a held step takes artifacts`);
+      const stopped = step.stoppedRun;
+      if (stopped && step.state === "parked") {
+        // RL-26: one transcript of the stopped run, from its machine and holder.
+        if (b.kind !== "transcript" || actor.machineId !== stopped.machine || actor.userId !== stopped.holder) throw refused;
+        const round = (step.rounds?.length ?? 0) + 1;
+        if ((await this.store.listArtifacts({ step: step.id, round })).some((x) => x.kind === "transcript" && x.by === stopped.holder && x.createdAt >= stopped.at)) throw refused;
+      } else {
+        if (step.state !== "claimed" && step.state !== "paused") throw refused;
+        if (step.holderUser !== actor.userId && !actor.roles.includes("admin")) throw new HubError(403, `${step.id} is held by ${step.holderUser}`);
+      }
       // The event names the uploading session: never another user's (or, with a machine token, another machine's).
       if (b.sid) this.refuseForeign(await this.callerMachine(actor, b.sid), b.sid);
       const bytes = Buffer.byteLength(b.content, "utf8");
@@ -3188,6 +3197,7 @@ export class HubService {
       delete next.parkedReason;
       delete next.parkedAt;
       delete next.outcome;
+      delete next.stoppedRun;
       const before = await this.store.listSteps({ goal: step.goal });
       const all = before.map((s) => (s.id === step.id ? next : s));
       const settled = await this.settleSteps(all, now);
@@ -3208,6 +3218,47 @@ export class HubService {
         await this.markGoalDone(goal);
       }
       return (await this.store.getStep(step.id)) ?? final;
+    });
+  }
+
+  /**
+   * RL-26 `POST /v1/steps/:id/stop-run`: park a step held by a headless run (RL-22's park effect,
+   * reason `stopped: <reason>`) and ask the run's machine to kill the run (one `run_stop` message).
+   * Rights: `canApprove` (under act-for the goal owner only), or the holder machine's owner with
+   * their own token.
+   */
+  async stopRun(actor: Actor, id: string, reason: string): Promise<{ step: Step; message: number; online: boolean }> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOrRefuse(id);
+      const goal = await this.goalOr404(step.goal);
+      if (goal.state === "done" || goal.state === "dropped") throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
+      const machine = step.holderMachine ? await this.store.getMachine(step.holderMachine) : undefined;
+      const ownMachine = !actor.via && machine !== undefined && machine.userId === actor.userId;
+      if (!canApprove(actor, goal.ownerId) && !ownMachine) throw refuse(403, "not-approver", `only the goal owner, approvers or admins stop the run of ${step.id}`);
+      const held = (step.state === "claimed" || step.state === "paused") && step.holderMachine !== undefined;
+      const accepted = step.holderSid === undefined && step.offer?.state === "accepted" && step.offer.mode === "headless" && step.offer.to.machine === step.holderMachine;
+      if (!held || !machine || !((await this.runHeld(step)) || accepted)) {
+        throw refuse(409, "not-a-run", `${step.id} is not held by a headless run; park it instead (mesh step park ${step.id})`);
+      }
+      if (machine.runStop !== true) throw refuse(409, "run-stop-unsupported", `${machineName(machine)} runs an older mesh that cannot stop a run; park the step and ask ${machine.userId} to upgrade`);
+      const now = this.now();
+      const runId = (await this.store.eventsFor({ step: step.id })).filter((e) => e.type === "run.started").at(-1)?.payload?.runId;
+      const via = viaOf(actor);
+      const stoppedRun = { machine: machine.id, holder: step.holderUser ?? machine.userId, at: now, by: actor.userId, ...(typeof runId === "string" ? { runId } : {}), ...via };
+      const next: Step = { ...step, state: "parked", parkedReason: `stopped: ${reason}`, parkedAt: now, stoppedRun, updatedAt: now };
+      for (const f of ["holderUser", "holderSid", "holderMachine", "claimedAt", "pausedAt", "roundStartedAt"] as const) delete next[f];
+      await this.saveStepFrom(next, step);
+      const data = { step: step.id, goal: step.goal, reason, by: actor.userId, ...(typeof runId === "string" ? { runId } : {}), ...via };
+      const message = await this.machineMessage(machine.id, actor.userId, "run_stop", `MESH: @${actor.userId} stopped the headless run of ${step.id}: ${reason}${actor.via ? ` (via ${actor.via})` : ""}`, data);
+      await this.emit({ type: "run.stop_requested", user: actor.userId, goal: step.goal, step: step.id, payload: { machine: machine.id, ...(typeof runId === "string" ? { runId } : {}), reason, ...via } });
+      await this.emit({
+        type: "step.parked",
+        user: actor.userId,
+        goal: step.goal,
+        step: step.id,
+        payload: { reason: `stopped: ${reason}`, operator: true, stopped: true, was: step.state, ...(step.holderUser ? { holder: step.holderUser } : {}), ...via },
+      });
+      return { step: next, message, online: now - machine.lastSeen < ONLINE_MS };
     });
   }
 
@@ -3353,10 +3404,18 @@ export class HubService {
             ...(req.machine.repos ? { repos: req.machine.repos } : {}),
             ...(req.machine.accept ? { accept: req.machine.accept } : {}),
             ...(req.machine.headless !== undefined ? { headless: req.machine.headless } : {}),
+            // RL-26: absent means false, so a downgraded daemon clears them.
+            remoteStop: req.machine.remoteStop === true,
+            teamOffers: req.machine.teamOffers === true,
+            runStop: req.machine.runStop === true,
           }
         : undefined;
+      const prior = facts ? await this.store.getMachine(machine) : undefined;
       await this.store.touchMachine(machine, now, req.counts, facts);
       const stored = await this.store.getMachine(machine);
+      if (facts && prior && ((prior.remoteStop === true) !== facts.remoteStop || (prior.teamOffers === true) !== facts.teamOffers)) {
+        await this.emit({ type: "machine.consent_changed", user: prior.userId, payload: { machine, remoteStop: facts.remoteStop, teamOffers: facts.teamOffers } });
+      }
       // RL-5: agent files of the machine's repos; reports outside its inventory are dropped.
       if (req.machine?.agents !== undefined) {
         const inventory = new Set((stored?.repos ?? []).map((r) => r.id));

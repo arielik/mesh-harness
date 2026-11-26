@@ -83,6 +83,13 @@ export const SyncRequest = z.object({
       headless: z.boolean().optional(),
       /** RL-5: agent files of its remote-backed repos. Absent: the hub keeps what it has; `[]`: none. */
       agents: z.array(AgentReport).max(2000).optional(),
+      /**
+       * RL-26: the owner allows remote session stops, the owner allows team offers, the daemon can
+       * stop a headless run. A sync with `machine` stores an absent one as false.
+       */
+      remoteStop: z.boolean().optional(),
+      teamOffers: z.boolean().optional(),
+      runStop: z.boolean().optional(),
     })
     .optional(),
 });
@@ -477,6 +484,13 @@ export const RunReport = z.object({
 });
 export const GateDecision = z.object({ comment: z.string().max(4000).optional(), rule: z.string().max(60).optional(), inputs: z.record(z.string(), z.unknown()).optional(), reopen: z.array(z.string()).max(50).optional() });
 export const ResumeRequest = z.object({ comment: z.string().max(4000).optional() });
+
+/** RL-26: body of `POST /v1/steps/:id/stop-run`. */
+export const StopRun = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
+export type StopRun = z.infer<typeof StopRun>;
+/** RL-26: body of `POST /v1/sessions/:sid/stop`. */
+export const StopSession = z.object({ mode: z.enum(["interrupt", "end"]), reason: z.string().trim().min(1).max(500) }).strict();
+export type StopSession = z.infer<typeof StopSession>;
 export const AskRequest = z.object({ text: z.string().min(1).max(4000), sid: z.string().optional(), step: z.string().optional() });
 export const AnswerRequest = z.object({ text: z.string().min(1).max(4000) });
 /** `to` (MM-4): `<machine>/<session>` or `<user>/<nickname>/<session>`, resolved like an assign target. */
@@ -767,7 +781,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "runs", "spot-checks", "step-assign-for", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "run-stop", "runs", "spot-checks", "step-assign-for", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({

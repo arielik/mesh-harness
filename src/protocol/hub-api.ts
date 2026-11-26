@@ -41,6 +41,7 @@ import {
   ReviewUpload,
   RunReport,
   RunsPage,
+  StopRun,
   Health,
   FindingsRollup,
   ProfileFit,
@@ -67,7 +68,7 @@ const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "sessions:stop"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -387,6 +388,17 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/steps/:id/approve", rule: "member", tag: "steps", body: GateDecision, summary: "Pass a gate step." },
   { method: "POST", path: "/v1/steps/:id/reject", rule: "member", tag: "steps", body: GateDecision, summary: "Reject a gate step (optionally reopening steps)." },
   { method: "POST", path: "/v1/steps/:id/resume", rule: "member", tag: "steps", body: ResumeRequest, summary: "Resume a parked step." },
+  {
+    method: "POST",
+    path: "/v1/steps/:id/stop-run",
+    rule: "member",
+    scope: "goals:decide",
+    onBehalfOf: true,
+    tag: "steps",
+    body: StopRun,
+    summary:
+      "Park a step held by a headless run (reason `stopped: <reason>`) and ask the run's machine to kill the run; the goal owner, approvers or admins, or the holder machine's owner with their own token. A service acts for a person with the member role only.",
+  },
   { method: "POST", path: "/v1/steps/:id/take", rule: "member", tag: "steps", body: ClaimRequest, summary: "Take over a step held by someone else (after the takeover threshold)." },
   {
     method: "POST",

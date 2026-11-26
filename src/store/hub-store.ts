@@ -273,6 +273,10 @@ export interface MachineRow {
   accept?: string[];
   /** RL-1: its daemon can run headless steps; absent when never reported. */
   headless?: boolean;
+  /** RL-26: the owner allows remote session stops; team offers; the daemon can stop a run. */
+  remoteStop?: boolean;
+  teamOffers?: boolean;
+  runStop?: boolean;
 }
 
 /** Facts a sync reports about its machine (MM-1; `accept`: MM-3; `headless`: RL-1). */
@@ -281,6 +285,9 @@ export interface MachineFacts {
   repos?: Repo[] | undefined;
   accept?: string[] | undefined;
   headless?: boolean | undefined;
+  remoteStop?: boolean | undefined;
+  teamOffers?: boolean | undefined;
+  runStop?: boolean | undefined;
 }
 
 export interface HubSession {
@@ -382,7 +389,7 @@ type MachineDbRow = {
   extra?: string | null;
 };
 /** The JSON column `machine.extra`: per-machine facts beyond the indexed columns. */
-type MachineExtra = { repos?: Repo[]; reposAt?: number; labels?: string[]; accept?: string[]; headless?: boolean };
+type MachineExtra = { repos?: Repo[]; reposAt?: number; labels?: string[]; accept?: string[]; headless?: boolean; remoteStop?: boolean; teamOffers?: boolean; runStop?: boolean };
 const machineExtra = (raw: string | null | undefined): MachineExtra => (raw ? (JSON.parse(raw) as MachineExtra) : {});
 const machineFrom = (r: MachineDbRow): MachineRow => {
   const x = machineExtra(r.extra);
@@ -400,6 +407,9 @@ const machineFrom = (r: MachineDbRow): MachineRow => {
     ...(Array.isArray(x.labels) && x.labels.length ? { labels: x.labels } : {}),
     ...(Array.isArray(x.accept) ? { accept: x.accept } : {}),
     ...(typeof x.headless === "boolean" ? { headless: x.headless } : {}),
+    ...(typeof x.remoteStop === "boolean" ? { remoteStop: x.remoteStop } : {}),
+    ...(typeof x.teamOffers === "boolean" ? { teamOffers: x.teamOffers } : {}),
+    ...(typeof x.runStop === "boolean" ? { runStop: x.runStop } : {}),
   };
 };
 
@@ -612,7 +622,8 @@ export class HubStore {
    * so two syncs of one machine never lose each other's keys. A sync never changes the labels (MM-2).
    */
   async touchMachine(id: string, now: number, counts: Record<string, number>, facts?: MachineFacts): Promise<void> {
-    if (facts?.share === undefined && facts?.repos === undefined && facts?.accept === undefined && facts?.headless === undefined) {
+    const consent = facts?.remoteStop !== undefined || facts?.teamOffers !== undefined || facts?.runStop !== undefined;
+    if (facts?.share === undefined && facts?.repos === undefined && facts?.accept === undefined && facts?.headless === undefined && !consent) {
       await this.db.run("UPDATE machine SET last_seen = ?, counts = ? WHERE id = ?", now, json(counts), id);
       return;
     }
@@ -623,7 +634,10 @@ export class HubStore {
       if (facts.repos !== undefined) x = { ...x, repos: facts.repos, reposAt: now };
       if (facts.accept !== undefined) x = { ...x, accept: [...facts.accept] };
       if (facts.headless !== undefined) x = { ...x, headless: facts.headless };
-      const extra = facts.repos !== undefined || facts.accept !== undefined || facts.headless !== undefined ? json(x) : r.extra;
+      if (facts.remoteStop !== undefined) x = { ...x, remoteStop: facts.remoteStop };
+      if (facts.teamOffers !== undefined) x = { ...x, teamOffers: facts.teamOffers };
+      if (facts.runStop !== undefined) x = { ...x, runStop: facts.runStop };
+      const extra = facts.repos !== undefined || facts.accept !== undefined || facts.headless !== undefined || consent ? json(x) : r.extra;
       await this.db.run("UPDATE machine SET last_seen = ?, counts = ?, share = COALESCE(?, share), extra = ? WHERE id = ?", now, json(counts), facts.share ?? null, extra, id);
     });
   }
