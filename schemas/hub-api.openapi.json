@@ -1522,6 +1522,11 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "withdrawn": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
                     }
                   },
                   "required": [
@@ -1631,6 +1636,11 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "withdrawn": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
                     }
                   },
                   "required": [

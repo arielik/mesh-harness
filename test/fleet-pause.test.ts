@@ -126,7 +126,7 @@ describe("AC-03 pause and resume", { timeout: 30_000 }, () => {
     await cast();
     const at = k.w.clock;
     const r = await pauseOk(ops, "root");
-    expect(r).toStrictEqual({ paused: { since: at, by: "root", via: "ops", reason: REASON } });
+    expect(r).toStrictEqual({ paused: { since: at, by: "root", via: "ops", reason: REASON }, withdrawn: 0 });
     let ev = await fleetEvents();
     expect(ev).toHaveLength(1);
     expect(ev[0]).toMatchObject({ type: "fleet.paused", user: "root", payload: { reason: REASON, withdrawn: 0, via: "ops" } });

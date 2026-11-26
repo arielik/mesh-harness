@@ -105,8 +105,8 @@ export const FleetPause = z.object({
   reason: z.string(),
 });
 export type FleetPause = z.infer<typeof FleetPause>;
-/** RL-24: the reply of the fleet pause and resume routes. */
-export const FleetState = z.object({ paused: FleetPause.nullable() });
+/** RL-24: the reply of the fleet pause and resume routes; a pause also says how many headless offers it withdrew. */
+export const FleetState = z.object({ paused: FleetPause.nullable(), withdrawn: z.number().int().optional() });
 export type FleetState = z.infer<typeof FleetState>;
 
 /**

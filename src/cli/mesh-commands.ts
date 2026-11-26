@@ -732,6 +732,9 @@ export function statusCommand(c: CliEnv): Command {
       if (st.hub === "offline") c.io.out(`hub offline${st.offlineSince ? ` since ${new Date(st.offlineSince).toISOString().slice(11, 16)} UTC` : ""}: working locally; ${st.outbox} event(s) and ${st.queued ?? 0} call(s) are sent when it is back`);
       else if (st.hub === "auth-failed") c.io.out("the hub refused our login; run: mesh login");
       else if (st.outbox || st.queued) c.io.out(`${st.outbox} event(s) and ${st.queued ?? 0} call(s) waiting to sync`);
+      // RL-24: the fleet pause of the hub's last sync reply.
+      const p = st.fleetPaused;
+      if (p) c.io.out(`fleet paused since ${new Date(p.since).toISOString().slice(11, 16)} UTC by @${p.by}${p.via ? ` via ${p.via}` : ""}: ${p.reason} (no pulses or headless offers; running work goes on)`);
       return 0;
     },
   };
@@ -755,7 +758,11 @@ const HELP_TEXT: Record<string, string> = {
   next: "usage: mesh next [--repo R]     list ready steps",
   take: "usage: mesh take <step>     take over a paused or stalled step",
   machines: "usage: mesh machines [--label L] [--json]     your machines and their sessions (also: mesh fleet)",
-  fleet: "usage: mesh fleet [--label L] [--json]     your machines and their sessions (also: mesh machines)",
+  fleet: [
+    "usage: mesh fleet [--label L] [--json]     your machines and their sessions (also: mesh machines)",
+    "       mesh fleet pause <reason…>     admins: no pulse fires and no headless offer is made until resumed; running work goes on",
+    "       mesh fleet resume [reason…]     admins: end the fleet pause",
+  ].join("\n"),
   offers: "usage: mesh offers [--json]     offers to your machines",
 };
 

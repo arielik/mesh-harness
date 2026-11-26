@@ -1,7 +1,7 @@
 // "My mesh" (MM-1): mesh machines / mesh fleet, and mesh machine name.
 
 import { filterFleet, renderFleet } from "../core/index.ts";
-import { NICKNAME_RULE, nicknameOk, parseLabels, type Credentials, type FleetMachine, type FleetView, type MachineLabelsView } from "../protocol/index.ts";
+import { NICKNAME_RULE, nicknameOk, parseLabels, type Credentials, type FleetMachine, type FleetState, type FleetView, type MachineLabelsView } from "../protocol/index.ts";
 import type { Command } from "./commands.ts";
 import { parseArgs, type CliEnv } from "./context.ts";
 import { HubCallError, HubClient, loadCredentialsOrSolo } from "./hub-client.ts";
@@ -44,12 +44,40 @@ function asTyped(raw: string): string[] {
   return [...new Set(raw.split(",").map((l) => l.trim().toLowerCase()).filter(Boolean))];
 }
 
+/** RL-24: `mesh fleet pause <reason…>` / `mesh fleet resume [reason…]` (the person's own token). */
+async function fleetSwitch(c: CliEnv, verb: "pause" | "resume", words: readonly string[]): Promise<number> {
+  const reason = words.join(" ").trim();
+  if (verb === "pause" && !reason) {
+    c.io.err("usage: mesh fleet pause <reason…>");
+    return 2;
+  }
+  const creds = loadCredentialsOrSolo(c.paths);
+  if (!creds) {
+    c.io.err(NOT_LOGGED_IN);
+    return 1;
+  }
+  try {
+    const r = await new HubClient(creds).post<FleetState>(`/v1/fleet/${verb}`, reason ? { reason } : {});
+    c.io.out(verb === "pause" ? `fleet paused: ${r.paused?.reason ?? reason} (${r.withdrawn ?? 0} headless offer(s) withdrawn)` : "fleet resumed");
+    return 0;
+  } catch (e) {
+    if (!(e instanceof HubCallError)) throw e;
+    c.io.err(e.message);
+    return 1;
+  }
+}
+
 export function machinesCommand(c: CliEnv, name: "machines" | "fleet"): Command {
   return {
     name,
-    summary: "every machine logged in as you and what each session on it does (--label a,b, --json)",
+    summary:
+      name === "fleet"
+        ? "every machine logged in as you and what each session on it does (--label a,b, --json); fleet pause <reason…> / fleet resume [reason…]: admins stop and restart unattended work"
+        : "every machine logged in as you and what each session on it does (--label a,b, --json)",
     async run(args) {
       const a = parseArgs(args, ["label"]);
+      const sub = a.positional[0];
+      if (sub === "pause" || sub === "resume") return await fleetSwitch(c, sub, a.positional.slice(1));
       const raw = a.str("label") ?? "";
       const parsed = parseLabels(raw);
       if ("error" in parsed) {

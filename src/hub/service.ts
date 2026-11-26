@@ -7319,7 +7319,7 @@ export class HubService {
    */
   async pauseFleet(actor: Actor, req: FleetPauseRequest): Promise<FleetState> {
     HubService.refuseNotAdmin(actor);
-    const paused = await this.goalTx(async () => {
+    return await this.goalTx(async () => {
       const cur = await this.store.getFleetPause();
       if (cur) throw refuse(409, "fleet-already-paused", `the fleet is already paused since ${new Date(cur.since).toISOString()} by ${cur.by}: ${cur.reason}`);
       const now = this.now();
@@ -7339,9 +7339,8 @@ export class HubService {
       this.store.afterCommit(() => {
         this.pauseCache = view;
       });
-      return view;
+      return { paused: view, withdrawn: row.held.length };
     });
-    return { paused };
   }
 
   /**
