@@ -42,7 +42,7 @@ Roles come from provider groups (`roles:` mappings) and `bootstrap_admins`.
 - Device tokens (CLI and daemon) and web sessions expire as configured.
 - `mesh hub revoke --user alice` or `--machine m-…` revokes them.
 - `mesh hub token --service analytics` mints a token for `GET /v1/events` and `mesh ledger export --events`.
-- `--scope` adds member routes to a service token, comma-separated. `goals:read` reads goals and steps (`GET /v1/goals`, `/v1/goals/:id` with its files and timeline, `GET /v1/steps`, `/v1/steps/:id`) and checks presets (`POST /v1/presets/check`, a read that writes nothing); `goals:write` creates goals (`POST /v1/goals`, owned by the service account); `live:read` reads `GET /v1/live`, `GET /v1/fleet` and `GET /v1/stream`; `pulses:write` creates and changes pulses (`POST /v1/pulses`, `/v1/pulses/:id/{update,pause,resume,fire,delete}`); `profiles:write` saves permission profiles (`POST /v1/profiles`); `steps:assign` offers a ready step for a person and ranks that person's machines for it (`POST /v1/steps/:id/assign`, `GET /v1/steps/:id/suggest`, only with `X-Mesh-On-Behalf-Of`). No scope approves, claims or answers. Example, for a dashboard that shows and adds goals: `mesh hub token --service dash --scope goals:read,goals:write,live:read`. A scope is fixed when the token is minted; to change it, revoke the token (`mesh hub revoke --user <service user>`) and mint another.
+- `--scope` adds member routes to a service token, comma-separated. `goals:read` reads goals and steps (`GET /v1/goals`, `/v1/goals/:id` with its files and timeline, `GET /v1/steps`, `/v1/steps/:id`) and checks presets (`POST /v1/presets/check`, a read that writes nothing); `goals:write` creates goals (`POST /v1/goals`, owned by the service account); `live:read` reads `GET /v1/live`, `GET /v1/fleet` and `GET /v1/stream`; `pulses:write` creates and changes pulses (`POST /v1/pulses`, `/v1/pulses/:id/{update,pause,resume,fire,delete}`); `profiles:write` saves permission profiles (`POST /v1/profiles`); `steps:assign` offers a ready step for a person and ranks that person's machines for it (`POST /v1/steps/:id/assign`, `GET /v1/steps/:id/suggest`, only with `X-Mesh-On-Behalf-Of`); `goals:decide` approves, revises and replans plans, passes and rejects gates, resumes and parks steps for a person (`POST /v1/goals/:id/{approve,revise,replan}`, `POST /v1/steps/:id/{approve,reject,resume,park}`); `questions:answer` answers a question for a person (`POST /v1/questions/:id/answer`); `sessions:message` writes into a person's session (`POST /v1/messages`). The last three work only with `X-Mesh-On-Behalf-Of` (0.1.42, below). `goals:read` also reads the team form of attention (`GET /v1/attention?team=1`) and the open questions (`GET /v1/questions?state=open`). No scope claims a step. Example, for a dashboard that shows and adds goals: `mesh hub token --service dash --scope goals:read,goals:write,live:read`. A scope is fixed when the token is minted; to change it, revoke the token (`mesh hub revoke --user <service user>`) and mint another.
 
 **A service acts for a person.** On `GET /v1/fleet`, `POST /v1/profiles`, `POST /v1/pulses` and `POST /v1/pulses/:id/{update,pause,resume,fire,delete}`, a service token with the route's scope may send `X-Mesh-On-Behalf-Of: <user id>`. The request then runs as that person, with the member role only (never their admin role): the pulse or profile is theirs, the fleet is theirs, and the events name them in `user` and the service in `payload.via`. A pulse made or changed this way must name the person's own machines in `target.machines` (by id, `<user>/<nickname>` or nickname); labels may narrow it. Refusals, each with its own `error`:
 
@@ -97,5 +97,45 @@ The assign answers `{step, auto, message}`; `message` is the id of the offer mes
 `GET /v1/steps/:id` gives `offer.state` (it needs `goals:read`); `GET /v1/events` gives the events (a service reads them). `message.delivered` names no step: the `message` of the reply is the join key.
 
 Example, for a dashboard that also starts steps for people: `mesh hub token --service dash --scope goals:read,goals:write,live:read,pulses:write,profiles:write,steps:assign`.
+
+**A service decides for a person** (0.1.42, feature `decide-for`). A dashboard that holds a service token relays a person's decisions instead of showing a command to copy. Each route needs its scope and `X-Mesh-On-Behalf-Of: <user id>`; without the header the hub answers `400 on-behalf-of-required` and changes nothing:
+
+| Route | Scope | Header for a service | Check, against the person as a member |
+|---|---|---|---|
+| `POST /v1/goals/:id/{approve,revise}` | `goals:decide` | required | goal owner; a pending plan |
+| `POST /v1/goals/:id/replan` | `goals:decide` | required | goal owner; goal not done or dropped |
+| `POST /v1/steps/:id/{approve,reject}` | `goals:decide` | required | goal owner; a ready gate |
+| `POST /v1/steps/:id/{resume,park}` | `goals:decide` | required | goal owner; parked or failed (resume), claimed or paused (park) |
+| `POST /v1/questions/:id/answer` | `questions:answer` | required | the person is an addressee |
+| `POST /v1/messages` | `sessions:message` | required | the target session is visible to the person |
+| `POST /v1/goals/:id/drop` | `goals:write` | optional | goal owner; no held step |
+| `POST /v1/goals`, `POST /v1/goals/from-preset` | `goals:write` | optional | the person owns the new goal |
+
+The request runs with the person's member role only, as every act-for route: through a service only the goal owner passes the approve check, and an approver or admin who does not own the goal gets `403 not-approver` and decides with their own login (`mesh goal approve`, `mesh step approve`, …). The admin override of answers does not apply either. The header is optional on goal create and drop: without it the service acts as itself, as before (the goal is owned by the service account; a drop is checked against it). Events name the person in `user` and the service in `payload.via`; the stored decision (`plan.decidedBy`, the gate round's `gate.by`, `answeredBy`, the resume note, `ownerId`) names the person; a relayed answer, plan revision or park message ends with ` (via <service>)`, a message's text is left as written. Mint a new token to grant the scopes: `mesh hub token --service dash --scope goals:read,goals:write,goals:decide,questions:answer,sessions:message`.
+
+These refusals carry a stable `code` beside the unchanged `error` (other refusals of these routes, such as body-schema `400`s and goal-create problems, have no `code`). A `409` means the state moved: refetch.
+
+| Status | `code` | When |
+|---|---|---|
+| 404 | `goal-unknown` / `step-unknown` / `question-unknown` | no such goal, step or question |
+| 403 | `not-approver` | the rights check (goal owner, approvers, admins; the owner only through a service) |
+| 403 | `not-addressed` | the question is not addressed to the person |
+| 404 | `plan-none` | no pending plan (or the asked version) |
+| 409 | `plan-decided` | the plan was already decided |
+| 404 | `design-unknown` | replan of a goal with no design step |
+| 409 | `goal-closed` | the goal is done or dropped (replan, drop, park) |
+| 409 | `goal-held` | drop of a goal with held steps |
+| 409 | `not-gate` / `gate-not-ready` | gate approve or reject of a step that is not a gate, or not ready |
+| 400 | `reopen-required` | reject without `reopen` |
+| 409 | `reopen-unknown` | a `reopen` id is not a done step of the goal |
+| 409 | `step-not-resumable` | resume of a step that is not parked or failed |
+| 409 | `step-gate` / `step-debrief` / `step-parked` / `step-not-parkable` | park of a gate, a debrief, a parked step, or a step that is not claimed or paused |
+| 409 | `question-answered` | the question was already answered |
+| 404 | `session-unknown` | the target session is not live or not visible |
+| 409 | `step-unheld` | `toStep` names a step no session holds |
+| 400 | `team-required` / `bad-query` | a service reads `GET /v1/attention` without `team=1`; a query value out of range |
+| 403 | `team-forbidden` | a member without admin asks for `team=1` |
+
+**Team reads** (0.1.42, features `team-attention`, `questions-list`). `GET /v1/attention?team=1` answers every open item of the team in one read, for a service with `goals:read` (which must send `team=1`) or an admin: plans, gates, debriefs, overdue debriefs, open questions, parked, failed, paused and stalled steps, stuck steps and sessions (the `GET /v1/stuck` rules at `needsYouMs` and `turns`), sessions in needs_you, missed and blocked pulses, ready steps nobody claimed and open offers, each with `who` (the one person it waits on), `at` and a stable `key`, and `users` (every hub user that is not a service account). `trial` and `limit` (1-5000, default 2000; `truncated` says more were left out) narrow it. A member without admin gets `403 team-forbidden`: the team form shows every machine's sessions. `GET /v1/questions?state=open` lists unanswered questions oldest first: all of them for a service or an admin, those addressed to the caller for a member.
 
 A daemon whose token expired keeps working locally and shows "hub login expired"; `mesh login` again.

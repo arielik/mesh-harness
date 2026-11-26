@@ -700,11 +700,13 @@ rounds:
 
 Without mesh the programme runs the same; only the records are missing. Change the agents and the workflow as you like: mesh relies only on the labels (`<role>:<key>[:<round>]`) and on the result fields named in each agent's "Report" section.
 
-## 7. Decide gates, resume parked steps, take over work
+## 7. Decide gates, park and resume steps, take over work
 
 ```bash
 mesh step approve G4.r3 --rule GATE-1 --comment "CI green, criteria met"
 mesh step reject  G4.r3 --reopen develop --comment "AC-02 fails on the staging data"
+mesh step park    G4.build wrong branch       # stop work on a claimed or paused step (0.1.42)
+#   G4.build parked: operator: wrong branch
 mesh step resume  G4.verify --comment "the test database is back"
 mesh take G3.web           # continue bob's paused step (after the take-over delay, or at once as the owner)
 mesh answer 5 "yes, keep v1 until March"
