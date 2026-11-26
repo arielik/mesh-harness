@@ -51,7 +51,7 @@ describe("RL-22 AC-22 codes keep the 0.1.41 texts", () => {
 
 describe("RL-22 AC-22 registry, features, OpenAPI", () => {
   it("test_AC22_scopes_and_routes", () => {
-    expect(SERVICE_SCOPES.slice(-3)).toStrictEqual(["goals:decide", "questions:answer", "sessions:message"]);
+    expect(SERVICE_SCOPES).toEqual(expect.arrayContaining(["goals:decide", "questions:answer", "sessions:message"]));
     const route = (m: string, p: string) => HUB_API.find((r) => r.method === m && r.path === p);
     const decide = ["/v1/goals/:id/approve", "/v1/goals/:id/revise", "/v1/goals/:id/replan", "/v1/steps/:id/approve", "/v1/steps/:id/reject", "/v1/steps/:id/resume", "/v1/steps/:id/park"];
     for (const p of decide) expect(route("POST", p), p).toMatchObject({ rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true });

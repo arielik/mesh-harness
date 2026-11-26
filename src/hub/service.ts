@@ -267,7 +267,8 @@ import type {
 import { PulseSlot as PulseSlotSchema, StateTimeReport, SLA_DECIDER, type Carry } from "../protocol/index.ts";
 import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { FIGURE_EVENTS, goalCard, rollup, stepWindow, turnsSinceCommit } from "../core/efficiency.ts";
-import { HubStore, type EventRow, type FleetPauseRow, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
+import { AlertWebhook, type AlertItem, type AlertWebhookResult } from "../protocol/index.ts";
+import { HubStore, type AlertEpisodeRow, type EventRow, type FleetPauseRow, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
@@ -423,6 +424,40 @@ const LOGIN_TTL = 10 * 60_000;
 const CLI_CODE_TTL = 5 * 60_000;
 const ONLINE_MS = 2 * 60_000;
 const DAY_MS = 86_400_000;
+/** RL-25: a firing alert's episode is notified again (a reminder) at most this often. */
+export const ALERT_REMIND_MS = 4 * 3_600_000;
+/** RL-25: a person's machines seen within this long receive alert notices. */
+const ALERT_RECIPIENT_MS = 14 * DAY_MS;
+/** RL-25: resolved alert episodes are kept this long after their last change. */
+const ALERT_KEEP_MS = 7 * DAY_MS;
+
+/** RL-25: what an alert's notices and event say about it. */
+interface AlertInfo {
+  alertname?: string | undefined;
+  severity?: string | undefined;
+  summary: string;
+  runbook?: string | undefined;
+  dashboard?: string | undefined;
+  url?: string | undefined;
+}
+
+function alertInfo(a: AlertItem): AlertInfo {
+  const present = (v: string | undefined) => (v !== undefined && v.trim() !== "" ? v : undefined);
+  const link = (v: string | undefined) => (v !== undefined && v.length <= 2000 ? present(v) : undefined);
+  // eslint-disable-next-line no-control-regex -- control characters are what is replaced
+  const summary = (present(a.annotations.summary) ?? present(a.annotations.description) ?? present(a.labels.alertname) ?? a.fingerprint).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 200);
+  return {
+    alertname: present(a.labels.alertname),
+    severity: present(a.labels.severity),
+    summary,
+    runbook: link(a.annotations.runbook_url),
+    dashboard: link(a.annotations.dashboard),
+    url: link(a.generatorURL),
+  };
+}
+
+/** RL-25: the fields of `o` that are set. */
+const defined = (o: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
 
 /** RL-2: the order of a lineage's items on every backend: most severe first, then first seen, then fp. */
 /** RL-15: the vias of a debrief's own decisions (a person's in the session, or the hub's after the SLA). */
@@ -3499,6 +3534,93 @@ export class HubService {
     const ok = await this.store.ackMessage(id, actor.machineId, state, method, this.now());
     if (ok) await this.emit({ type: "message.delivered", user: actor.userId, payload: { id, state, method } });
     return ok;
+  }
+
+  // ---------- alerts (RL-25) ----------
+
+  /**
+   * RL-25: an Alertmanager webhook. Each alert's person (`labels.person`, an exact user id) is
+   * notified on their machines seen in the last 14 days, once per episode (fingerprint and
+   * `startsAt`), again after 4 hours, and told when it resolves. One transaction under the
+   * serialize lock, so replicas and Alertmanager peers decide from one current row.
+   */
+  async alertWebhook(actor: Actor, readBody: () => Promise<unknown>): Promise<AlertWebhookResult> {
+    if (!actor.roles.includes("service") || actor.roles.includes("member")) throw refuse(403, "service-only", "only a service token posts alerts");
+    const raw = await readBody();
+    const version = raw !== null && typeof raw === "object" ? (raw as { version?: unknown }).version : undefined;
+    if (typeof version === "string" && version !== "4") throw refuse(400, "alert-version", `webhook version ${version} is not supported; expected 4`);
+    const parsed = AlertWebhook.safeParse(raw);
+    if (!parsed.success) throw new HubError(400, "invalid alert webhook body", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`), "alert-body");
+    const now = this.now();
+    return await this.goalTx(async () => {
+      const r: AlertWebhookResult = { received: parsed.data.alerts.length, notified: 0, reminded: 0, resolved: 0, suppressed: 0, skipped: [] };
+      for (const a of parsed.data.alerts) await this.alertOne(actor.userId, a, now, r);
+      return r;
+    });
+  }
+
+  /** RL-25: one alert of a webhook (inside its transaction); counts it in `r`. */
+  private async alertOne(service: string, a: AlertItem, now: number, r: AlertWebhookResult): Promise<void> {
+    const skip = (reason: AlertWebhookResult["skipped"][number]["reason"]) => void r.skipped.push({ fingerprint: a.fingerprint, reason });
+    const person = (a.labels.person ?? "").trim();
+    if (!person) return skip("no-person");
+    const user = await this.store.getUser(person);
+    if (!user || user.roles.includes("service")) return skip("person-unknown");
+    const startsAt = Date.parse(a.startsAt);
+    const row = await this.store.getAlertEpisode(a.fingerprint, person);
+    const info = alertInfo(a);
+    const sameEpisode = row !== undefined && row.startsAt === startsAt;
+    if (a.status === "resolved") {
+      // Only the row's own episode resolves: a late resolve of an earlier one changes nothing.
+      if (row?.state !== "firing" || !sameEpisode) return void r.suppressed++;
+      await this.cancelNotices(row, now);
+      const delivered: string[] = [];
+      for (const n of row.notices) if (!delivered.includes(n.machine) && (await this.store.getMessage(n.message))?.state === "delivered") delivered.push(n.machine);
+      for (const m of delivered) await this.machineMessage(m, service, "alert", `MESH ALERT resolved: ${info.summary}`, this.alertData(a, info, startsAt, "resolved", false));
+      await this.store.saveAlertEpisode({ ...row, state: "resolved", resolvedAt: now, updatedAt: now });
+      await this.emitAlert(service, a, info, person, startsAt, "resolved", false, delivered);
+      r.resolved++;
+      return;
+    }
+    // A late repeat of a resolved episode, or a repeat within the reminder interval.
+    if (sameEpisode && (row.state === "resolved" || now - row.notifiedAt < ALERT_REMIND_MS)) return void r.suppressed++;
+    const machines = (await this.store.listMachines({ userId: person })).filter((m) => m.lastSeen >= now - ALERT_RECIPIENT_MS).map((m) => m.id);
+    if (machines.length === 0) return skip("no-machine");
+    const reminder = sameEpisode && row.state === "firing";
+    if (row) await this.cancelNotices(row, now);
+    const text = `MESH ALERT${info.severity ? ` ${info.severity.toUpperCase()}` : ""}: ${info.summary}`;
+    const queued: AlertEpisodeRow["notices"] = [];
+    for (const m of machines) queued.push({ machine: m, message: await this.machineMessage(m, service, "alert", text, this.alertData(a, info, startsAt, "firing", reminder)) });
+    await this.store.saveAlertEpisode({
+      fingerprint: a.fingerprint,
+      person,
+      state: "firing",
+      startsAt,
+      updatedAt: now,
+      ...(info.alertname ? { alertname: info.alertname } : {}),
+      ...(info.severity ? { severity: info.severity } : {}),
+      summary: info.summary,
+      notifiedAt: now,
+      notices: reminder && row ? [...row.notices, ...queued] : queued,
+    });
+    await this.emitAlert(service, a, info, person, startsAt, "firing", reminder, machines);
+    if (reminder) r.reminded++;
+    else r.notified++;
+  }
+
+  /** RL-25: cancel the notices of an episode that are still pending. */
+  private async cancelNotices(row: AlertEpisodeRow, now: number): Promise<void> {
+    for (const n of row.notices) await this.store.cancelMessage(n.message, now);
+  }
+
+  private alertData(a: AlertItem, info: AlertInfo, startsAt: number, status: "firing" | "resolved", reminder: boolean): Record<string, unknown> {
+    const { alertname, severity, summary, runbook, dashboard, url } = info;
+    return { alert: defined({ fingerprint: a.fingerprint, status, reminder, alertname, severity, summary, startsAt, runbook, dashboard, url }) };
+  }
+
+  private async emitAlert(service: string, a: AlertItem, info: AlertInfo, person: string, startsAt: number, status: "firing" | "resolved", reminder: boolean, machines: string[]): Promise<void> {
+    const payload = defined({ fingerprint: a.fingerprint, person, status, reminder, alertname: info.alertname, severity: info.severity, startsAt, machines });
+    await this.emit({ type: "alert.notified", user: service, payload });
   }
 
   // ---------- views ----------
@@ -7492,6 +7614,8 @@ export class HubService {
 
   async tick(): Promise<void> {
     const now = this.now();
+    // RL-25: resolved alert episodes are forgotten a week after they resolved.
+    await this.store.pruneAlertEpisodes(now - ALERT_KEEP_MS);
     if (this.lastArtifactPrune === undefined || now - this.lastArtifactPrune >= 6 * 3_600_000) {
       this.lastArtifactPrune = now;
       await this.pruneArtifactContent(now);

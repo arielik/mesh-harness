@@ -236,13 +236,13 @@ describe("AC-17 migration", { timeout: 60_000 }, () => {
   }
 
   it("test_AC17_schema12_sqlite", async () => {
-    expect(HubStore.SCHEMA_VERSION).toBe(13);
+    expect(HubStore.SCHEMA_VERSION).toBe(14);
     const path = file();
     const old = await openSyncDb(path, HUB_MIGRATIONS.slice(0, 12));
     old.close();
     const s = await HubStore.open(path);
     try {
-      expect(await s.schemaVersion()).toBe(13);
+      expect(await s.schemaVersion()).toBe(14);
       expect(await s.getFleetPause()).toBeUndefined();
       await s.setFleetPause({ since: 1, by: "root", reason: "r", held: ["G1.a"], skipped: 2, missed: 1 }, 5);
       expect(await s.getFleetPause()).toStrictEqual({ since: 1, by: "root", reason: "r", held: ["G1.a"], skipped: 2, missed: 1 });
@@ -263,7 +263,7 @@ describe("AC-17 migration", { timeout: 60_000 }, () => {
     await copyHubToPostgres(path, url);
     const pg = await HubStore.open(url);
     try {
-      expect(await pg.schemaVersion()).toBe(13);
+      expect(await pg.schemaVersion()).toBe(14);
       expect(await pg.getFleetPause()).toStrictEqual(row);
     } finally {
       await pg.close();

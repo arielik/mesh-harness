@@ -67,7 +67,7 @@ describe("probes", () => {
   it("/healthz and /readyz answer without auth when the database is up and migrated", async () => {
     const hub = await start(":memory:");
     // RL-11 AC-14: the probes carry the hub's version; /healthz its schema and features too.
-    const live = { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"], paused: null };
+    const live = { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"], paused: null };
     expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: live });
     expect(await call(hub, "GET", "/health")).toEqual({ status: 200, json: live });
     expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: HubStore.SCHEMA_VERSION, version: pkg.version } });
@@ -76,7 +76,7 @@ describe("probes", () => {
   // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9; RL-3 AC-05 (migration 10) to 10; RL-5 AC-03 (migration 11) to 11; RL-24 AC-17 (migration 13) to 13.
   it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08, RL-3 AC-05, RL-5 AC-03)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 13, version: pkg.version } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 14, version: pkg.version } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
@@ -105,7 +105,7 @@ describe("probes", () => {
     expect(r.json.error).toMatch(/database unreachable/);
     expect(r.json.version).toBe(pkg.version);
     // RL-11 AC-14: liveness reads nothing from the database.
-    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"], paused: null } });
+    expect(await call(hub, "GET", "/healthz")).toEqual({ status: 200, json: { ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"], paused: null } });
   });
 
   it.skipIf(!PG_URL)("/readyz on Postgres", async () => {
@@ -491,6 +491,31 @@ describe.skipIf(!PG_URL)(`RL-6 topics through mesh hub migrate${PG_URL ? "" : " 
     const p = await HubStore.open(url);
     try {
       expect(await p.listTopics()).toStrictEqual(before);
+    } finally {
+      await p.close();
+    }
+  });
+});
+
+// RL-25 AC-14: the alert_episode table goes through `mesh hub migrate` (Postgres only); on SQLite,
+// test_AC04_tables_equal_migrated above checks hub-copy TABLES lists it.
+describe.skipIf(!PG_URL)(`RL-25 tables${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+  const X = (s: HubStore): any => s;
+  it("test_AC14_migrate_copies_alert_episodes", async () => {
+    const file = join(tmp(), "hub.db");
+    const s = await HubStore.open(file);
+    const row = { fingerprint: "fp1", person: "alice", state: "firing", startsAt: clock - 1000, updatedAt: clock, summary: "s", notifiedAt: clock, notices: [{ machine: "m1", message: 1 }] };
+    await X(s).saveAlertEpisode(row);
+    await X(s).saveAlertEpisode({ ...row, fingerprint: "fp2", state: "resolved", resolvedAt: clock });
+    await s.close();
+    const url = await pgdb.fresh();
+    const report = await copyHubToPostgres(file, url);
+    expect(report.tables.find((x) => x.name === "alert_episode")?.rows).toBe(2);
+    const p = await HubStore.open(url);
+    try {
+      expect(await X(p).getAlertEpisode("fp1", "alice")).toStrictEqual(row);
+      expect(await X(p).getAlertEpisode("fp2", "alice")).toMatchObject({ state: "resolved", resolvedAt: clock });
     } finally {
       await p.close();
     }

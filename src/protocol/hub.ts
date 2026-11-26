@@ -793,7 +793,51 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"];
+
+/** RL-25: an RFC 3339 time as Alertmanager writes it (fractions to nanoseconds, `Z` or an offset). */
+const Rfc3339 = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/i, "not an RFC 3339 time")
+  .refine((v) => !Number.isNaN(Date.parse(v)), "not an RFC 3339 time");
+
+/** RL-25: one alert of an Alertmanager webhook (unknown keys are stripped). */
+export const AlertItem = z.object({
+  status: z.enum(["firing", "resolved"]),
+  labels: z.record(z.string(), z.string()),
+  annotations: z.record(z.string(), z.string()).default({}),
+  startsAt: Rfc3339,
+  endsAt: z.string().optional(),
+  generatorURL: z.string().optional(),
+  fingerprint: z.string().min(1).max(64),
+});
+export type AlertItem = z.infer<typeof AlertItem>;
+
+/** RL-25: body of `POST /v1/alerts/webhook`, the Alertmanager webhook (version "4"). */
+export const AlertWebhook = z.object({
+  version: z.string(),
+  status: z.enum(["firing", "resolved"]),
+  receiver: z.string().max(200).optional(),
+  groupKey: z.string().max(2000).optional(),
+  externalURL: z.string().max(2000).optional(),
+  truncatedAlerts: z.number().int().min(0).optional(),
+  alerts: z.array(AlertItem).max(1000),
+});
+export type AlertWebhook = z.infer<typeof AlertWebhook>;
+
+/** RL-25: why an alert notified no one. */
+export const AlertSkipReason = z.enum(["no-person", "person-unknown", "no-machine"]);
+
+/** RL-25: the reply of `POST /v1/alerts/webhook` (`received = notified + reminded + resolved + suppressed + skipped.length`). */
+export const AlertWebhookResult = z.object({
+  received: z.number().int(),
+  notified: z.number().int(),
+  reminded: z.number().int(),
+  resolved: z.number().int(),
+  suppressed: z.number().int(),
+  skipped: z.array(z.object({ fingerprint: z.string(), reason: AlertSkipReason })),
+});
+export type AlertWebhookResult = z.infer<typeof AlertWebhookResult>;
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({

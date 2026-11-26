@@ -5,6 +5,8 @@
 import { z } from "zod";
 import {
   AckRequest,
+  AlertWebhook,
+  AlertWebhookResult,
   AnswerRequest,
   Approve,
   ArtifactUpload,
@@ -73,7 +75,7 @@ const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message", "fleet:pause"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message", "fleet:pause", "alerts:notify"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -573,6 +575,16 @@ export const HUB_API: readonly HubApiRoute[] = [
     query: { after: "return events with a sequence number above this", limit: "at most this many (default 500)" },
     response: z.object({ events: z.array(HubEvent) }),
     summary: "The event log, gap-free and in commit order (service tokens and admins).",
+  },
+  {
+    method: "POST",
+    path: "/v1/alerts/webhook",
+    rule: "member",
+    scope: "alerts:notify",
+    tag: "admin",
+    body: AlertWebhook,
+    response: AlertWebhookResult,
+    summary: "Alertmanager webhook (version 4): notify each alert's person on their machines.",
   },
   { method: "GET", path: "/v1/admin/users", rule: "admin", tag: "admin", summary: "All users." },
   { method: "POST", path: "/v1/admin/revoke", rule: "admin", tag: "admin", body: RevokeRequest, summary: "Revoke the tokens of a user or a machine." },
