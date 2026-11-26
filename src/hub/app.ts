@@ -58,6 +58,7 @@ import {
   SESSION_COOKIE,
   SyncRequest,
   StopRun,
+  StopSession,
   HUB_FEATURES,
   PulseFire,
   type LoginResult,
@@ -529,6 +530,19 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),
     r("POST", "/v1/questions/:id/answer", "member", async (c, a) => c.json(await svc.answer(a, Number(param(c, "id")), (await body(c, AnswerRequest)).text))),
     r("POST", "/v1/messages", "member", async (c, a) => c.json(await svc.say(a, await body(c, MessageRequest)), 201)),
+    // RL-26: interrupt or end a session on a machine whose owner allowed remote stops.
+    forPerson(
+      r(
+        "POST",
+        "/v1/sessions/:sid/stop",
+        "member",
+        async (c, a) => {
+          const b = await body(c, StopSession);
+          return c.json(await svc.stopSession(a, param(c, "sid"), b.mode, b.reason));
+        },
+        "sessions:stop",
+      ),
+    ),
 
     // ---------- analysis feed, admin ----------
     r("GET", "/v1/events", "events", async (c) => c.json({ events: await svc.events(Number(c.req.query("after") ?? 0) || 0, Number(c.req.query("limit") ?? 500) || 500) })),

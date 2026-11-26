@@ -42,6 +42,7 @@ import {
   RunReport,
   RunsPage,
   StopRun,
+  StopSession,
   Health,
   FindingsRollup,
   ProfileFit,
@@ -503,6 +504,17 @@ export const HUB_API: readonly HubApiRoute[] = [
 
   { method: "POST", path: "/v1/questions", rule: "member", tag: "questions", body: AskRequest, status: 201, summary: "Ask a person a question (mesh_ask)." },
   { method: "POST", path: "/v1/questions/:id/answer", rule: "member", tag: "questions", body: AnswerRequest, summary: "Answer a question; the answer is delivered to the asking session." },
+  {
+    method: "POST",
+    path: "/v1/sessions/:sid/stop",
+    rule: "member",
+    scope: "sessions:stop",
+    onBehalfOf: true,
+    tag: "questions",
+    body: StopSession,
+    summary:
+      "Interrupt (`interrupt`) or end (`end`) a session, only on a machine whose owner allowed remote stops (daemon config `remoteStop`); the session's owner, the goal's approvers or an admin. A service acts for a person with the member role only.",
+  },
   { method: "POST", path: "/v1/messages", rule: "member", tag: "questions", body: MessageRequest, status: 201, summary: "Send a message to a session (by sid or <machine>/<session>) or to whoever holds a step." },
 
   {

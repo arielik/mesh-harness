@@ -3262,6 +3262,41 @@ export class HubService {
     });
   }
 
+  /**
+   * RL-26 `POST /v1/sessions/:sid/stop`: ask the session's machine to interrupt or end it (one
+   * machine-wide `stop` message). Only on a machine whose owner allowed remote stops; the session's
+   * owner, `canApprove` on the goal of its step (under act-for the goal owner only), or an admin.
+   */
+  async stopSession(actor: Actor, sid: string, mode: "interrupt" | "end", reason: string): Promise<{ message: number; online: boolean }> {
+    return await this.store.tx(async () => {
+      const hs = await this.store.getSession(sid);
+      if (!hs) throw refuse(404, "session-unknown", `no session ${sid}`);
+      const s = hs.session;
+      if (s.state === "ended") throw refuse(409, "session-ended", `${sid} has ended`);
+      if (s.kind === "print") throw refuse(409, "session-is-run", `${sid} is a headless run; stop it with mesh stop <step>`);
+      const goalId = s.step ? (await this.store.getStep(s.step))?.goal : undefined;
+      const goal = goalId ? await this.store.getGoal(goalId) : undefined;
+      const allowed = hs.userId === actor.userId || (goal !== undefined && canApprove(actor, goal.ownerId)) || actor.roles.includes("admin");
+      if (!allowed) throw refuse(403, "not-allowed", `only the owner of ${sid}, the goal's approvers or an admin stop it`);
+      const machine = await this.store.getMachine(hs.machineId);
+      if (!machine || machine.remoteStop !== true) {
+        const name = machine ? machineName(machine) : hs.machineId;
+        throw refuse(409, "stop-refused", `${name}'s owner has not allowed remote stops; ask ${machine?.userId ?? hs.userId} to stop it`);
+      }
+      if (s.agent === "opencode") throw refuse(409, "stop-unsupported", `${sid} is an OpenCode session; mesh does not stop it`);
+      const via = viaOf(actor);
+      const message = await this.machineMessage(
+        machine.id,
+        actor.userId,
+        "stop",
+        `MESH: @${actor.userId} asks to ${mode} session ${sessionName(s)}: ${reason}${actor.via ? ` (via ${actor.via})` : ""}`,
+        { sid, mode, reason, by: actor.userId, ...via },
+      );
+      await this.emit({ type: "session.stop_requested", user: actor.userId, sid, payload: { machine: machine.id, mode, reason, ...(s.step ? { step: s.step } : {}), ...via } });
+      return { message, online: this.now() - machine.lastSeen < ONLINE_MS };
+    });
+  }
+
   async takeStep(actor: Actor, stepId: string, sid: string | undefined): Promise<Step> {
     return await this.goalTx(async () => {
       const step = await this.stepOr404(stepId);
