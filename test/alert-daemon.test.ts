@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Daemon, DEFAULT_INTERVALS, defaultDeps } from "../src/daemon/index.ts";
-import type { DaemonConfig, InboxMessage, NotifyTarget } from "../src/protocol/index.ts";
+import type { AgentEntry, DaemonConfig, InboxMessage, NotifyTarget } from "../src/protocol/index.ts";
 import { DaemonStore } from "../src/store/index.ts";
 
 const BATCH = 150;
@@ -21,6 +21,8 @@ interface Rig {
   inbox: InboxMessage[];
   acks: { id: number; state: string; method?: string }[];
   calls: { title: string; body: string; target: NotifyTarget | undefined; args: number }[];
+  /** What `claude agents` lists (the reconciler marks these sessions interactive). */
+  agents: AgentEntry[];
   /** Acks answered 500 (not taken) while > 0. */
   failAcks: number;
   now: number;
@@ -42,7 +44,7 @@ async function rig(notify: DaemonConfig["notify"], result: (() => unknown) | unk
   const store = await DaemonStore.open(":memory:");
   const config = { port: 0, key: "k".repeat(32), notify, workspaceRoots: [], autopilot: "nudge", shareSessions: "steps", accept: ["self"], assignments: "deliver" } as DaemonConfig;
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const r = { inbox: [], acks: [], calls: [], failAcks: 0, now: NOW } as unknown as Rig;
+  const r = { inbox: [], acks: [], calls: [], agents: [], failAcks: 0, now: NOW } as unknown as Rig;
   const daemon = new Daemon({
     config,
     store,
@@ -52,7 +54,7 @@ async function rig(notify: DaemonConfig["notify"], result: (() => unknown) | unk
       harness: () => ({ hash: "h0", parts: { repo: "r0", user: "u0", plugins: "none", mesh: "test" } }),
       claudeVersion: async () => "2.1.318",
       scanRuns: () => [],
-      listAgents: async () => [],
+      listAgents: async () => r.agents,
       paste: async () => true,
       wakeBackground: async () => ({ ok: true }),
       // eslint-disable-next-line @typescript-eslint/require-await -- a fake
@@ -101,10 +103,16 @@ function notice(text: string, o: { createdAt?: number; kind?: string } = {}): In
   return { id: ++ids, toSid: "", kind: o.kind ?? "alert", text, fromUser: "am", createdAt: o.createdAt ?? NOW - 60_000, data: { alert: { fingerprint: `fp-${ids}`, status: "firing", reminder: false, summary: text, startsAt: NOW - HOUR } } };
 }
 
-/** An interactive session started by a hook at `at`, in tmux pane `%<pid>`. */
-function session(r: Rig, pid: number, at: number): void {
+/** An interactive session (as the reconciler sees it) in tmux pane `%<pid>`, last active at `at`. */
+async function session(r: Rig, pid: number, at: number): Promise<void> {
+  r.now = at - 60_000;
+  const hook = (kind: "SessionStart" | "UserPromptSubmit") =>
+    r.daemon.handleHook(kind, { session_id: `claude-${pid}`, cwd: CWD, hook_event_name: kind, transcript_path: `/t/${pid}.jsonl`, ...(kind === "UserPromptSubmit" ? { prompt: "work" } : {}) }, { claudePid: String(pid), tmuxPane: `%${pid}` });
+  hook("SessionStart");
+  r.agents.push({ kind: "interactive", pid, cwd: CWD, sessionId: `claude-${pid}`, status: "idle" });
+  await r.daemon.reconcile();
   r.now = at;
-  r.daemon.handleHook("SessionStart", { session_id: `claude-${pid}`, cwd: CWD, hook_event_name: "SessionStart", transcript_path: `/t/${pid}.jsonl` }, { claudePid: String(pid), tmuxPane: `%${pid}` });
+  hook("UserPromptSubmit");
 }
 
 async function until(cond: () => boolean, ms = 3_000): Promise<void> {
@@ -122,9 +130,9 @@ describe("AC-11 batch and ack", () => {
 
   it("test_AC11_two_notices_one_call", async () => {
     const r = await rig("desktop");
-    session(r, 101, NOW - 5_000);
-    session(r, 102, NOW - 1_000);
-    session(r, 103, NOW - 3_000);
+    await session(r, 101, NOW - 5_000);
+    await session(r, 102, NOW - 1_000);
+    await session(r, 103, NOW - 3_000);
     r.now = NOW;
     const a = notice("MESH ALERT CRIT: Plan G12 waits on you for 26 h");
     const b = notice("MESH ALERT WARN: second");
@@ -155,8 +163,8 @@ describe("AC-11 batch and ack", () => {
 
   it("test_AC11_ended_session_not_a_target", async () => {
     const r = await rig("terminal");
-    session(r, 201, NOW - 5_000);
-    session(r, 202, NOW - 1_000);
+    await session(r, 201, NOW - 5_000);
+    await session(r, 202, NOW - 1_000);
     r.now = NOW - 500;
     r.daemon.handleHook("SessionEnd", { session_id: "claude-202", cwd: CWD, hook_event_name: "SessionEnd", transcript_path: "/t/202.jsonl" }, { claudePid: "202", tmuxPane: "%202" });
     r.now = NOW;

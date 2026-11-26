@@ -213,9 +213,13 @@ export interface Intervals {
   transcriptMs: number;
   tickMs: number;
   deliveryMs: number;
+  /** RL-25: alert notices arriving within this long of the first are shown as one notification. */
+  alertBatchMs: number;
 }
 
-export const DEFAULT_INTERVALS: Intervals = { reconcileMs: 5_000, transcriptMs: 30_000, tickMs: 15_000, deliveryMs: 10_000 };
+export const DEFAULT_INTERVALS: Intervals = { reconcileMs: 5_000, transcriptMs: 30_000, tickMs: 15_000, deliveryMs: 10_000, alertBatchMs: 2_000 };
+/** RL-25: an alert notice older than this is acked `stale` and not shown. */
+const ALERT_STALE_MS = 24 * 3_600_000;
 
 /** Ended sessions stay visible this long. */
 const SHOW_ENDED_MS = 10 * 60_000;
@@ -273,6 +277,9 @@ export class Daemon {
   private offersHandled = new Map<number, { state: "delivered" | "failed"; method?: string | undefined; acked: boolean }>();
   /** MM-3: offer messages whose hub call or ack got no answer; a pull retries them. */
   private offersAwaitingRetry = new Set<number>();
+  /** RL-25: alert notices waiting to be shown together, and the timer that shows them. */
+  private alertBatch: InboxMessage[] = [];
+  private alertTimer: ReturnType<typeof setTimeout> | undefined;
   /** MM-3: sessions an in-flight offer picked, so a concurrent offer never picks the same one. */
   /**
    * Sessions reserved for offers (MM-3): the session an auto offer picked, by message id, kept until
@@ -539,6 +546,8 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.link?.stop();
+    if (this.alertTimer) clearTimeout(this.alertTimer);
+    this.alertTimer = undefined;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     if (this.server) {
@@ -761,6 +770,11 @@ export class Daemon {
   private receive(m: InboxMessage, hub: string): "queued" | "unknown" | "handling" {
     // MM-3: a machine-wide message (no session) is an offer the daemon handles itself.
     if (m.toSid === "") {
+      // RL-25: an alert notice for this machine's person.
+      if (m.kind === "alert") {
+        void this.handleAlert(m).catch((e) => this.deps.log(`alert ${m.id}: ${String(e)}`));
+        return "handling";
+      }
       if (m.kind !== "offer") return "unknown";
       void this.handleOffer(m).catch((e) => this.deps.log(`offer ${m.id}: ${String(e)}`));
       return "handling";
@@ -809,6 +823,55 @@ export class Daemon {
     for (const [id, h] of this.offersHandled) if (h.acked && !pending.has(id)) this.offersHandled.delete(id);
     for (const id of this.offersAwaitingRetry) if (!pending.has(id) && !this.offersInFlight.has(id)) this.offersAwaitingRetry.delete(id);
     for (const id of this.offerPicks.keys()) if (!pending.has(id) && !this.offersInFlight.has(id)) this.offerPicks.delete(id);
+  }
+
+  /**
+   * RL-25: an alert notice. It is shown under the `notify` setting, batched with the notices that
+   * arrive within `alertBatchMs` of the first, and acked with the configured channels. The offer
+   * bookkeeping keeps its id from arrival to ack, so a re-pull never shows it twice.
+   */
+  private async handleAlert(m: InboxMessage): Promise<void> {
+    if (this.offersHandled.has(m.id)) return await this.ackHandled(m.id);
+    if (this.offersInFlight.has(m.id)) return;
+    this.offersInFlight.add(m.id);
+    if (!notifyChannels(this.config).any || this.deps.now() - m.createdAt > ALERT_STALE_MS) {
+      try {
+        await this.ackOffer(m, "delivered", notifyChannels(this.config).any ? "stale" : "off");
+      } finally {
+        this.offersInFlight.delete(m.id);
+      }
+      return;
+    }
+    this.alertBatch.push(m);
+    this.alertTimer ??= setTimeout(() => void this.showAlerts().catch((e) => this.deps.log(`alerts: ${String(e)}`)), this.intervals.alertBatchMs);
+  }
+
+  /** RL-25: show the batched alert notices as one notification, then ack each. */
+  private async showAlerts(): Promise<void> {
+    const batch = this.alertBatch.splice(0);
+    this.alertTimer = undefined;
+    const first = batch[0];
+    if (!first) return;
+    const strip = (t: string) => t.replace(/^MESH ALERT:? /, "");
+    const title = batch.length === 1 ? "mesh · alert" : `mesh · ${batch.length} alerts`;
+    const body = batch.length === 1 ? strip(first.text) : `${strip(first.text)} (+${batch.length - 1} more)`;
+    const live = this.sessions.filter((s) => s.kind === "interactive" && s.state !== "ended" && (s.pid !== undefined || s.pane));
+    const latest = live.reduce<Session | undefined>((a, s) => (a === undefined || s.lastEventAt > a.lastEventAt ? s : a), undefined);
+    let shown = false;
+    try {
+      shown = Boolean(latest ? await this.deps.notify(title, body, notifyTarget(latest)) : await this.deps.notify(title, body));
+    } catch {
+      shown = false;
+    }
+    const ch = notifyChannels(this.config);
+    const method = ch.desktop && ch.terminal ? "both" : ch.desktop ? "desktop" : "terminal";
+    for (const m of batch) {
+      try {
+        await this.ackOffer(m, shown ? "delivered" : "failed", shown ? method : "no-channel");
+      } finally {
+        this.offersInFlight.delete(m.id);
+      }
+    }
   }
 
   /**
