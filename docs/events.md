@@ -35,7 +35,8 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.dropped` | a new plan removed it | — |
 | `question.asked` / `question.answered` | `mesh_ask` / an answer | `question` |
 | `message.sent` | a person messaged a session | `id` |
-| `message.delivered` | the daemon delivered or failed a message | `id`, `state`, `method` |
+| `message.delivered` | the daemon delivered or failed a message | `id`, `state`, `method`; for an `alert` notice (RL-25) the method is `off` (notify off, nothing shown), `stale` (older than 24 h, nothing shown), `desktop`, `terminal` or `both` (the configured channels, shown) or `no-channel` (`failed`: no channel showed it). A notice the hub cancelled emits none |
+| `alert.notified` | an Alertmanager webhook (RL-25) notified a person of a new episode, a reminder (`reminder: true`, 4 h after the last notice), or resolved an episode; `user` = the service. Repeats and skipped alerts emit nothing | `fingerprint`, `person`, `status` (`firing` or `resolved`), `reminder`, `alertname`, `severity`, `startsAt` (ms), `machines` (the machines messaged; `[]` for a resolved episode no machine had seen) |
 | `machine.named` | a machine was named or its name cleared | `machine`, `nickname` (null when cleared) |
 | `machine.labelled` | a machine's labels changed | `machine`, `labels` |
 | `step.offered` | a step was offered to a machine (`mesh assign`, `mesh_assign`, a goal's stick); `user` = the offerer, `sid` = the offering session | `machine` (target machine id), `sid` (target session, when named), `auto`, `note`, `stick`; `via` (the service that offered for `user`, 0.1.40); `mode: "headless"` and `profile` (name) on a headless offer (0.1.40) |

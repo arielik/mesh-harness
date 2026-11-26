@@ -42,7 +42,7 @@ Roles come from provider groups (`roles:` mappings) and `bootstrap_admins`.
 - Device tokens (CLI and daemon) and web sessions expire as configured.
 - `mesh hub revoke --user alice` or `--machine m-…` revokes them.
 - `mesh hub token --service analytics` mints a token for `GET /v1/events` and `mesh ledger export --events`.
-- `--scope` adds member routes to a service token, comma-separated. `goals:read` reads goals and steps (`GET /v1/goals`, `/v1/goals/:id` with its files and timeline, `GET /v1/steps`, `/v1/steps/:id`) and checks presets (`POST /v1/presets/check`, a read that writes nothing); `goals:write` creates goals (`POST /v1/goals`, owned by the service account); `live:read` reads `GET /v1/live`, `GET /v1/fleet` and `GET /v1/stream`; `pulses:write` creates and changes pulses (`POST /v1/pulses`, `/v1/pulses/:id/{update,pause,resume,fire,delete}`); `profiles:write` saves permission profiles (`POST /v1/profiles`); `steps:assign` offers a ready step for a person and ranks that person's machines for it (`POST /v1/steps/:id/assign`, `GET /v1/steps/:id/suggest`, only with `X-Mesh-On-Behalf-Of`). No scope approves, claims or answers. Example, for a dashboard that shows and adds goals: `mesh hub token --service dash --scope goals:read,goals:write,live:read`. A scope is fixed when the token is minted; to change it, revoke the token (`mesh hub revoke --user <service user>`) and mint another.
+- `--scope` adds member routes to a service token, comma-separated. `goals:read` reads goals and steps (`GET /v1/goals`, `/v1/goals/:id` with its files and timeline, `GET /v1/steps`, `/v1/steps/:id`) and checks presets (`POST /v1/presets/check`, a read that writes nothing); `goals:write` creates goals (`POST /v1/goals`, owned by the service account); `live:read` reads `GET /v1/live`, `GET /v1/fleet` and `GET /v1/stream`; `pulses:write` creates and changes pulses (`POST /v1/pulses`, `/v1/pulses/:id/{update,pause,resume,fire,delete}`); `profiles:write` saves permission profiles (`POST /v1/profiles`); `steps:assign` offers a ready step for a person and ranks that person's machines for it (`POST /v1/steps/:id/assign`, `GET /v1/steps/:id/suggest`, only with `X-Mesh-On-Behalf-Of`); `alerts:notify` posts Alertmanager alerts that notify people on their machines (`POST /v1/alerts/webhook`, see below). No scope approves, claims or answers. Example, for a dashboard that shows and adds goals: `mesh hub token --service dash --scope goals:read,goals:write,live:read`. A scope is fixed when the token is minted; to change it, revoke the token (`mesh hub revoke --user <service user>`) and mint another.
 
 **A service acts for a person.** On `GET /v1/fleet`, `POST /v1/profiles`, `POST /v1/pulses` and `POST /v1/pulses/:id/{update,pause,resume,fire,delete}`, a service token with the route's scope may send `X-Mesh-On-Behalf-Of: <user id>`. The request then runs as that person, with the member role only (never their admin role): the pulse or profile is theirs, the fleet is theirs, and the events name them in `user` and the service in `payload.via`. A pulse made or changed this way must name the person's own machines in `target.machines` (by id, `<user>/<nickname>` or nickname); labels may narrow it. Refusals, each with its own `error`:
 
@@ -97,5 +97,18 @@ The assign answers `{step, auto, message}`; `message` is the id of the offer mes
 `GET /v1/steps/:id` gives `offer.state` (it needs `goals:read`); `GET /v1/events` gives the events (a service reads them). `message.delivered` names no step: the `message` of the reply is the join key.
 
 Example, for a dashboard that also starts steps for people: `mesh hub token --service dash --scope goals:read,goals:write,live:read,pulses:write,profiles:write,steps:assign`.
+
+**Alerts from Alertmanager** (RL-25, feature `alert-notify`). `POST /v1/alerts/webhook` takes the Alertmanager webhook body (version `"4"`) from a service token with the scope `alerts:notify`, minted for the receiver alone: `mesh hub token --service alertmanager --scope alerts:notify`. Each alert's `person` label names the user whose machines get a notice ([operations](operations.md#alerts-from-alertmanager)). The route takes no `X-Mesh-On-Behalf-Of`. Refusals:
+
+| Status | `code` | `error` | When |
+|---|---|---|---|
+| 401 | `login-required` | `login required` | no or bad token |
+| 403 | `forbidden` | `forbidden` | a service token without `alerts:notify` |
+| 403 | `service-only` | `only a service token posts alerts` | a member's or an admin's own token |
+| 400 | `on-behalf-of-not-accepted` | `on-behalf-of is not accepted on this route` | the act-for header is sent |
+| 400 | `alert-version` | `webhook version <v> is not supported; expected 4` | `version` is not `"4"` |
+| 400 | `alert-body` | `invalid alert webhook body` (the problems in `details`) | the body does not fit, more than 1000 alerts, a `startsAt` that is not an RFC 3339 time |
+
+Alertmanager does not retry a 4xx: these show in its log as configuration errors.
 
 A daemon whose token expired keeps working locally and shows "hub login expired"; `mesh login` again.
