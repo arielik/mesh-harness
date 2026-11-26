@@ -222,6 +222,19 @@ else a sid prefix of at least 4 characters. When several sessions match, use a s
 Under `shareSessions: steps` the hub does not know an idle session, so a `<machine>/<session>`
 target answers 404 until that session holds a step; offer to the machine alone instead.
 
+### Pause all unattended work (admins)
+
+```bash
+mesh fleet pause "bad agent release"   # no pulse fires, no headless offer is made, queued runs wait
+#   fleet paused: bad agent release (2 headless offer(s) withdrawn)
+mesh status
+#   fleet paused since 14:05 UTC by @alice: bad agent release (no pulses or headless offers; running work goes on)
+mesh fleet resume                      # the held steps are offered again; missed slots are not fired
+#   fleet resumed
+```
+
+Running runs, claimed steps and interactive sessions go on. See [operations](operations.md#pause-the-fleet).
+
 ### Run a step headless
 
 A step a machine runs on its own, with no person watching (an audit, a triage). For the whole path,

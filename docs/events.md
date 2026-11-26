@@ -42,7 +42,9 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.accepted` | the target machine accepted the offer (an accept, or a claim from that machine); `user`, `sid` = the accepting session | `machine`, `sid` |
 | `step.declined` | the offer was declined | `machine`, `note` |
 | `step.offer_expired` | the offer was not accepted within `thresholds.offer_expiry` | `machine` |
-| `step.offer_withdrawn` | the offerer or an admin withdrew it, the offerer claimed the step, the step left `ready`, or a pulse moved on | `machine`, `reason` (`claimed by the offerer`, `step <state>`, `pulse: not accepted in time`, `pulse: slot missed`) |
+| `step.offer_withdrawn` | the offerer or an admin withdrew it, the offerer claimed the step, the step left `ready`, or a pulse moved on | `machine`, `reason` (`claimed by the offerer`, `step <state>`, `pulse: not accepted in time`, `pulse: slot missed`, `fleet paused`: an admin paused the fleet, `user` = that person) |
+| `fleet.paused` | an admin paused the fleet (RL-24): no pulse fires and no headless offer is made until resumed; `user` = the person | `reason`, `withdrawn` (headless offers withdrawn), `via` (the service that acted for the person) |
+| `fleet.resumed` | an admin resumed the fleet (RL-24); `user` = the person | `pausedAt`, `pausedBy`, `skipped` (slots recorded `skipped`/`fleet_paused` during the pause), `missed` (slots recorded `missed`/`fleet_paused`), `reason`, `via` |
 | `step.artifact` | an artifact was stored for a held step (`mesh_artifact`, a run's transcript); `user`, `sid` | `id`, `kind`, `round`, `bytes`, `sha256`, `redactions` (never the content) |
 | `run.started` | a machine started a headless run of the step | `runId`, `machine`, `profile`, `profileHash` (the profile the offer carried) |
 | `run.finished` | a headless run ended (after its close-as-fail, if any) | `runId`, `round` (absent when the run has no round of its own), `branch`, `commit` (from 0.1.32: the run's result commit), and the telemetry fields (`turns`, `turnsApprox`, tokens, `costUsdEstimate`, `durationMs`, `exit`, `permissionDenials`, `toolsUsed` and `denied` from 0.1.30, …) |
@@ -65,10 +67,10 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `pulse.paused` | the owner or an admin paused it; no `user` when the hub paused it because its owner is no longer a member | `pulse`, `reason`, `via` |
 | `pulse.resumed` / `pulse.deleted` | resumed / removed | `pulse`, `via` |
 | `pulse.fired` | a slot created a goal; `goal`, and `user` for a manual fire (none when a queued slot fires) | `pulse`, `slot`, `manual`, `catchUp`, `trial` (a trial fire, 0.1.30), `queued` (a queued slot fired, 0.1.37), `via` |
-| `pulse.skipped` | a slot was skipped while an earlier goal runs, or a queued slot was replaced (0.1.37) | `pulse`, `slot`, `reason` (`overlap`), `running` (that goal), `replacedBy` (the newer slot that replaced a queued one; absent when the pulse left `queue` or was deleted) |
+| `pulse.skipped` | a slot was skipped while an earlier goal runs, or a queued slot was replaced (0.1.37); RL-24: a slot that would fire (due, or queued and released) while the fleet is paused | `pulse`, `slot`, `reason` (`overlap`, or `fleet_paused` with no `running`), `running` (that goal), `replacedBy` (the newer slot that replaced a queued one; absent when the pulse left `queue` or was deleted) |
 | `pulse.queued` | a slot waits for a running goal (`overlap: queue`, 0.1.37); `user` for a manual fire | `pulse`, `slot`, `running` |
 | `pulse.superseded` | a fire dropped a goal that only waited on people (`overlap: supersede`, 0.1.37); `goal` | `pulse`, `slot` (the new slot), `goal` (the dropped goal), `from` (its slot) |
-| `pulse.missed` | a slot was missed; `goal` when it had one | `pulse`, `slot`, `reason` (`no_machine`, `not_accepted`, `capacity`, `expired`, `hub_down`, `error`), `tried` (machines offered), `error` (reason `error` only) |
+| `pulse.missed` | a slot was missed; `goal` when it had one | `pulse`, `slot`, `reason` (`no_machine`, `not_accepted`, `capacity`, `expired`, `hub_down`, `error`; RL-24: `fleet_paused`, a pending slot whose window ended while the fleet is paused), `tried` (machines offered), `error` (reason `error` only) |
 | `pulse.abandoned` | a started goal older than `maxGoalAge` was dropped; `goal` | `pulse`, `slot` |
 | `catalog.saved` | an admin registered a catalog source or changed its folder/calibrator; `user` | `repo`, `folder` |
 | `catalog.pushed` | a machine pushed the committed definitions of a catalog source; `user` | `repo`, `commit`, `added` (new definitions), `count` (current definitions) |

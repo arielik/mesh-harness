@@ -134,12 +134,12 @@ describe("AC-28 POST /v1/sync replies with the stored share level", () => {
     // test_AC28_reply_has_stored_share
     const first = await sync(l.token, { machine: { share: "me" } });
     expect(first.status).toBe(200);
-    expect(first.json).toStrictEqual({ accepted: 0, share: "me" });
+    expect(first.json).toStrictEqual({ accepted: 0, share: "me", paused: null });
     // test_AC28_reply_keeps_stored_without_machine
-    expect((await sync(l.token, {})).json).toStrictEqual({ accepted: 0, share: "me" });
+    expect((await sync(l.token, {})).json).toStrictEqual({ accepted: 0, share: "me", paused: null });
     // test_AC28_reply_reflects_change
-    expect((await sync(l.token, { machine: { share: "all" } })).json).toStrictEqual({ accepted: 0, share: "all" });
-    expect((await sync(l.token, {})).json).toStrictEqual({ accepted: 0, share: "all" });
+    expect((await sync(l.token, { machine: { share: "all" } })).json).toStrictEqual({ accepted: 0, share: "all", paused: null });
+    expect((await sync(l.token, {})).json).toStrictEqual({ accepted: 0, share: "all", paused: null });
   });
 
   it("test_AC28_never_reported_no_key", async () => {
@@ -147,10 +147,10 @@ describe("AC-28 POST /v1/sync replies with the stored share level", () => {
     const l = await w.login("bob");
     const r = await sync(l.token, { sessions: [sess("s1")] });
     expect(r.status).toBe(200);
-    expect(r.json).toStrictEqual({ accepted: 0 });
+    expect(r.json).toStrictEqual({ accepted: 0, paused: null });
     expect(r.json).not.toHaveProperty("share");
     // Positive control: the key appears once a level is stored.
-    expect((await sync(l.token, { machine: { share: "steps" } })).json).toStrictEqual({ accepted: 0, share: "steps" });
+    expect((await sync(l.token, { machine: { share: "steps" } })).json).toStrictEqual({ accepted: 0, share: "steps", paused: null });
   });
 });
 

@@ -9,6 +9,7 @@ export {
   HUB_MIGRATIONS_PG,
   HubStore,
   type EventRow,
+  type FleetPauseRow,
   type HubSession,
   type StepTimeRow,
   type MachineRow,

@@ -58,6 +58,8 @@ import {
   Replan,
   SESSION_COOKIE,
   SyncRequest,
+  FleetPauseRequest,
+  FleetResumeRequest,
   HUB_FEATURES,
   PulseFire,
   type LoginResult,
@@ -82,6 +84,8 @@ export interface Route {
   onBehalfOfRequired?: boolean | undefined;
   /** RL-22: a write on which a service may send the header but need not. */
   onBehalfOfOptional?: true | undefined;
+  /** RL-24: the person's roles, besides member, that act-for keeps here. */
+  onBehalfOfRoles?: readonly ("approver" | "admin")[] | undefined;
   handler: Handler;
 }
 
@@ -124,8 +128,8 @@ export function pasteCodePage(code: string): string {
 `;
 }
 
-/** RL-11: the liveness body; asks nothing of the database. */
-const liveness = () => ({ ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: [...HUB_FEATURES] });
+/** RL-11: the liveness body; asks nothing of the database. RL-24: the fleet pause from this replica's copy. */
+const liveness = (svc: HubService) => ({ ok: true, version: pkg.version, schema: HubStore.SCHEMA_VERSION, features: [...HUB_FEATURES], paused: svc.pausedView() });
 
 export function buildRoutes(svc: HubService): Route[] {
   const secureCookie = svc.config.url.startsWith("https://");
@@ -134,18 +138,19 @@ export function buildRoutes(svc: HubService): Route[] {
 
   const r = (method: Route["method"], path: string, rule: RouteRule, handler: Handler, scope?: ServiceScope): Route => ({ method, path, rule, handler, scope });
   /** A route a service token may call for a person (mesh-ai B-178). */
-  const forPerson = (route: Route, o: { required?: boolean; optional?: boolean } = {}): Route => ({
+  const forPerson = (route: Route, o: { required?: boolean; optional?: boolean; roles?: readonly ("approver" | "admin")[] } = {}): Route => ({
     ...route,
     onBehalfOf: true,
     ...(o.required ? { onBehalfOfRequired: true } : {}),
     ...(o.optional ? { onBehalfOfOptional: true as const } : {}),
+    ...(o.roles ? { onBehalfOfRoles: o.roles } : {}),
   });
   return [
     // RL-11: the probes say which hub this is (version, the schema it migrates to, its features).
-    r("GET", "/health", "public", (c) => c.json(liveness())),
+    r("GET", "/health", "public", (c) => c.json(liveness(svc))),
     // Probes (M4.6), no auth. Liveness: the process answers. Readiness: the database answers and is
     // migrated; a load balancer sends this replica no traffic until it is ready.
-    r("GET", "/healthz", "public", (c) => c.json(liveness())),
+    r("GET", "/healthz", "public", (c) => c.json(liveness(svc))),
     r("GET", "/readyz", "public", async (c) => {
       const ready = await svc.ready();
       return c.json({ ...ready, version: pkg.version }, ready.ok ? 200 : 503);
@@ -219,6 +224,9 @@ export function buildRoutes(svc: HubService): Route[] {
     // ---------- dashboard ----------
     r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a, topicsQuery(c))), "live:read"),
     forPerson(r("GET", "/v1/fleet", "member", async (c, a) => c.json(await svc.fleet(a)), "live:read")),
+    // RL-24: the fleet pause; act-for keeps the person's admin role on these two routes only.
+    forPerson(r("POST", "/v1/fleet/pause", "member", async (c, a) => c.json(await svc.pauseFleet(a, await body(c, FleetPauseRequest))), "fleet:pause"), { required: true, roles: ["admin"] }),
+    forPerson(r("POST", "/v1/fleet/resume", "member", async (c, a) => c.json(await svc.resumeFleet(a, await body(c, FleetResumeRequest))), "fleet:pause"), { required: true, roles: ["admin"] }),
     r("POST", "/v1/machines/:id/name", "member", async (c, a) => c.json(await svc.renameMachine(a, param(c, "id"), (await body(c, MachineName)).nickname))),
     r("POST", "/v1/machines/:id/labels", "member", async (c, a) => c.json(await svc.labelMachine(a, param(c, "id"), await body(c, MachineLabels)))),
     // RL-22: team=1 is every open item of the team (a service with goals:read, or an admin).
@@ -623,7 +631,7 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
       const caller = c.get("actor");
       if (!allowed(route.rule, caller, route.scope)) return c.json(caller ? { error: "forbidden", code: "forbidden" } : { error: "login required", code: "login-required" }, caller ? 403 : 401);
       // mesh-ai B-178: a service token acts for a person on the routes that allow it.
-      const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: (route.method === "POST" && route.onBehalfOfOptional !== true) || route.onBehalfOfRequired === true }) : caller;
+      const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: (route.method === "POST" && route.onBehalfOfOptional !== true) || route.onBehalfOfRequired === true, keep: route.onBehalfOfRoles }) : caller;
       // Retries of a service acting for a person never replay another caller's answer.
       const idemUser = actor?.via ? `${actor.via}>${actor.userId}` : actor?.userId;
       const key = route.method === "POST" && route.read !== true && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;

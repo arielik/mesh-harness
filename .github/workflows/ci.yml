@@ -55,7 +55,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vitest run src/store test/m46-replicas.test.ts test/m46-ops.test.ts
+      - run: pnpm exec vitest run src/store test/m46-replicas.test.ts test/m46-ops.test.ts test/fleet-pause-replicas.test.ts test/fleet-pause.test.ts
 
   # The hub image (Dockerfile): built and started once, not published.
   image:

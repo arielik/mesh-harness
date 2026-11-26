@@ -113,7 +113,8 @@ export type PulseUpdate = z.infer<typeof PulseUpdate>;
 
 export const SlotState = z.enum(["fired", "skipped", "missed", "abandoned", "queued"]);
 export type SlotState = z.infer<typeof SlotState>;
-export const SlotReason = z.enum(["overlap", "no_machine", "not_accepted", "capacity", "expired", "hub_down", "max_goal_age", "error"]);
+/** RL-24: `fleet_paused`, a slot that would fire (or a pending one whose window ended) while the fleet is paused. */
+export const SlotReason = z.enum(["overlap", "no_machine", "not_accepted", "capacity", "expired", "hub_down", "max_goal_age", "error", "fleet_paused"]);
 export type SlotReason = z.infer<typeof SlotReason>;
 
 export const SlotTry = z.object({

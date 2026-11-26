@@ -88,6 +88,27 @@ export const SyncRequest = z.object({
 });
 export type SyncRequest = z.infer<typeof SyncRequest>;
 
+/** RL-24: the body of `POST /v1/fleet/pause`. */
+export const FleetPauseRequest = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
+export type FleetPauseRequest = z.infer<typeof FleetPauseRequest>;
+/** RL-24: the body of `POST /v1/fleet/resume` (`{}` or no body is accepted). */
+export const FleetResumeRequest = z.object({ reason: z.string().trim().min(1).max(500).optional() }).strict();
+export type FleetResumeRequest = z.infer<typeof FleetResumeRequest>;
+/** RL-24: a stored fleet pause as replies, probes and the sync reply show it. */
+export const FleetPause = z.object({
+  /** Hub clock (ms) when the pause was stored. */
+  since: z.number().int(),
+  /** The person (never a service account under act-for). */
+  by: z.string(),
+  /** The service that acted for `by`. */
+  via: z.string().optional(),
+  reason: z.string(),
+});
+export type FleetPause = z.infer<typeof FleetPause>;
+/** RL-24: the reply of the fleet pause and resume routes; a pause also says how many headless offers it withdrew. */
+export const FleetState = z.object({ paused: FleetPause.nullable(), withdrawn: z.number().int().optional() });
+export type FleetState = z.infer<typeof FleetState>;
+
 /**
  * Reply to `POST /v1/sync`. `share`: the level the hub has stored for the token's machine (absent
  * when none was ever reported); a hub older than v0.1.10 answers `{ accepted }` only.
@@ -97,6 +118,8 @@ export interface SyncResponse {
   share?: ShareLevel | undefined;
   /** RL-14: sessions of the body whose step the hub says they do not hold (their time stops accruing there). */
   notHeld?: { sid: string; step: string }[] | undefined;
+  /** RL-24: the fleet pause (null: not paused); an older hub omits it. */
+  paused?: FleetPause | null | undefined;
 }
 
 /** A machine nickname (MM-1): short, lowercase, unique among one person's machines. */
@@ -770,7 +793,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({

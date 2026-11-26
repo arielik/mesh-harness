@@ -18,10 +18,12 @@ export interface RunningHub {
    * The interval timer calls this; tests with `tickMs: 0` call it themselves.
    */
   runTick(): Promise<boolean>;
+  /** RL-24: re-read the fleet pause for `/healthz` (the `pauseRefreshMs` timer calls this). */
+  refreshPause(): Promise<void>;
   stop(): Promise<void>;
 }
 
-export async function startHub(config: HubConfig, opts: { webRoot?: string | undefined; store?: HubStore; tickMs?: number; now?: () => number } = {}): Promise<RunningHub> {
+export async function startHub(config: HubConfig, opts: { webRoot?: string | undefined; store?: HubStore; tickMs?: number; pauseRefreshMs?: number; now?: () => number } = {}): Promise<RunningHub> {
   const store = opts.store ?? (await HubStore.open(config.db));
   // Several replicas share hints over the database; one hub alone fans out in process.
   const channel = store.channel(HINT_CHANNEL);
@@ -39,6 +41,14 @@ export async function startHub(config: HubConfig, opts: { webRoot?: string | und
     bus = new LocalHintBus();
   }
   const svc = new HubService(store, config, opts.now, { bus });
+  try {
+    // RL-24: /healthz answers the fleet pause from the first request on.
+    await svc.refreshPause();
+  } catch (e) {
+    await bus.close().catch(() => undefined);
+    if (!opts.store) await store.close().catch(() => undefined);
+    throw e;
+  }
   const leader = store.leader("tick");
   const { app } = createApp(svc, { webRoot: opts.webRoot });
   let server: ServerType;
@@ -81,14 +91,29 @@ export async function startHub(config: HubConfig, opts: { webRoot?: string | und
           });
         }, tickMs)
       : undefined;
+  // RL-24: every replica re-reads the fleet pause, so a change served elsewhere shows within the period.
+  let refreshFailing = false;
+  const refreshPause = async (): Promise<void> => {
+    try {
+      await svc.refreshPause();
+      refreshFailing = false;
+    } catch (e) {
+      if (!refreshFailing) process.stderr.write(`hub: reading the fleet pause failed (the last value is kept): ${String(e)}\n`);
+      refreshFailing = true;
+    }
+  };
+  const pauseRefreshMs = opts.pauseRefreshMs ?? 5_000;
+  const pauseTimer = pauseRefreshMs > 0 ? setInterval(() => void refreshPause(), pauseRefreshMs) : undefined;
   return {
     url: config.url,
     port,
     svc,
     runTick,
+    refreshPause,
     async stop() {
       svc.draining = true;
       if (timer) clearInterval(timer);
+      if (pauseTimer) clearInterval(pauseTimer);
       await ticking?.catch(() => undefined);
       await leader.release();
       const s = server as unknown as { closeAllConnections?: () => void; close(cb: () => void): void };

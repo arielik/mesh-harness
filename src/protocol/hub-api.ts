@@ -49,6 +49,10 @@ import {
   ChangesPage,
   AgentCompare,
   EfficiencyWindow,
+  FleetPause,
+  FleetPauseRequest,
+  FleetResumeRequest,
+  FleetState,
   GoalEfficiency,
   Stuck,
   RunCardsPage,
@@ -63,13 +67,13 @@ import { PresetCheck, PresetCheckResult, PulseCreate, PulseFire, PulseUpdate } f
 import { CatalogPush, CatalogSourceSave } from "./roster.ts";
 
 /** RL-11: the probe bodies. */
-const Liveness = z.object({ ok: z.literal(true), version: z.string(), schema: z.number().int(), features: z.array(z.string()) });
+const Liveness = z.object({ ok: z.literal(true), version: z.string(), schema: z.number().int(), features: z.array(z.string()), paused: FleetPause.nullable() });
 const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(), error: z.string().optional(), version: z.string() });
 
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message", "fleet:pause"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -98,6 +102,8 @@ export interface HubApiRoute {
   onBehalfOfRequired?: boolean;
   /** RL-22: a write on which a service may send the header but need not (it then acts as itself). */
   onBehalfOfOptional?: true;
+  /** RL-24: the person's roles, besides `member`, that act-for keeps on this route. */
+  onBehalfOfRoles?: readonly ("approver" | "admin")[];
 }
 
 const TOPIC_QUERY = "topic names, repeated or comma-separated: only goals with every one (`all`: every goal)";
@@ -140,6 +146,33 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/inbox/:id/ack", rule: "member", tag: "daemon", body: AckRequest, summary: "Mark an inbox message delivered or failed." },
   { method: "GET", path: "/v1/live", rule: "member", scope: "live:read", tag: "daemon", query: { topic: TOPIC_QUERY }, summary: "Live sessions across the team, and goals (filtered by topic)." },
   { method: "GET", path: "/v1/fleet", rule: "member", scope: "live:read", onBehalfOf: true, tag: "daemon", summary: "Every machine logged in as the caller (or the person a service acts for) and what each session on it is doing (read-only)." },
+  // RL-24: the fleet pause; act-for keeps the person's admin role here and nowhere else (MESH-OQ-AIOPS-12).
+  {
+    method: "POST",
+    path: "/v1/fleet/pause",
+    rule: "member",
+    scope: "fleet:pause",
+    onBehalfOf: true,
+    onBehalfOfRequired: true,
+    onBehalfOfRoles: ["admin"],
+    tag: "admin",
+    body: FleetPauseRequest,
+    response: FleetState,
+    summary: "Pause the fleet (admins; a service acts for an admin): no pulse fires and no headless offer is made until resumed; running work goes on.",
+  },
+  {
+    method: "POST",
+    path: "/v1/fleet/resume",
+    rule: "member",
+    scope: "fleet:pause",
+    onBehalfOf: true,
+    onBehalfOfRequired: true,
+    onBehalfOfRoles: ["admin"],
+    tag: "admin",
+    body: FleetResumeRequest,
+    response: FleetState,
+    summary: "Resume the fleet (admins; a service acts for an admin): the steps the pause held back are offered again; nothing missed is fired.",
+  },
   { method: "POST", path: "/v1/machines/:id/name", rule: "member", tag: "daemon", body: MachineName, summary: "Name one of your machines (or clear its name with null)." },
   { method: "POST", path: "/v1/machines/:id/labels", rule: "member", tag: "daemon", body: MachineLabels, summary: "Label one of your machines (replace, or add/remove)." },
   {

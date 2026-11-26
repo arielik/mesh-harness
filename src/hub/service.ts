@@ -245,6 +245,10 @@ import type {
   StoredReview,
   StoredReviewItem,
   FireResult,
+  FleetPause,
+  FleetPauseRequest,
+  FleetResumeRequest,
+  FleetState,
   GoalFromPreset,
   GoalState,
   Pulse,
@@ -263,7 +267,7 @@ import type {
 import { PulseSlot as PulseSlotSchema, StateTimeReport, SLA_DECIDER, type Carry } from "../protocol/index.ts";
 import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { FIGURE_EVENTS, goalCard, rollup, stepWindow, turnsSinceCommit } from "../core/efficiency.ts";
-import { HubStore, type EventRow, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
+import { HubStore, type EventRow, type FleetPauseRow, type HubSession, type MachineRow, type NewEvent, type StoredProfile, type UserRow } from "../store/index.ts";
 import { LocalHintBus, type HintBus } from "./bus.ts";
 import type { HubConfig } from "./config.ts";
 
@@ -815,10 +819,15 @@ export class HubService {
   private async emitReady(goalId: string, stepId: string): Promise<void> {
     await this.emit({ type: "step.ready", goal: goalId, step: stepId });
     const goal = await this.store.getGoal(goalId);
-    const stick = goal?.stick;
-    if (!goal || !stick) return;
+    if (!goal?.stick) return;
     const s = await this.store.getStep(stepId);
-    if (!s || s.state !== "ready" || s.kind === "gate" || s.offer?.state === "offered") return;
+    if (s) await this.stickOffer(goal, s);
+  }
+
+  /** Offer a ready step to its goal's stick target. RL-24: a headless one is held while the fleet is paused. */
+  private async stickOffer(goal: Goal, s: Step): Promise<void> {
+    const stick = goal.stick;
+    if (!stick || s.state !== "ready" || s.kind === "gate" || s.offer?.state === "offered") return;
     // RL-4: a debrief is never offered; only its assignee runs it.
     if (isDebrief(s.policy)) return;
     const machine = await this.store.getMachine(stick.to.machine);
@@ -830,6 +839,7 @@ export class HubService {
     }
     const guard = await this.headlessGuard(s, machine, goal);
     if (!guard.ok) return;
+    if (s.policy?.mode === "headless" && (await this.holdForPause([s.id]))) return;
     const byMachine = stick.byMachine ? await this.store.getMachine(stick.byMachine) : undefined;
     await this.offerStep(s, { machine, session }, { userId: stick.by, sid: stick.bySid, machine: byMachine }, { stick: true, goal, snapshot: guard.snapshot });
   }
@@ -903,6 +913,9 @@ export class HubService {
       const run = await this.headlessRun(actor, step, target, req);
       const guard = await this.headlessGuard(step, target.machine, goal, run);
       if (!guard.ok) throw refuse(409, guard.code, guard.error);
+      // RL-24: no headless offer while the fleet is paused.
+      const paused = step.policy?.mode === "headless" || run !== undefined ? await this.store.getFleetPause() : undefined;
+      if (paused) throw HubService.fleetPaused(paused);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
       const by = { userId: actor.userId, sid: req.sid, machine: caller.machine, via: actor.via };
@@ -948,13 +961,22 @@ export class HubService {
       const target = await this.resolveTarget(actor, req.to);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
-      // RL-1: headless steps the target cannot run are skipped (not offered, not counted).
+      // RL-1: headless steps the target cannot run are skipped (not offered, not counted). RL-24:
+      // while the fleet is paused a headless step it can run is left out (held when sticking).
+      const paused = await this.store.getFleetPause();
       const ready: { step: Step; snapshot?: ProfileSnapshot | undefined }[] = [];
+      const leftOut: string[] = [];
       for (const s of await this.offerableSteps(goal.id)) {
         const guard = await this.headlessGuard(s, target.machine, goal);
-        if (guard.ok) ready.push({ step: s, snapshot: guard.snapshot });
+        if (!guard.ok) continue;
+        if (paused && s.policy?.mode === "headless") leftOut.push(s.id);
+        else ready.push({ step: s, snapshot: guard.snapshot });
       }
-      if (ready.length === 0 && !req.stick) throw new HubError(409, `${goal.id} has no ready step to offer`);
+      if (ready.length === 0 && !req.stick) {
+        if (paused && leftOut.length) throw HubService.fleetPaused(paused);
+        throw new HubError(409, `${goal.id} has no ready step to offer`);
+      }
+      if (req.stick && leftOut.length) await this.holdForPause(leftOut);
       const by = { userId: actor.userId, sid: req.sid, machine: caller.machine };
       const offered: Step[] = [];
       for (const r of ready) offered.push(await this.offerStep(r.step, target, by, { note: req.note, stick: false, goal, snapshot: r.snapshot }));
@@ -2135,6 +2157,9 @@ export class HubService {
       this.refuseForeign(caller, sid);
       if (!caller.machine || caller.machine.id !== offer.to.machine) throw new HubError(403, `${step.id} is offered to ${await this.machineNameOf(offer.to.machine)}, not to this machine`);
       if (sid !== undefined) HubService.refuseHeadlessAccept(step);
+      // RL-24: after today's checks, so a wrong machine or a session keeps its refusal.
+      const paused = offer.mode === "headless" || step.policy?.mode === "headless" ? await this.store.getFleetPause() : undefined;
+      if (paused) throw HubService.fleetPaused(paused);
       const claimed = await this.claimInTx(actor, step, sid, caller.machine.id);
       return await this.markAccepted(actor, claimed, sid);
     });
@@ -2272,10 +2297,12 @@ export class HubService {
   /**
    * mesh-ai B-178: who a request runs as. A service token (the `service` role without `member`)
    * may name a person in `x-mesh-on-behalf-of` on the routes that allow it (`allowed`); the request
-   * then runs as that person with the member role only (never their admin role), and `via` names the
-   * service. A service's write on such a route needs the header. Anyone else sending it is refused.
+   * then runs as that person with the member role only, and `via` names the service. A service's
+   * write on such a route needs the header. Anyone else sending it is refused. RL-24: `keep` names the
+   * person's roles the route keeps besides member; only `POST /v1/fleet/pause` and
+   * `POST /v1/fleet/resume` keep `admin` (owner decision MESH-OQ-AIOPS-12).
    */
-  async actingFor(caller: Actor, header: string | undefined, route: { allowed: boolean; write: boolean }): Promise<Actor> {
+  async actingFor(caller: Actor, header: string | undefined, route: { allowed: boolean; write: boolean; keep?: readonly Role[] | undefined }): Promise<Actor> {
     const service = caller.roles.includes("service") && !caller.roles.includes("member");
     if (header === undefined) {
       if (service && route.allowed && route.write) throw refuse(400, "on-behalf-of-required", "on-behalf-of required: a service writes for a person (x-mesh-on-behalf-of)");
@@ -2286,7 +2313,8 @@ export class HubService {
     const id = header.trim();
     const user = id ? await this.store.getUser(id) : undefined;
     if (!user || user.roles.includes("service")) throw refuse(403, "user-unknown", `unknown user ${JSON.stringify(id)}`);
-    return { userId: user.id, roles: ["member"], tokenHash: caller.tokenHash, tokenKind: caller.tokenKind, via: caller.userId };
+    const kept = (user.roles as Role[]).filter((r) => r !== "member" && route.keep?.includes(r) === true);
+    return { userId: user.id, roles: ["member", ...kept], tokenHash: caller.tokenHash, tokenKind: caller.tokenKind, via: caller.userId };
   }
 
   /**
@@ -3455,7 +3483,9 @@ export class HubService {
       // MM-1: the stored share level tells the daemon this hub applies the visibility rule.
       const share = stored?.share;
       // RL-14: present when the body has a step-holding session (an empty list unmarks them all).
-      return { accepted, ...(share ? { share } : {}), ...(req.sessions.some((s) => s.step !== undefined) ? { notHeld } : {}) };
+      // RL-24: the fleet pause, so the daemon starts no queued headless run while it lasts.
+      const paused = HubService.pauseOf(await this.store.getFleetPause());
+      return { accepted, ...(share ? { share } : {}), ...(req.sessions.some((s) => s.step !== undefined) ? { notHeld } : {}), paused };
     });
   }
 
@@ -4020,6 +4050,8 @@ export class HubService {
         slot: await this.goalTx(async () => {
           const p = await this.pulseOr404(id);
           HubService.ownerOrAdmin(actor, p);
+          const paused = await this.store.getFleetPause();
+          if (paused) throw HubService.fleetPaused(paused);
           return await this.fireSlot(p, slotId, now, now, { manual: true, by: actor.userId, via: actor.via, trial });
         }),
       };
@@ -6679,17 +6711,20 @@ export class HubService {
       await this.store.saveSlot(s);
       return s;
     }
+    // RL-24: while the fleet is paused no attempt is made, and a slot whose window ends is missed for it.
+    const paused = await this.store.getFleetPause();
     if (s.until !== undefined && now >= s.until) {
       const last = s.tried.at(-1);
-      const reason: SlotReason = !last ? "no_machine" : last.outcome === "capacity" ? "capacity" : last.outcome === "accepted" ? "expired" : "not_accepted";
+      const reason: SlotReason = paused ? "fleet_paused" : !last ? "no_machine" : last.outcome === "capacity" ? "capacity" : last.outcome === "accepted" ? "expired" : "not_accepted";
       if (rs?.offer?.state === "offered") await this.withdrawOffer({ userId: p.owner }, rs, "pulse: slot missed");
       await this.dropGoal(goal.id, "missed", now);
       s = { ...s, state: "missed", reason, decidedAt: now };
       await this.store.saveSlot(s);
       await this.emit({ type: "pulse.missed", goal: goal.id, payload: { pulse: p.id, slot: s.slot, reason, tried: s.tried.length } });
+      if (paused) await this.countForPause(paused, "missed");
       return s;
     }
-    if (o.attempt && rs?.state === "ready") s = await this.attempt(s, p, goal, rs, now);
+    if (o.attempt && !paused && rs?.state === "ready") s = await this.attempt(s, p, goal, rs, now);
     if (s !== slot) await this.store.saveSlot(s);
     return s;
   }
@@ -7044,6 +7079,13 @@ export class HubService {
           if (!owner || !owner.roles.some((r) => r === "member" || r === "approver" || r === "admin")) return;
           if (!p.enabled) return;
           if ((await this.runningGoal(p, s.slot)) !== undefined) return;
+          // RL-24: a queued slot released while the fleet is paused is skipped (no goal).
+          const paused = await this.store.getFleetPause();
+          if (paused) {
+            const { running: _r, ...rest } = s;
+            await this.skipForPause(paused, { ...rest, state: "skipped", reason: "fleet_paused", decidedAt: now }, "save");
+            return;
+          }
           await this.slotGoal(p, s, now, { manual: s.manual === true, ...(s.by !== undefined ? { by: s.by } : {}), queued: true, from: now });
         });
       } catch (e) {
@@ -7108,7 +7150,10 @@ export class HubService {
           await this.emit({ type: "pulse.missed", payload: { pulse: p.id, slot, reason: "error", tried: 0, error: message } });
         }
       } else {
-        await this.fireSlot(p, slot, last, now, inWindow ? {} : { catchUp: true });
+        // RL-24: while the fleet is paused the slot that would fire is skipped instead (no goal, no catch-up later).
+        const paused = await this.store.getFleetPause();
+        if (paused) await this.skipForPause(paused, { pulse: p.id, slot, at: last, state: "skipped", reason: "fleet_paused", ...(inWindow ? {} : { catchUp: true as const }), tried: [], decidedAt: now }, "add");
+        else await this.fireSlot(p, slot, last, now, inWindow ? {} : { catchUp: true });
       }
     }
     const { nextAt: _old, ...rest } = p;
@@ -7489,6 +7534,122 @@ export class HubService {
     await this.advancePending(now);
     await this.releaseQueued(now);
     await this.fireDue(now);
+  }
+
+  // ---------- fleet pause (RL-24) ----------
+
+  /** This replica's copy of the fleet pause, for the probes only (enforcement reads the store). */
+  private pauseCache: FleetPause | null = null;
+
+  /** RL-24: the fleet pause as `/healthz` shows it (no database read). */
+  pausedView(): FleetPause | null {
+    return this.pauseCache;
+  }
+
+  /** RL-24: re-read the fleet pause into this replica's copy (one primary-key read). */
+  async refreshPause(): Promise<void> {
+    this.pauseCache = HubService.pauseOf(await this.store.getFleetPause());
+  }
+
+  private static pauseOf(row: FleetPauseRow | undefined): FleetPause | null {
+    if (!row) return null;
+    const { held: _h, skipped: _s, missed: _m, ...pause } = row;
+    return pause;
+  }
+
+  private static refuseNotAdmin(actor: Actor): void {
+    if (!actor.roles.includes("admin")) throw refuse(403, "not-admin", "fleet pause and resume are for admins");
+  }
+
+  /** RL-24: the refusal of an offer, accept or fire while the fleet is paused. */
+  private static fleetPaused(row: FleetPauseRow): HubError {
+    return refuse(409, "fleet-paused", `the fleet is paused since ${new Date(row.since).toISOString()} by ${row.by}: ${row.reason}; an admin resumes it (mesh fleet resume)`);
+  }
+
+  /** RL-24 (inside `goalTx`): while the fleet is paused, add these steps to its held list; false when not paused. */
+  private async holdForPause(ids: readonly string[]): Promise<boolean> {
+    const row = await this.store.getFleetPause();
+    if (!row) return false;
+    const held = [...row.held];
+    for (const id of ids) if (!held.includes(id)) held.push(id);
+    if (held.length !== row.held.length) await this.store.setFleetPause({ ...row, held }, this.now());
+    return true;
+  }
+
+  /** RL-24 (inside `goalTx`): count a slot recorded skipped or missed for the pause. */
+  private async countForPause(row: FleetPauseRow, field: "skipped" | "missed"): Promise<void> {
+    await this.store.setFleetPause({ ...row, [field]: row[field] + 1 }, this.now());
+  }
+
+  /** RL-24 (inside `goalTx`): record a slot skipped for the pause (a new row, or a queued one saved), count it and emit `pulse.skipped`. */
+  private async skipForPause(row: FleetPauseRow, slot: PulseSlot, how: "add" | "save"): Promise<void> {
+    if (how === "add") {
+      if (!(await this.store.addSlot(slot))) return;
+    } else {
+      await this.store.saveSlot(slot);
+    }
+    await this.countForPause(row, "skipped");
+    await this.emit({ type: "pulse.skipped", payload: { pulse: slot.pulse, slot: slot.slot, reason: "fleet_paused" } });
+  }
+
+  /**
+   * RL-24 `POST /v1/fleet/pause`: store the pause and withdraw every open headless offer (each step
+   * is held for the resume). A withdrawn run step offer of a pending pulse slot loses its undecided
+   * try, so that machine stays a candidate after the resume.
+   */
+  async pauseFleet(actor: Actor, req: FleetPauseRequest): Promise<FleetState> {
+    HubService.refuseNotAdmin(actor);
+    return await this.goalTx(async () => {
+      const cur = await this.store.getFleetPause();
+      if (cur) throw refuse(409, "fleet-already-paused", `the fleet is already paused since ${new Date(cur.since).toISOString()} by ${cur.by}: ${cur.reason}`);
+      const now = this.now();
+      const row: FleetPauseRow = { since: now, by: actor.userId, ...viaOf(actor), reason: req.reason, held: [], skipped: 0, missed: 0 };
+      for (const s of await this.store.listSteps({ state: "ready" })) {
+        const o = s.offer;
+        if (o?.state !== "offered" || (o.mode !== "headless" && s.policy?.mode !== "headless")) continue;
+        const slot = await this.pendingSlotOf(await this.store.getGoal(s.goal), s);
+        await this.withdrawOffer(actor, s, "fleet paused");
+        if (!row.held.includes(s.id)) row.held.push(s.id);
+        const last = slot?.tried.at(-1);
+        if (slot && last && last.outcome === undefined && last.machine === o.to.machine) await this.store.saveSlot({ ...slot, tried: slot.tried.slice(0, -1) });
+      }
+      await this.store.setFleetPause(row, now);
+      await this.emit({ type: "fleet.paused", user: actor.userId, payload: { reason: req.reason, withdrawn: row.held.length, ...viaOf(actor) } });
+      const view = HubService.pauseOf(row);
+      this.store.afterCommit(() => {
+        this.pauseCache = view;
+      });
+      return { paused: view, withdrawn: row.held.length };
+    });
+  }
+
+  /**
+   * RL-24 `POST /v1/fleet/resume`: clear the pause and offer again, by stick, the steps it held back
+   * (not a pulse goal's run step: the slot's next attempt offers it). Nothing is fired.
+   */
+  async resumeFleet(actor: Actor, req: FleetResumeRequest): Promise<FleetState> {
+    HubService.refuseNotAdmin(actor);
+    await this.goalTx(async () => {
+      const row = await this.store.getFleetPause();
+      if (!row) throw refuse(409, "fleet-not-paused", "the fleet is not paused");
+      await this.store.setFleetPause(undefined, this.now());
+      for (const id of row.held) {
+        const s = await this.store.getStep(id);
+        const goal = s ? await this.store.getGoal(s.goal) : undefined;
+        if (!s || !goal?.stick || goal.state === "done" || goal.state === "dropped") continue;
+        if (goal.refs?.pulse !== undefined && (await this.runStepOf(goal)) === s.id) continue;
+        await this.stickOffer(goal, s);
+      }
+      await this.emit({
+        type: "fleet.resumed",
+        user: actor.userId,
+        payload: { pausedAt: row.since, pausedBy: row.by, skipped: row.skipped, missed: row.missed, ...(req.reason ? { reason: req.reason } : {}), ...viaOf(actor) },
+      });
+      this.store.afterCommit(() => {
+        this.pauseCache = null;
+      });
+    });
+    return { paused: null };
   }
 
   /** Mint a service token: the event feed, plus the member routes its scopes name. */

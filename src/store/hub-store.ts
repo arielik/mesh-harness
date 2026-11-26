@@ -1,8 +1,10 @@
 // Hub persistence (plan §3.2, §8). Rows keep a few indexed columns plus the JSON value.
 
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   DispositionRow,
+  FleetPause,
   Goal,
   ItemHistoryEntry,
   ItemRow,
@@ -108,6 +110,8 @@ export const HUB_MIGRATIONS: readonly string[] = [
    CREATE INDEX IF NOT EXISTS step_time_goal ON step_time (goal);
    CREATE INDEX IF NOT EXISTS step_time_as_of ON step_time (as_of);
    CREATE INDEX IF NOT EXISTS event_at ON event (at);`,
+  // RL-24: hub-wide state, one row per key (`fleet`: the fleet pause; no row: not paused).
+  `CREATE TABLE IF NOT EXISTS hub_state (k TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);`,
 ];
 
 /**
@@ -190,7 +194,16 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    CREATE INDEX IF NOT EXISTS step_time_goal ON step_time (lower(goal));
    CREATE INDEX IF NOT EXISTS step_time_as_of ON step_time (as_of);
    CREATE INDEX IF NOT EXISTS event_at ON event (at);`,
+  `CREATE TABLE IF NOT EXISTS hub_state (k TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at BIGINT NOT NULL);`,
 ];
+
+/**
+ * RL-24: the stored fleet pause, hub-internal (never in a reply, a probe or an event): the steps the
+ * pause held back (the resume offers them again; ids are not removed during the pause, the resume
+ * ignores stale ones) and the slots it recorded skipped and missed.
+ */
+export const FleetPauseRow = FleetPause.extend({ held: z.array(z.string()), skipped: z.number().int(), missed: z.number().int() });
+export type FleetPauseRow = z.infer<typeof FleetPauseRow>;
 
 /** RL-14: one session's state time on one step, as stored. */
 export interface StepTimeRow {
@@ -1605,6 +1618,25 @@ export class HubStore {
       const max = (await this.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM event"))?.m ?? 0;
       return this.events(Math.max(0, max - limit), limit);
     });
+  }
+
+  /** RL-24: the fleet pause, or undefined when the fleet is not paused. */
+  async getFleetPause(): Promise<FleetPauseRow | undefined> {
+    const r = await this.db.get<{ value: string }>("SELECT value FROM hub_state WHERE k = 'fleet'");
+    return r ? FleetPauseRow.parse(JSON.parse(r.value)) : undefined;
+  }
+
+  /** RL-24: store the fleet pause, or with undefined clear it. */
+  async setFleetPause(p: FleetPauseRow | undefined, now: number): Promise<void> {
+    if (p === undefined) {
+      await this.db.run("DELETE FROM hub_state WHERE k = 'fleet'");
+      return;
+    }
+    await this.db.run(
+      "INSERT INTO hub_state (k, value, updated_at) VALUES ('fleet', ?, ?) ON CONFLICT(k) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      json(FleetPauseRow.parse(p)),
+      now,
+    );
   }
 
   async getIdem(key: string, userId: string): Promise<unknown> {
