@@ -128,6 +128,10 @@ export interface SyncFacts {
   sessions?: Session[];
   /** RL-21: the machine's share level (default `me`). */
   share?: "steps" | "me" | "all";
+  /** RL-26: consent and capability facts (sent only when set). */
+  remoteStop?: boolean;
+  teamOffers?: boolean;
+  runStop?: boolean;
 }
 
 export class Pk {
@@ -266,6 +270,9 @@ export class Pk {
       ...(f.repos ? { repos: f.repos.map((id) => ({ id, name: id.slice(id.lastIndexOf("/") + 1) })) } : {}),
       ...(f.accept ? { accept: f.accept } : {}),
       ...(f.headless !== undefined ? { headless: f.headless } : {}),
+      ...(f.remoteStop !== undefined ? { remoteStop: f.remoteStop } : {}),
+      ...(f.teamOffers !== undefined ? { teamOffers: f.teamOffers } : {}),
+      ...(f.runStop !== undefined ? { runStop: f.runStop } : {}),
     };
     const res = await this.w.call(m.token, "POST", "/v1/sync", { events: [], counts: {}, sessions: f.sessions ?? [], machine });
     expect(res.status, JSON.stringify(res.json)).toBe(200);
