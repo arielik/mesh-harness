@@ -30,7 +30,7 @@ describe("RL-17 AC-11 docs", () => {
     expect(ev.some((l) => l.startsWith("| `pulse.created`") && l.includes("`agents`"))).toBe(true);
     expect(ev.some((l) => l.startsWith("| `pulse.updated`") && l.includes("`sha256`") && l.includes("`agents`"))).toBe(true);
     const o = read("docs/guide/operations.md");
-    expect(section(o, "Upgrading to 0.1.43")).toContain("0.1.34 (RL-17)");
+    expect(section(o, "Upgrading to 0.1.44")).toContain("0.1.34 (RL-17)");
     expect(section(o, "Probes", "###")).toContain("`agent-compare`");
     const plan = read("docs/plan/implementation-plan.md");
     expect(plan).toContain("| `GET /v1/changes` |");

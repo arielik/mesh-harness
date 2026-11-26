@@ -687,7 +687,7 @@ describe("RL-6 AC-16 checks, schema, routes", () => {
 
   it("test_AC16_version", () => {
     // RL-12 AC-12: the release is v0.1.31 (was v0.1.30).
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.43");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.44");
   });
 
   it("test_AC07_route_table", () => {
@@ -783,7 +783,7 @@ describe("RL-9 AC-18/AC-19 routes and schema", () => {
   });
 
   it("test_AC19_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.43"); // RL-12 AC-12 (was 0.1.30)
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.44"); // RL-12 AC-12 (was 0.1.30)
   });
 
   it("test_AC19_schema_version", () => {
@@ -822,7 +822,7 @@ describe("RL-10 AC-12/AC-13 routes and schema", () => {
   });
 
   it("test_AC13_version", () => {
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.43"); // RL-12 AC-12 (was 0.1.30)
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.44"); // RL-12 AC-12 (was 0.1.30)
   });
 
   it("test_AC13_schema_version", () => {

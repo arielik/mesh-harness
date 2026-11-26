@@ -26,7 +26,7 @@ describe("RL-19 AC-11 docs", () => {
     expect(section(sr, "Read the results")).toContain("GET /v1/findings/rollup");
     expect(section(sr, "Pick or write a relay preset")).toContain("kind:");
     const ops = read("docs/guide/operations.md");
-    const up = section(ops, "Upgrading to 0.1.43");
+    const up = section(ops, "Upgrading to 0.1.44");
     expect(up).toContain("0.1.38 (RL-19) adds a findings roll-up per preset and repo (`GET /v1/findings/rollup`");
     expect(up.indexOf("0.1.38 (RL-19)")).toBeLessThan(up.indexOf("0.1.23 has no release package."));
     expect(up).toContain("no migration (schema 12)");
