@@ -857,7 +857,7 @@ export class Daemon {
     const body = batch.length === 1 ? strip(first.text) : `${strip(first.text)} (+${batch.length - 1} more)`;
     const live = this.sessions.filter((s) => s.kind === "interactive" && s.state !== "ended" && (s.pid !== undefined || s.pane));
     const latest = live.reduce<Session | undefined>((a, s) => (a === undefined || s.lastEventAt > a.lastEventAt ? s : a), undefined);
-    let shown = false;
+    let shown: boolean;
     try {
       shown = Boolean(latest ? await this.deps.notify(title, body, notifyTarget(latest)) : await this.deps.notify(title, body));
     } catch {

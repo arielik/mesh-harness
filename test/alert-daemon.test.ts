@@ -57,7 +57,6 @@ async function rig(notify: DaemonConfig["notify"], result: (() => unknown) | unk
       listAgents: async () => r.agents,
       paste: async () => true,
       wakeBackground: async () => ({ ok: true }),
-      // eslint-disable-next-line @typescript-eslint/require-await -- a fake
       notify: async (...a: [string, string, NotifyTarget?]) => {
         r.calls.push({ title: a[0], body: a[1], target: a[2], args: a.length });
         return typeof result === "function" ? (result as () => unknown)() : result;
