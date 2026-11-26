@@ -200,8 +200,10 @@ export interface AttWorld {
   q2: number;
   /** The `at` of the 40th turn of G2.stuck after its last commit. */
   stuckAt: number;
-  times: Record<string, number>;
+  times: Record<TimeKey, number>;
 }
+
+type TimeKey = "plan" | "approved" | "gate" | "park" | "fail" | "pause" | "stall" | "ny" | "ny2" | "offer" | "q1" | "q2" | "blocked" | "missed" | "trialFail";
 
 const WORK = ["gate", "deb1", "deb2", "park", "fail", "pause", "stall", "stuck", "ny", "impl", "off"];
 
@@ -210,7 +212,7 @@ export async function attentionWorld(): Promise<AttWorld> {
   const k = await Ak.start(NOW - 10 * HOUR);
   const w = k.w;
   const at = (ms: number) => (w.clock = ms);
-  const t: Record<string, number> = {};
+  const t = {} as Record<TimeKey, number>;
 
   // G1: plan v1 superseded by v2, awaiting approval; its design step is held (not ready-unclaimed).
   at(NOW - 9 * HOUR);

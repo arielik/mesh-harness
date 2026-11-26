@@ -36,6 +36,8 @@ import {
   ReleaseRequest,
   Replan,
   ResumeRequest,
+  StepPark,
+  OpenQuestions,
   RetargetRequest,
   RevertRequest,
   ReviewUpload,
@@ -67,7 +69,7 @@ const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -94,6 +96,8 @@ export interface HubApiRoute {
   read?: true;
   /** RL-21: a service token must send the header here, also on a read. */
   onBehalfOfRequired?: boolean;
+  /** RL-22: a write on which a service may send the header but need not (it then acts as itself). */
+  onBehalfOfOptional?: true;
 }
 
 const TOPIC_QUERY = "topic names, repeated or comma-separated: only goals with every one (`all`: every goal)";
@@ -138,7 +142,21 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "GET", path: "/v1/fleet", rule: "member", scope: "live:read", onBehalfOf: true, tag: "daemon", summary: "Every machine logged in as the caller (or the person a service acts for) and what each session on it is doing (read-only)." },
   { method: "POST", path: "/v1/machines/:id/name", rule: "member", tag: "daemon", body: MachineName, summary: "Name one of your machines (or clear its name with null)." },
   { method: "POST", path: "/v1/machines/:id/labels", rule: "member", tag: "daemon", body: MachineLabels, summary: "Label one of your machines (replace, or add/remove)." },
-  { method: "GET", path: "/v1/attention", rule: "member", tag: "daemon", summary: "What needs the calling user: questions, gates, stalled steps." },
+  {
+    method: "GET",
+    path: "/v1/attention",
+    rule: "member",
+    scope: "goals:read",
+    tag: "daemon",
+    query: {
+      team: "1: every open item of the team (a service with goals:read, or an admin); a service must send it",
+      needsYouMs: "team form: 60000-604800000, default 1800000 (the stuck-session floor)",
+      turns: "team form: 1-10000, default 40 (the stuck-step floor)",
+      trial: "team form: exclude (default) or include",
+      limit: "team form: 1-5000, default 2000",
+    },
+    summary: "What needs the calling user: questions, gates, stalled steps. With team=1: every open item of the team in one read (TeamAttention).",
+  },
   { method: "GET", path: "/v1/stream", rule: "member", scope: "live:read", tag: "daemon", sse: true, summary: "Server-sent hints (changed, wake). Lossy by design: clients refetch." },
 
   {
@@ -150,12 +168,14 @@ export const HUB_API: readonly HubApiRoute[] = [
     query: { topic: TOPIC_QUERY, pulses: "1: also goals created by pulses (left out by default)" },
     summary: "All goals, or those with the given topics.",
   },
-  { method: "POST", path: "/v1/goals", rule: "member", scope: "goals:write", tag: "goals", body: NewGoal, status: 201, summary: "Create a goal." },
+  { method: "POST", path: "/v1/goals", rule: "member", scope: "goals:write", onBehalfOf: true, onBehalfOfOptional: true, tag: "goals", body: NewGoal, status: 201, summary: "Create a goal (a service may create it for a person, who then owns it)." },
   {
     method: "POST",
     path: "/v1/goals/from-preset",
     rule: "member",
     scope: "goals:write",
+    onBehalfOf: true,
+    onBehalfOfOptional: true,
     tag: "goals",
     body: GoalFromPreset,
     status: 201,
@@ -266,10 +286,10 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/pulses/:id/delete", rule: "member", scope: "pulses:write", onBehalfOf: true, tag: "goals", summary: "Remove a pulse; its slots and goals stay." },
   { method: "GET", path: "/v1/goals/:id", rule: "member", scope: "goals:read", tag: "goals", summary: "A goal with its plans and steps." },
   { method: "POST", path: "/v1/goals/:id/plan", rule: "member", tag: "goals", body: ProposePlan, status: 201, summary: "Propose a plan (design sessions)." },
-  { method: "POST", path: "/v1/goals/:id/approve", rule: "member", tag: "goals", body: Approve, summary: "Approve the proposed plan (approvers)." },
-  { method: "POST", path: "/v1/goals/:id/revise", rule: "member", tag: "goals", body: Decide, summary: "Ask the design session to revise the proposed plan." },
-  { method: "POST", path: "/v1/goals/:id/drop", rule: "member", scope: "goals:write", tag: "goals", body: GoalDrop, summary: "Drop a goal (its owner, an approver or an admin); no step may be held." },
-  { method: "POST", path: "/v1/goals/:id/replan", rule: "member", tag: "goals", body: Replan, summary: "Reopen design for a goal with an approved plan." },
+  { method: "POST", path: "/v1/goals/:id/approve", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: Approve, summary: "Approve the proposed plan (approvers)." },
+  { method: "POST", path: "/v1/goals/:id/revise", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: Decide, summary: "Ask the design session to revise the proposed plan." },
+  { method: "POST", path: "/v1/goals/:id/drop", rule: "member", scope: "goals:write", onBehalfOf: true, onBehalfOfOptional: true, tag: "goals", body: GoalDrop, summary: "Drop a goal (its owner, an approver or an admin); no step may be held." },
+  { method: "POST", path: "/v1/goals/:id/replan", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: Replan, summary: "Reopen design for a goal with an approved plan." },
   { method: "GET", path: "/v1/goals/:id/files", rule: "member", scope: "goals:read", tag: "goals", summary: "The record files of a goal, as the ledger writes them." },
   { method: "POST", path: "/v1/goals/:id/topics", rule: "member", scope: "goals:write", tag: "goals", body: GoalTopicsChange, summary: "Tag a goal with topics or untag it (any member)." },
   { method: "GET", path: "/v1/topics", rule: "member", scope: "goals:read", tag: "goals", summary: "Topics with their goal counts; `all` (every goal) first." },
@@ -384,9 +404,18 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/steps/:id/release", rule: "member", tag: "steps", body: ReleaseRequest, summary: "Give a step back with a handoff note." },
   { method: "POST", path: "/v1/steps/:id/note", rule: "member", tag: "steps", body: NoteRequest, summary: "Add a progress note to a step." },
   { method: "POST", path: "/v1/steps/:id/done", rule: "member", tag: "steps", body: DoneRequest, summary: "Finish a step (done, or fail and reopen earlier steps)." },
-  { method: "POST", path: "/v1/steps/:id/approve", rule: "member", tag: "steps", body: GateDecision, summary: "Pass a gate step." },
-  { method: "POST", path: "/v1/steps/:id/reject", rule: "member", tag: "steps", body: GateDecision, summary: "Reject a gate step (optionally reopening steps)." },
-  { method: "POST", path: "/v1/steps/:id/resume", rule: "member", tag: "steps", body: ResumeRequest, summary: "Resume a parked step." },
+  { method: "POST", path: "/v1/steps/:id/approve", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "steps", body: GateDecision, summary: "Pass a gate step." },
+  { method: "POST", path: "/v1/steps/:id/reject", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "steps", body: GateDecision, summary: "Reject a gate step (optionally reopening steps)." },
+  { method: "POST", path: "/v1/steps/:id/resume", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "steps", body: ResumeRequest, summary: "Resume a parked step." },
+  {
+    method: "POST",
+    path: "/v1/steps/:id/park",
+    rule: "member",
+    scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, 
+    tag: "steps",
+    body: StepPark,
+    summary: "Park a claimed or paused step by hand (the goal owner, approvers, admins): the holder is told to stop; no process is signalled. Resume lets it go on.",
+  },
   { method: "POST", path: "/v1/steps/:id/take", rule: "member", tag: "steps", body: ClaimRequest, summary: "Take over a step held by someone else (after the takeover threshold)." },
   {
     method: "POST",
@@ -490,8 +519,18 @@ export const HUB_API: readonly HubApiRoute[] = [
   },
 
   { method: "POST", path: "/v1/questions", rule: "member", tag: "questions", body: AskRequest, status: 201, summary: "Ask a person a question (mesh_ask)." },
-  { method: "POST", path: "/v1/questions/:id/answer", rule: "member", tag: "questions", body: AnswerRequest, summary: "Answer a question; the answer is delivered to the asking session." },
-  { method: "POST", path: "/v1/messages", rule: "member", tag: "questions", body: MessageRequest, status: 201, summary: "Send a message to a session (by sid or <machine>/<session>) or to whoever holds a step." },
+  {
+    method: "GET",
+    path: "/v1/questions",
+    rule: "member",
+    scope: "goals:read",
+    tag: "questions",
+    query: { state: "open (required)", limit: "1-5000, default 2000" },
+    response: OpenQuestions,
+    summary: "Unanswered questions, oldest first: every one for a service or an admin, those addressed to the caller for a member.",
+  },
+  { method: "POST", path: "/v1/questions/:id/answer", rule: "member", scope: "questions:answer", onBehalfOf: true, onBehalfOfRequired: true, tag: "questions", body: AnswerRequest, summary: "Answer a question; the answer is delivered to the asking session." },
+  { method: "POST", path: "/v1/messages", rule: "member", scope: "sessions:message", onBehalfOf: true, onBehalfOfRequired: true, tag: "questions", body: MessageRequest, status: 201, summary: "Send a message to a session (by sid or <machine>/<session>) or to whoever holds a step." },
 
   {
     method: "GET",
@@ -525,7 +564,7 @@ export function hubOpenApi(version = "1"): Record<string, unknown> {
       params.push({ name: IDEMPOTENCY_HEADER, in: "header", required: false, description: "Repeat-safe retries: a repeated key returns the first response.", schema: { type: "string" } });
     }
     if (r.onBehalfOf) {
-      const need = r.onBehalfOfRequired ? "required for a service on this route" : "required for a service's writes";
+      const need = r.onBehalfOfRequired ? "required for a service on this route" : r.onBehalfOfOptional ? "optional: without it the service acts as itself" : "required for a service's writes";
       params.push({ name: ON_BEHALF_OF_HEADER, in: "header", required: false, description: `Service tokens only: the user id of the person this request acts for (${need}).`, schema: { type: "string" } });
     }
     const status = String(r.status ?? 200);

@@ -795,13 +795,13 @@ describe("AC-29 messages to sessions the caller cannot see", () => {
   it("test_AC29_alice_to_bob_me_session_404", async () => {
     const { alice, bob, sBob } = await setup();
     const r = await say(alice, sBob, "from alice, hidden");
-    expect(r).toEqual({ status: 404, json: { error: `session ${sBob} is not live on any machine` } });
+    expect(r).toEqual({ status: 404, json: { error: `session ${sBob} is not live on any machine`, code: "session-unknown" } });
     expect((await inbox(bob)).filter((m) => m.text === "from alice, hidden")).toEqual([]);
   });
 
   it("test_AC29_same_as_unknown_sid", async () => {
     const { alice } = await setup();
-    expect(await say(alice, "s-nope", "x")).toEqual({ status: 404, json: { error: "session s-nope is not live on any machine" } });
+    expect(await say(alice, "s-nope", "x")).toEqual({ status: 404, json: { error: "session s-nope is not live on any machine", code: "session-unknown" } });
   });
 
   it("test_AC29_bob_can_message_own", async () => {

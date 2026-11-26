@@ -142,7 +142,7 @@ describe("RL-9 AC-14 goal drop", { timeout: 90_000 }, () => {
     const s = K();
     const [ida, idb] = [fA, fB].map((f) => s.fs(CG, f)) as [string, string];
     await s.hold(s.bob, ida);
-    expect(await s.call(s.ann, "POST", `/v1/goals/${CG}/drop`, {})).toStrictEqual({ status: 409, json: { error: `${CG} has held steps: ${ida}; release them first` } });
+    expect(await s.call(s.ann, "POST", `/v1/goals/${CG}/drop`, {})).toStrictEqual({ status: 409, json: { error: `${CG} has held steps: ${ida}; release them first`, code: "goal-held" } });
     expect((await s.r.act(s.bob, ida, "release", {})).status).toBe(200);
     await s.patchStep(idb, { state: "paused" });
     const paused = await s.call(s.ann, "POST", `/v1/goals/${CG}/drop`, {});
@@ -157,9 +157,9 @@ describe("RL-9 AC-14 goal drop", { timeout: 90_000 }, () => {
     expect((await s.goalView(P)).goal.state).toBe("dropped");
     // After the release: the owner drops it.
     expect((await s.call(s.ann, "POST", `/v1/goals/${CG}/drop`, {})).status).toBe(200);
-    expect(await s.call(s.ann, "POST", `/v1/goals/${CG}/drop`, {})).toStrictEqual({ status: 409, json: { error: `${CG} is dropped` } });
+    expect(await s.call(s.ann, "POST", `/v1/goals/${CG}/drop`, {})).toStrictEqual({ status: 409, json: { error: `${CG} is dropped`, code: "goal-closed" } });
     expect((await s.goalView(G1.G)).goal.state).toBe("done");
-    expect(await s.call(s.ann, "POST", `/v1/goals/${G1.G}/drop`, {})).toStrictEqual({ status: 409, json: { error: `${G1.G} is done` } });
+    expect(await s.call(s.ann, "POST", `/v1/goals/${G1.G}/drop`, {})).toStrictEqual({ status: 409, json: { error: `${G1.G} is done`, code: "goal-closed" } });
   });
 
   it("test_AC14_pulse_goal", async () => {

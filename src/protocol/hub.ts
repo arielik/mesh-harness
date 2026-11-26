@@ -477,6 +477,9 @@ export const RunReport = z.object({
 });
 export const GateDecision = z.object({ comment: z.string().max(4000).optional(), rule: z.string().max(60).optional(), inputs: z.record(z.string(), z.unknown()).optional(), reopen: z.array(z.string()).max(50).optional() });
 export const ResumeRequest = z.object({ comment: z.string().max(4000).optional() });
+/** RL-22: `POST /v1/steps/:id/park`: a person parks a claimed or paused step by hand. */
+export const StepPark = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
+export type StepPark = z.infer<typeof StepPark>;
 export const AskRequest = z.object({ text: z.string().min(1).max(4000), sid: z.string().optional(), step: z.string().optional() });
 export const AnswerRequest = z.object({ text: z.string().min(1).max(4000) });
 /** `to` (MM-4): `<machine>/<session>` or `<user>/<nickname>/<session>`, resolved like an assign target. */
@@ -767,7 +770,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "runs", "spot-checks", "step-assign-for", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({
@@ -1245,3 +1248,87 @@ export const Stuck = z.object({
   unmeasured: int,
 });
 export type Stuck = z.infer<typeof Stuck>;
+
+/** RL-22: the kinds of the team form of `GET /v1/attention` (mesh-ai ADR-0025 D24.1). */
+export const TEAM_ATTENTION_KINDS = [
+  "plan",
+  "gate",
+  "debrief",
+  "debrief-overdue",
+  "hub-question",
+  "parked",
+  "failed",
+  "paused",
+  "stalled",
+  "stuck-step",
+  "stuck-session",
+  "needs-you-session",
+  "slot-missed",
+  "pulse-blocked",
+  "ready-unclaimed",
+  "offer",
+] as const;
+
+/** RL-22: one open item of the team (`GET /v1/attention?team=1`). */
+export const TeamAttentionItem = z.object({
+  /** Stable across reads: `<kind>:<goal|pulse|->:<step|slot|->:<question|sid|->`. */
+  key: z.string(),
+  kind: z.enum(TEAM_ATTENTION_KINDS),
+  goal: z.string().nullable(),
+  step: z.string().nullable(),
+  /** The step's repo, else the goal's primary repo, else null. */
+  repo: z.string().nullable(),
+  /** The one hub user the item waits on, or null. */
+  who: z.string().nullable(),
+  /** When the item started waiting. */
+  at: z.number(),
+  text: z.string(),
+  goalTitle: z.string().optional(),
+  stepTitle: z.string().optional(),
+  planVersion: int.optional(),
+  question: int.optional(),
+  toUsers: z.array(z.string()).optional(),
+  sid: z.string().optional(),
+  machine: z.string().optional(),
+  needs: z.string().optional(),
+  holder: z.string().optional(),
+  reason: z.string().optional(),
+  sla: z.object({ dueAt: z.number(), breached: z.literal(true), escalated: z.boolean() }).optional(),
+  escalatedTo: z.string().optional(),
+  turns: int.optional(),
+  forMs: ms.optional(),
+  pulse: z.string().optional(),
+  slot: z.string().optional(),
+  stepKind: z.string().optional(),
+  mode: z.string().optional(),
+  targetMachine: z.string().optional(),
+});
+export type TeamAttentionItem = z.infer<typeof TeamAttentionItem>;
+
+/** RL-22: `GET /v1/attention?team=1`. */
+export const TeamAttention = z.object({
+  generatedAt: z.number(),
+  thresholds: z.object({ needsYouMs: ms, turns: int }),
+  /** More items than `limit`: the oldest `limit` are returned. */
+  truncated: z.boolean(),
+  /** Every hub user that is not a service account, sorted. */
+  users: z.array(z.string()),
+  items: z.array(TeamAttentionItem),
+});
+export type TeamAttention = z.infer<typeof TeamAttention>;
+
+/** RL-22: one unanswered question (`GET /v1/questions?state=open`). */
+export const OpenQuestion = z.object({
+  id: int,
+  goal: z.string().optional(),
+  step: z.string().optional(),
+  repo: z.string().optional(),
+  sid: z.string().optional(),
+  fromUser: z.string(),
+  toUsers: z.array(z.string()),
+  text: z.string(),
+  at: z.number(),
+});
+export type OpenQuestion = z.infer<typeof OpenQuestion>;
+export const OpenQuestions = z.object({ truncated: z.boolean(), questions: z.array(OpenQuestion) });
+export type OpenQuestions = z.infer<typeof OpenQuestions>;
