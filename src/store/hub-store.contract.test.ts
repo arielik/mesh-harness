@@ -1653,6 +1653,69 @@ function contract(d: Driver) {
       expect(await ids([...many, "G2.audit"])).toStrictEqual(["a-far", "a-A", "a-B", "a-late"]);
     });
   });
+
+  // RL-25 AC-14: cancelMessage, the alert_episode table (migration 13), its rows.
+  describe("RL-25 alert episodes", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+    const X = (s: HubStore): any => s;
+    const ep = (fingerprint: string, person: string, state: string, updatedAt: number, over: Record<string, unknown> = {}) => ({
+      fingerprint,
+      person,
+      state,
+      startsAt: T0 - 1000,
+      updatedAt,
+      alertname: "A",
+      severity: "crit",
+      summary: "s",
+      notifiedAt: updatedAt,
+      notices: [{ machine: "m1", message: 7 }],
+      ...over,
+    });
+
+    it("test_AC14_migration_13", async () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
+      expect(HUB_MIGRATIONS.length).toBe(13);
+      expect(HUB_MIGRATIONS_PG.length).toBe(13);
+      const s = await store();
+      expect(await s.schemaVersion()).toBe(13);
+      expect(await s.db.all("SELECT * FROM alert_episode")).toStrictEqual([]);
+    });
+
+    it("test_AC14_cancel_only_pending", async () => {
+      const s = await store();
+      const a = await s.addMessage({ toMachine: "m1", toSid: "", fromUser: "am", kind: "alert", text: "MESH ALERT: a" }, T0);
+      const b = await s.addMessage({ toMachine: "m1", toSid: "", fromUser: "am", kind: "alert", text: "MESH ALERT: b" }, T0);
+      expect(await s.ackMessage(b.id, "m1", "delivered", "desktop", T0 + 1)).toBe(true);
+      expect(await X(s).cancelMessage(a.id, T0 + 2)).toBe(true);
+      expect(await X(s).cancelMessage(a.id, T0 + 3)).toBe(false);
+      expect(await X(s).cancelMessage(b.id, T0 + 3)).toBe(false);
+      expect(await X(s).cancelMessage(9999, T0 + 3)).toBe(false);
+      expect(await s.getMessage(a.id)).toMatchObject({ state: "failed", method: "cancelled", ackedAt: T0 + 2 });
+      expect(await s.getMessage(b.id)).toMatchObject({ state: "delivered", method: "desktop", ackedAt: T0 + 1 });
+      expect((await s.inbox("m1")).map((m) => m.id)).toStrictEqual([]);
+    });
+
+    it("test_AC14_episode_rows", async () => {
+      const s = await store();
+      expect(await X(s).getAlertEpisode("fp1", "ann")).toBeUndefined();
+      await X(s).saveAlertEpisode(ep("fp1", "ann", "firing", T0));
+      await X(s).saveAlertEpisode(ep("fp1", "bob", "firing", T0));
+      expect(await X(s).getAlertEpisode("fp1", "ann")).toStrictEqual(ep("fp1", "ann", "firing", T0));
+      // Upsert on (fingerprint, person); optional fields absent stay absent.
+      const next = { ...ep("fp1", "ann", "resolved", T0 + 5, { resolvedAt: T0 + 5 }) } as Record<string, unknown>;
+      delete next.severity;
+      await X(s).saveAlertEpisode(next);
+      expect(await X(s).getAlertEpisode("fp1", "ann")).toStrictEqual(next);
+      expect(await X(s).getAlertEpisode("fp1", "bob")).toMatchObject({ state: "firing" });
+      // Prune: resolved rows updated before the bound only.
+      await X(s).saveAlertEpisode(ep("fp2", "ann", "resolved", T0 - 10));
+      await X(s).saveAlertEpisode(ep("fp3", "ann", "firing", T0 - 10));
+      expect(await X(s).pruneAlertEpisodes(T0)).toBe(1);
+      expect(await X(s).getAlertEpisode("fp2", "ann")).toBeUndefined();
+      expect(await X(s).getAlertEpisode("fp3", "ann")).toMatchObject({ state: "firing" });
+      expect(await X(s).getAlertEpisode("fp1", "ann")).toMatchObject({ state: "resolved" });
+    });
+  });
 }
 
 describe("store contract: sqlite", () => contract(sqlite));

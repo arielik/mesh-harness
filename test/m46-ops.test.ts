@@ -496,3 +496,28 @@ describe.skipIf(!PG_URL)(`RL-6 topics through mesh hub migrate${PG_URL ? "" : " 
     }
   });
 });
+
+// RL-25 AC-14: the alert_episode table goes through `mesh hub migrate` (Postgres only); on SQLite,
+// test_AC04_tables_equal_migrated above checks hub-copy TABLES lists it.
+describe.skipIf(!PG_URL)(`RL-25 tables${PG_URL ? "" : " (skipped: set MESH_TEST_PG_URL)"}`, () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- new store methods, read loosely
+  const X = (s: HubStore): any => s;
+  it("test_AC14_migrate_copies_alert_episodes", async () => {
+    const file = join(tmp(), "hub.db");
+    const s = await HubStore.open(file);
+    const row = { fingerprint: "fp1", person: "alice", state: "firing", startsAt: clock - 1000, updatedAt: clock, summary: "s", notifiedAt: clock, notices: [{ machine: "m1", message: 1 }] };
+    await X(s).saveAlertEpisode(row);
+    await X(s).saveAlertEpisode({ ...row, fingerprint: "fp2", state: "resolved", resolvedAt: clock });
+    await s.close();
+    const url = await pgdb.fresh();
+    const report = await copyHubToPostgres(file, url);
+    expect(report.tables.find((x) => x.name === "alert_episode")?.rows).toBe(2);
+    const p = await HubStore.open(url);
+    try {
+      expect(await X(p).getAlertEpisode("fp1", "alice")).toStrictEqual(row);
+      expect(await X(p).getAlertEpisode("fp2", "alice")).toMatchObject({ state: "resolved", resolvedAt: clock });
+    } finally {
+      await p.close();
+    }
+  });
+});
