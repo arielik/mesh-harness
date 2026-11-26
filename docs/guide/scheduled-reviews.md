@@ -491,13 +491,21 @@ The goal then sticks to that machine, so its later steps go there too.
 |---|---|---|
 | `fired` | | a goal was created (its run started, or is about to) |
 | `skipped` | `overlap` | a goal of an earlier slot still had machine work (a headless step ready, offered or running) |
+| | `fleet_paused` | the fleet was paused when the slot would have fired (due in its window or caught up, or queued and released); no goal |
 | `missed` | `no_machine` | no candidate: nothing online with the repo, the labels and an accept policy that takes your offer |
 | | `not_accepted` | every candidate declined or did not answer in time |
 | | `capacity` | the runner's queue was full until the deadline |
 | | `expired` | accepted, but the run did not start before the window ended |
 | | `hub_down` | the hub was not running at the slot's time |
 | | `error` | the fire failed; the text is in `mesh pulse show --json` |
+| | `fleet_paused` | the slot's window ended while the fleet was paused, before its run started; its goal is dropped |
 | `abandoned` | `max_goal_age` | the earlier goal ran too long and was dropped |
+
+**While the fleet is paused** (`mesh fleet pause`, [operations](operations.md#pause-the-fleet)) a slot that
+would fire is recorded `skipped` with the reason `fleet_paused` (spelled with an underscore, like every
+slot reason); a slot the hub would not fire anyway (past its window) stays `missed`/`hub_down`. A
+queued slot released while paused is skipped too, and no new slot is queued. A pending slot makes no
+attempt; it is offered again by the first tick after the resume. Nothing is caught up after a resume.
 
 You see them in `mesh pulse ls` (the last slot), `mesh pulse show` (the latest slots, with the
 machines tried) and on the web **Mine** page under **Pulses** (your pulses and their recent slots).

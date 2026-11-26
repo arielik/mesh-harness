@@ -30,7 +30,7 @@ describe("RL-19 AC-11 docs", () => {
     expect(up).toContain("0.1.38 (RL-19) adds a findings roll-up per preset and repo (`GET /v1/findings/rollup`");
     expect(up.indexOf("0.1.38 (RL-19)")).toBeLessThan(up.indexOf("0.1.23 has no release package."));
     expect(up).toContain("no migration (schema 12)");
-    expect(ops).toContain("`efficiency`, `findings-rollup`, `health`");
+    expect(ops).toContain("`efficiency`, `findings-rollup`, `fleet-pause`, `health`");
     expect(read("docs/plan/implementation-plan.md")).toContain("| `GET /v1/findings/rollup` |");
     const route = HUB_API.find((r) => r.method === "GET" && r.path === "/v1/findings/rollup");
     expect(route).toMatchObject({ rule: "member", scope: "goals:read", tag: "analysis" });
