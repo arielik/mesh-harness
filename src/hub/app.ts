@@ -54,6 +54,7 @@ import {
   ReleaseRequest,
   GateDecision,
   ResumeRequest,
+  StepPark,
   Replan,
   SESSION_COOKIE,
   SyncRequest,
@@ -79,6 +80,8 @@ export interface Route {
   read?: true | undefined;
   /** RL-21: a service token must send the header here, also on a read. */
   onBehalfOfRequired?: boolean | undefined;
+  /** RL-22: a write on which a service may send the header but need not. */
+  onBehalfOfOptional?: true | undefined;
   handler: Handler;
 }
 
@@ -131,7 +134,12 @@ export function buildRoutes(svc: HubService): Route[] {
 
   const r = (method: Route["method"], path: string, rule: RouteRule, handler: Handler, scope?: ServiceScope): Route => ({ method, path, rule, handler, scope });
   /** A route a service token may call for a person (mesh-ai B-178). */
-  const forPerson = (route: Route, o: { required?: boolean } = {}): Route => ({ ...route, onBehalfOf: true, ...(o.required ? { onBehalfOfRequired: true } : {}) });
+  const forPerson = (route: Route, o: { required?: boolean; optional?: boolean } = {}): Route => ({
+    ...route,
+    onBehalfOf: true,
+    ...(o.required ? { onBehalfOfRequired: true } : {}),
+    ...(o.optional ? { onBehalfOfOptional: true as const } : {}),
+  });
   return [
     // RL-11: the probes say which hub this is (version, the schema it migrates to, its features).
     r("GET", "/health", "public", (c) => c.json(liveness())),
@@ -213,7 +221,23 @@ export function buildRoutes(svc: HubService): Route[] {
     forPerson(r("GET", "/v1/fleet", "member", async (c, a) => c.json(await svc.fleet(a)), "live:read")),
     r("POST", "/v1/machines/:id/name", "member", async (c, a) => c.json(await svc.renameMachine(a, param(c, "id"), (await body(c, MachineName)).nickname))),
     r("POST", "/v1/machines/:id/labels", "member", async (c, a) => c.json(await svc.labelMachine(a, param(c, "id"), await body(c, MachineLabels)))),
-    r("GET", "/v1/attention", "member", async (c, a) => c.json({ attention: await svc.attentionFor(a) })),
+    // RL-22: team=1 is every open item of the team (a service with goals:read, or an admin).
+    r(
+      "GET",
+      "/v1/attention",
+      "member",
+      async (c, a) => {
+        const team = c.req.query("team");
+        if (team === undefined) {
+          if (!a.roles.includes("member") && !a.roles.includes("admin")) throw new HubError(400, "team=1 required: a service reads the team form", undefined, "team-required");
+          return c.json({ attention: await svc.attentionFor(a) });
+        }
+        return c.json(
+          await svc.teamAttention(a, { team, needsYouMs: c.req.query("needsYouMs"), turns: c.req.query("turns"), trial: c.req.query("trial"), limit: c.req.query("limit") }),
+        );
+      },
+      "goals:read",
+    ),
     r("GET", "/v1/stream", "member", (c, a) =>
       streamSSE(c, async (stream) => {
         let open = true;
@@ -253,19 +277,29 @@ export function buildRoutes(svc: HubService): Route[] {
 
     // ---------- goals ----------
     r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals(topicsQuery(c), { pulses: c.req.query("pulses") === "1" }) }), "goals:read"),
-    r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201), "goals:write"),
+    forPerson(r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201), "goals:write"), { optional: true }),
     // RL-3: ingest (a goal with an approved plan from a preset).
-    r("POST", "/v1/goals/from-preset", "member", async (c, a) => c.json(await svc.goalFromPreset(a, await body(c, GoalFromPreset)), 201), "goals:write"),
+    forPerson(r("POST", "/v1/goals/from-preset", "member", async (c, a) => c.json(await svc.goalFromPreset(a, await body(c, GoalFromPreset)), 201), "goals:write"), { optional: true }),
     r("GET", "/v1/goals/:id", "member", async (c) => c.json(await svc.goalDetail(param(c, "id"))), "goals:read"),
     r("POST", "/v1/goals/:id/plan", "member", async (c, a) => c.json(await svc.proposePlan(a, param(c, "id"), await body(c, ProposePlan)), 201)),
-    r("POST", "/v1/goals/:id/approve", "member", async (c, a) => {
-      const b = await body(c, Approve);
-      return c.json(await svc.approvePlan(a, param(c, "id"), b.version, b.comment));
-    }),
-    r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(await svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment))),
-    // RL-9: a person ends a goal.
-    r("POST", "/v1/goals/:id/drop", "member", async (c, a) => c.json(await svc.dropGoalByPerson(a, param(c, "id"), (await body(c, GoalDrop)).reason)), "goals:write"),
-    r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment))),
+    // RL-22: a service with goals:decide decides for the goal owner (header required).
+    forPerson(
+      r(
+        "POST",
+        "/v1/goals/:id/approve",
+        "member",
+        async (c, a) => {
+          const b = await body(c, Approve);
+          return c.json(await svc.approvePlan(a, param(c, "id"), b.version, b.comment));
+        },
+        "goals:decide",
+      ),
+      { required: true },
+    ),
+    forPerson(r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(await svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment)), "goals:decide"), { required: true }),
+    // RL-9: a person ends a goal (RL-22: a service may drop for a person, or as itself).
+    forPerson(r("POST", "/v1/goals/:id/drop", "member", async (c, a) => c.json(await svc.dropGoalByPerson(a, param(c, "id"), (await body(c, GoalDrop)).reason)), "goals:write"), { optional: true }),
+    forPerson(r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment)), "goals:decide"), { required: true }),
     r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) }), "goals:read"),
     r("POST", "/v1/goals/:id/topics", "member", async (c, a) => c.json(await svc.changeGoalTopics(a, param(c, "id"), await body(c, GoalTopicsChange))), "goals:write"),
 
@@ -481,9 +515,11 @@ export function buildRoutes(svc: HubService): Route[] {
       return c.json(await svc.noteStep(a, param(c, "id"), b.text, b.sid));
     }),
     r("POST", "/v1/steps/:id/done", "member", async (c, a) => c.json(await svc.doneStep(a, param(c, "id"), await body(c, DoneRequest)))),
-    r("POST", "/v1/steps/:id/approve", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: true }))),
-    r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false }))),
-    r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(await svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment))),
+    forPerson(r("POST", "/v1/steps/:id/approve", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: true })), "goals:decide"), { required: true }),
+    forPerson(r("POST", "/v1/steps/:id/reject", "member", async (c, a) => c.json(await svc.decideGate(a, param(c, "id"), { ...(await body(c, GateDecision)), approve: false })), "goals:decide"), { required: true }),
+    forPerson(r("POST", "/v1/steps/:id/resume", "member", async (c, a) => c.json(await svc.resumeStep(a, param(c, "id"), (await body(c, ResumeRequest)).comment)), "goals:decide"), { required: true }),
+    // RL-22: a person parks a claimed or paused step by hand.
+    forPerson(r("POST", "/v1/steps/:id/park", "member", async (c, a) => c.json({ step: await svc.parkStep(a, param(c, "id"), (await body(c, StepPark)).reason) }), "goals:decide"), { required: true }),
     r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(await svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
     // RL-21: a service with steps:assign assigns and ranks for a person (header required on both).
     forPerson(r("POST", "/v1/steps/:id/assign", "member", async (c, a) => c.json(await svc.assignStep(a, param(c, "id"), await body(c, StepAssignRequest))), "steps:assign")),
@@ -524,8 +560,10 @@ export function buildRoutes(svc: HubService): Route[] {
 
     // ---------- questions, messages ----------
     r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),
-    r("POST", "/v1/questions/:id/answer", "member", async (c, a) => c.json(await svc.answer(a, Number(param(c, "id")), (await body(c, AnswerRequest)).text))),
-    r("POST", "/v1/messages", "member", async (c, a) => c.json(await svc.say(a, await body(c, MessageRequest)), 201)),
+    // RL-22: the open questions; a service answers and messages for a person.
+    r("GET", "/v1/questions", "member", async (c, a) => c.json(await svc.openQuestionsFor(a, { state: c.req.query("state"), limit: c.req.query("limit") })), "goals:read"),
+    forPerson(r("POST", "/v1/questions/:id/answer", "member", async (c, a) => c.json(await svc.answer(a, Number(param(c, "id")), (await body(c, AnswerRequest)).text)), "questions:answer"), { required: true }),
+    forPerson(r("POST", "/v1/messages", "member", async (c, a) => c.json(await svc.say(a, await body(c, MessageRequest)), 201), "sessions:message"), { required: true }),
 
     // ---------- analysis feed, admin ----------
     r("GET", "/v1/events", "events", async (c) => c.json({ events: await svc.events(Number(c.req.query("after") ?? 0) || 0, Number(c.req.query("limit") ?? 500) || 500) })),
@@ -585,7 +623,7 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
       const caller = c.get("actor");
       if (!allowed(route.rule, caller, route.scope)) return c.json(caller ? { error: "forbidden", code: "forbidden" } : { error: "login required", code: "login-required" }, caller ? 403 : 401);
       // mesh-ai B-178: a service token acts for a person on the routes that allow it.
-      const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: route.method === "POST" || route.onBehalfOfRequired === true }) : caller;
+      const actor = caller && route.rule !== "public" ? await svc.actingFor(caller, c.req.header(ON_BEHALF_OF_HEADER), { allowed: route.onBehalfOf === true, write: (route.method === "POST" && route.onBehalfOfOptional !== true) || route.onBehalfOfRequired === true }) : caller;
       // Retries of a service acting for a person never replay another caller's answer.
       const idemUser = actor?.via ? `${actor.via}>${actor.userId}` : actor?.userId;
       const key = route.method === "POST" && route.read !== true && actor ? c.req.header(IDEMPOTENCY_HEADER) : undefined;

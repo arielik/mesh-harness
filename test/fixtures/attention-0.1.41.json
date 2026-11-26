@@ -1,0 +1,165 @@
+{
+  "ann": {
+    "attention": [
+      {
+        "kind": "needs_you",
+        "text": "svc: asked a question",
+        "sid": "s-ny2",
+        "at": 1795175940000
+      },
+      {
+        "kind": "needs_you",
+        "text": "svc: permission",
+        "step": "G2.ny",
+        "sid": "s-ny",
+        "at": 1795174140000
+      },
+      {
+        "kind": "failed",
+        "text": "G5.y failed: trial failed",
+        "goal": "G5",
+        "step": "G5.y",
+        "at": 1795173000000
+      },
+      {
+        "kind": "parked",
+        "text": "G4.x is parked: round cap (2)",
+        "goal": "G4",
+        "step": "G4.x",
+        "at": 1795172400000
+      },
+      {
+        "kind": "question",
+        "text": "ann asks: lunch?",
+        "sid": "s-ny2",
+        "question": 2,
+        "at": 1795168800000
+      },
+      {
+        "kind": "question",
+        "text": "bob asks: which branch?",
+        "step": "G2.stall",
+        "sid": "s-stall",
+        "question": 1,
+        "at": 1795161600000
+      },
+      {
+        "kind": "stalled",
+        "text": "G2.stall stalled in bob's session",
+        "goal": "G2",
+        "step": "G2.stall",
+        "sid": "s-stall",
+        "at": 1795151400000
+      },
+      {
+        "kind": "debrief_overdue",
+        "text": "Debrief G2.deb2 \"Title deb2\" is overdue: waiting since 2026-11-20T04:00:00.000Z, SLA 1h",
+        "goal": "G2",
+        "step": "G2.deb2",
+        "at": 1795150800000
+      },
+      {
+        "kind": "paused",
+        "text": "G2.pause is paused (holder bob went away)",
+        "goal": "G2",
+        "step": "G2.pause",
+        "at": 1795149600000
+      },
+      {
+        "kind": "failed",
+        "text": "G2.fail failed: tests failed",
+        "goal": "G2",
+        "step": "G2.fail",
+        "at": 1795149000000
+      },
+      {
+        "kind": "parked",
+        "text": "G2.park is parked: round cap (3)",
+        "goal": "G2",
+        "step": "G2.park",
+        "at": 1795148400000
+      },
+      {
+        "kind": "approval",
+        "text": "Gate R1 for G2 \"work goal\" waits for a decision",
+        "goal": "G2",
+        "step": "G2.gate",
+        "at": 1795147800000
+      },
+      {
+        "kind": "approval",
+        "text": "Plan v2 for G1 \"plan goal\" awaits approval",
+        "goal": "G1",
+        "at": 1795144200000
+      }
+    ]
+  },
+  "bob": {
+    "attention": [
+      {
+        "kind": "offer",
+        "text": "@ann offers G2.off \"Title off\" to bob-box",
+        "goal": "G2",
+        "step": "G2.off",
+        "at": 1795165200000
+      },
+      {
+        "kind": "question",
+        "text": "bob asks: which branch?",
+        "step": "G2.stall",
+        "sid": "s-stall",
+        "question": 1,
+        "at": 1795161600000
+      },
+      {
+        "kind": "stalled",
+        "text": "G2.stall stalled in bob's session",
+        "goal": "G2",
+        "step": "G2.stall",
+        "sid": "s-stall",
+        "at": 1795151400000
+      },
+      {
+        "kind": "paused",
+        "text": "G2.pause is paused (holder bob went away)",
+        "goal": "G2",
+        "step": "G2.pause",
+        "at": 1795149600000
+      }
+    ]
+  },
+  "apu": {
+    "attention": [
+      {
+        "kind": "approval",
+        "text": "Gate R1 for G2 \"work goal\" waits for a decision",
+        "goal": "G2",
+        "step": "G2.gate",
+        "at": 1795147800000
+      },
+      {
+        "kind": "approval",
+        "text": "Plan v2 for G1 \"plan goal\" awaits approval",
+        "goal": "G1",
+        "at": 1795144200000
+      }
+    ]
+  },
+  "root": {
+    "attention": [
+      {
+        "kind": "approval",
+        "text": "Gate R1 for G2 \"work goal\" waits for a decision",
+        "goal": "G2",
+        "step": "G2.gate",
+        "at": 1795147800000
+      },
+      {
+        "kind": "approval",
+        "text": "Plan v2 for G1 \"plan goal\" awaits approval",
+        "goal": "G1",
+        "at": 1795144200000
+      }
+    ]
+  }
+}

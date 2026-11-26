@@ -28,7 +28,7 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `step.noted` | `mesh_note` | — |
 | `step.done` / `step.failed` | `mesh_done`; `step.done` also when a later complete audit resolved the item of a ready or blocked finding step (`user` = the goal owner) | `summary`, `mr`, `reopen`, `round`, `commit` (from 0.1.32, when the round has one), `model`, `verdict`, `buckets`; a resolved finding: `summary` (`resolved by <audit step id>`), `by` (the goal owner) |
 | `step.rejected` | `mesh_done` not accepted (reconcile: criteria not covered); the holder keeps the step | `reason`, `missing` |
-| `step.parked` | a rule stopped the step (round cap, churn, stall, a bucket routed to a person, reconcile after a retry) | `reason`, `round` |
+| `step.parked` | a rule stopped the step (round cap, churn, stall, a bucket routed to a person, reconcile after a retry), or a person parked it by hand (`operator: true`, `reason` starts with `operator: `) | `reason`, `round?` (absent on a park by hand), `operator?`, `was?`, `holder?` |
 | `step.resumed` | a person resumed a parked or failed step | `comment`, `was` |
 | `gate.approved` / `gate.rejected` | a person (or a recorded rule) decided a gate step | `gate`, `rule`, `comment`, `reopen` |
 | `step.reopened` | a test, verify or review step failed it, or a gate was rejected; a finding step whose item was filed again (`refiled`: reopened, or a moved-away step revived by a sink), whose dismissal or deferral was reverted (`reverted`), or that a move reopened or revived (`moved`) | `by`, `reason` (bucket, criterion and assertion when given, never the tester's prose; `refiled`, `reverted` or `moved` for finding steps), `fixCycles`, `buckets`; finding steps: `by` = the goal owner (refiled), the reverting person, or the mover (the retarget caller, else the owner of the goal the step left), `from` = the sink stage, the debrief step, the audit step of a fold move or `mesh items retarget`. Activity for `moved`: `<step> reopened: its finding was moved here (fix cycle <n>)` |
@@ -79,6 +79,8 @@ Pulse event payloads never carry the preset text or a profile's settings. Roster
 never carry agent texts, descriptions or paths.
 
 A plan replaced before anyone decided is stored as `superseded`, not `revised`. It emits no `plan.revised`, so design rounds count only human requests for changes.
+
+A request a service makes for a person (`X-Mesh-On-Behalf-Of`) emits its events with `user` = the person, and these carry `via` (the service user id) in the payload: `plan.approved`, `plan.revised`, `goal.replan`, `gate.approved`, `gate.rejected`, `step.reopened`, `step.resumed`, `step.parked`, `question.answered`, `message.sent`, `goal.dropped`, `goal.created` (from 0.1.42), and `pulse.*`, `profile.saved` and `step.offered` before that. Events that follow on their own (`step.ready`, `step.skipped`, offer events) carry no `via`, nor does any event of a request made without the header.
 
 ## Synced by daemons
 

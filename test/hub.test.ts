@@ -144,7 +144,8 @@ describe("service token scopes", () => {
     expect((await call("GET", "/v1/live", reader)).status).toBe(200);
     expect((await call("GET", "/v1/events?after=0", reader)).status).toBe(200);
     expect((await call("POST", "/v1/goals", reader, { title: "nope" })).status).toBe(403);
-    expect((await call("GET", "/v1/attention", reader)).status).toBe(403);
+    // RL-22: a service with goals:read reads the team form only (team=1).
+    expect(await call("GET", "/v1/attention", reader)).toMatchObject({ status: 400, json: { code: "team-required" } });
 
     const writer = await hub.svc.serviceToken("mesh-ai", ["goals:write", "goals:read"]);
     const created = await call("POST", "/v1/goals", writer, { title: "From the trunk", refs: { trunk: "item-1" } });

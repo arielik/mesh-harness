@@ -9,7 +9,11 @@
 - *revised* (a person asked for changes);
 - *superseded* (replaced by a newer proposal before anyone decided; not counted as a design round).
 
-**Step.** One unit of work in one repo, of a kind: design, spec, plan, implement, test, verify, review, merge, gate or docs. One holder at a time. Its state is *blocked*, *ready*, *claimed*, *paused*, *done*, *failed*, *parked* (stopped by a rule; a person resumes it) or *dropped*.
+**Step.** One unit of work in one repo, of a kind: design, spec, plan, implement, test, verify, review, merge, gate or docs. One holder at a time. Its state is *blocked*, *ready*, *claimed*, *paused*, *done*, *failed*, *parked* (stopped by a rule, or by a person; a person resumes it) or *dropped*.
+
+**Park by hand** (0.1.42, feature `step-park`). The goal owner, an approver or an admin parks a claimed or paused step with `mesh step park <step> <reason…>` (`POST /v1/steps/:id/park`) when work on it should stop until someone looks. The step becomes *parked* with the reason `operator: <reason>`, the holder fields are removed, no round is added, and the holder session gets one message telling it to stop. No process is signalled: a headless run holding the step goes on until it ends, and its `mesh_done` is refused as for any step it no longer holds. `mesh step resume` lets the step go on. A gate, a debrief, or a step that is not claimed or paused is not parked by hand.
+
+**Team attention** (0.1.42, feature `team-attention`): `GET /v1/attention?team=1` answers, for an admin or a service with `goals:read`, every open item of the team in one read (plans, gates, debriefs, questions, parked, failed, paused, stalled and stuck work, sessions that need someone, missed or blocked pulses, unclaimed ready steps and open offers), each naming the one person it waits on; the personal `GET /v1/attention` is unchanged ([auth](auth.md)).
 - A test or review step that finds a problem finishes with outcome `fail` and reopens earlier steps (a fix cycle).
 - A paused step can be taken over (`mesh take`).
 

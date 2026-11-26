@@ -364,11 +364,14 @@ The envelope is `{schema: "mesh.harness.v1", id, seq, at, type, user, sid?, goal
 |---|---|
 | `GET /auth/providers`, `GET /auth/:id/start`, `GET /auth/:id/callback`, `POST /auth/cli/exchange`, `POST /auth/:id/device`, `POST /auth/:id/device/poll`, `POST /auth/:id/token`, `POST /auth/logout` | Auth |
 | `POST /v1/machines`, `POST /v1/sync`, `GET /v1/inbox`, `POST /v1/inbox/:id/ack` | Daemon (`/v1/sync` also carries `stateTime`, absolute state time per session and step, from v0.1.36) |
-| `GET /v1/me`, `GET /v1/live`, `GET /v1/attention`, `GET /v1/stream` | Dashboard |
-| `GET/POST /v1/goals`, `GET /v1/goals/:id`, `POST /v1/goals/:id/{plan,approve,revise,replan}` | Goals |
+| `GET /v1/me`, `GET /v1/live`, `GET /v1/attention`, `GET /v1/stream` | Dashboard. RL-22 (0.1.42): `GET /v1/attention?team=1`, every open item of the team in one read (scope `goals:read` or an admin) |
+| `GET/POST /v1/goals`, `GET /v1/goals/:id`, `POST /v1/goals/:id/{plan,approve,revise,replan}` | Goals. RL-22 (0.1.42): approve, revise and replan take scope `goals:decide` for a service acting for the goal owner (header required); create and `POST /v1/goals/from-preset` take the header optionally (scope `goals:write`) |
 | `GET/POST /v1/topics`, `POST /v1/topics/:name/delete`, `POST /v1/goals/:id/topics`, `GET /v1/goals?topic=a,b` | Topics: labels for goals (v0.1.8). Every goal is in `all`; a filter with several topics means all of them |
 | `GET /v1/steps?ready=1&repo=`, `GET /v1/steps/:id/context`, `POST /v1/steps/:id/{claim,release,note,done,take}` | Steps |
-| `POST /v1/messages` | Messages (`toSid`, `toStep`, or `to`: `<machine>/<session>`, resolved like an assign target, v0.1.13) |
+| `POST /v1/messages` | Messages (`toSid`, `toStep`, or `to`: `<machine>/<session>`, resolved like an assign target, v0.1.13). RL-22: scope `sessions:message` for a service acting for a person |
+| `POST /v1/steps/:id/{approve,reject,resume}` | Gates and resume. RL-22: scope `goals:decide` for a service acting for the goal owner |
+| `POST /v1/steps/:id/park` | Park by hand (RL-22, 0.1.42): a claimed or paused step becomes parked (`operator: <reason>`); the goal owner, approvers, admins; scope `goals:decide` |
+| `GET /v1/questions` | Open questions (RL-22, 0.1.42): `state=open`, oldest first; scope `goals:read`. `POST /v1/questions/:id/answer` takes scope `questions:answer` |
 | `GET /v1/fleet`, `POST /v1/machines/:id/name` | My mesh (v0.1.10): the caller's machines and their sessions; name a machine |
 | `POST /v1/machines/:id/labels` | Machine labels (v0.1.11): replace, or add/remove, the labels of one of the caller's machines |
 | `POST /v1/steps/:id/assign` | Assign (v0.1.12): offer a ready step to a machine or `<machine>/<session>`; the target's accept policy decides `auto`. RL-21 (0.1.40): scope `steps:assign` for a service acting for a person (own machines and sessions only), `mode`/`profile` for a headless run on the caller's own machine, `code` on refusals, `message` in the reply |

@@ -1536,10 +1536,57 @@
     "/v1/attention": {
       "get": {
         "operationId": "getVAttention",
-        "summary": "What needs the calling user: questions, gates, stalled steps.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "summary": "What needs the calling user: questions, gates, stalled steps. With team=1: every open item of the team in one read (TeamAttention).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "daemon"
+        ],
+        "parameters": [
+          {
+            "name": "team",
+            "in": "query",
+            "required": false,
+            "description": "1: every open item of the team (a service with goals:read, or an admin); a service must send it",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "needsYouMs",
+            "in": "query",
+            "required": false,
+            "description": "team form: 60000-604800000, default 1800000 (the stuck-session floor)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "turns",
+            "in": "query",
+            "required": false,
+            "description": "team form: 1-10000, default 40 (the stuck-step floor)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trial",
+            "in": "query",
+            "required": false,
+            "description": "team form: exclude (default) or include",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "team form: 1-5000, default 2000",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
@@ -1554,6 +1601,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -1635,7 +1685,7 @@
       },
       "post": {
         "operationId": "postVGoals",
-        "summary": "Create a goal.",
+        "summary": "Create a goal (a service may create it for a person, who then owns it).",
         "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:write`.",
         "tags": [
           "goals"
@@ -1646,6 +1696,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (optional: without it the service acts as itself).",
             "schema": {
               "type": "string"
             }
@@ -1775,6 +1834,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (optional: without it the service acts as itself).",
             "schema": {
               "type": "string"
             }
@@ -6693,7 +6761,7 @@
       "post": {
         "operationId": "postVGoalsIdApprove",
         "summary": "Approve the proposed plan (approvers).",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
         "tags": [
           "goals"
         ],
@@ -6711,6 +6779,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -6754,6 +6831,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -6762,7 +6842,7 @@
       "post": {
         "operationId": "postVGoalsIdRevise",
         "summary": "Ask the design session to revise the proposed plan.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
         "tags": [
           "goals"
         ],
@@ -6780,6 +6860,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -6818,6 +6907,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -6844,6 +6936,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (optional: without it the service acts as itself).",
             "schema": {
               "type": "string"
             }
@@ -6895,7 +6996,7 @@
       "post": {
         "operationId": "postVGoalsIdReplan",
         "summary": "Reopen design for a goal with an approved plan.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
         "tags": [
           "goals"
         ],
@@ -6913,6 +7014,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -6951,6 +7061,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -10021,7 +10134,7 @@
       "post": {
         "operationId": "postVStepsIdApprove",
         "summary": "Pass a gate step.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
         "tags": [
           "steps"
         ],
@@ -10039,6 +10152,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -10095,6 +10217,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -10103,7 +10228,7 @@
       "post": {
         "operationId": "postVStepsIdReject",
         "summary": "Reject a gate step (optionally reopening steps).",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
         "tags": [
           "steps"
         ],
@@ -10121,6 +10246,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -10177,6 +10311,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -10185,7 +10322,7 @@
       "post": {
         "operationId": "postVStepsIdResume",
         "summary": "Resume a parked step.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
         "tags": [
           "steps"
         ],
@@ -10203,6 +10340,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -10241,6 +10387,90 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/steps/{id}/park": {
+      "post": {
+        "operationId": "postVStepsIdPark",
+        "summary": "Park a claimed or paused step by hand (the goal owner, approvers, admins): the holder is told to stop; no process is signalled. Resume lets it go on.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -12051,13 +12281,118 @@
             "description": "Login required."
           }
         }
+      },
+      "get": {
+        "operationId": "getVQuestions",
+        "summary": "Unanswered questions, oldest first: every one for a service or an admin, those addressed to the caller for a member.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
+        "tags": [
+          "questions"
+        ],
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "open (required)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1-5000, default 2000",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "truncated": {
+                      "type": "boolean"
+                    },
+                    "questions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "goal": {
+                            "type": "string"
+                          },
+                          "step": {
+                            "type": "string"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "sid": {
+                            "type": "string"
+                          },
+                          "fromUser": {
+                            "type": "string"
+                          },
+                          "toUsers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "fromUser",
+                          "toUsers",
+                          "text",
+                          "at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "truncated",
+                    "questions"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
       }
     },
     "/v1/questions/{id}/answer": {
       "post": {
         "operationId": "postVQuestionsIdAnswer",
         "summary": "Answer a question; the answer is delivered to the asking session.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `questions:answer`.",
         "tags": [
           "questions"
         ],
@@ -12075,6 +12410,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -12117,6 +12461,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }
@@ -12125,7 +12472,7 @@
       "post": {
         "operationId": "postVMessages",
         "summary": "Send a message to a session (by sid or <machine>/<session>) or to whoever holds a step.",
-        "description": "Any logged-in user (bearer token or web session).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `sessions:message`.",
         "tags": [
           "questions"
         ],
@@ -12135,6 +12482,15 @@
             "in": "header",
             "required": false,
             "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
             "schema": {
               "type": "string"
             }
@@ -12188,6 +12544,9 @@
           },
           "401": {
             "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
           }
         }
       }

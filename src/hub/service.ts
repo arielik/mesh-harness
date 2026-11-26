@@ -199,6 +199,9 @@ import type {
   GoalEfficiency,
   StepWindowRow,
   Stuck,
+  OpenQuestions,
+  TeamAttention,
+  TeamAttentionItem,
   HealthTotal,
   PulseHealth,
   RunCard,
@@ -337,6 +340,32 @@ export class HubError extends Error {
 /** RL-21: a refusal with a stable code and no details. */
 const refuse = (status: number, code: string, message: string) => new HubError(status, message, undefined, code);
 
+/** RL-14 thresholds of the stuck signal; RL-22 (`coded`): the team attention read answers `bad-query`. */
+function stuckQuery(q: { needsYouMs?: string | undefined; turns?: string | undefined; trial?: string | undefined }, coded = false): { needsYouMs: number; turns: number; trial: "exclude" | "include" } {
+  const bad = (message: string) => (coded ? refuse(400, "bad-query", message) : new HubError(400, message));
+  let needsYouMs = 1_800_000;
+  if (q.needsYouMs !== undefined) {
+    needsYouMs = /^\d{1,9}$/.test(q.needsYouMs) ? Number(q.needsYouMs) : NaN;
+    if (!Number.isInteger(needsYouMs) || needsYouMs < 60_000 || needsYouMs > 604_800_000) throw bad("needsYouMs must be a whole number from 60000 to 604800000");
+  }
+  let turns = 40;
+  if (q.turns !== undefined) {
+    turns = /^\d{1,5}$/.test(q.turns) ? Number(q.turns) : NaN;
+    if (!Number.isInteger(turns) || turns < 1 || turns > 10_000) throw bad("turns must be a whole number from 1 to 10000");
+  }
+  const trial = q.trial ?? "exclude";
+  if (trial !== "exclude" && trial !== "include") throw bad("trial must be exclude or include");
+  return { needsYouMs, turns, trial };
+}
+
+/** RL-22: `limit` of the team attention and open-question reads: 1-5000, default 2000. */
+function limitQuery(raw: string | undefined): number {
+  if (raw === undefined) return 2000;
+  const n = /^\d{1,4}$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isInteger(n) || n < 1 || n > 5000) throw refuse(400, "bad-query", "limit must be a whole number from 1 to 5000");
+  return n;
+}
+
 export interface Actor extends Principal {
   machineId?: string | undefined;
   tokenHash: string;
@@ -346,7 +375,9 @@ export interface Actor extends Principal {
 }
 
 /** The event payload field naming the service that acted for the person (mesh-ai B-178). */
-const viaOf = (actor: Actor): { via?: string } => (actor.via ? { via: actor.via } : {});
+const viaOf = (actor: { via?: string | undefined }): { via?: string } => (actor.via ? { via: actor.via } : {});
+/** RL-22: the end of a session message relayed by a service for a person. */
+const viaText = (actor: { via?: string | undefined }): string => (actor.via ? ` (via ${actor.via})` : "");
 
 /** RL-17: a pulse's roster pins as event payload (`agents`: `{key, hash}` sorted and distinct), or nothing. */
 const pinsOf = (p: Pulse): { agents?: { key: string; hash: string }[] } => {
@@ -528,9 +559,10 @@ export class HubService {
     return { id: u.id, name: u.name, roles: u.roles };
   }
 
-  private async goalOr404(id: string): Promise<Goal> {
+  /** RL-22: `coded` adds the `goal-unknown` code (the routes of RL-22 §Codes only). */
+  private async goalOr404(id: string, coded = false): Promise<Goal> {
     const g = await this.store.getGoal(id);
-    if (!g) throw new HubError(404, `no goal ${id}`);
+    if (!g) throw new HubError(404, `no goal ${id}`, undefined, coded ? "goal-unknown" : undefined);
     return g;
   }
 
@@ -546,9 +578,10 @@ export class HubService {
     });
   }
 
-  private async stepOr404(id: string): Promise<Step> {
+  /** RL-22: `coded` adds the `step-unknown` code (the routes of RL-22 §Codes only). */
+  private async stepOr404(id: string, coded = false): Promise<Step> {
     const s = await this.store.getStep(id);
-    if (!s) throw new HubError(404, `no step ${id}`);
+    if (!s) throw new HubError(404, `no step ${id}`, undefined, coded ? "step-unknown" : undefined);
     return s;
   }
 
@@ -2479,7 +2512,7 @@ export class HubService {
         updatedAt: now,
       };
       await this.store.saveSteps([design]);
-      await this.emit({ type: "goal.created", user: actor.userId, goal: goal.id, payload: { title: goal.title, ...(topics.length ? { topics } : {}) } });
+      await this.emit({ type: "goal.created", user: actor.userId, goal: goal.id, payload: { title: goal.title, ...(topics.length ? { topics } : {}), ...viaOf(actor) } });
       await this.emit({ type: "step.ready", goal: goal.id, step: design.id });
       return goal;
     });
@@ -2664,11 +2697,11 @@ export class HubService {
   /** Reopen the design (plan §3.4 replan): a new plan version replaces steps not yet done. */
   async replan(actor: Actor, goalId: string, comment: string | undefined): Promise<GoalDetail> {
     await this.goalTx(async () => {
-      const goal = await this.goalOr404(goalId);
-      if (!isOwnerOrAdmin(actor, goal.ownerId) && !actor.roles.includes("approver")) throw new HubError(403, `only the goal owner, approvers or admins can replan ${goal.id}`);
-      if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      const goal = await this.goalOr404(goalId, true);
+      if (!isOwnerOrAdmin(actor, goal.ownerId) && !actor.roles.includes("approver")) throw refuse(403, "not-approver", `only the goal owner, approvers or admins can replan ${goal.id}`);
+      if (goal.state === "done" || goal.state === "dropped") throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
       const design = await this.store.getStep(`${goal.id}.design`);
-      if (!design) throw new HubError(404, `${goal.id} has no design step`);
+      if (!design) throw refuse(404, "design-unknown", `${goal.id} has no design step`);
       const now = this.now();
       const reopened: Step = { ...design, state: "ready", updatedAt: now };
       delete reopened.outcome;
@@ -2682,8 +2715,14 @@ export class HubService {
       await this.saveStepFrom(reopened, design);
       await this.store.addNote({ step: reopened.id, user: actor.userId, text: `Replan requested${comment ? `: ${comment}` : ""}`, at: now });
       await this.store.saveGoal({ ...goal, state: "design", updatedAt: now });
-      await this.message(previousSid, actor.userId, "replan", `MESH: ${actor.userId} asked to replan ${goal.id}${comment ? `: ${comment}` : ""}. Claim ${reopened.id} with mesh_claim, update the design and propose a new plan with mesh_plan.`);
-      await this.emit({ type: "goal.replan", user: actor.userId, goal: goal.id, step: reopened.id, payload: { comment } });
+      await this.message(
+        previousSid,
+        actor.userId,
+        "replan",
+        `MESH: ${actor.userId} asked to replan ${goal.id}${comment ? `: ${comment}` : ""}. Claim ${reopened.id} with mesh_claim, update the design and propose a new plan with mesh_plan.`,
+        actor.via ? viaOf(actor) : undefined,
+      );
+      await this.emit({ type: "goal.replan", user: actor.userId, goal: goal.id, step: reopened.id, payload: { comment, ...viaOf(actor) } });
       await this.emitReady(goal.id, reopened.id);
     });
     return await this.goalDetail(goalId);
@@ -2741,12 +2780,12 @@ export class HubService {
 
   async approvePlan(actor: Actor, goalId: string, version?: number, comment?: string): Promise<GoalDetail> {
     await this.goalTx(async () => {
-      const goal = await this.goalOr404(goalId);
-      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins can approve ${goal.id}`);
+      const goal = await this.goalOr404(goalId, true);
+      if (!canApprove(actor, goal.ownerId)) throw refuse(403, "not-approver", `only the goal owner, approvers or admins can approve ${goal.id}`);
       const plans = await this.store.listPlans(goal.id);
       const plan = version ? plans.find((p) => p.version === version) : plans.filter((p) => p.decision === "pending").at(-1);
-      if (!plan) throw new HubError(404, `no pending plan for ${goal.id}`);
-      if (plan.decision !== "pending") throw new HubError(409, `plan v${plan.version} is already ${plan.decision}`);
+      if (!plan) throw refuse(404, "plan-none", `no pending plan for ${goal.id}`);
+      if (plan.decision !== "pending") throw refuse(409, "plan-decided", `plan v${plan.version} is already ${plan.decision}`);
       const now = this.now();
       // RL-5 (R-6): pin the plan's new roster keys; a key pinned before keeps its pin.
       const pins = await this.pinAgents(plan.steps, goal.agents ?? {});
@@ -2782,7 +2821,7 @@ export class HubService {
         actor.userId,
         "plan_approved",
         `MESH: plan v${plan.version} for ${goal.id} was approved by ${actor.userId}${comment ? ` (${comment})` : ""}. mesh updated .mesh/goals/${goal.id}/plan.v${plan.version}.yaml with the approval; commit it with the design. The steps are open now.`,
-        { goal: goal.id, version: plan.version },
+        { goal: goal.id, version: plan.version, ...viaOf(actor) },
       );
       await this.applyApproved(actor, goal, plan, existing, changes, m, now);
     });
@@ -2794,7 +2833,7 @@ export class HubService {
    * `when`, set the goal's state, and emit `plan.approved`, ended offers, ready, skipped, done and
    * dropped steps. Shared by `approvePlan` and RL-3's create-with-plan.
    */
-  private async applyApproved(by: { userId: string }, goal: Goal, plan: Plan, existing: readonly Step[], changes: Step[], m: Materialized, now: number): Promise<void> {
+  private async applyApproved(by: { userId: string; via?: string | undefined }, goal: Goal, plan: Plan, existing: readonly Step[], changes: Step[], m: Materialized, now: number): Promise<void> {
     const first = endOffersLeavingReady(existing, changes, now);
     await this.store.saveSteps(first.steps);
     const afterFirst = await this.store.listSteps({ goal: goal.id });
@@ -2807,7 +2846,7 @@ export class HubService {
     const fresh = await this.store.getGoal(goal.id);
     const complete = HubService.goalComplete(fresh ?? goal, finalSteps);
     await this.store.saveGoal({ ...(fresh ?? goal), state: complete ? "done" : "in_progress", updatedAt: now });
-    await this.emit({ type: "plan.approved", user: by.userId, goal: goal.id, payload: { version: plan.version } });
+    await this.emit({ type: "plan.approved", user: by.userId, goal: goal.id, payload: { version: plan.version, ...viaOf(by) } });
     await this.emitOffersEnded(by, [...first.ended, ...second.ended]);
     const finalState = new Map(finalSteps.map((s) => [s.id, s.state]));
     for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready" && finalState.get(x.id) === "ready")) await this.emitReady(goal.id, s.id);
@@ -2823,16 +2862,22 @@ export class HubService {
 
   async revisePlan(actor: Actor, goalId: string, comment: string | undefined): Promise<GoalDetail> {
     await this.goalTx(async () => {
-      const goal = await this.goalOr404(goalId);
-      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins can revise ${goal.id}`);
+      const goal = await this.goalOr404(goalId, true);
+      if (!canApprove(actor, goal.ownerId)) throw refuse(403, "not-approver", `only the goal owner, approvers or admins can revise ${goal.id}`);
       const plan = (await this.store.listPlans(goal.id)).filter((p) => p.decision === "pending").at(-1);
-      if (!plan) throw new HubError(404, `no pending plan for ${goal.id}`);
+      if (!plan) throw refuse(404, "plan-none", `no pending plan for ${goal.id}`);
       const now = this.now();
       await this.store.savePlan({ ...plan, decision: "revised", decidedBy: actor.userId, decidedAt: now, ...(comment ? { comment } : {}) });
       if (goal.state === "awaiting_approval") await this.store.saveGoal({ ...goal, state: "design", updatedAt: now });
       const design = await this.store.getStep(`${goal.id}.design`);
-      await this.message(design?.holderSid, actor.userId, "plan_revised", `MESH: plan v${plan.version} for ${goal.id} needs changes: ${comment ?? "(no comment)"}. Update the design and propose again with mesh_plan.`, { goal: goal.id, version: plan.version });
-      await this.emit({ type: "plan.revised", user: actor.userId, goal: goal.id, payload: { version: plan.version, comment } });
+      await this.message(
+        design?.holderSid,
+        actor.userId,
+        "plan_revised",
+        `MESH: plan v${plan.version} for ${goal.id} needs changes: ${comment ?? "(no comment)"}. Update the design and propose again with mesh_plan.${viaText(actor)}`,
+        { goal: goal.id, version: plan.version, ...viaOf(actor) },
+      );
+      await this.emit({ type: "plan.revised", user: actor.userId, goal: goal.id, payload: { version: plan.version, comment, ...viaOf(actor) } });
     });
     return await this.goalDetail(goalId);
   }
@@ -3123,16 +3168,16 @@ export class HubService {
   /** A person (or a recorded rule) decides a gate step (M4.5). */
   async decideGate(actor: Actor, stepId: string, input: { approve: boolean; comment?: string | undefined; rule?: string | undefined; inputs?: Record<string, unknown> | undefined; reopen?: string[] | undefined }): Promise<DoneResult> {
     return await this.goalTx(async () => {
-      const step = await this.stepOr404(stepId);
+      const step = await this.stepOr404(stepId, true);
       const goal = await this.goalOr404(step.goal);
-      if (step.kind !== "gate") throw new HubError(409, `${step.id} is not a gate step`);
-      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins decide ${step.id}`);
-      if (step.state !== "ready") throw new HubError(409, `${step.id} is ${step.state}; a gate is decided when its dependencies are done`);
+      if (step.kind !== "gate") throw refuse(409, "not-gate", `${step.id} is not a gate step`);
+      if (!canApprove(actor, goal.ownerId)) throw refuse(403, "not-approver", `only the goal owner, approvers or admins decide ${step.id}`);
+      if (step.state !== "ready") throw refuse(409, "gate-not-ready", `${step.id} is ${step.state}; a gate is decided when its dependencies are done`);
       const now = this.now();
       const all = await this.store.listSteps({ goal: step.goal });
       const explicit = (input.reopen ?? []).map((r) => (r.includes(".") ? r : `${step.goal}.${r}`));
-      if (!input.approve && explicit.length === 0) throw new HubError(400, "rejecting a gate needs the steps to reopen (reopen: [...])");
-      for (const id of explicit) if (!all.some((x) => x.id === id && x.state === "done")) throw new HubError(409, `cannot reopen ${id}: no such done step`);
+      if (!input.approve && explicit.length === 0) throw refuse(400, "reopen-required", "rejecting a gate needs the steps to reopen (reopen: [...])");
+      for (const id of explicit) if (!all.some((x) => x.id === id && x.state === "done")) throw refuse(409, "reopen-unknown", `cannot reopen ${id}: no such done step`);
       const round: Round = {
         n: (step.rounds?.length ?? 0) + 1,
         user: actor.userId,
@@ -3155,10 +3200,10 @@ export class HubService {
       const others = endOffersLeavingReady(all, [...changed.values()].filter((s) => s.id !== decided.id), now);
       await this.store.saveSteps(others.steps);
       await this.emitOffersEnded(actor, others.ended);
-      await this.emit({ type: input.approve ? "gate.approved" : "gate.rejected", user: actor.userId, goal: step.goal, step: step.id, payload: { gate: step.policy?.gate, rule: input.rule, comment: input.comment, reopen: explicit } });
+      await this.emit({ type: input.approve ? "gate.approved" : "gate.rejected", user: actor.userId, goal: step.goal, step: step.id, payload: { gate: step.policy?.gate, rule: input.rule, comment: input.comment, reopen: explicit, ...viaOf(actor) } });
       for (const s of reopenChanges.filter((x) => explicit.includes(x.id))) {
         await this.store.addNote({ step: s.id, user: actor.userId, text: `Reopened by gate ${step.id}: ${input.comment ?? "changes requested"}`, at: now });
-        await this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: input.comment, fixCycles: s.fixCycles } });
+        await this.emit({ type: "step.reopened", user: actor.userId, goal: step.goal, step: s.id, payload: { by: step.id, reason: input.comment, fixCycles: s.fixCycles, ...viaOf(actor) } });
       }
       const nowReady = [...changed.values()].filter((s) => s.state === "ready").map((s) => s.id);
       for (const id of nowReady) await this.emitReady(step.goal, id);
@@ -3179,10 +3224,10 @@ export class HubService {
   /** A person lets a parked step go on: it waits for its dependencies again, rounds are kept. */
   async resumeStep(actor: Actor, stepId: string, comment: string | undefined): Promise<Step> {
     return await this.goalTx(async () => {
-      const step = await this.stepOr404(stepId);
+      const step = await this.stepOr404(stepId, true);
       const goal = await this.goalOr404(step.goal);
-      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins resume ${step.id}`);
-      if (step.state !== "parked" && step.state !== "failed") throw new HubError(409, `${step.id} is ${step.state}, not parked or failed`);
+      if (!canApprove(actor, goal.ownerId)) throw refuse(403, "not-approver", `only the goal owner, approvers or admins resume ${step.id}`);
+      if (step.state !== "parked" && step.state !== "failed") throw refuse(409, "step-not-resumable", `${step.id} is ${step.state}, not parked or failed`);
       const now = this.now();
       const next: Step = { ...step, state: "blocked", updatedAt: now };
       delete next.parkedReason;
@@ -3198,7 +3243,7 @@ export class HubService {
       await this.store.saveSteps(others.steps);
       await this.emitOffersEnded(actor, others.ended);
       await this.store.addNote({ step: step.id, user: actor.userId, text: `Resumed by ${actor.userId}${comment ? `: ${comment}` : ""} (was: ${step.parkedReason ?? step.state})`, at: now });
-      await this.emit({ type: "step.resumed", user: actor.userId, goal: step.goal, step: step.id, payload: { comment, was: step.parkedReason } });
+      await this.emit({ type: "step.resumed", user: actor.userId, goal: step.goal, step: step.id, payload: { comment, was: step.parkedReason, ...viaOf(actor) } });
       if (final.state === "ready") await this.emitReady(step.goal, step.id);
       await this.emitSkipped(step.goal, settled.skipped);
       const after = all.map((s) => ready.find((x) => x.id === s.id) ?? s);
@@ -3208,6 +3253,48 @@ export class HubService {
         await this.markGoalDone(goal);
       }
       return (await this.store.getStep(step.id)) ?? final;
+    });
+  }
+
+  /**
+   * RL-22: a person parks a claimed or paused step by hand. The holder is told to stop (one inbox
+   * message); no process is signalled, no round is added and no outcome is set.
+   */
+  async parkStep(actor: Actor, stepId: string, reason: string): Promise<Step> {
+    return await this.goalTx(async () => {
+      const step = await this.stepOr404(stepId, true);
+      const goal = await this.goalOr404(step.goal);
+      if (goal.state === "done" || goal.state === "dropped") throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
+      if (!canApprove(actor, goal.ownerId)) throw refuse(403, "not-approver", `only the goal owner, approvers or admins park ${step.id}`);
+      if (step.kind === "gate") throw refuse(409, "step-gate", `${step.id} is a gate step; a gate is decided, not parked`);
+      if (isDebrief(step.policy)) throw refuse(409, "step-debrief", `${step.id} is a debrief step; a debrief is not parked by hand`);
+      if (step.state === "parked") throw refuse(409, "step-parked", `${step.id} is already parked`);
+      if (step.state !== "claimed" && step.state !== "paused") throw refuse(409, "step-not-parkable", `${step.id} is ${step.state}; only a claimed or paused step is parked by hand`);
+      const now = this.now();
+      const parkedReason = `operator: ${reason}`;
+      const parked: Step = { ...step, state: "parked", parkedReason, parkedAt: now, updatedAt: now };
+      delete parked.holderUser;
+      delete parked.holderSid;
+      delete parked.holderMachine;
+      delete parked.claimedAt;
+      delete parked.roundStartedAt;
+      await this.saveStepFrom(parked, step);
+      await this.emit({
+        at: now,
+        type: "step.parked",
+        user: actor.userId,
+        goal: step.goal,
+        step: step.id,
+        payload: { reason: parkedReason, operator: true, was: step.state, ...(step.holderUser ? { holder: step.holderUser } : {}), ...viaOf(actor) },
+      });
+      await this.message(
+        step.holderSid,
+        actor.userId,
+        "parked",
+        `MESH: @${actor.userId} parked step ${step.id}: ${reason}. Stop working on it; your notes are kept. A person resumes it (mesh step resume ${step.id}).${viaText(actor)}`,
+        { step: step.id, ...viaOf(actor) },
+      );
+      return parked;
     });
   }
 
@@ -3267,13 +3354,13 @@ export class HubService {
   async answer(actor: Actor, id: number, text: string): Promise<Question> {
     return await this.store.tx(async () => {
       const q = await this.store.getQuestion(id);
-      if (!q) throw new HubError(404, `no question ${id}`);
-      if (q.answer !== undefined) throw new HubError(409, `question ${id} is already answered`);
-      if (!q.toUsers.includes(actor.userId) && !actor.roles.includes("admin")) throw new HubError(403, `question ${id} is not addressed to you`);
+      if (!q) throw refuse(404, "question-unknown", `no question ${id}`);
+      if (q.answer !== undefined) throw refuse(409, "question-answered", `question ${id} is already answered`);
+      if (!q.toUsers.includes(actor.userId) && !actor.roles.includes("admin")) throw refuse(403, "not-addressed", `question ${id} is not addressed to you`);
       const answered: Question = { ...q, answer: text, answeredBy: actor.userId, answeredAt: this.now() };
       await this.store.saveQuestion(answered);
-      await this.message(q.sid, actor.userId, "answer", `MESH: answer from ${actor.userId} to your question "${q.text}": ${text}`);
-      await this.emit({ type: "question.answered", user: actor.userId, step: q.step, payload: { question: id } });
+      await this.message(q.sid, actor.userId, "answer", `MESH: answer from ${actor.userId} to your question "${q.text}": ${text}${viaText(actor)}`, actor.via ? viaOf(actor) : undefined);
+      await this.emit({ type: "question.answered", user: actor.userId, step: q.step, payload: { question: id, ...viaOf(actor) } });
       return answered;
     });
   }
@@ -3285,22 +3372,22 @@ export class HubService {
         const t = await this.resolveTarget(actor, input.to);
         if (!t.session) throw new HubError(400, "say needs a session: <machine>/<session>");
         const target = t.session.session.sid;
-        const id = await this.message(target, actor.userId, "say", input.text);
-        if (id === undefined) throw new HubError(404, `session ${target} is not live on any machine`);
-        await this.emit({ type: "message.sent", user: actor.userId, sid: target, payload: { id } });
+        const id = await this.message(target, actor.userId, "say", input.text, actor.via ? viaOf(actor) : undefined);
+        if (id === undefined) throw refuse(404, "session-unknown", `session ${target} is not live on any machine`);
+        await this.emit({ type: "message.sent", user: actor.userId, sid: target, payload: { id, ...viaOf(actor) } });
         return { id, toSid: target, to: `${machineName(t.machine)}/${sessionName(t.session.session)}` };
       }
-      const sid = input.toSid ?? (input.toStep ? (await this.stepOr404(input.toStep)).holderSid : undefined);
-      if (!sid) throw new HubError(409, `${input.toStep} has no session holding it`);
+      const sid = input.toSid ?? (input.toStep ? (await this.stepOr404(input.toStep, true)).holderSid : undefined);
+      if (!sid) throw refuse(409, "step-unheld", `${input.toStep} has no session holding it`);
       if (input.toSid !== undefined) {
         // MM-1: a session the caller cannot see answers like an unknown one; nothing is queued.
         const hs = await this.store.getSession(input.toSid);
         const share = hs ? (await this.store.getMachine(hs.machineId))?.share : undefined;
-        if (hs && !sessionVisible(actor.userId, { userId: hs.userId, step: hs.session.step }, share)) throw new HubError(404, `session ${sid} is not live on any machine`);
+        if (hs && !sessionVisible(actor.userId, { userId: hs.userId, step: hs.session.step }, share)) throw refuse(404, "session-unknown", `session ${sid} is not live on any machine`);
       }
-      const id = await this.message(sid, actor.userId, "say", input.text);
-      if (id === undefined) throw new HubError(404, `session ${sid} is not live on any machine`);
-      await this.emit({ type: "message.sent", user: actor.userId, sid, payload: { id } });
+      const id = await this.message(sid, actor.userId, "say", input.text, actor.via ? viaOf(actor) : undefined);
+      if (id === undefined) throw refuse(404, "session-unknown", `session ${sid} is not live on any machine`);
+      await this.emit({ type: "message.sent", user: actor.userId, sid, payload: { id, ...viaOf(actor) } });
       return { id, toSid: sid };
     });
   }
@@ -3971,7 +4058,8 @@ export class HubService {
           priority: b.priority,
           refs: b.refs,
           comment: `ingest (preset ${b.preset.name} ${b.preset.sha256.slice(0, 12)})`,
-          extra: {},
+          extra: viaOf(actor),
+          via: actor.via,
         },
         now,
       );
@@ -4004,6 +4092,8 @@ export class HubService {
       spotCheck?: GoalSpotCheck | undefined;
       /** RL-11: a trial fire's goal. */
       trial?: boolean | undefined;
+      /** RL-22: the service that created the goal for its owner (on `plan.approved`). */
+      via?: string | undefined;
     },
     now: number,
   ): Promise<Goal> {
@@ -4041,7 +4131,7 @@ export class HubService {
     await this.store.savePlan(plan);
     await this.emit({ type: "goal.created", user: o.owner, goal: goal.id, payload: { title: goal.title, preset: o.preset.name, ...o.extra } });
     const m = materialize(goal.id, 1, plan.steps, [], now);
-    await this.applyApproved({ userId: o.owner }, goal, plan, [], [...m.upserts], m, now);
+    await this.applyApproved({ userId: o.owner, ...(o.via ? { via: o.via } : {}) }, goal, plan, [], [...m.upserts], m, now);
     return (await this.store.getGoal(goal.id)) ?? goal;
   }
 
@@ -4579,60 +4669,246 @@ export class HubService {
 
   /** `GET /v1/stuck`: sessions waiting on a person too long, claimed steps turning without a commit. */
   async stuck(q: { needsYouMs?: string | undefined; turns?: string | undefined; repo?: string | undefined; trial?: string | undefined }): Promise<Stuck> {
-    let needsYouMs = 1_800_000;
-    if (q.needsYouMs !== undefined) {
-      needsYouMs = /^\d{1,9}$/.test(q.needsYouMs) ? Number(q.needsYouMs) : NaN;
-      if (!Number.isInteger(needsYouMs) || needsYouMs < 60_000 || needsYouMs > 604_800_000) throw new HubError(400, "needsYouMs must be a whole number from 60000 to 604800000");
-    }
-    let turns = 40;
-    if (q.turns !== undefined) {
-      turns = /^\d{1,5}$/.test(q.turns) ? Number(q.turns) : NaN;
-      if (!Number.isInteger(turns) || turns < 1 || turns > 10_000) throw new HubError(400, "turns must be a whole number from 1 to 10000");
-    }
-    const trial = q.trial ?? "exclude";
-    if (trial !== "exclude" && trial !== "include") throw new HubError(400, "trial must be exclude or include");
+    const t = stuckQuery(q);
     return this.store.tx(async () => {
-      const now = this.now();
-      const goals = new Map<string, Goal | undefined>();
-      const passes = async (s: Step) => {
-        if (q.repo !== undefined && s.repo !== q.repo) return false;
-        if (!goals.has(s.goal)) goals.set(s.goal, await this.store.getGoal(s.goal));
-        const g = goals.get(s.goal);
-        return g !== undefined && (trial === "include" || g.trial !== true);
-      };
-      const sessions: Stuck["sessions"] = [];
-      let unmeasured = 0;
-      for (const hs of await this.store.listSessions({ live: true })) {
-        const x = hs.session;
-        if (x.state !== "needs_you" || x.step === undefined) continue;
-        const s = await this.store.getStep(x.step);
-        if (!s || !heldBy(s, x.sid, hs.userId, hs.machineId) || !(await passes(s))) continue;
-        if (x.stateSince === undefined) {
-          unmeasured++;
-          continue;
-        }
-        const forMs = now - x.stateSince;
-        if (forMs < needsYouMs) continue;
-        sessions.push({ sid: x.sid, user: hs.userId, machine: hs.machineId, step: s.id, goal: s.goal, repo: s.repo, ...(x.needs ? { needs: x.needs } : {}), since: x.stateSince, forMs, lastSeenAt: hs.updatedAt });
-      }
-      sessions.sort((a, b) => b.forMs - a.forMs || (a.sid < b.sid ? -1 : a.sid > b.sid ? 1 : 0));
-      const steps: Stuck["steps"] = [];
-      for (const s of await this.store.listSteps({ state: "claimed" })) {
-        if (!(await passes(s))) continue;
-        const evs = (await this.store.eventsFor({ step: s.id })).filter((e) => e.type === "session.turn_started");
-        const t = turnsSinceCommit(s, evs);
-        if (t.turns < turns) continue;
-        steps.push({ step: s.id, goal: s.goal, repo: s.repo, ...(s.holderUser ? { holder: s.holderUser } : {}), turns: t.turns, ...(t.commit ? { commit: t.commit, commitAt: t.commitAt } : {}), ...(s.claimedAt !== undefined ? { claimedAt: s.claimedAt } : {}) });
-      }
-      steps.sort((a, b) => b.turns - a.turns || (a.step < b.step ? -1 : a.step > b.step ? 1 : 0));
+      const { sessions, steps, unmeasured } = await this.stuckRows({ ...t, repo: q.repo }, this.now());
       const repoNames = [...new Set([...sessions.map((x) => x.repo), ...steps.map((x) => x.repo)])].sort();
       return {
-        thresholds: { needsYouMs, turns },
+        thresholds: { needsYouMs: t.needsYouMs, turns: t.turns },
         sessions,
-        steps,
+        steps: steps.map(({ reachedAt: _, ...row }) => row),
         repos: repoNames.map((repo) => ({ repo, sessions: sessions.filter((x) => x.repo === repo).length, steps: steps.filter((x) => x.repo === repo).length })),
         unmeasured,
       };
+    });
+  }
+
+  /**
+   * RL-14 stuck rows (inside the caller's transaction), shared by `GET /v1/stuck` and RL-22's team
+   * attention: sessions in needs_you on a step they hold past `needsYouMs`, claimed steps with at
+   * least `turns` turns since their last commit. RL-22: each step row carries `reachedAt`, the start
+   * of the turn that reached the floor (the `turns`-th turn after the last commit).
+   */
+  private async stuckRows(
+    o: { needsYouMs: number; turns: number; repo?: string | undefined; trial: "exclude" | "include" },
+    now: number,
+  ): Promise<{ sessions: Stuck["sessions"]; steps: (Stuck["steps"][number] & { reachedAt: number })[]; unmeasured: number }> {
+    const goals = new Map<string, Goal | undefined>();
+    const passes = async (s: Step) => {
+      if (o.repo !== undefined && s.repo !== o.repo) return false;
+      if (!goals.has(s.goal)) goals.set(s.goal, await this.store.getGoal(s.goal));
+      const g = goals.get(s.goal);
+      return g !== undefined && (o.trial === "include" || g.trial !== true);
+    };
+    const sessions: Stuck["sessions"] = [];
+    let unmeasured = 0;
+    for (const hs of await this.store.listSessions({ live: true })) {
+      const x = hs.session;
+      if (x.state !== "needs_you" || x.step === undefined) continue;
+      const s = await this.store.getStep(x.step);
+      if (!s || !heldBy(s, x.sid, hs.userId, hs.machineId) || !(await passes(s))) continue;
+      if (x.stateSince === undefined) {
+        unmeasured++;
+        continue;
+      }
+      const forMs = now - x.stateSince;
+      if (forMs < o.needsYouMs) continue;
+      sessions.push({ sid: x.sid, user: hs.userId, machine: hs.machineId, step: s.id, goal: s.goal, repo: s.repo, ...(x.needs ? { needs: x.needs } : {}), since: x.stateSince, forMs, lastSeenAt: hs.updatedAt });
+    }
+    sessions.sort((a, b) => b.forMs - a.forMs || (a.sid < b.sid ? -1 : a.sid > b.sid ? 1 : 0));
+    const steps: (Stuck["steps"][number] & { reachedAt: number })[] = [];
+    for (const s of await this.store.listSteps({ state: "claimed" })) {
+      if (!(await passes(s))) continue;
+      const evs = (await this.store.eventsFor({ step: s.id })).filter((e) => e.type === "session.turn_started");
+      const t = turnsSinceCommit(s, evs);
+      if (t.turns < o.turns) continue;
+      const after = t.commitAt ?? Number.NEGATIVE_INFINITY;
+      const counted = evs.filter((e) => e.at > after).sort((a, b) => a.at - b.at);
+      const reachedAt = counted[o.turns - 1]?.at as number;
+      steps.push({
+        step: s.id,
+        goal: s.goal,
+        repo: s.repo,
+        ...(s.holderUser ? { holder: s.holderUser } : {}),
+        turns: t.turns,
+        ...(t.commit ? { commit: t.commit, commitAt: t.commitAt } : {}),
+        ...(s.claimedAt !== undefined ? { claimedAt: s.claimedAt } : {}),
+        reachedAt,
+      });
+    }
+    steps.sort((a, b) => b.turns - a.turns || (a.step < b.step ? -1 : a.step > b.step ? 1 : 0));
+    return { sessions, steps, unmeasured };
+  }
+
+  /**
+   * RL-22: `GET /v1/attention?team=1`: every open item of the team in one read (the kinds and
+   * fields of mesh-ai ADR-0025 D24.1), for a service with goals:read or an admin.
+   */
+  async teamAttention(
+    actor: Actor,
+    q: { team: string; needsYouMs?: string | undefined; turns?: string | undefined; trial?: string | undefined; limit?: string | undefined },
+  ): Promise<TeamAttention> {
+    if (q.team !== "1") throw refuse(400, "bad-query", "team must be 1");
+    const t = stuckQuery(q, true);
+    const limit = limitQuery(q.limit);
+    const service = actor.roles.includes("service") && !actor.roles.includes("member");
+    if (!service && !actor.roles.includes("admin")) throw refuse(403, "team-forbidden", "team=1 is for admins and service tokens");
+    return this.store.tx(async () => {
+      const now = this.now();
+      const goals = await this.store.listGoals();
+      const goalById = new Map(goals.map((g) => [g.id, g] as const));
+      const open = (g: Goal | undefined): g is Goal => g !== undefined && g.state !== "done" && g.state !== "dropped" && (t.trial === "include" || g.trial !== true);
+      const machines = await this.store.listMachines();
+      const machineById = new Map(machines.map((m) => [m.id, m] as const));
+      const allSteps = await this.store.listSteps();
+      const stepById = new Map(allSteps.map((s) => [s.id, s] as const));
+      const times = new Map<string, Map<string, Step>>();
+      const plansOf = new Map<string, Plan[]>();
+      const readyAt = async (s: Step): Promise<number> => {
+        if (!times.has(s.goal)) {
+          times.set(s.goal, new Map(allSteps.filter((x) => x.goal === s.goal).map((x) => [x.id, x] as const)));
+          plansOf.set(s.goal, await this.store.listPlans(s.goal));
+        }
+        const st = stageTimes(s, times.get(s.goal) as Map<string, Step>, plansOf.get(s.goal) ?? [], now);
+        return st.cycleReadyAt ?? st.readyAt ?? s.updatedAt;
+      };
+      const items: TeamAttentionItem[] = [];
+      const add = (
+        kind: TeamAttentionItem["kind"],
+        o: { goal?: Goal | undefined; step?: Step | undefined; who: string | null | undefined; at: number; text: string; key2?: string | undefined; key3?: string | undefined; key1?: string | undefined },
+        extra: Partial<TeamAttentionItem> = {},
+      ) => {
+        const goalId = o.goal?.id ?? null;
+        const stepId = o.step?.id ?? null;
+        items.push({
+          key: `${kind}:${o.key1 ?? goalId ?? "-"}:${o.key2 ?? stepId ?? "-"}:${o.key3 ?? "-"}`,
+          kind,
+          goal: goalId,
+          step: stepId,
+          repo: o.step?.repo ? o.step.repo : (o.goal?.primaryRepo ?? null),
+          who: o.who ?? null,
+          at: o.at,
+          text: o.text,
+          ...(o.goal ? { goalTitle: o.goal.title } : {}),
+          ...(o.step ? { stepTitle: o.step.title } : {}),
+          ...extra,
+        });
+      };
+
+      for (const g of goals) {
+        if (!open(g) || g.state !== "awaiting_approval") continue;
+        const plan = (await this.store.listPlans(g.id)).filter((p) => p.decision === "pending").at(-1);
+        if (!plan) continue;
+        add("plan", { goal: g, who: g.ownerId, at: plan.proposedAt ?? g.updatedAt, text: `Plan v${plan.version} for ${g.id} "${g.title}" awaits approval` }, { planVersion: plan.version });
+      }
+      for (const s of allSteps) {
+        const g = goalById.get(s.goal);
+        if (!open(g)) continue;
+        const debrief = isDebrief(s.policy);
+        if (s.state === "ready" && s.kind === "gate") add("gate", { goal: g, step: s, who: g.ownerId, at: s.updatedAt, text: `Gate ${s.policy?.gate ?? s.id} for ${g.id} "${g.title}" waits for a decision` });
+        if (s.state === "ready" && debrief && !(s.read && s.read.round === (s.rounds?.length ?? 0) + 1)) {
+          const who = debriefAssignee(s.policy, g.ownerId);
+          add("debrief", { goal: g, step: s, who, at: await readyAt(s), text: `Debrief ${s.id} "${s.title}" waits for ${who}` });
+        }
+        if (s.state === "parked") add("parked", { goal: g, step: s, who: g.ownerId, at: s.parkedAt ?? s.updatedAt, text: `${s.id} is parked: ${s.parkedReason ?? ""}` }, s.parkedReason !== undefined ? { reason: s.parkedReason } : {});
+        if (s.state === "failed") add("failed", { goal: g, step: s, who: g.ownerId, at: s.updatedAt, text: `${s.id} failed: ${s.summary ?? ""}` }, s.summary !== undefined ? { reason: s.summary } : {});
+        if (s.state === "paused") add("paused", { goal: g, step: s, who: s.holderUser, at: s.pausedAt ?? s.updatedAt, text: `${s.id} is paused (holder ${s.holderUser ?? "?"} went away)` }, s.holderUser ? { holder: s.holderUser } : {});
+        if (s.state === "claimed" && s.holderSid) {
+          const hs = await this.sessionOf(s.holderSid);
+          if (hs?.state === "stalled") add("stalled", { goal: g, step: s, who: s.holderUser, at: hs.lastStopAt ?? hs.lastEventAt, text: `${s.id} stalled in ${s.holderUser ?? "?"}'s session`, key3: hs.sid }, { sid: hs.sid });
+        }
+        if (s.state === "ready" && s.kind !== "gate" && !debrief && !s.holderUser && s.offer?.state !== "offered") {
+          add("ready-unclaimed", { goal: g, step: s, who: null, at: await readyAt(s), text: `${s.id} "${s.title}" is ready and unclaimed` }, { stepKind: s.kind, ...(s.policy?.mode ? { mode: s.policy.mode } : {}) });
+        }
+        if (s.state === "ready" && s.offer?.state === "offered") {
+          const m = machineById.get(s.offer.to.machine);
+          add("offer", { goal: g, step: s, who: m?.userId, at: s.offer.at, text: `@${s.offer.by} offers ${s.id} "${s.title}" to ${m ? machineName(m) : s.offer.to.machine}` }, { targetMachine: s.offer.to.machine });
+        }
+      }
+      for (const o of await this.overdueDebriefs(goals, now)) {
+        add(
+          "debrief-overdue",
+          { goal: o.goal, step: o.step, who: o.assignee, at: o.sla.dueAt, text: `Debrief ${o.step.id} "${o.step.title}" is overdue: waiting since ${new Date(o.sla.since).toISOString()}, SLA ${o.step.policy?.sla ?? ""}` },
+          { sla: { dueAt: o.sla.dueAt, breached: true, escalated: o.sla.escalated }, ...(o.sla.escalated ? { escalatedTo: o.owner } : {}) },
+        );
+      }
+      for (const qu of await this.store.openQuestions()) {
+        const s = qu.step ? stepById.get(qu.step) : undefined;
+        add(
+          "hub-question",
+          { goal: s ? goalById.get(s.goal) : undefined, step: s, who: qu.toUsers[0], at: qu.at, text: `${qu.fromUser} asks: ${qu.text}`, key3: String(qu.id) },
+          { question: qu.id, ...(qu.sid ? { sid: qu.sid } : {}), toUsers: qu.toUsers },
+        );
+      }
+      const stuck = await this.stuckRows({ needsYouMs: t.needsYouMs, turns: t.turns, trial: t.trial }, now);
+      for (const r of stuck.steps) {
+        const g = goalById.get(r.goal);
+        if (!open(g)) continue;
+        add("stuck-step", { goal: g, step: stepById.get(r.step), who: r.holder ?? g.ownerId, at: r.reachedAt, text: `${r.step} has ${r.turns} turns since its last commit` }, { turns: r.turns, ...(r.holder ? { holder: r.holder } : {}) });
+      }
+      for (const r of stuck.sessions) {
+        const g = goalById.get(r.goal);
+        if (!open(g)) continue;
+        add(
+          "stuck-session",
+          { goal: g, step: stepById.get(r.step), who: r.user, at: r.since, text: `${r.sid} has waited for a person for ${Math.round(r.forMs / 60_000)} min on ${r.step}`, key3: r.sid },
+          { sid: r.sid, machine: r.machine, forMs: r.forMs },
+        );
+      }
+      for (const hs of await this.store.listSessions({ live: true })) {
+        const x = hs.session;
+        if (x.state !== "needs_you") continue;
+        const s = x.step ? stepById.get(x.step) : undefined;
+        const g = s ? goalById.get(s.goal) : undefined;
+        if (s && !open(g)) continue;
+        add(
+          "needs-you-session",
+          { goal: g, step: s, who: hs.userId, at: x.stateSince ?? x.lastStopAt ?? x.lastEventAt, text: `${x.repo?.name ?? x.name ?? x.sid.slice(0, 8)}: ${needsLabel(x)}`, key3: x.sid },
+          { sid: x.sid, machine: hs.machineId, ...(x.needs ? { needs: x.needs } : {}) },
+        );
+      }
+      for (const p of await this.store.listPulses({})) {
+        if (p.deletedAt !== undefined || !p.enabled) continue;
+        const last = await this.lastSlot(p.id, t.trial === "include");
+        if (last?.state === "missed") {
+          add("slot-missed", { who: p.owner, at: last.at, text: `Pulse ${p.id} "${p.title}" missed its slot ${last.slot}${last.reason ? `: ${last.reason}` : ""}`, key1: p.id, key2: last.slot }, { pulse: p.id, slot: last.slot, ...(last.reason ? { reason: last.reason } : {}) });
+        }
+        const blocked = await this.blockedBy(p, now);
+        if (blocked) {
+          const g = goalById.get(blocked.goal);
+          add("pulse-blocked", { goal: g, step: stepById.get(blocked.step), who: p.owner, at: g?.createdAt ?? now, text: `Pulse ${p.id} "${p.title}" is blocked by ${blocked.step}`, key1: p.id }, { pulse: p.id });
+        }
+      }
+      items.sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      const users = (await this.store.listUsers())
+        .filter((u) => !(u.roles.includes("service") && !u.roles.includes("member")))
+        .map((u) => u.id)
+        .sort();
+      return { generatedAt: now, thresholds: { needsYouMs: t.needsYouMs, turns: t.turns }, truncated: items.length > limit, users, items: items.slice(0, limit) };
+    });
+  }
+
+  /** RL-22: `GET /v1/questions?state=open`: every unanswered question for a service or an admin, those addressed to a member. */
+  async openQuestionsFor(actor: Actor, q: { state?: string | undefined; limit?: string | undefined }): Promise<OpenQuestions> {
+    if (q.state !== "open") throw refuse(400, "bad-query", "state must be open");
+    const limit = limitQuery(q.limit);
+    const all = (actor.roles.includes("service") && !actor.roles.includes("member")) || actor.roles.includes("admin");
+    return this.store.tx(async () => {
+      const qs = (await this.store.openQuestions()).filter((x) => all || x.toUsers.includes(actor.userId)).sort((a, b) => a.at - b.at || a.id - b.id);
+      const questions: OpenQuestions["questions"] = [];
+      for (const x of qs.slice(0, limit)) {
+        const s = x.step ? await this.store.getStep(x.step) : undefined;
+        questions.push({
+          id: x.id,
+          ...(s ? { goal: s.goal, step: s.id, ...(s.repo ? { repo: s.repo } : {}) } : x.step ? { step: x.step } : {}),
+          ...(x.sid ? { sid: x.sid } : {}),
+          fromUser: x.fromUser,
+          toUsers: x.toUsers,
+          text: x.text,
+          at: x.at,
+        });
+      }
+      return { truncated: qs.length > limit, questions };
     });
   }
 
@@ -4829,17 +5105,7 @@ export class HubService {
           } else slots[s.state]++;
           if (s.goal !== undefined) slotGoals.add(s.goal);
         }
-        // lastSlot: the newest slot that passes trial.
-        let lastSlot: PulseHealth["lastSlot"];
-        let pos: { at: number; slot: string } | undefined;
-        for (let guard = 0; guard < 100 && !lastSlot; guard++) {
-          const batch = await this.store.listSlots({ pulse: p.id, limit: 20, ...(pos ? { before: pos } : {}) });
-          const hit = batch.find((s) => withTrial || s.trial !== true);
-          if (hit) lastSlot = { slot: hit.slot, at: hit.at, state: hit.state, ...(hit.reason !== undefined ? { reason: hit.reason } : {}) };
-          const last = batch.at(-1);
-          if (hit || batch.length < 20 || !last) break;
-          pos = { at: last.at, slot: last.slot };
-        }
+        const lastSlot = await this.lastSlot(p.id, withTrial);
         const blockedBy = await this.blockedBy(p, now);
         // Runs.
         const runs: PulseHealth["runs"] = { count: 0, durationMs: 0, turns: 0, failed: 0, overBudget: 0, denials: 0, allDismissed: 0 };
@@ -5012,6 +5278,20 @@ export class HubService {
   }
 
   /** RL-12: what `fireSlot` would find blocking at `now` (read only); undefined when nothing blocks. */
+  /** RL-12: a pulse's newest slot that passes trial (the `lastSlot` of `GET /v1/health`). */
+  private async lastSlot(pulse: string, withTrial: boolean): Promise<PulseHealth["lastSlot"]> {
+    let pos: { at: number; slot: string } | undefined;
+    for (let guard = 0; guard < 100; guard++) {
+      const batch = await this.store.listSlots({ pulse, limit: 20, ...(pos ? { before: pos } : {}) });
+      const hit = batch.find((s) => withTrial || s.trial !== true);
+      if (hit) return { slot: hit.slot, at: hit.at, state: hit.state, ...(hit.reason !== undefined ? { reason: hit.reason } : {}) };
+      const last = batch.at(-1);
+      if (batch.length < 20 || !last) return undefined;
+      pos = { at: last.at, slot: last.slot };
+    }
+    return undefined;
+  }
+
   private async blockedBy(p: Pulse, now: number): Promise<{ goal: string; step: string; ageMs: number } | undefined> {
     if (p.overlap === "allow") return undefined;
     for (const s of await this.store.listSlots({ pulse: p.id, state: "fired" })) {
@@ -5574,7 +5854,7 @@ export class HubService {
    * Drop a goal (inside `goalTx`): every step not done, skipped, dropped or failed is dropped (open
    * offers withdrawn); `goal.dropped` and `step.dropped` carry the reason.
    */
-  private async dropGoal(goalId: string, reason: "abandoned" | "missed" | "person" | "superseded", now: number, o: { by?: string | undefined; comment?: string | undefined } = {}): Promise<void> {
+  private async dropGoal(goalId: string, reason: "abandoned" | "missed" | "person" | "superseded", now: number, o: { by?: string | undefined; comment?: string | undefined; via?: string | undefined } = {}): Promise<void> {
     const goal = await this.store.getGoal(goalId);
     if (!goal || goal.state === "dropped") return;
     const dropped: Step[] = [];
@@ -5591,7 +5871,7 @@ export class HubService {
     if (dropped.length) await this.store.saveSteps(dropped);
     await this.store.saveGoal({ ...goal, state: "dropped", updatedAt: now });
     // RL-9: a person's drop names who dropped it (and why).
-    await this.emit({ type: "goal.dropped", user: o.by, goal: goal.id, payload: { reason, ...(o.by ? { by: o.by } : {}), ...(o.comment ? { comment: o.comment } : {}) } });
+    await this.emit({ type: "goal.dropped", user: o.by, goal: goal.id, payload: { reason, ...(o.by ? { by: o.by } : {}), ...(o.comment ? { comment: o.comment } : {}), ...viaOf(o) } });
     for (const s of dropped) await this.emit({ type: "step.dropped", user: o.by, goal: goal.id, step: s.id, payload: { reason } });
     await this.emitOffersEnded(o.by ? { userId: o.by } : undefined, ended);
   }
@@ -6268,12 +6548,12 @@ export class HubService {
   /** `POST /v1/goals/:id/drop`: a person ends a goal (its owner, an approver or an admin); no step may be held. */
   async dropGoalByPerson(actor: Actor, id: string, reason: string | undefined): Promise<Goal> {
     return await this.goalTx(async () => {
-      const goal = await this.goalOr404(id);
-      if (!canApprove(actor, goal.ownerId)) throw new HubError(403, `only the goal owner, approvers or admins can drop ${goal.id}`);
-      if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      const goal = await this.goalOr404(id, true);
+      if (!canApprove(actor, goal.ownerId)) throw refuse(403, "not-approver", `only the goal owner, approvers or admins can drop ${goal.id}`);
+      if (goal.state === "done" || goal.state === "dropped") throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
       const held = (await this.store.listSteps({ goal: goal.id })).filter((s) => s.state === "claimed" || s.state === "paused").map((s) => s.id);
-      if (held.length) throw new HubError(409, `${goal.id} has held steps: ${held.join(", ")}; release them first`);
-      await this.dropGoal(goal.id, "person", this.now(), { by: actor.userId, comment: reason });
+      if (held.length) throw refuse(409, "goal-held", `${goal.id} has held steps: ${held.join(", ")}; release them first`);
+      await this.dropGoal(goal.id, "person", this.now(), { by: actor.userId, comment: reason, via: actor.via });
       return (await this.store.getGoal(goal.id)) ?? goal;
     });
   }
