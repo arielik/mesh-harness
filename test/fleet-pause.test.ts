@@ -304,7 +304,7 @@ describe("AC-05 due slots while paused", { timeout: 60_000 }, () => {
       k.at(at(9, 30));
       await pauseOk("root");
       for (const h of [10, 11, 12]) await k.tickAt(at(h, 1), m1);
-      const slots = await k.slotsOf("p-1");
+      const slots = (await k.slotsOf("p-1")).sort((a, b) => a.at - b.at);
       expect(slots.map((s) => [s.slot, s.state, s.reason, s.catchUp])).toStrictEqual([10, 11, 12].map((h) => [iso(at(h)), "skipped", "fleet_paused", undefined]));
       expect(await pulseEv("pulse.skipped")).toStrictEqual([10, 11, 12].map((h) => ({ pulse: "p-1", slot: iso(at(h)), reason: "fleet_paused" })));
       expect(await k.goalsOfPulse("p-1")).toStrictEqual([]);
@@ -344,7 +344,7 @@ describe("AC-06 restart while paused", { timeout: 60_000 }, () => {
     await k.w.startHubAgain();
     expect((await probe("/healthz")).paused).toStrictEqual(r.paused);
     await k.tickAt(reopen, m1);
-    return (await k.slotsOf("p-1")).map((s) => ({ slot: s.slot, state: s.state, reason: s.reason, ...(s.catchUp ? { catchUp: true } : {}) }));
+    return (await k.slotsOf("p-1")).sort((a, b) => a.at - b.at).map((s) => ({ slot: s.slot, state: s.state, reason: s.reason, ...(s.catchUp ? { catchUp: true } : {}) }));
   }
 
   it("test_AC06a_in_window_skipped", async () => {

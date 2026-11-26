@@ -3082,7 +3082,8 @@
                               "expired",
                               "hub_down",
                               "max_goal_age",
-                              "error"
+                              "error",
+                              "fleet_paused"
                             ]
                           },
                           "by": {
@@ -3754,7 +3755,8 @@
                                   "expired",
                                   "hub_down",
                                   "max_goal_age",
-                                  "error"
+                                  "error",
+                                  "fleet_paused"
                                 ]
                               }
                             },

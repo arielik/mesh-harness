@@ -880,6 +880,9 @@ export class HubService {
       const run = await this.headlessRun(actor, step, target, req);
       const guard = await this.headlessGuard(step, target.machine, goal, run);
       if (!guard.ok) throw refuse(409, guard.code, guard.error);
+      // RL-24: no headless offer while the fleet is paused.
+      const paused = step.policy?.mode === "headless" || run !== undefined ? await this.store.getFleetPause() : undefined;
+      if (paused) throw HubService.fleetPaused(paused);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
       const by = { userId: actor.userId, sid: req.sid, machine: caller.machine, via: actor.via };
@@ -925,13 +928,22 @@ export class HubService {
       const target = await this.resolveTarget(actor, req.to);
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
-      // RL-1: headless steps the target cannot run are skipped (not offered, not counted).
+      // RL-1: headless steps the target cannot run are skipped (not offered, not counted). RL-24:
+      // while the fleet is paused a headless step it can run is left out (held when sticking).
+      const paused = await this.store.getFleetPause();
       const ready: { step: Step; snapshot?: ProfileSnapshot | undefined }[] = [];
+      const leftOut: string[] = [];
       for (const s of await this.offerableSteps(goal.id)) {
         const guard = await this.headlessGuard(s, target.machine, goal);
-        if (guard.ok) ready.push({ step: s, snapshot: guard.snapshot });
+        if (!guard.ok) continue;
+        if (paused && s.policy?.mode === "headless") leftOut.push(s.id);
+        else ready.push({ step: s, snapshot: guard.snapshot });
       }
-      if (ready.length === 0 && !req.stick) throw new HubError(409, `${goal.id} has no ready step to offer`);
+      if (ready.length === 0 && !req.stick) {
+        if (paused && leftOut.length) throw HubService.fleetPaused(paused);
+        throw new HubError(409, `${goal.id} has no ready step to offer`);
+      }
+      if (req.stick && leftOut.length) await this.holdForPause(leftOut);
       const by = { userId: actor.userId, sid: req.sid, machine: caller.machine };
       const offered: Step[] = [];
       for (const r of ready) offered.push(await this.offerStep(r.step, target, by, { note: req.note, stick: false, goal, snapshot: r.snapshot }));
@@ -2112,6 +2124,9 @@ export class HubService {
       this.refuseForeign(caller, sid);
       if (!caller.machine || caller.machine.id !== offer.to.machine) throw new HubError(403, `${step.id} is offered to ${await this.machineNameOf(offer.to.machine)}, not to this machine`);
       if (sid !== undefined) HubService.refuseHeadlessAccept(step);
+      // RL-24: after today's checks, so a wrong machine or a session keeps its refusal.
+      const paused = offer.mode === "headless" || step.policy?.mode === "headless" ? await this.store.getFleetPause() : undefined;
+      if (paused) throw HubService.fleetPaused(paused);
       const claimed = await this.claimInTx(actor, step, sid, caller.machine.id);
       return await this.markAccepted(actor, claimed, sid);
     });
@@ -3948,6 +3963,8 @@ export class HubService {
         slot: await this.goalTx(async () => {
           const p = await this.pulseOr404(id);
           HubService.ownerOrAdmin(actor, p);
+          const paused = await this.store.getFleetPause();
+          if (paused) throw HubService.fleetPaused(paused);
           return await this.fireSlot(p, slotId, now, now, { manual: true, by: actor.userId, via: actor.via, trial });
         }),
       };
@@ -6414,17 +6431,20 @@ export class HubService {
       await this.store.saveSlot(s);
       return s;
     }
+    // RL-24: while the fleet is paused no attempt is made, and a slot whose window ends is missed for it.
+    const paused = await this.store.getFleetPause();
     if (s.until !== undefined && now >= s.until) {
       const last = s.tried.at(-1);
-      const reason: SlotReason = !last ? "no_machine" : last.outcome === "capacity" ? "capacity" : last.outcome === "accepted" ? "expired" : "not_accepted";
+      const reason: SlotReason = paused ? "fleet_paused" : !last ? "no_machine" : last.outcome === "capacity" ? "capacity" : last.outcome === "accepted" ? "expired" : "not_accepted";
       if (rs?.offer?.state === "offered") await this.withdrawOffer({ userId: p.owner }, rs, "pulse: slot missed");
       await this.dropGoal(goal.id, "missed", now);
       s = { ...s, state: "missed", reason, decidedAt: now };
       await this.store.saveSlot(s);
       await this.emit({ type: "pulse.missed", goal: goal.id, payload: { pulse: p.id, slot: s.slot, reason, tried: s.tried.length } });
+      if (paused) await this.countForPause(paused, "missed");
       return s;
     }
-    if (o.attempt && rs?.state === "ready") s = await this.attempt(s, p, goal, rs, now);
+    if (o.attempt && !paused && rs?.state === "ready") s = await this.attempt(s, p, goal, rs, now);
     if (s !== slot) await this.store.saveSlot(s);
     return s;
   }
@@ -6779,6 +6799,13 @@ export class HubService {
           if (!owner || !owner.roles.some((r) => r === "member" || r === "approver" || r === "admin")) return;
           if (!p.enabled) return;
           if ((await this.runningGoal(p, s.slot)) !== undefined) return;
+          // RL-24: a queued slot released while the fleet is paused is skipped (no goal).
+          const paused = await this.store.getFleetPause();
+          if (paused) {
+            const { running: _r, ...rest } = s;
+            await this.skipForPause(paused, { ...rest, state: "skipped", reason: "fleet_paused", decidedAt: now }, "save");
+            return;
+          }
           await this.slotGoal(p, s, now, { manual: s.manual === true, ...(s.by !== undefined ? { by: s.by } : {}), queued: true, from: now });
         });
       } catch (e) {
@@ -6843,7 +6870,10 @@ export class HubService {
           await this.emit({ type: "pulse.missed", payload: { pulse: p.id, slot, reason: "error", tried: 0, error: message } });
         }
       } else {
-        await this.fireSlot(p, slot, last, now, inWindow ? {} : { catchUp: true });
+        // RL-24: while the fleet is paused the slot that would fire is skipped instead (no goal, no catch-up later).
+        const paused = await this.store.getFleetPause();
+        if (paused) await this.skipForPause(paused, { pulse: p.id, slot, at: last, state: "skipped", reason: "fleet_paused", ...(inWindow ? {} : { catchUp: true as const }), tried: [], decidedAt: now }, "add");
+        else await this.fireSlot(p, slot, last, now, inWindow ? {} : { catchUp: true });
       }
     }
     const { nextAt: _old, ...rest } = p;
@@ -7264,6 +7294,22 @@ export class HubService {
     for (const id of ids) if (!held.includes(id)) held.push(id);
     if (held.length !== row.held.length) await this.store.setFleetPause({ ...row, held }, this.now());
     return true;
+  }
+
+  /** RL-24 (inside `goalTx`): count a slot recorded skipped or missed for the pause. */
+  private async countForPause(row: FleetPauseRow, field: "skipped" | "missed"): Promise<void> {
+    await this.store.setFleetPause({ ...row, [field]: row[field] + 1 }, this.now());
+  }
+
+  /** RL-24 (inside `goalTx`): record a slot skipped for the pause (a new row, or a queued one saved), count it and emit `pulse.skipped`. */
+  private async skipForPause(row: FleetPauseRow, slot: PulseSlot, how: "add" | "save"): Promise<void> {
+    if (how === "add") {
+      if (!(await this.store.addSlot(slot))) return;
+    } else {
+      await this.store.saveSlot(slot);
+    }
+    await this.countForPause(row, "skipped");
+    await this.emit({ type: "pulse.skipped", payload: { pulse: slot.pulse, slot: slot.slot, reason: "fleet_paused" } });
   }
 
   /**
