@@ -76,6 +76,9 @@ export function offerText(l: OfferLine): string {
 export function offerLine(o: OfferView, now: number): string {
   return (
     `${o.step} "${o.title}" · ${o.repo || "-"} · from @${o.by} · to ${o.to} · ${o.auto ? "auto" : "manual"} · expires in ${age(o.expiresAt - now)}` +
+    // RL-26: a headless offer's profile, the service that made it, a team offer.
+    (o.mode === "headless" ? ` · headless${o.profile ? `, profile ${o.profile.name}` : ""}` : "") +
+    (o.via ? ` · via ${o.via}${o.team ? ", team offer" : ""}` : "") +
     (o.note ? ` · ${o.note}` : "")
   );
 }

@@ -752,6 +752,13 @@ export function statusCommand(c: CliEnv): Command {
       if (st.hub === "offline") c.io.out(`hub offline${st.offlineSince ? ` since ${new Date(st.offlineSince).toISOString().slice(11, 16)} UTC` : ""}: working locally; ${st.outbox} event(s) and ${st.queued ?? 0} call(s) are sent when it is back`);
       else if (st.hub === "auth-failed") c.io.out("the hub refused our login; run: mesh login");
       else if (st.outbox || st.queued) c.io.out(`${st.outbox} event(s) and ${st.queued ?? 0} call(s) waiting to sync`);
+      // RL-26: the owner's consent settings (mesh setup --remote-stop, --team-offers).
+      try {
+        const cfg = loadConfig(c.paths);
+        c.io.out(`remote stops: ${cfg.remoteStop ? "on" : "off"} · team offers: ${cfg.teamOffers ? "on" : "off"}`);
+      } catch {
+        // No readable daemon.json: nothing to say.
+      }
       return 0;
     },
   };
