@@ -332,3 +332,30 @@ describe("AC-16 manual accept of a listed headless team offer", { timeout: 60_00
     expect((await r.stepOf(id)).offer.state).toBe("offered");
   });
 });
+
+describe("CLI mesh stop, mesh session stop, mesh offers, mesh status", { timeout: 60_000 }, () => {
+  it("test_cli_stop_session_stop_offers_status", async () => {
+    const k = await kit({ remoteStop: true });
+    const id = await headless(k, { id: "c", mode: "headless" }, [{ waitFor: "never" }]);
+    await r.autoOffer(k.ann, id, k.self);
+    await r.pull(k.ann);
+    await r.started(id);
+    await r.w.flush();
+    const s = await r.cli(k.ann, ["stop", id, "wrong", "base"]);
+    expect([s.code, s.err]).toStrictEqual([0, []]);
+    expect(s.out.join("\n")).toBe(`${id} parked: stopped: wrong base; asked ${r.w.machineOf(k.ann)} to stop the run`);
+    expect(s.requests).toContain(`POST /v1/steps/${encodeURIComponent(id)}/stop-run`);
+    const again = await r.cli(k.ann, ["stop", id, "x"]);
+    expect(again.code).toBe(1);
+    expect(again.err.join("\n")).toContain("is not held by a headless run");
+    const sid = await hookSession(k, 601);
+    const ss = await r.cli(k.ann, ["session", "stop", sid, "--end", "too", "long"]);
+    expect([ss.code, ss.err]).toStrictEqual([0, []]);
+    expect(ss.requests).toContain(`POST /v1/sessions/${sid}/stop`);
+    const [ev] = await r.events("session.stop_requested");
+    expect(ev?.payload).toMatchObject({ mode: "end", reason: "too long" });
+    const st = await r.cli(k.ann, ["status"]);
+    expect(st.out.join("\n")).toContain("remote stops: on · team offers: off");
+    expect((await r.cli(k.ann, ["session", "stop", sid])).code).toBe(2);
+  });
+});
