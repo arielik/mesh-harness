@@ -438,12 +438,12 @@ function contract(d: Driver) {
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
     it("test_AC05_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(12);
+      expect(HUB_MIGRATIONS.length).toBe(13);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -579,9 +579,9 @@ function contract(d: Driver) {
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
     it("test_AC08_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
-      expect(HUB_MIGRATIONS.length).toBe(12);
-      expect(HUB_MIGRATIONS_PG.length).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
+      expect(HUB_MIGRATIONS.length).toBe(13);
+      expect(HUB_MIGRATIONS_PG.length).toBe(13);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -671,9 +671,9 @@ function contract(d: Driver) {
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
     it("test_AC06_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
-      expect(HUB_MIGRATIONS.length).toBe(12);
-      expect(HUB_MIGRATIONS_PG.length).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
+      expect(HUB_MIGRATIONS.length).toBe(13);
+      expect(HUB_MIGRATIONS_PG.length).toBe(13);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */
@@ -772,9 +772,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
-      expect(HUB_MIGRATIONS.length).toBe(12);
-      expect(HUB_MIGRATIONS_PG.length).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
+      expect(HUB_MIGRATIONS.length).toBe(13);
+      expect(HUB_MIGRATIONS_PG.length).toBe(13);
     });
 
     it("test_AC08_v7_migrates", async () => {
@@ -808,7 +808,7 @@ function contract(d: Driver) {
       expect(await X(s).listArtifacts({})).toStrictEqual([]);
       expect(await X(s).listProfiles()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(12);
+      expect(Number((v as { version: number }).version)).toBe(13);
     });
 
     it("test_AC08_artifact_roundtrip", async () => {
@@ -957,9 +957,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
-      expect(HUB_MIGRATIONS.length).toBe(12);
-      expect(HUB_MIGRATIONS_PG.length).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
+      expect(HUB_MIGRATIONS.length).toBe(13);
+      expect(HUB_MIGRATIONS_PG.length).toBe(13);
     });
 
     it("test_AC08_v8_migrates", async () => {
@@ -991,7 +991,7 @@ function contract(d: Driver) {
       expect(await X(s).listItems("L")).toStrictEqual([]);
       expect(await X(s).itemHistory("L")).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(12);
+      expect(Number((v as { version: number }).version)).toBe(13);
     });
 
     it("test_AC08_addReview", async () => {
@@ -1110,9 +1110,9 @@ function contract(d: Driver) {
     const slotIds = (xs: { slot: string }[]) => xs.map((x) => x.slot);
 
     it("test_AC05_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
-      expect(HUB_MIGRATIONS.length).toBe(12);
-      expect(HUB_MIGRATIONS_PG.length).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
+      expect(HUB_MIGRATIONS.length).toBe(13);
+      expect(HUB_MIGRATIONS_PG.length).toBe(13);
     });
 
     it("test_AC05_v9_upgrade", async () => {
@@ -1165,7 +1165,7 @@ function contract(d: Driver) {
       expect(await X(s).listPulses()).toStrictEqual([]);
       expect((await X(s).createPulse(pulseRow())).id).toBe("p-1");
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(12);
+      expect(Number((v as { version: number }).version)).toBe(13);
     });
 
     it("test_AC05_ids", async () => {
@@ -1322,7 +1322,7 @@ function contract(d: Driver) {
     });
 
     it("test_AC25_schema_version_unchanged", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
     });
 
     it("test_AC25_listSteps_updatedSince", async () => {
@@ -1372,9 +1372,9 @@ function contract(d: Driver) {
       xs.map(({ at: _a, ...x }) => x).sort((a, b) => `${String(a.machine)}${String(a.repo)}${String(a.name)}`.localeCompare(`${String(b.machine)}${String(b.repo)}${String(b.name)}`));
 
     it("test_AC03_schema_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
-      expect(HUB_MIGRATIONS.length).toBe(12);
-      expect(HUB_MIGRATIONS_PG.length).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
+      expect(HUB_MIGRATIONS.length).toBe(13);
+      expect(HUB_MIGRATIONS_PG.length).toBe(13);
     });
 
     it("test_AC03_v10_migrates", async () => {
@@ -1419,7 +1419,7 @@ function contract(d: Driver) {
       expect(await X(s).listRepoAgents()).toStrictEqual([]);
       expect(await X(s).listCatalogSources()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(12);
+      expect(Number((v as { version: number }).version)).toBe(13);
     });
 
     it("test_AC03_replace_machine_agents", async () => {
@@ -1536,7 +1536,7 @@ function contract(d: Driver) {
 
     it("test_AC12_step_time_upsert", async () => {
       const s = await store();
-      expect(HubStore.SCHEMA_VERSION).toBe(12);
+      expect(HubStore.SCHEMA_VERSION).toBe(13);
       expect(await s.putStepTime(row(1000 * D + 500, 500))).toBe(true);
       // Newer wins, equal replaces, older is ignored, another user never overwrites.
       expect(await s.putStepTime(row(1000 * D + 900, 900))).toBe(true);

@@ -8,6 +8,7 @@ export {
   HUB_MIGRATIONS,
   HUB_MIGRATIONS_PG,
   HubStore,
+  type AlertEpisodeRow,
   type EventRow,
   type HubSession,
   type StepTimeRow,

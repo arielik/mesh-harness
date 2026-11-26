@@ -93,6 +93,16 @@ async function body<T>(c: Context<Env>, schema: ZodType<T>): Promise<T> {
   return schema.parse(raw);
 }
 
+/** RL-25: a JSON body, unparsed; invalid JSON is an `alert-body` refusal. */
+async function rawBody(c: Context<Env>): Promise<unknown> {
+  try {
+    const text = await c.req.text();
+    return text ? JSON.parse(text) : {};
+  } catch {
+    throw new HubError(400, "invalid alert webhook body", ["invalid JSON"], "alert-body");
+  }
+}
+
 const param = (c: Context<Env>, name: string) => decodeURIComponent(c.req.param(name) ?? "");
 /** `?topic=a&topic=b` or `?topic=a,b`: goals must carry every one. */
 const topicsQuery = (c: Context<Env>): string[] => (c.req.queries("topic") ?? []).flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
@@ -529,6 +539,8 @@ export function buildRoutes(svc: HubService): Route[] {
 
     // ---------- analysis feed, admin ----------
     r("GET", "/v1/events", "events", async (c) => c.json({ events: await svc.events(Number(c.req.query("after") ?? 0) || 0, Number(c.req.query("limit") ?? 500) || 500) })),
+    // RL-25: an Alertmanager webhook; the service checks the caller before it reads the body.
+    r("POST", "/v1/alerts/webhook", "member", async (c, a) => c.json(await svc.alertWebhook(a, () => rawBody(c))), "alerts:notify"),
     r("GET", "/v1/admin/users", "admin", async (c) => c.json({ users: await svc.store.listUsers() })),
     r("POST", "/v1/admin/revoke", "admin", async (c) => {
       const b = (await c.req.json().catch(() => ({}))) as { userId?: string; machineId?: string };

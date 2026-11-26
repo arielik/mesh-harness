@@ -108,6 +108,10 @@ export const HUB_MIGRATIONS: readonly string[] = [
    CREATE INDEX IF NOT EXISTS step_time_goal ON step_time (goal);
    CREATE INDEX IF NOT EXISTS step_time_as_of ON step_time (as_of);
    CREATE INDEX IF NOT EXISTS event_at ON event (at);`,
+  // RL-25: one row per alert fingerprint and person (dedup and resolve of an Alertmanager webhook).
+  `CREATE TABLE IF NOT EXISTS alert_episode (fingerprint TEXT NOT NULL, person TEXT NOT NULL, state TEXT NOT NULL,
+     starts_at INTEGER NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (fingerprint, person));
+   CREATE INDEX IF NOT EXISTS alert_episode_prune ON alert_episode (state, updated_at);`,
 ];
 
 /**
@@ -190,7 +194,27 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
    CREATE INDEX IF NOT EXISTS step_time_goal ON step_time (lower(goal));
    CREATE INDEX IF NOT EXISTS step_time_as_of ON step_time (as_of);
    CREATE INDEX IF NOT EXISTS event_at ON event (at);`,
+  `CREATE TABLE IF NOT EXISTS alert_episode (fingerprint TEXT NOT NULL, person TEXT NOT NULL, state TEXT NOT NULL,
+     starts_at BIGINT NOT NULL, value TEXT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (fingerprint, person));
+   CREATE INDEX IF NOT EXISTS alert_episode_prune ON alert_episode (state, updated_at);`,
 ];
+
+/** RL-25: one alert episode of one fingerprint for one person, as stored. */
+export interface AlertEpisodeRow {
+  fingerprint: string;
+  person: string;
+  state: "firing" | "resolved";
+  /** The episode's `startsAt` (ms). */
+  startsAt: number;
+  updatedAt: number;
+  alertname?: string | undefined;
+  severity?: string | undefined;
+  summary: string;
+  notifiedAt: number;
+  resolvedAt?: number | undefined;
+  /** Every firing and reminder notice of the episode. */
+  notices: { machine: string; message: number }[];
+}
 
 /** RL-14: one session's state time on one step, as stored. */
 export interface StepTimeRow {
@@ -1513,6 +1537,43 @@ export class HubStore {
   async ackMessage(id: number, machineId: string, state: "delivered" | "failed", method: string | undefined, now: number): Promise<boolean> {
     const r = await this.db.run("UPDATE message SET state = ?, method = ?, acked_at = ? WHERE id = ? AND to_machine = ? AND state = 'pending'", state, method ?? null, now, id, machineId);
     return r.changes > 0;
+  }
+
+  /** RL-25: take a still pending message out of its machine's inbox (`failed`, method `cancelled`). */
+  async cancelMessage(id: number, now: number): Promise<boolean> {
+    const r = await this.db.run("UPDATE message SET state = 'failed', method = 'cancelled', acked_at = ? WHERE id = ? AND state = 'pending'", now, id);
+    return r.changes > 0;
+  }
+
+  // ---------- alert episodes (RL-25) ----------
+
+  async getAlertEpisode(fingerprint: string, person: string): Promise<AlertEpisodeRow | undefined> {
+    const r = await this.db.get<{ state: string; starts_at: number | string; value: string; updated_at: number | string }>(
+      "SELECT state, starts_at, value, updated_at FROM alert_episode WHERE fingerprint = ? AND person = ?",
+      fingerprint,
+      person,
+    );
+    if (!r) return undefined;
+    const v = JSON.parse(r.value) as Omit<AlertEpisodeRow, "fingerprint" | "person" | "state" | "startsAt" | "updatedAt">;
+    return { fingerprint, person, state: r.state as AlertEpisodeRow["state"], startsAt: Number(r.starts_at), updatedAt: Number(r.updated_at), ...v };
+  }
+
+  async saveAlertEpisode(e: AlertEpisodeRow): Promise<void> {
+    const { fingerprint, person, state, startsAt, updatedAt, ...value } = e;
+    await this.db.run(
+      "INSERT INTO alert_episode (fingerprint, person, state, starts_at, value, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (fingerprint, person) DO UPDATE SET state = excluded.state, starts_at = excluded.starts_at, value = excluded.value, updated_at = excluded.updated_at",
+      fingerprint,
+      person,
+      state,
+      startsAt,
+      json(value),
+      updatedAt,
+    );
+  }
+
+  /** Delete resolved episodes last changed before `before`; returns how many. */
+  async pruneAlertEpisodes(before: number): Promise<number> {
+    return (await this.db.run("DELETE FROM alert_episode WHERE state = 'resolved' AND updated_at < ?", before)).changes;
   }
 
   // ---------- events and idempotency ----------

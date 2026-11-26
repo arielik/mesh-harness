@@ -256,8 +256,8 @@ describe("AC-04 a new episode", () => {
     // The machine sees it in its inbox, machine-wide.
     const inbox = await W().call(c.annBox.token, "GET", "/v1/inbox");
     expect(inbox.json.messages.map((x: Json) => [x.id, x.kind, x.toSid])).toStrictEqual([[m.id, "alert", ""]]);
-    expect((await W().call(c.annOld.token, "GET", "/v1/inbox")).json.messages).toStrictEqual([]);
-    expect((await W().call(c.bobBox.token, "GET", "/v1/inbox")).json.messages).toStrictEqual([]);
+    expect(await alertMsgs(c.annOld.machine)).toStrictEqual([]);
+    expect(await alertMsgs(c.bobBox.machine)).toStrictEqual([]);
     const ev = await alertEvents();
     expect(ev).toHaveLength(1);
     expect(ev[0]).toMatchObject({ type: "alert.notified", user: "am" });

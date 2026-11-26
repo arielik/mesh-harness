@@ -61,7 +61,8 @@ describe("RL-25 AC-15 route, scope, feature, docs", () => {
     try {
       const run = promisify(execFile);
       const main = join(ROOT, "src", "main.ts");
-      const env = { ...process.env, MESH_HUB_CONFIG: "", MESH_HUB_DB: "" };
+      const env: NodeJS.ProcessEnv = { ...process.env, MESH_HUB_CONFIG: "" };
+      delete env.MESH_HUB_DB;
       const config = join(dir, "mesh-hub.yaml");
       await run(process.execPath, [main, "hub", "init", "--users", "ann", "--config", config], { cwd: dir, env });
       const { stdout } = await run(process.execPath, [main, "hub", "token", "--config", config, "--service", "x", "--scope", "alerts:notify"], { cwd: dir, env });
