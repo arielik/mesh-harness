@@ -3,13 +3,13 @@ import pkg from "../package.json" with { type: "json" };
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { resolve } from "node:path";
-import { listAgents, processRunner, wakeBackground } from "./claude/index.ts";
+import { listAgents, processRunner, stopBackground, wakeBackground } from "./claude/index.ts";
 import { dispatch, exitQuietlyOnClosedPipe, webRootFor, hubInit, installService, loadConfig, meshCommands, parseArgs, paths, stdio, type CliEnv, type Command } from "./cli/index.ts";
 import { buildHubConfig, HubService, loadHubConfig, startHub, type RunningHub } from "./hub/index.ts";
 import { runShim } from "./mcp/index.ts";
 import { copyHubToPostgres, describeDbTarget, HubStore, isPostgresUrl } from "./store/index.ts";
 import { Daemon, defaultDeps } from "./daemon/index.ts";
-import { desktopNotify, paneText, pasteToPane, spawnDetached, terminalNotify } from "./mux/index.ts";
+import { desktopNotify, paneText, pasteToPane, sendKeyToPane, spawnDetached, terminalNotify } from "./mux/index.ts";
 import { DaemonStore } from "./store/index.ts";
 import { notifyChannels, SERVICE_SCOPES, trustSystemCertificates, writeFileAtomic, type Credentials, type ServiceScope } from "./protocol/index.ts";
 import * as tls from "node:tls";
@@ -77,6 +77,9 @@ const up: Command = {
         paste: (pane, text, server) => pasteToPane(pane, text, server),
         paneText: (pane, server) => paneText(pane, server),
         wakeBackground: (t, text) => wakeBackground(t, text),
+        // RL-26: a remote stop (only when daemon.json allows it): the interrupt key, `claude stop`.
+        sendKey: (pane, key, server) => sendKeyToPane(pane, key, server),
+        stopBackground: (bgId) => stopBackground(bgId),
         notify: async (title, body, target) => {
           const ch = notifyChannels(config);
           const sent = await Promise.all([

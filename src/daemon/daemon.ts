@@ -143,6 +143,12 @@ export interface DaemonDeps {
   meshCommand?: string[];
   /** RL-1: the checkout of a repo on this machine (default: the first under workspaceRoots). */
   findCheckout?(repo: string): string | undefined;
+  /** RL-26: send one key to a tmux pane (a session's interrupt key). Without it nothing is sent. */
+  sendKey?(pane: string, key: string, server: { socketPath?: string | undefined }): Promise<boolean>;
+  /** RL-26: signal a session's agent process (default: `process.kill`); false when it failed. */
+  signal?(pid: number, signal: "SIGTERM"): boolean;
+  /** RL-26: `claude stop <bgId>`: stop a background session's process. */
+  stopBackground?(bgId: string): Promise<{ ok: boolean; error?: string }>;
 }
 
 /** `kill -0`: EPERM means the process exists but belongs to someone else. */
@@ -188,6 +194,14 @@ export const defaultDeps = (overrides: Partial<DaemonDeps> & Pick<DaemonDeps, "l
   scanRuns: (since) => scanWorkflowRuns(claudeHome(), since),
   alive: pidAlive,
   scanRepos,
+  signal: (pid, signal) => {
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  },
   ...overrides,
 });
 
@@ -228,6 +242,9 @@ const SHOW_ENDED_MS = 10 * 60_000;
 const MAX_BODY = 4 << 20;
 /** MM-4: how long a launch for an offer counts toward maxSessions before its session shows up. */
 const LAUNCH_PENDING_MS = 120_000;
+/** RL-26: how often kept headless offers are checked against the hub's open offers. */
+const KEPT_SWEEP_MS = 3_600_000;
+const KEPT_PREFIX = "headless-offer:";
 /** RL-5: the back-off of catalog pushes after a 5xx or no answer: 30 s, doubling, at most 15 min. */
 const CATALOG_RETRY_MIN_MS = 30_000;
 const CATALOG_RETRY_MAX_MS = 15 * 60_000;
@@ -345,6 +362,7 @@ export class Daemon {
         share: () => this.config.shareSessions,
         accept: () => this.config.accept,
         headless: () => this.runs?.canRun() ?? false,
+        consent: () => ({ remoteStop: this.config.remoteStop === true, teamOffers: this.config.teamOffers === true, runStop: this.runs !== undefined }),
         machineRepos: () => this.machineRepos(),
         machineAgents: () => this.machineAgents(),
         afterSync: () => this.catalogPass(),
@@ -388,6 +406,7 @@ export class Daemon {
             endRunSessions: (sids, reason) => this.endRunSessions(sids, reason),
             now: () => this.deps.now(),
             log: (l) => this.deps.log(l),
+            notify: (body) => this.ownerNotice(body),
           })
         : undefined;
   }
@@ -534,6 +553,9 @@ export class Daemon {
     every(this.intervals.deliveryMs, () => this.deliverPending());
     every(this.intervals.deliveryMs * 3, () => this.link?.pullInbox());
     every(this.intervals.tickMs * 40, () => this.backfill());
+    // RL-26: kept headless offers whose offer ended are removed (at start, then hourly).
+    every(this.intervals.reconcileMs > 0 ? KEPT_SWEEP_MS : 0, () => this.sweepKeptOffers());
+    void this.sweepKeptOffers().catch(() => undefined);
     if (this.link) {
       this.link.credentials();
       if (this.intervals.reconcileMs > 0) this.link.startStream();
@@ -778,6 +800,11 @@ export class Daemon {
         void this.handleAlert(m).catch((e) => this.deps.log(`alert ${m.id}: ${String(e)}`));
         return "handling";
       }
+      // RL-26: a stop of a headless run or of a session, handled once per message as offers are.
+      if (m.kind === "run_stop" || m.kind === "stop") {
+        void this.handleStop(m).catch((e) => this.deps.log(`${m.kind} ${m.id}: ${String(e)}`));
+        return "handling";
+      }
       if (m.kind !== "offer") return "unknown";
       void this.handleOffer(m).catch((e) => this.deps.log(`offer ${m.id}: ${String(e)}`));
       return "handling";
@@ -795,6 +822,89 @@ export class Daemon {
     this.store.queueMessage(s.sid, m.text, this.deps.now(), { hub, id: m.id });
     void this.deliverPending(s.sid).catch(() => undefined);
     return "queued";
+  }
+
+  /** RL-26: tell the machine's owner through the configured channels. */
+  private async ownerNotice(body: string): Promise<void> {
+    if (notifyChannels(this.config).any) await this.deps.notify("mesh", body);
+  }
+
+  /** RL-26: a `run_stop` or `stop` message (acked once; a retried pull never stops twice). */
+  private async handleStop(m: InboxMessage): Promise<void> {
+    if (this.offersHandled.has(m.id)) return await this.ackHandled(m.id);
+    if (this.offersInFlight.has(m.id)) return;
+    this.offersInFlight.add(m.id);
+    try {
+      const d = m.data ?? {};
+      const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+      const by = str(d.by) ?? m.fromUser;
+      const via = str(d.via);
+      const reason = str(d.reason) ?? "";
+      const tail = via ? ` (via ${via})` : "";
+      if (m.kind === "run_stop") {
+        const step = str(d.step);
+        const outcome = step && this.runs ? this.runs.stop(step, { runId: str(d.runId), reason, by, via }) : "no-run";
+        // A killed run's notice comes when it has finished (it names kept commits).
+        if (outcome !== "killed") await this.ownerNotice(`@${by} stopped the headless run of ${step ?? "?"}: ${reason}${tail}`);
+        return await this.ackOffer(m, "delivered", outcome);
+      }
+      const r = await this.stopSession(str(d.sid) ?? "", d.mode === "end" ? "end" : "interrupt", { by, reason });
+      if (r.acted) await this.ownerNotice(`@${by} ${d.mode === "end" ? "ended" : "interrupted"} ${r.name}: ${reason}${tail}`);
+      return await this.ackOffer(m, r.state, r.method);
+    } finally {
+      this.offersInFlight.delete(m.id);
+    }
+  }
+
+  /**
+   * RL-26: interrupt (the agent's interrupt key in its tmux pane) or end (interrupt, then SIGTERM
+   * to the agent process; a background session: `claude stop <bgId>`) a local session, only when
+   * this machine's own config allows remote stops.
+   */
+  private async stopSession(sid: string, mode: "interrupt" | "end", o: { by: string; reason: string }): Promise<{ state: "delivered" | "failed"; method: string; acted: boolean; name: string }> {
+    const fail = (method: string, name = sid) => ({ state: "failed" as const, method, acted: false, name });
+    if (this.config.remoteStop !== true) {
+      this.deps.log(`stop of ${sid} refused: remoteStop is off on this machine`);
+      return fail("stop-refused");
+    }
+    const s = this.sessions.find((x) => x.sid === sid && x.state !== "ended");
+    if (!s) return fail("no-session");
+    const name = sessionName(s);
+    const server = { socketPath: s.tmuxSocket };
+    const interrupt = async () => (s.pane && this.deps.sendKey ? await this.deps.sendKey(s.pane, "Escape", server) : false);
+    if (mode === "interrupt") {
+      if (!s.pane || !(await interrupt())) return fail("no-pane", name);
+      return { state: "delivered", method: "interrupted", acted: true, name };
+    }
+    if (s.pane) {
+      await interrupt();
+      if (s.pid === undefined || !this.deps.signal?.(s.pid, "SIGTERM")) return fail("no-pane", name);
+    } else if (s.bgId) {
+      const r = (await this.deps.stopBackground?.(s.bgId)) ?? { ok: false };
+      if (!r.ok) return fail("no-pane", name);
+    } else return fail("no-pane", name);
+    this.endRunSessions(new Set([s.sid]), `stopped by @${o.by}: ${o.reason}`);
+    return { state: "delivered", method: "ended", acted: true, name };
+  }
+
+  /** RL-26: the key of a listed headless offer kept in the daemon store until the offer ends. */
+  private static keptKey(step: string): string {
+    return `${KEPT_PREFIX}${step}`;
+  }
+
+  /** RL-26: remove kept headless offers whose step no longer has an open offer to this machine. */
+  private async sweepKeptOffers(): Promise<void> {
+    const keys = this.store.kvKeys(KEPT_PREFIX);
+    if (keys.length === 0 || !this.link?.credentials() || this.link.offline) return;
+    let offers: OfferView[];
+    try {
+      offers = (await this.link.rpc<{ offers: OfferView[] }>("GET", "/v1/offers")).offers;
+    } catch {
+      return;
+    }
+    const machine = this.link.credentials()?.machine;
+    const open = new Set(offers.filter((o) => o.machine === machine).map((o) => o.step));
+    for (const k of keys) if (!open.has(k.slice(KEPT_PREFIX.length))) this.store.deleteKv(k);
   }
 
   /** Ack a machine-wide offer message and remember how, so a later pull does not handle it again. */
@@ -901,7 +1011,11 @@ export class Daemon {
       const key = `offer-${m.id}`;
       const refused = (e: unknown) => e instanceof HubRpcError && e.status >= 400 && e.status < 500 && e.status !== 401;
       const listed = async () => {
-        if (notifyChannels(this.config).any) await this.deps.notify("mesh", `@${by} offers ${step} "${title}": mesh offers`);
+        // RL-26: a listed headless offer is kept until the offer ends, so `mesh accept` can run it.
+        if (d.mode === "headless") this.store.setKv(Daemon.keptKey(step), JSON.stringify({ message: m, keptAt: this.deps.now() }));
+        const prof = d.mode === "headless" && typeof (d.profile as { name?: unknown } | undefined)?.name === "string" ? `, headless, profile ${(d.profile as { name: string }).name}` : d.mode === "headless" ? ", headless" : "";
+        const via = typeof d.via === "string" ? `, via ${d.via}` : "";
+        await this.ownerNotice(`@${by} offers ${step} "${title}" (repo ${repo}${prof}${via}): mesh accept ${step} or mesh decline ${step}`);
         await this.ackOffer(m, "delivered", "listed");
       };
       if (this.config.assignments === "off") {
@@ -1059,7 +1173,9 @@ export class Daemon {
     try {
       const view = await link.rpc<StepView>("GET", `/v1/steps/${encodeURIComponent(b.step)}`);
       const st = view.context.step;
-      // RL-1: a headless step is never bound to a session (Open question: manual accept).
+      // RL-26: a headless offer to this machine is accepted by starting its run (never into a session).
+      const mine = st.offer?.state === "offered" && st.offer.to.machine === link.credentials()?.machine;
+      if (mine && (st.offer?.mode === "headless" || st.policy?.mode === "headless")) return await this.acceptHeadless(st, b.target);
       if (st.policy?.mode === "headless") throw new HttpError(409, `${st.id} is a headless step; this machine runs it only from an auto-accepted offer`);
       let s: Session | undefined;
       if (typeof b.target === "string" && b.target) {
@@ -1083,6 +1199,23 @@ export class Daemon {
     } catch (e) {
       throw e instanceof HubRpcError ? new HttpError(e.status, e.message) : e;
     }
+  }
+
+  /** RL-26: `mesh accept <step>` of a listed headless offer: start its run from the kept message. */
+  private async acceptHeadless(st: Step, target: unknown): Promise<{ step: string; sid: string; message: string }> {
+    if (typeof target === "string" && target) throw new HttpError(409, `${st.id} runs headless; mesh accept ${st.id} without --session`);
+    if (!this.runs) throw new HttpError(409, `this machine cannot run headless steps; mesh decline ${st.id}`);
+    const key = Daemon.keptKey(st.id);
+    const raw = this.store.getKv(key);
+    const kept = raw ? (JSON.parse(raw) as { message: InboxMessage }).message : undefined;
+    if (!kept) throw new HttpError(409, `the offer's run data is not on this machine; ask @${st.offer?.by ?? "the offerer"} to offer it again`);
+    const r = await this.runs.handleOffer(kept, st.title);
+    if (r === "retry") throw new HttpError(503, "the hub cannot be reached; try again");
+    this.store.deleteKv(key);
+    if (r.state === "failed" || r.method === "declined") throw new HttpError(409, `${st.id}: ${r.method}`);
+    const run = this.runs.list().find((x) => x.step === st.id && x.state !== "finished" && x.state !== "released");
+    const runId = run?.runId ?? "?";
+    return { step: st.id, sid: "", message: r.method === "queued" ? `accepted ${st.id}; queued (run ${runId})` : `accepted ${st.id}; running headless (run ${runId})` };
   }
 
   /** `GET /local/offers`: open offers to this machine. */

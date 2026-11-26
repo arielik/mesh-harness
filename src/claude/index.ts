@@ -1,6 +1,6 @@
 // Claude Code adapter: hook installer, agents --json, background wake, version (plan §5.1, §6).
 export { listAgents } from "./agents.ts";
-export { attachCommand, wakeBackground, type WakeResult } from "./background.ts";
+export { attachCommand, stopBackground, wakeBackground, type WakeResult } from "./background.ts";
 export { run, type RunOptions, type RunResult, type Runner } from "./exec.ts";
 export {
   hookCommand,

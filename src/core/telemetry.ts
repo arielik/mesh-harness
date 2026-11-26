@@ -91,7 +91,7 @@ export function deniedOf(denials: readonly unknown[]): RunTelemetry["denied"] {
 }
 
 /** Telemetry from a run's stream: complete with a `result` event, else partial (`turnsApprox`). */
-export function telemetryFromStream(stream: string, run: { durationMs: number; exitCode: number | undefined; killedForBudget: boolean; stoppedAfterDone?: boolean | undefined }): StreamTelemetry {
+export function telemetryFromStream(stream: string, run: { durationMs: number; exitCode: number | undefined; killedForBudget: boolean; stoppedAfterDone?: boolean | undefined; stoppedByOperator?: boolean | undefined }): StreamTelemetry {
   const evs = events(stream);
   const init = evs.find((e) => e.type === "system" && e.subtype === "init");
   const assistants = evs.filter((e) => e.type === "assistant" && isObj(e.message));
@@ -149,7 +149,8 @@ export function telemetryFromStream(stream: string, run: { durationMs: number; e
   }
   // RL-1: a run ended by the daemon after its accepted mesh_done did not crash: its signal exit code
   // reads as an exit without a result.
-  const exit: RunExit = run.killedForBudget ? "killed_budget" : run.exitCode === 0 || run.stoppedAfterDone ? "no_result" : "crashed";
+  // RL-26: a run killed on a person's request.
+  const exit: RunExit = run.stoppedByOperator ? "killed_operator" : run.killedForBudget ? "killed_budget" : run.exitCode === 0 || run.stoppedAfterDone ? "no_result" : "crashed";
   return {
     ...head,
     turns: byId.size,

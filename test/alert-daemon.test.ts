@@ -42,7 +42,7 @@ async function rig(notify: DaemonConfig["notify"], result: (() => unknown) | unk
   const credentialsPath = join(dir, "credentials.json");
   writeFileSync(credentialsPath, JSON.stringify({ hub: "http://hub.test", token: "t", user: { id: "ann", name: "ann", roles: ["member"] }, machine: "m-ann" }));
   const store = await DaemonStore.open(":memory:");
-  const config = { port: 0, key: "k".repeat(32), notify, workspaceRoots: [], autopilot: "nudge", shareSessions: "steps", accept: ["self"], assignments: "deliver" } as DaemonConfig;
+  const config = { port: 0, key: "k".repeat(32), notify, workspaceRoots: [], autopilot: "nudge", shareSessions: "steps", accept: ["self"], assignments: "deliver", remoteStop: false, teamOffers: false } as DaemonConfig;
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const r = { inbox: [], acks: [], calls: [], agents: [], failAcks: 0, now: NOW } as unknown as Rig;
   const daemon = new Daemon({

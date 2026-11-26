@@ -60,6 +60,8 @@ import {
   SyncRequest,
   FleetPauseRequest,
   FleetResumeRequest,
+  StopRun,
+  StopSession,
   HUB_FEATURES,
   PulseFire,
   type LoginResult,
@@ -237,6 +239,20 @@ export function buildRoutes(svc: HubService): Route[] {
     // RL-24: the fleet pause; act-for keeps the person's admin role on these two routes only.
     forPerson(r("POST", "/v1/fleet/pause", "member", async (c, a) => c.json(await svc.pauseFleet(a, await body(c, FleetPauseRequest))), "fleet:pause"), { required: true, roles: ["admin"] }),
     forPerson(r("POST", "/v1/fleet/resume", "member", async (c, a) => c.json(await svc.resumeFleet(a, await body(c, FleetResumeRequest))), "fleet:pause"), { required: true, roles: ["admin"] }),
+    // RL-26: teammates' machines that accept team offers (offers=team is required).
+    forPerson(
+      r(
+        "GET",
+        "/v1/machines",
+        "member",
+        async (c, a) => {
+          if (c.req.query("offers") !== "team") throw new HubError(400, "offers=team is required", undefined, "bad-query");
+          return c.json(await svc.teamMachines(a));
+        },
+        "live:read",
+      ),
+      { required: true },
+    ),
     r("POST", "/v1/machines/:id/name", "member", async (c, a) => c.json(await svc.renameMachine(a, param(c, "id"), (await body(c, MachineName)).nickname))),
     r("POST", "/v1/machines/:id/labels", "member", async (c, a) => c.json(await svc.labelMachine(a, param(c, "id"), await body(c, MachineLabels)))),
     // RL-22: team=1 is every open item of the team (a service with goals:read, or an admin).
@@ -539,6 +555,8 @@ export function buildRoutes(svc: HubService): Route[] {
     // RL-22: a person parks a claimed or paused step by hand.
     forPerson(r("POST", "/v1/steps/:id/park", "member", async (c, a) => c.json({ step: await svc.parkStep(a, param(c, "id"), (await body(c, StepPark)).reason) }), "goals:decide"), { required: true }),
     r("POST", "/v1/steps/:id/take", "member", async (c, a) => c.json(await svc.takeStep(a, param(c, "id"), (await body(c, ClaimRequest)).sid))),
+    // RL-26: park a step and stop the headless run that holds it.
+    forPerson(r("POST", "/v1/steps/:id/stop-run", "member", async (c, a) => c.json(await svc.stopRun(a, param(c, "id"), (await body(c, StopRun)).reason)), "goals:decide")),
     // RL-21: a service with steps:assign assigns and ranks for a person (header required on both).
     forPerson(r("POST", "/v1/steps/:id/assign", "member", async (c, a) => c.json(await svc.assignStep(a, param(c, "id"), await body(c, StepAssignRequest))), "steps:assign")),
     forPerson(r("GET", "/v1/steps/:id/suggest", "member", async (c, a) => c.json(await svc.suggestStep(a, param(c, "id"), suggestFlags(c))), "steps:assign"), { required: true }),
@@ -582,6 +600,19 @@ export function buildRoutes(svc: HubService): Route[] {
     r("GET", "/v1/questions", "member", async (c, a) => c.json(await svc.openQuestionsFor(a, { state: c.req.query("state"), limit: c.req.query("limit") })), "goals:read"),
     forPerson(r("POST", "/v1/questions/:id/answer", "member", async (c, a) => c.json(await svc.answer(a, Number(param(c, "id")), (await body(c, AnswerRequest)).text)), "questions:answer"), { required: true }),
     forPerson(r("POST", "/v1/messages", "member", async (c, a) => c.json(await svc.say(a, await body(c, MessageRequest)), 201), "sessions:message"), { required: true }),
+    // RL-26: interrupt or end a session on a machine whose owner allowed remote stops.
+    forPerson(
+      r(
+        "POST",
+        "/v1/sessions/:sid/stop",
+        "member",
+        async (c, a) => {
+          const b = await body(c, StopSession);
+          return c.json(await svc.stopSession(a, param(c, "sid"), b.mode, b.reason));
+        },
+        "sessions:stop",
+      ),
+    ),
 
     // ---------- analysis feed, admin ----------
     r("GET", "/v1/events", "events", async (c) => c.json({ events: await svc.events(Number(c.req.query("after") ?? 0) || 0, Number(c.req.query("limit") ?? 500) || 500) })),

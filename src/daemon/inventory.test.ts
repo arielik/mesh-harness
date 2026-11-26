@@ -227,7 +227,7 @@ describe("AC-30 `steps` sends no repo inventory", () => {
   it("test_AC30_repos_sent_is_empty", async () => {
     const b = await stepsDaemon();
     // MM-3: the body also carries the accept policy (test_AC05_inventory_exact_body).
-    expect(b.syncs[0].machine).toStrictEqual({ share: "steps", accept: ["self"], repos: [] });
+    expect(b.syncs[0].machine).toStrictEqual({ share: "steps", accept: ["self"], remoteStop: false, teamOffers: false, runStop: false, repos: [] });
     for (const s of b.syncs) {
       expect(s.machine?.share).toBe("steps");
       if (s.machine && "repos" in s.machine) expect(s.machine.repos).toEqual([]);
@@ -287,7 +287,7 @@ describe("AC-05 machine.accept in the sync body", () => {
     await b.daemon.link?.flush();
     expect(b.syncs.length).toBeGreaterThan(0);
     for (const s of b.syncs) expect(s.machine?.accept).toStrictEqual(["self"]);
-    expect(b.syncs[0].machine).toStrictEqual({ share: "steps", accept: ["self"], repos: [] });
+    expect(b.syncs[0].machine).toStrictEqual({ share: "steps", accept: ["self"], remoteStop: false, teamOffers: false, runStop: false, repos: [] });
   });
 
   it("test_AC05_sync_body_config_unit", async () => {

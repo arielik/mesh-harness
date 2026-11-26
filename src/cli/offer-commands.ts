@@ -1,6 +1,6 @@
 // Assign (MM-3): mesh assign, offers, accept, decline, withdraw, and mesh session accept.
 
-import { assignText, offerLine, sessionName } from "../core/index.ts";
+import { assignText, findSession, offerLine, sessionName } from "../core/index.ts";
 import { parseAccept, type AssignResult, type GoalAssignResult, type GoalWithdrawResult, type OfferView, type Step, type StepView, type SuggestView } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
@@ -12,7 +12,8 @@ const ASSIGN_USAGE =
 const ACCEPT_USAGE = "usage: mesh accept <step> [--session <s> | --launch]";
 const DECLINE_USAGE = 'usage: mesh decline <step> [--note "…"]';
 const WITHDRAW_USAGE = "usage: mesh withdraw <goal|step>";
-const SESSION_USAGE = "usage: mesh session accept <session> --from <rule,…> | --off | --clear";
+const SESSION_USAGE = "usage: mesh session accept <session> --from <rule,…> | --off | --clear\n       mesh session stop <session> [--end] <reason…>";
+const STOP_USAGE = "usage: mesh stop <step> <reason…>";
 
 const isStep = (target: string) => target.includes(".");
 const enc = encodeURIComponent;
@@ -203,6 +204,7 @@ export function sessionCommand(c: CliEnv): Command {
     summary: "whose offers a session accepts automatically: mesh session accept <session> --from <rule,…> | --off | --clear",
     async run(args) {
       const a = parseArgs(args, ["from"]);
+      if (a.positional[0] === "stop") return await sessionStop(c, a.positional.slice(1), a.has("end"));
       const [sub, target] = a.positional;
       const modes = [a.has("from"), a.has("off"), a.has("clear")].filter(Boolean).length;
       if (sub !== "accept" || !target || modes !== 1 || a.positional.length > 2) {
@@ -230,7 +232,53 @@ export function sessionCommand(c: CliEnv): Command {
   };
 }
 
+/**
+ * RL-26 `mesh session stop <session> [--end] <reason…>`: a session of this machine by name or sid
+ * (as `mesh say` resolves it), else the sid as given; only a machine whose owner allowed it stops.
+ */
+async function sessionStop(c: CliEnv, rest: string[], end: boolean): Promise<number> {
+  const [target, ...words] = rest;
+  if (!target || words.length === 0) {
+    c.io.err(SESSION_USAGE);
+    return 2;
+  }
+  return orFail(c, async () => {
+    let sid = target;
+    try {
+      sid = findSession((await new DaemonClient(loadConfig(c.paths)).sessions()).sessions, target)?.sid ?? target;
+    } catch {
+      // No local daemon: the hub takes the sid as given.
+    }
+    const r = await HubClient.from(c.paths).post<{ message: number; online: boolean }>(`/v1/sessions/${enc(sid)}/stop`, { mode: end ? "end" : "interrupt", reason: words.join(" ") });
+    c.io.out(`asked to ${end ? "end" : "interrupt"} ${target}${r.online ? "" : " (machine offline: it stops when it is back)"}`);
+    return 0;
+  });
+}
+
+/** RL-26 `mesh stop <step> <reason…>`: park a step and stop the headless run that holds it. */
+export function stopCommand(c: CliEnv): Command {
+  return {
+    name: "stop",
+    help: STOP_USAGE,
+    summary: "stop the headless run that holds a step (the step is parked): mesh stop <step> <reason…>",
+    async run(args) {
+      const [step, ...words] = args;
+      if (!step || words.length === 0 || step.startsWith("-")) {
+        c.io.err(STOP_USAGE);
+        return 2;
+      }
+      const reason = words.join(" ");
+      return orFail(c, async () => {
+        const r = await HubClient.from(c.paths).post<{ step: Step; message: number; online: boolean }>(`/v1/steps/${enc(step)}/stop-run`, { reason });
+        const machine = r.step.stoppedRun?.machine ?? "its machine";
+        c.io.out(`${step} parked: stopped: ${reason}; asked ${machine} to stop the run${r.online ? "" : " (machine offline: it stops when it is back)"}`);
+        return 0;
+      });
+    },
+  };
+}
+
 /** The six MM-3 commands. `launch` runs `mesh run` with the given arguments (for `mesh accept --launch`). */
 export function offerCommands(c: CliEnv, launch: (args: string[]) => Promise<number>): Command[] {
-  return [assignCommand(c), offersCommand(c), acceptCommand(c, launch), declineCommand(c), withdrawCommand(c), sessionCommand(c)];
+  return [assignCommand(c), offersCommand(c), acceptCommand(c, launch), declineCommand(c), withdrawCommand(c), sessionCommand(c), stopCommand(c)];
 }

@@ -45,6 +45,8 @@ import {
   ReviewUpload,
   RunReport,
   RunsPage,
+  StopRun,
+  StopSession,
   Health,
   FindingsRollup,
   ProfileFit,
@@ -75,7 +77,7 @@ const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message", "fleet:pause", "alerts:notify"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message", "fleet:pause", "alerts:notify", "sessions:stop"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -174,6 +176,17 @@ export const HUB_API: readonly HubApiRoute[] = [
     body: FleetResumeRequest,
     response: FleetState,
     summary: "Resume the fleet (admins; a service acts for an admin): the steps the pause held back are offered again; nothing missed is fired.",
+  },
+  {
+    method: "GET",
+    path: "/v1/machines",
+    rule: "member",
+    scope: "live:read",
+    onBehalfOf: true,
+    onBehalfOfRequired: true,
+    tag: "daemon",
+    query: { offers: "team (required): teammates' machines whose owner accepts team offers" },
+    summary: "Teammates' machines (never the caller's or the acted-for person's own, never a service's) whose owner accepts team offers (daemon config `teamOffers`), online first (read-only).",
   },
   { method: "POST", path: "/v1/machines/:id/name", rule: "member", tag: "daemon", body: MachineName, summary: "Name one of your machines (or clear its name with null)." },
   { method: "POST", path: "/v1/machines/:id/labels", rule: "member", tag: "daemon", body: MachineLabels, summary: "Label one of your machines (replace, or add/remove)." },
@@ -451,6 +464,17 @@ export const HUB_API: readonly HubApiRoute[] = [
     body: StepPark,
     summary: "Park a claimed or paused step by hand (the goal owner, approvers, admins): the holder is told to stop; no process is signalled. Resume lets it go on.",
   },
+  {
+    method: "POST",
+    path: "/v1/steps/:id/stop-run",
+    rule: "member",
+    scope: "goals:decide",
+    onBehalfOf: true,
+    tag: "steps",
+    body: StopRun,
+    summary:
+      "Park a step held by a headless run (reason `stopped: <reason>`) and ask the run's machine to kill the run; the goal owner, approvers or admins, or the holder machine's owner with their own token. A service acts for a person with the member role only.",
+  },
   { method: "POST", path: "/v1/steps/:id/take", rule: "member", tag: "steps", body: ClaimRequest, summary: "Take over a step held by someone else (after the takeover threshold)." },
   {
     method: "POST",
@@ -565,6 +589,17 @@ export const HUB_API: readonly HubApiRoute[] = [
     summary: "Unanswered questions, oldest first: every one for a service or an admin, those addressed to the caller for a member.",
   },
   { method: "POST", path: "/v1/questions/:id/answer", rule: "member", scope: "questions:answer", onBehalfOf: true, onBehalfOfRequired: true, tag: "questions", body: AnswerRequest, summary: "Answer a question; the answer is delivered to the asking session." },
+  {
+    method: "POST",
+    path: "/v1/sessions/:sid/stop",
+    rule: "member",
+    scope: "sessions:stop",
+    onBehalfOf: true,
+    tag: "questions",
+    body: StopSession,
+    summary:
+      "Interrupt (`interrupt`) or end (`end`) a session, only on a machine whose owner allowed remote stops (daemon config `remoteStop`); the session's owner, the goal's approvers or an admin. A service acts for a person with the member role only.",
+  },
   { method: "POST", path: "/v1/messages", rule: "member", scope: "sessions:message", onBehalfOf: true, onBehalfOfRequired: true, tag: "questions", body: MessageRequest, status: 201, summary: "Send a message to a session (by sid or <machine>/<session>) or to whoever holds a step." },
 
   {

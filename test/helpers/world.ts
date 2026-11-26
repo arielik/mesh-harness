@@ -59,6 +59,10 @@ export interface Person {
   headless?: HeadlessOptions | undefined;
   /** RL-1: `deps.runsDir` when headless (default `<dir>/runs`). */
   runsDir?: string | undefined;
+  /** RL-26: keys sent to tmux panes, signals sent to session processes, `claude stop <bgId>` calls (fakes). */
+  keys: { pane: string; key: string }[];
+  signals: { pid: number; signal: string }[];
+  bgStops: string[];
 }
 
 /** RL-1: daemon deps for headless runs. The real `claude` is never used: `claudeBin` defaults to the fake. */
@@ -215,6 +219,9 @@ export class World {
       requests: [],
       launches: [],
       logs: [],
+      keys: [],
+      signals: [],
+      bgStops: [],
       dropReplyOnce: (path) => void drops.push(path),
       failOnce: (path, status) => void fails.push({ path, status }),
     };
@@ -242,6 +249,9 @@ export class World {
       assignments?: "deliver" | "launch" | "off";
       /** MM-4: the cap on live sessions for a launch; `undefined` removes the field. */
       maxSessions?: number | undefined;
+      /** RL-26: the owner's consent settings. */
+      remoteStop?: boolean;
+      teamOffers?: boolean;
     } = {},
     opts: PersonOptions = {},
     /** RL-7: awaited after the old daemon stopped and before the new one starts. */
@@ -321,6 +331,19 @@ export class World {
           return true;
         },
         wakeBackground: async () => ({ ok: true }),
+        // RL-26: fakes of the session stop (no tmux, no signal, no claude).
+        sendKey: async (pane: string, key: string) => {
+          p.keys.push({ pane, key });
+          return true;
+        },
+        signal: (pid: number, signal: string) => {
+          p.signals.push({ pid, signal });
+          return true;
+        },
+        stopBackground: async (bgId: string) => {
+          p.bgStops.push(bgId);
+          return { ok: true };
+        },
         notify: async (t, b) => p.notes.push(`${t}: ${b}`),
         now: () => this.clock,
         // Sessions in the person's own checkout belong to its repo; any other folder is read from git.

@@ -25,6 +25,12 @@ export async function wakeBackground(
   return { ok: true };
 }
 
+/** RL-26: stop a background session's process (`claude stop <bgId>`). */
+export async function stopBackground(bgId: string, runner: Runner = run): Promise<{ ok: boolean; error?: string }> {
+  const r = await runner("claude", ["stop", bgId], { timeoutMs: 30_000 });
+  return r.code === 0 ? { ok: true } : { ok: false, error: (r.stderr || r.stdout).trim().slice(0, 300) };
+}
+
 /** Command a person runs to open a background session in their terminal. */
 export function attachCommand(bgId: string): string[] {
   return ["claude", "attach", bgId];

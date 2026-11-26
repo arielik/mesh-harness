@@ -83,6 +83,13 @@ export const SyncRequest = z.object({
       headless: z.boolean().optional(),
       /** RL-5: agent files of its remote-backed repos. Absent: the hub keeps what it has; `[]`: none. */
       agents: z.array(AgentReport).max(2000).optional(),
+      /**
+       * RL-26: the owner allows remote session stops, the owner allows team offers, the daemon can
+       * stop a headless run. A sync with `machine` stores an absent one as false.
+       */
+      remoteStop: z.boolean().optional(),
+      teamOffers: z.boolean().optional(),
+      runStop: z.boolean().optional(),
     })
     .optional(),
 });
@@ -503,6 +510,13 @@ export const ResumeRequest = z.object({ comment: z.string().max(4000).optional()
 /** RL-22: `POST /v1/steps/:id/park`: a person parks a claimed or paused step by hand. */
 export const StepPark = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
 export type StepPark = z.infer<typeof StepPark>;
+
+/** RL-26: body of `POST /v1/steps/:id/stop-run`. */
+export const StopRun = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
+export type StopRun = z.infer<typeof StopRun>;
+/** RL-26: body of `POST /v1/sessions/:sid/stop`. */
+export const StopSession = z.object({ mode: z.enum(["interrupt", "end"]), reason: z.string().trim().min(1).max(500) }).strict();
+export type StopSession = z.infer<typeof StopSession>;
 export const AskRequest = z.object({ text: z.string().min(1).max(4000), sid: z.string().optional(), step: z.string().optional() });
 export const AnswerRequest = z.object({ text: z.string().min(1).max(4000) });
 /** `to` (MM-4): `<machine>/<session>` or `<user>/<nickname>/<session>`, resolved like an assign target. */
@@ -685,6 +699,24 @@ export interface OfferView {
   note?: string | undefined;
   /** RL-21: the service that made the offer for `by`. */
   via?: string | undefined;
+  /** RL-26: a headless offer, with the profile it runs under. */
+  mode?: "headless" | undefined;
+  profile?: { name: string; sha256: string } | undefined;
+  /** RL-26: an offer a service made for a person to this teammate machine (never auto). */
+  team?: true | undefined;
+}
+
+/** RL-26: one teammate machine of `GET /v1/machines?offers=team`. `repos`: repo names. */
+export interface TeamMachine {
+  id: string;
+  name: string;
+  nickname?: string | undefined;
+  owner: string;
+  labels: string[];
+  online: boolean;
+  lastSeen: number;
+  headless: boolean;
+  repos: string[];
 }
 
 /** MM-3: a step's last offer on the goal page. `accepted` = `<machine name>/<session name>` once accepted. */
@@ -793,7 +825,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "runs", "spot-checks", "step-assign-for", "step-park", "team-attention", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "step-park", "team-attention", "team-offers", "trial"];
 
 /** RL-25: an RFC 3339 time as Alertmanager writes it (fractions to nanoseconds, `Z` or an offset). */
 const Rfc3339 = z
