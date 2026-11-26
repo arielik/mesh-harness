@@ -57,7 +57,7 @@ describe("RL-27 AC-01 a stuck session's at is its entry instant", () => {
 
   it("test_AC01_second_needs_you_keeps_state_since", () => {
     const T0 = NOW - 31 * MIN;
-    const base: Session = { sid: "s-1", claudeSessionIds: [], cwd: "/w", kind: "interactive", state: "working", quiet: false, startedAt: T0 - HOUR, lastEventAt: T0 - MIN, turns: 1, humanPrompts: 1 };
+    const base: Session = { sid: "s-1", claudeSessionIds: [], cwd: "/w", kind: "interactive", state: "working", quiet: false, startedAt: T0 - HOUR, lastEventAt: T0 - MIN, turns: 1, humanPrompts: 1, seenByReconciler: true };
     const s0 = accrue(undefined, base, T0 - MIN);
     const s1 = accrue(s0, { ...s0, state: "needs_you", needs: "permission" }, T0);
     expect(s1.stateSince).toBe(T0);
