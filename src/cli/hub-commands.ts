@@ -557,20 +557,32 @@ export function stepCommand(c: CliEnv): Command {
     '  mesh step approve <step> [--comment "…"] [--rule GATE-1]   a gate step',
     '  mesh step reject <step> --reopen a,b [--comment "…"]         a gate step, reopening steps',
     '  mesh step resume <step> [--comment "…"]                      a parked (or failed) step',
+    "  mesh step park <step> <reason…>                              stop work on a claimed or paused step until a person resumes it",
   ].join("\n");
   return {
     name: "step",
     help: usage,
-    summary: "decide gates and resume parked steps: mesh step approve|reject|resume <step>",
+    summary: "decide gates, park and resume steps: mesh step approve|reject|resume|park <step>",
     async run(args) {
       const [sub, id, ...rest] = args;
       const a = parseArgs(rest, ["comment", "rule", "reopen"]);
-      if (!id || !["approve", "reject", "resume"].includes(sub ?? "")) {
+      if (!id || !["approve", "reject", "resume", "park"].includes(sub ?? "")) {
         c.io.err(usage);
         return 2;
       }
       const hub = HubClient.from(c.paths);
       const path = `/v1/steps/${encodeURIComponent(id)}/${sub as string}`;
+      if (sub === "park") {
+        // RL-22: the reason is the rest of the line.
+        const reason = rest.join(" ").trim();
+        if (!reason) {
+          c.io.err("mesh step park needs a reason: mesh step park <step> <reason…>");
+          return 2;
+        }
+        const r = await hub.post<{ step: Step }>(path, { reason });
+        c.io.out(`${r.step.id} parked: ${r.step.parkedReason ?? ""}`);
+        return 0;
+      }
       const comment = a.str("comment") ?? (a.positional.length ? a.positional.join(" ") : undefined);
       if (sub === "resume") {
         const s = await hub.post<Step>(path, comment ? { comment } : {});
