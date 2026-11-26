@@ -96,13 +96,46 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "paused": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "since": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "by": {
+                              "type": "string"
+                            },
+                            "via": {
+                              "type": "string"
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "since",
+                            "by",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
                     "ok",
                     "version",
                     "schema",
-                    "features"
+                    "features",
+                    "paused"
                   ],
                   "additionalProperties": false
                 }
@@ -147,13 +180,46 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "paused": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "since": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "by": {
+                              "type": "string"
+                            },
+                            "via": {
+                              "type": "string"
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "since",
+                            "by",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
                     "ok",
                     "version",
                     "schema",
-                    "features"
+                    "features",
+                    "paused"
                   ],
                   "additionalProperties": false
                 }
@@ -1356,6 +1422,227 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/fleet/pause": {
+      "post": {
+        "operationId": "postVFleetPause",
+        "summary": "Pause the fleet (admins; a service acts for an admin): no pulse fires and no headless offer is made until resumed; running work goes on.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `fleet:pause`.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "paused": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "since": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "by": {
+                              "type": "string"
+                            },
+                            "via": {
+                              "type": "string"
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "since",
+                            "by",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "paused"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/fleet/resume": {
+      "post": {
+        "operationId": "postVFleetResume",
+        "summary": "Resume the fleet (admins; a service acts for an admin): the steps the pause held back are offered again; nothing missed is fired.",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `fleet:pause`.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "paused": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "since": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "by": {
+                              "type": "string"
+                            },
+                            "via": {
+                              "type": "string"
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "since",
+                            "by",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "paused"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
           },
           "401": {
             "description": "Login required."
