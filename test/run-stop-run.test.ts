@@ -47,7 +47,6 @@ async function headless(k: K, step: PlanIn, script: unknown[]): Promise<string> 
 }
 
 const stopRun = (k: K, id: string, reason = "wrong base") => r.w.call(k.self, "POST", `/v1/steps/${id}/stop-run`, { reason });
-const msgOf = async (k: K, kind: string) => (await r.inboxOf(k.ann)).filter((m: Json) => m.kind === kind).at(-1);
 const acksOf = (p: Person, id: number) => p.acks.filter((a) => a.id === id);
 const doneCalls = (p: Person, id: string) => p.requests.filter((q) => q.method === "POST" && q.path === `/v1/steps/${encodeURIComponent(id)}/done`);
 
