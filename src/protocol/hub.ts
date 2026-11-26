@@ -673,6 +673,24 @@ export interface OfferView {
   note?: string | undefined;
   /** RL-21: the service that made the offer for `by`. */
   via?: string | undefined;
+  /** RL-26: a headless offer, with the profile it runs under. */
+  mode?: "headless" | undefined;
+  profile?: { name: string; sha256: string } | undefined;
+  /** RL-26: an offer a service made for a person to this teammate machine (never auto). */
+  team?: true | undefined;
+}
+
+/** RL-26: one teammate machine of `GET /v1/machines?offers=team`. `repos`: repo names. */
+export interface TeamMachine {
+  id: string;
+  name: string;
+  nickname?: string | undefined;
+  owner: string;
+  labels: string[];
+  online: boolean;
+  lastSeen: number;
+  headless: boolean;
+  repos: string[];
 }
 
 /** MM-3: a step's last offer on the goal page. `accepted` = `<machine name>/<session name>` once accepted. */
@@ -781,7 +799,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "changes", "commits", "debrief-sla", "efficiency", "findings-rollup", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "team-offers", "trial"];
 
 /** RL-11: the item states now of the items a run's raising record listed. */
 export const RunItems = z.object({

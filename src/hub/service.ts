@@ -157,6 +157,7 @@ import type {
   OfferLine,
   OfferTarget,
   OfferView,
+  TeamMachine,
   StepOffer,
   Attention,
   Failure,
@@ -636,28 +637,60 @@ export class HubService {
    * RL-21: with `owner` (a service acting for that person), the resolved machine must be the owner's,
    * checked before any session lookup, and the resolved session too; `coded` adds the refusal codes.
    */
-  private async resolveTarget(actor: Actor, to: string, o: { owner?: string | undefined; coded?: boolean } = {}): Promise<{ machine: MachineRow; session?: HubSession | undefined }> {
+  private async resolveTarget(
+    actor: Actor,
+    to: string,
+    o: { owner?: string | undefined; coded?: boolean; team?: boolean } = {},
+  ): Promise<{ machine: MachineRow; session?: HubSession | undefined; team?: true }> {
+    let team = false;
+    const r = await this.resolveTargetIn(actor, to, o, () => (team = true));
+    return team ? { ...r, team: true } : r;
+  }
+
+  /** RL-26: another non-service user of this hub. */
+  private async isTeammate(userId: string, of: string): Promise<boolean> {
+    if (userId === of) return false;
+    const u = await this.store.getUser(userId);
+    return u !== undefined && !u.roles.includes("service");
+  }
+
+  private async resolveTargetIn(
+    actor: Actor,
+    to: string,
+    o: { owner?: string | undefined; coded?: boolean; team?: boolean },
+    markTeam: () => void,
+  ): Promise<{ machine: MachineRow; session?: HubSession | undefined }> {
     const coded = o.coded === true;
-    const own = (m: MachineRow): MachineRow => {
-      if (o.owner !== undefined && m.userId !== o.owner) throw refuse(403, "machine-not-yours", `machine not yours: ${to}`);
+    let team = false;
+    const own = async (m: MachineRow): Promise<MachineRow> => {
+      if (o.owner !== undefined && m.userId !== o.owner) {
+        // RL-26: an act-for assign may name a teammate's machine whose owner opted in to team offers.
+        if (!o.team || m.teamOffers !== true || !(await this.isTeammate(m.userId, o.owner))) throw refuse(403, "machine-not-yours", `machine not yours: ${to}`);
+        team = true;
+        markTeam();
+      }
       return m;
     };
     const session = async (m: MachineRow, ref: string): Promise<HubSession> => {
+      if (team) throw refuse(403, "team-offer-session", `a teammate's machine takes the offer, never one of their sessions: name ${machineName(m)} only`);
       const hs = await this.findSessionOn(actor, m, ref, coded);
       if (o.owner !== undefined && hs.userId !== o.owner) throw refuse(403, "session-not-yours", `session not yours: ${to}`);
       return hs;
     };
     const parts = to.split("/");
-    if (parts.length === 1) return { machine: own(await this.machineOr404(actor, to, coded)) };
+    if (parts.length === 1) return { machine: await own(await this.machineOr404(actor, to, coded)) };
     if (parts.length === 2) {
       const [a, b] = parts as [string, string];
       const m = a ? await this.findMachine(actor, a) : undefined;
-      if (m) return { machine: own(m), session: await session(own(m), b) };
-      return { machine: own(await this.machineOr404(actor, to, coded)) };
+      if (m) {
+        const mm = await own(m);
+        return { machine: mm, session: await session(mm, b) };
+      }
+      return { machine: await own(await this.machineOr404(actor, to, coded)) };
     }
     if (parts.length === 3) {
       const [a, b, c] = parts as [string, string, string];
-      const m = own(await this.machineOr404(actor, `${a}/${b}`, coded));
+      const m = await own(await this.machineOr404(actor, `${a}/${b}`, coded));
       return { machine: m, session: await session(m, c) };
     }
     throw new HubError(404, `no machine ${to}`, undefined, coded ? "machine-unknown" : undefined);
@@ -713,10 +746,12 @@ export class HubService {
     step: Step,
     target: { machine: MachineRow; session?: HubSession | undefined },
     by: { userId: string; sid?: string | undefined; machine?: MachineRow | undefined; via?: string | undefined },
-    opts: { note?: string | undefined; stick: boolean; goal: Goal; snapshot?: ProfileSnapshot | undefined; deadline?: number | undefined; headless?: boolean | undefined },
+    opts: { note?: string | undefined; stick: boolean; goal: Goal; snapshot?: ProfileSnapshot | undefined; deadline?: number | undefined; headless?: boolean | undefined; team?: boolean | undefined },
   ): Promise<{ step: Step; message: number }> {
     const now = this.now();
-    const auto = this.autoFor(target, by);
+    // RL-26: a team offer waits for the machine owner's accept, whatever the accept policy says.
+    const team = opts.team === true;
+    const auto = team ? false : this.autoFor(target, by);
     const sid = target.session?.session.sid;
     // RL-1: a headless offer carries the profile snapshot, budget, deadline and agent. RL-21: also
     // a step run headless by the assign (`headless`).
@@ -744,6 +779,7 @@ export class HubService {
       ...(opts.note ? { note: opts.note } : {}),
       ...(snap ? { profile: { name: snap.name, sha256: snap.sha256 }, mode: "headless" as const } : {}),
       ...(via ? { via } : {}),
+      ...(team ? { team: true as const } : {}),
     };
     const next: Step = { ...step, offer, updatedAt: now };
     await this.saveStepFrom(next, step);
@@ -751,8 +787,8 @@ export class HubService {
       target.machine.id,
       by.userId,
       "offer",
-      `MESH: @${by.userId} offers step ${step.id} "${step.title}" (repo ${step.repo}) to this machine${opts.note ? `: ${opts.note}` : ""}${via ? ` (via ${via})` : ""}`,
-      { step: step.id, goal: step.goal, repo: step.repo, topics: opts.goal.topics ?? [], auto, by: by.userId, ...(via ? { via } : {}), ...(sid ? { sid } : {}), ...(opts.note ? { note: opts.note } : {}), ...headless },
+      `MESH: @${by.userId} offers step ${step.id} "${step.title}" (repo ${step.repo}) to this machine${opts.note ? `: ${opts.note}` : ""}${via ? ` (via ${via}${team ? ", team offer" : ""})` : ""}`,
+      { step: step.id, goal: step.goal, repo: step.repo, topics: opts.goal.topics ?? [], auto, by: by.userId, ...(via ? { via } : {}), ...(team ? { team: true } : {}), ...(sid ? { sid } : {}), ...(opts.note ? { note: opts.note } : {}), ...headless },
     );
     await this.emit({
       type: "step.offered",
@@ -767,6 +803,7 @@ export class HubService {
         ...(opts.note ? { note: opts.note } : {}),
         ...(opts.stick ? { stick: true } : {}),
         ...(via ? { via } : {}),
+        ...(team ? { team: true } : {}),
         ...(snap ? { mode: "headless", profile: snap.name } : {}),
       },
     });
@@ -865,7 +902,9 @@ export class HubService {
         if (req.sid !== undefined) throw refuse(400, "on-behalf-of-option", "sid is not accepted when a service acts for a person");
         if (req.stick) throw refuse(400, "on-behalf-of-option", "stick is not accepted when a service acts for a person");
       }
-      const target = await this.resolveTarget(actor, req.to, { owner: actor.via ? actor.userId : undefined, coded: true });
+      const target = await this.resolveTarget(actor, req.to, { owner: actor.via ? actor.userId : undefined, coded: true, team: actor.via !== undefined });
+      // RL-26: a teammate's machine receives only what the step declares.
+      if (target.team && (req.mode !== undefined || req.profile !== undefined)) throw refuse(403, "team-offer-override", `machine not yours: ${req.to}`);
       const goal = await this.goalOr404(step.goal);
       const run = await this.headlessRun(actor, step, target, req);
       const guard = await this.headlessGuard(step, target.machine, goal, run);
@@ -873,7 +912,7 @@ export class HubService {
       const caller = await this.callerMachine(actor, req.sid);
       this.refuseForeign(caller, req.sid);
       const by = { userId: actor.userId, sid: req.sid, machine: caller.machine, via: actor.via };
-      const { step: next, message } = await this.offerStepMessage(step, target, by, { note: req.note, stick: false, goal, snapshot: guard.snapshot, headless: run !== undefined });
+      const { step: next, message } = await this.offerStepMessage(step, target, by, { note: req.note, stick: false, goal, snapshot: guard.snapshot, headless: run !== undefined, team: target.team });
       if (req.stick) await this.setStick(goal, next.offer as StepOffer);
       return { step: next, auto: (next.offer as StepOffer).auto, message };
     });
@@ -2224,9 +2263,36 @@ export class HubService {
           auto: o.auto,
           ...(o.note ? { note: o.note } : {}),
           ...(o.via ? { via: o.via } : {}),
+          ...(o.mode ? { mode: o.mode } : {}),
+          ...(o.profile ? { profile: o.profile } : {}),
+          ...(o.team ? { team: true as const } : {}),
         });
       }
       return out.sort((a, b) => a.at - b.at || cmp(a.step, b.step));
+    });
+  }
+
+  /** RL-26 `GET /v1/machines?offers=team`: the teammates' machines that accept team offers. */
+  async teamMachines(viewer: Actor): Promise<{ machines: TeamMachine[] }> {
+    return this.store.tx(async () => {
+      const now = this.now();
+      const out: TeamMachine[] = [];
+      for (const m of await this.store.listMachines()) {
+        if (m.teamOffers !== true || !(await this.isTeammate(m.userId, viewer.userId))) continue;
+        out.push({
+          id: m.id,
+          name: machineName(m),
+          ...(m.nickname ? { nickname: m.nickname } : {}),
+          owner: m.userId,
+          labels: m.labels ?? [],
+          online: now - m.lastSeen < ONLINE_MS,
+          lastSeen: m.lastSeen,
+          headless: m.headless === true,
+          repos: (m.repos ?? []).map((r) => r.name),
+        });
+      }
+      out.sort((a, b) => Number(b.online) - Number(a.online) || cmp(a.owner, b.owner) || cmp(a.name, b.name));
+      return { machines: out };
     });
   }
 

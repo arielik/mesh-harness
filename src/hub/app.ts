@@ -213,6 +213,20 @@ export function buildRoutes(svc: HubService): Route[] {
     // ---------- dashboard ----------
     r("GET", "/v1/live", "member", async (c, a) => c.json(await svc.live(a, topicsQuery(c))), "live:read"),
     forPerson(r("GET", "/v1/fleet", "member", async (c, a) => c.json(await svc.fleet(a)), "live:read")),
+    // RL-26: teammates' machines that accept team offers (offers=team is required).
+    forPerson(
+      r(
+        "GET",
+        "/v1/machines",
+        "member",
+        async (c, a) => {
+          if (c.req.query("offers") !== "team") throw new HubError(400, "offers=team is required", undefined, "bad-query");
+          return c.json(await svc.teamMachines(a));
+        },
+        "live:read",
+      ),
+      { required: true },
+    ),
     r("POST", "/v1/machines/:id/name", "member", async (c, a) => c.json(await svc.renameMachine(a, param(c, "id"), (await body(c, MachineName)).nickname))),
     r("POST", "/v1/machines/:id/labels", "member", async (c, a) => c.json(await svc.labelMachine(a, param(c, "id"), await body(c, MachineLabels)))),
     r("GET", "/v1/attention", "member", async (c, a) => c.json({ attention: await svc.attentionFor(a) })),

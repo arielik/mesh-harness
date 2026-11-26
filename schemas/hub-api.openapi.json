@@ -1375,6 +1375,54 @@
         }
       }
     },
+    "/v1/machines": {
+      "get": {
+        "operationId": "getVMachines",
+        "summary": "Teammates' machines (never the caller's or the acted-for person's own, never a service's) whose owner accepts team offers (daemon config `teamOffers`), online first (read-only).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `live:read`.",
+        "tags": [
+          "daemon"
+        ],
+        "parameters": [
+          {
+            "name": "offers",
+            "in": "query",
+            "required": false,
+            "description": "team (required): teammates' machines whose owner accepts team offers",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
     "/v1/machines/{id}/name": {
       "post": {
         "operationId": "postVMachinesIdName",
