@@ -250,6 +250,22 @@ its new holder. Runs outlive the daemon: a restarted daemon adopts runs that are
 closes those that ended meanwhile. A machine that can run headless steps says so to the hub (it
 needs mesh 0.1.15 and `workspaceRoots` with the repo); other machines are never offered one.
 
+**Stopping a headless run** (RL-26). `mesh stop <step> <reason…>` (or `POST /v1/steps/:id/stop-run`)
+parks the step at once (`parkedReason: "stopped: <reason>"`) and asks the run's machine to kill the
+run: the daemon ends it as a budget kill, reports exit `killed_operator`, stores the transcript tail
+and makes no `mesh_done` and no push; commits the run made stay in its worktree (the owner's notice
+names the folder). The goal's owner, an approver or an admin may stop a run, and the machine's owner
+may stop a run on their own machine. `mesh step resume <step>` lets the step go on.
+
+**Team offers** (RL-26). A service acting for a person (a dashboard) may route a step to a teammate's
+machine whose owner opted in with `mesh setup --team-offers on` (daemon config `teamOffers`, default
+off). Such a team offer is never accepted automatically, whatever the machine's accept rules say: it
+is listed (`mesh offers`), and the machine's owner runs `mesh accept <step>` or `mesh decline <step>`.
+It carries no launch-time mode or profile: only what the step declares. A team offer that nobody
+answers expires as any offer. A listed headless offer (a team offer of a step that declares
+`mode: headless`, or any headless offer not auto-accepted) is kept by the daemon until the offer
+ends, so `mesh accept <step>` on that machine starts its run (`mesh accept --session` refuses it).
+
 ## Artifacts
 
 **Artifact.** Output of a step's round that does not belong in the repo (a report, a review, a run
