@@ -33,6 +33,8 @@ export class Ak {
   svc = "";
   reader = "";
   writer = "";
+  /** The share level each machine syncs (default `all`). */
+  share: Record<string, "steps" | "me" | "all"> = {};
   private sessions: Record<string, Session[]> = {};
 
   constructor(w: World) {
@@ -100,7 +102,7 @@ export class Ak {
       events: [],
       counts: {},
       sessions: this.sessions[user],
-      machine: { share: "all", repos: [{ id: REPO_ID, name: REPO }], accept: ["self"] },
+      machine: { share: this.share[user] ?? "all", repos: [{ id: REPO_ID, name: REPO }], accept: ["self"] },
     });
     expect(res.status, JSON.stringify(res.json)).toBe(200);
   }
