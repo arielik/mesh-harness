@@ -64,6 +64,8 @@ export interface RunsDeps {
   endRunSessions(sids: ReadonlySet<string>, reason: string): void;
   now(): number;
   log(line: string): void;
+  /** RL-26: tell the machine's owner (a stopped run's end). */
+  notify?(body: string): Promise<unknown>;
 }
 
 /** RL-1: one `--agents` entry built from an agent file (tools plus the mesh tool rules). */
@@ -684,6 +686,33 @@ export class HeadlessRuns {
     if (r.ok || !r.retry) this.saveEnd(run, { ...this.end(run), startedDone: true });
   }
 
+  // ---------- stop (RL-26) ----------
+
+  /**
+   * A `run_stop` message: kill the running run of `step` (as a budget kill; it finishes as
+   * `killed_operator`), drop a queued one without starting it and without a hub call, or say that
+   * its process had ended already or that nothing of the step runs here.
+   */
+  stop(step: string, o: { runId?: string | undefined; reason: string; by: string; via?: string | undefined }): "killed" | "dropped" | "already-ended" | "no-run" {
+    const runs = [...this.runs.values()].filter((r) => r.step === step && (o.runId === undefined || r.runId === o.runId || r.state === "queued"));
+    const live = runs.find((r) => r.state === "running");
+    if (live) {
+      if (live.endedAt !== undefined || live.pid === undefined || live.startId === undefined) return "already-ended";
+      if (existsSync(this.file(live, "exit")) || !this.deps.runner.alive(live.pid, live.startId)) return "already-ended";
+      this.save({ ...live, stoppedByOperator: true, stopReason: o.reason, stoppedBy: { by: o.by, ...(o.via ? { via: o.via } : {}) } });
+      this.deps.log(`run ${live.runId}: stopped by @${o.by}: ${o.reason}`);
+      void this.deps.runner.kill(live.pid, live.startId).catch((e) => this.deps.log(`run ${live.runId}: kill failed: ${String(e)}`));
+      return "killed";
+    }
+    const queued = runs.find((r) => r.state === "queued" && !this.starting.has(r.runId));
+    if (queued) {
+      this.save({ ...queued, state: "released", stoppedByOperator: true, stopReason: o.reason });
+      this.deps.log(`run ${queued.runId}: dropped from the queue (stopped by @${o.by})`);
+      return "dropped";
+    }
+    return "no-run";
+  }
+
   // ---------- reconcile ----------
 
   /** Queue, budgets, ends. Called from the daemon's reconcile (never on a timer of its own). */
@@ -807,6 +836,7 @@ export class HeadlessRuns {
       exitCode: run.exitCode,
       killedForBudget: run.killedForBudget === true,
       stoppedAfterDone: run.stoppedAfterDone === true,
+      stoppedByOperator: run.stoppedByOperator === true,
     });
     let redactions = 0;
     for (const line of this.read(run, "artifacts.jsonl").split("\n")) {
@@ -847,6 +877,25 @@ export class HeadlessRuns {
     let e = this.end(run);
     const meta = this.meta(run);
     const sids = this.runSids(run);
+
+    // RL-26: a run stopped by a person uploads its transcript and reports its end; no done, no push.
+    if (!e.decided && run.stoppedByOperator) {
+      e = { ...e, decided: "none" };
+      this.saveEnd(run, e);
+    }
+    if (run.stoppedByOperator && !e.transcriptDone) {
+      const r = redactSecrets(renderTail(this.read(run, "stream.jsonl"), this.read(run, "stderr.log"), exit), this.deps.secrets());
+      const up = await this.call<StoredArtifact>(run, "transcript", "POST", this.stepPath(run.step, "/artifacts"), {
+        kind: "transcript",
+        mediaType: "text/plain",
+        title: `run transcript (${exit})`,
+        content: r.text,
+        redactions: r.count,
+      });
+      if (!up.ok && up.retry) return;
+      e = { ...e, transcriptDone: true };
+      this.saveEnd(run, e);
+    }
 
     if (!e.decided) {
       const got = await this.call<StepView>(run, "step", "GET", this.stepPath(run.step));
@@ -921,9 +970,21 @@ export class HeadlessRuns {
       this.saveEnd(run, e);
     }
 
+    let kept: string | undefined;
     if (run.worktree && existsSync(run.worktree)) {
-      const rm = await this.deps.runner.git(run.checkout, ["worktree", "remove", "--force", run.worktree]);
-      if (rm.code !== 0) this.deps.log(`run ${run.runId}: could not remove its worktree: ${gitError(rm)}`);
+      // RL-26: a stopped run's commits are kept in its worktree.
+      const head = run.stoppedByOperator ? await this.deps.runner.git(run.worktree, ["rev-parse", "HEAD"]) : undefined;
+      if (head && head.code === 0 && head.stdout.trim() !== run.baseCommit) {
+        kept = run.worktree;
+        this.deps.log(`run ${run.runId}: commits kept in ${kept}`);
+      } else {
+        const rm = await this.deps.runner.git(run.checkout, ["worktree", "remove", "--force", run.worktree]);
+        if (rm.code !== 0) this.deps.log(`run ${run.runId}: could not remove its worktree: ${gitError(rm)}`);
+      }
+    }
+    if (run.stoppedByOperator && run.stoppedBy) {
+      const who = `@${run.stoppedBy.by} stopped the headless run of ${run.step}: ${run.stopReason ?? ""}${run.stoppedBy.via ? ` (via ${run.stoppedBy.via})` : ""}`;
+      await this.deps.notify?.(`${who}${kept ? `; commits kept in ${kept}` : ""}`);
     }
     const final = this.runs.get(run.runId) ?? run;
     // RL-8: every live `print` session of the run ends with it (one revived after the end included).

@@ -301,6 +301,15 @@ export class DaemonStore {
     return this.db.get<{ v: string }>("SELECT v FROM kv WHERE k = ?", k)?.v;
   }
 
+  deleteKv(k: string): void {
+    this.db.run("DELETE FROM kv WHERE k = ?", k);
+  }
+
+  /** RL-26: the keys that start with `prefix`. */
+  kvKeys(prefix: string): string[] {
+    return this.db.all<{ k: string }>("SELECT k FROM kv WHERE k >= ? AND k < ? ORDER BY k", prefix, `${prefix}\uffff`).map((r) => r.k);
+  }
+
   setKv(k: string, v: string): void {
     this.db.run("INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, v);
   }

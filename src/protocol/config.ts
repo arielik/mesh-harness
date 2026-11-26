@@ -76,6 +76,10 @@ export const DaemonConfig = z.object({
    * sessions are live on the machine. Absent = no limit. Local only.
    */
   maxSessions: z.number().int().min(1).max(1000).optional(),
+  /** RL-26: the owner allows a remote stop (interrupt or end) of this machine's sessions. */
+  remoteStop: z.boolean().default(false),
+  /** RL-26: the owner allows offers a service makes for a teammate (listed, never auto). */
+  teamOffers: z.boolean().default(false),
 });
 export type DaemonConfig = z.infer<typeof DaemonConfig>;
 export type NotifyMode = "desktop" | "terminal" | "both" | "off";

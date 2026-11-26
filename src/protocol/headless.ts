@@ -29,6 +29,11 @@ export const RunFile = z.object({
   killedForBudget: z.boolean().optional(),
   /** RL-1: ended by the daemon DONE_GRACE_MS after its step's mesh_done was accepted (not a budget kill). */
   stoppedAfterDone: z.boolean().optional(),
+  /** RL-26: killed on a person's request (a `run_stop` message); it finishes as `killed_operator`. */
+  stoppedByOperator: z.boolean().optional(),
+  stopReason: z.string().optional(),
+  /** RL-26: who asked (`by`, `via`), for the owner notice at the end. */
+  stoppedBy: z.object({ by: z.string(), via: z.string().optional() }).optional(),
   endedAt: z.number().optional(),
   exitCode: z.number().int().optional(),
   exit: RunExit.optional(),

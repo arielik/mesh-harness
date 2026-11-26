@@ -1400,7 +1400,7 @@ describe("AC-21 daemon without an idle session", () => {
     await pull(d.B);
     expect(await until(() => acksOf(d.B, msg).length > 0)).toBe(true);
     expect(acksOf(d.B, msg)).toEqual([{ id: msg, state: "delivered", method: "listed" }]);
-    expect(d.B.notes.filter((n) => n.includes(id))).toEqual([`mesh: @bob offers ${id} "Title a": mesh offers`]);
+    expect(d.B.notes.filter((n) => n.includes(id))).toEqual([`mesh: @bob offers ${id} "Title a" (repo svc): mesh accept ${id} or mesh decline ${id}`]);
     expect(await stepOf(id)).toMatchObject({ state: "ready", offer: { state: "offered" } });
     expect(d.B.launches).toEqual([]);
   });
@@ -1445,7 +1445,7 @@ describe("AC-21 daemon without an idle session", () => {
     expect(d.B.launches).toEqual([]);
     expect(w.session(d.B, 201).step).toBeUndefined();
     expect(await stepOf(id)).toMatchObject({ state: "ready", offer: { state: "offered" } });
-    expect(d.B.notes.filter((n) => n.includes(id))).toEqual([`mesh: @alice offers ${id} "Title a": mesh offers`]);
+    expect(d.B.notes.filter((n) => n.includes(id))).toEqual([`mesh: @alice offers ${id} "Title a" (repo svc): mesh accept ${id} or mesh decline ${id}`]);
   });
 });
 

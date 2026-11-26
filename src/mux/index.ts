@@ -13,6 +13,7 @@ export {
   paneSocket,
   paneText,
   pasteToPane,
+  sendKeyToPane,
   serverFromEnv,
   type TmuxOpts,
   type TmuxServer,

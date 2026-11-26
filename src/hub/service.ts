@@ -3539,9 +3539,24 @@ export class HubService {
 
   async ack(actor: Actor, id: number, state: "delivered" | "failed", method: string | undefined): Promise<boolean> {
     if (!actor.machineId) throw new HubError(403, "ack needs a device token");
-    const ok = await this.store.ackMessage(id, actor.machineId, state, method, this.now());
-    if (ok) await this.emit({ type: "message.delivered", user: actor.userId, payload: { id, state, method } });
-    return ok;
+    const machine = actor.machineId;
+    return await this.store.tx(async () => {
+      const ok = await this.store.ackMessage(id, machine, state, method, this.now());
+      if (!ok) return false;
+      await this.emit({ type: "message.delivered", user: actor.userId, payload: { id, state, method } });
+      // RL-26: the first ack of a stop says how it ended.
+      const m = await this.store.getMessage(id);
+      const d = m?.data ?? {};
+      const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+      const base = { machine, outcome: method ?? state, state, by: str(d.by) ?? m?.fromUser, ...(str(d.via) ? { via: str(d.via) } : {}) };
+      if (m?.kind === "run_stop") {
+        const step = str(d.step);
+        await this.emit({ type: "run.stopped", user: actor.userId, goal: str(d.goal), step, payload: { ...base, step, ...(str(d.runId) ? { runId: str(d.runId) } : {}) } });
+      } else if (m?.kind === "stop") {
+        await this.emit({ type: "session.stopped", user: actor.userId, sid: str(d.sid), payload: { ...base, sid: str(d.sid), mode: str(d.mode) } });
+      }
+      return true;
+    });
   }
 
   // ---------- views ----------

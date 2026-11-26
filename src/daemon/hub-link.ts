@@ -44,6 +44,8 @@ export interface HubLinkDeps {
   accept?: () => string[];
   /** RL-1: the daemon can run headless steps (sent as `machine.headless: true` only when true). */
   headless?: () => boolean;
+  /** RL-26: the owner's consent settings and the run-stop capability, sent on every sync. */
+  consent?: () => { remoteStop: boolean; teamOffers: boolean; runStop: boolean };
   /**
    * A message from the hub inbox. `unknown`: acked as failed; `handling`: the daemon handles it
    * itself and acks it when done (MM-3 machine-wide offers).
@@ -365,6 +367,7 @@ export class HubLink {
             share,
             accept: this.deps.accept?.() ?? ["self"],
             ...(this.deps.headless?.() ? { headless: true } : {}),
+            ...(this.deps.consent?.() ?? {}),
             ...(sendRepos ? { repos } : {}),
             ...(sendAgents ? { agents } : {}),
           },

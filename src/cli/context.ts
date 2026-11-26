@@ -42,6 +42,8 @@ export function newConfig(port?: number): DaemonConfig {
     shareSessions: "me",
     accept: ["self"],
     assignments: "deliver",
+    remoteStop: false,
+    teamOffers: false,
   };
 }
 

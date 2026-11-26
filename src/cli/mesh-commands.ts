@@ -72,7 +72,7 @@ export function setupCommand(c: CliEnv): Command {
     name: "setup",
     summary: "install mesh into Claude Code, or OpenCode with --agent opencode|all (--uninstall to remove)",
     async run(args) {
-      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions", "share", "accept", "assignments", "max-sessions"]);
+      const a = parseArgs(args, ["port", "notify", "agent", "share-sessions", "share", "accept", "assignments", "max-sessions", "remote-stop", "team-offers"]);
       const notifyArg = a.str("notify");
       if (notifyArg !== undefined && !["desktop", "terminal", "both", "off"].includes(notifyArg)) {
         c.io.err("--notify must be desktop, terminal, both or off");
@@ -112,6 +112,18 @@ export function setupCommand(c: CliEnv): Command {
           c.io.err("--max-sessions must be a whole number from 1 to 1000, or off");
           return 2;
         }
+      }
+      // RL-26: the owner's consent to remote session stops and to team offers (both default off).
+      const onOff = (flag: string): boolean | undefined | "bad" => {
+        if (!a.has(flag)) return undefined;
+        const v = a.str(flag);
+        return v === "on" ? true : v === "off" ? false : "bad";
+      };
+      const remoteStopArg = onOff("remote-stop");
+      const teamOffersArg = onOff("team-offers");
+      if (remoteStopArg === "bad" || teamOffersArg === "bad") {
+        c.io.err(`--${remoteStopArg === "bad" ? "remote-stop" : "team-offers"} must be on or off`);
+        return 2;
       }
       const agent = a.has("agent") ? agentChoice(a.str("agent")) : a.has("uninstall") ? "all" : "claude";
       if (!agent) {
@@ -170,6 +182,8 @@ export function setupCommand(c: CliEnv): Command {
       if (shareArg) config = { ...config, shareSessions: shareArg };
       if (acceptArg) config = { ...config, accept: acceptArg };
       if (assignArg) config = { ...config, assignments: assignArg };
+      if (remoteStopArg !== undefined) config = { ...config, remoteStop: remoteStopArg };
+      if (teamOffersArg !== undefined) config = { ...config, teamOffers: teamOffersArg };
       if (maxArg === "off") {
         const { maxSessions: _, ...rest } = config;
         config = rest;
@@ -181,6 +195,10 @@ export function setupCommand(c: CliEnv): Command {
         : acceptArg.includes("off")
           ? "No offer is accepted automatically. Restart the daemon to apply."
           : `Offers from ${acceptArg.join(", ")} are accepted automatically. Restart the daemon to apply.`;
+      const consentLines = [
+        remoteStopArg === undefined ? "" : remoteStopArg ? "Remote stops of this machine's sessions are allowed (a goal's owner or approver may interrupt or end them). Restart the daemon to apply." : "Remote stops of this machine's sessions are not allowed. Restart the daemon to apply.",
+        teamOffersArg === undefined ? "" : teamOffersArg ? "Team offers are listed here for you to accept or decline (never auto). Restart the daemon to apply." : "Team offers are not taken. Restart the daemon to apply.",
+      ].filter(Boolean);
       const maxLine =
         maxArg === undefined
           ? ""
@@ -209,6 +227,7 @@ export function setupCommand(c: CliEnv): Command {
             shareLine,
             ...(acceptLine ? [acceptLine] : []),
             ...(maxLine ? [maxLine] : []),
+            ...consentLines,
             ...ocLines,
             "OpenCode sessions started from now on report to mesh. Next:",
             "  mesh up             # run the daemon here, or",
@@ -230,6 +249,7 @@ export function setupCommand(c: CliEnv): Command {
           shareLine,
           acceptLine,
           maxLine,
+          ...consentLines,
           r.changed ? `Installed ${HOOK_KINDS.length} hooks (v${HOOKS_VERSION}) into ${c.paths.claudeSettings}.` : `Hooks (v${HOOKS_VERSION}) already installed in ${c.paths.claudeSettings}.`,
           "skipped" in mcp ? "Skipped the MCP server and the skill (--no-mcp)." : mcp.ok ? "Registered the mesh MCP server." : `Could not register the MCP server: ${"error" in mcp ? mcp.error : ""}`,
           skill?.foreign
@@ -743,7 +763,7 @@ export function statusCommand(c: CliEnv): Command {
  * dispatch prints this text for --help or -h.
  */
 const HELP_TEXT: Record<string, string> = {
-  setup: "usage: mesh setup [--port N] [--notify desktop|terminal|both|off] [--share-sessions steps|me|all] [--accept rules|off] [--assignments deliver|launch|off] [--max-sessions N|off] [--agent claude|opencode|all] [--no-mcp] [--uninstall]",
+  setup: "usage: mesh setup [--port N] [--notify desktop|terminal|both|off] [--share-sessions steps|me|all] [--accept rules|off] [--assignments deliver|launch|off] [--max-sessions N|off] [--remote-stop on|off] [--team-offers on|off] [--agent claude|opencode|all] [--no-mcp] [--uninstall]",
   doctor: "usage: mesh doctor     check the installation (config, Claude Code, hooks, MCP, skill, daemon)",
   skill: "usage: mesh skill      print the mesh skill for Claude Code (mesh setup installs it)",
   status: "usage: mesh status     the daemon and hub: team, Solo, or offline and working locally",

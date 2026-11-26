@@ -39,6 +39,11 @@ export async function pasteToPane(pane: string, text: string, o: TmuxOpts = {}):
   return (await tmux(o, ["send-keys", "-t", pane, "Enter"])).code === 0;
 }
 
+/** RL-26: send one key to a pane (e.g. `Escape`, the agent's interrupt key). */
+export async function sendKeyToPane(pane: string, key: string, o: TmuxOpts = {}): Promise<boolean> {
+  return (await tmux(o, ["send-keys", "-t", pane, key])).code === 0;
+}
+
 /** Show a pane in the current client (the caller runs inside tmux on the same server). */
 export async function jumpToPane(pane: string, o: TmuxOpts = {}): Promise<boolean> {
   const r = await tmux(o, ["switch-client", "-t", pane]);

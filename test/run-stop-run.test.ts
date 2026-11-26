@@ -17,7 +17,9 @@ import type { Json, Person } from "./helpers/world.ts";
 let r: Relay;
 const dirs: string[] = [];
 afterEach(async () => {
-  await r?.stop();
+  const cur = r;
+  r = undefined as unknown as Relay;
+  await cur?.stop();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -242,7 +244,7 @@ describe("AC-09 AC-10 session stop on the machine", { timeout: 60_000 }, () => {
 
 describe("AC-12 consent config", () => {
   it("test_AC12_defaults_and_setup", async () => {
-    const parsed = DaemonConfig.parse({ port: 1, key: "k".repeat(32) });
+    const parsed = DaemonConfig.parse({ port: 31240, key: "k".repeat(32) });
     expect([parsed.remoteStop, parsed.teamOffers]).toStrictEqual([false, false]);
     const root = mkdtempSync(join(tmpdir(), "mesh-rl26-"));
     dirs.push(root);
@@ -252,14 +254,14 @@ describe("AC-12 consent config", () => {
     const c: CliEnv = { io: { out: (t) => out.push(t), err: (t) => out.push(t) }, paths, env: {}, cwd: join(root, "w"), self: ["mesh"], version: "0.0.0" };
     const setup = meshCommands(c).find((x) => x.name === "setup") as { run(a: string[]): Promise<number> };
     const cfg = () => JSON.parse(readFileSync(paths.daemonConfig, "utf8")) as Record<string, unknown>;
-    expect(await setup.run(["--port", "31241"])).toBe(0);
-    expect(await setup.run(["--remote-stop", "on"])).toBe(0);
+    expect(await setup.run([...["--port", "31241"], "--no-mcp"])).toBe(0);
+    expect(await setup.run([...["--remote-stop", "on"], "--no-mcp"])).toBe(0);
     expect(cfg().remoteStop).toBe(true);
-    expect(await setup.run(["--team-offers", "on"])).toBe(0);
+    expect(await setup.run([...["--team-offers", "on"], "--no-mcp"])).toBe(0);
     expect([cfg().remoteStop, cfg().teamOffers]).toStrictEqual([true, true]);
-    expect(await setup.run(["--remote-stop", "off"])).toBe(0);
+    expect(await setup.run([...["--remote-stop", "off"], "--no-mcp"])).toBe(0);
     expect(cfg().remoteStop).toBe(false);
-    expect(await setup.run(["--team-offers", "maybe"])).toBe(2);
+    expect(await setup.run([...["--team-offers", "maybe"], "--no-mcp"])).toBe(2);
   });
 });
 
