@@ -29,7 +29,7 @@ describe("RL-15 AC-13 docs", () => {
     const o = read("docs/guide/operations.md");
     expect(o).toContain(" 0.1.37 (RL-15) adds the overlap policies");
     expect(o.indexOf("0.1.37 (RL-15)")).toBeLessThan(o.indexOf("0.1.23 has no release package."));
-    expect(o).toContain("## Upgrading to 0.1.42");
+    expect(o).toContain("## Upgrading to 0.1.43");
     const probes = o.slice(o.indexOf("### Probes"), o.indexOf("\n## ", o.indexOf("### Probes")));
     for (const f of ["debrief-sla", "overlap-policy"]) expect(probes).toContain(`\`${f}\``);
     const ev = read("docs/events.md");

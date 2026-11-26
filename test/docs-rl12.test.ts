@@ -30,7 +30,7 @@ describe("RL-12 AC-12 docs", () => {
   it("test_AC12_guides", () => {
     expect(read("docs/guide/scheduled-reviews.md")).toContain("GET /v1/health?days=7");
     const o = read("docs/guide/operations.md");
-    expect(section(o, "Upgrading to 0.1.42")).toContain("0.1.31 adds pulse run cards");
+    expect(section(o, "Upgrading to 0.1.43")).toContain("0.1.31 adds pulse run cards");
     for (const f of ["health", "pulse-runs", "runs", "trial"]) expect(o).toContain(`\`${f}\``);
     const plan = read("docs/plan/implementation-plan.md");
     expect(plan).toContain("| `GET /v1/pulses/:id/runs` |");
