@@ -49,6 +49,8 @@ export interface RunsDeps {
   /** The live count for maxSessions (sessions, pending launches, runs whose session is not seen yet). */
   liveCount(): number;
   maxSessions(): number | undefined;
+  /** RL-24: the hub's last sync reply says the fleet is paused (no queued run starts). */
+  fleetPaused?(): boolean;
   /** Paths of the calls queued while the hub was offline. */
   pendingCallPaths(): string[];
   sessions(): readonly Session[];
@@ -737,6 +739,7 @@ export class HeadlessRuns {
         this.deps.log(`run ${run.runId}: released (no free session before the deadline)`);
         continue;
       }
+      if (this.deps.fleetPaused?.()) continue;
       const reserved = this.hasRoom() ? this.beginStart(run.runId) : undefined;
       if (reserved) await this.start(reserved);
     }

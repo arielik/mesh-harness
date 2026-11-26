@@ -7,7 +7,7 @@
 // is used (Solo).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { type AgentReport, Credentials, IDEMPOTENCY_HEADER, type InboxMessage, type Repo, type Session, type ShareLevel, type SyncEvent, type SyncResponse } from "../protocol/index.ts";
+import { type AgentReport, Credentials, type FleetPause, IDEMPOTENCY_HEADER, type InboxMessage, type Repo, type Session, type ShareLevel, type SyncEvent, type SyncResponse } from "../protocol/index.ts";
 import type { DaemonStore, PendingCall } from "../store/index.ts";
 import { selectStateTime, type SentMark } from "../core/state-time.ts";
 
@@ -68,6 +68,8 @@ export interface HubLinkDeps {
    * flush (`sids`); not called when the hub sent none (an older hub).
    */
   onNotHeld?(sids: readonly string[], notHeld: readonly { sid: string; step: string }[]): void;
+  /** RL-24: the fleet pause of a sync reply (null: not paused); not called when the hub sent none (an older hub). */
+  onPaused?(paused: FleetPause | null): void;
   /** A call queued while offline was sent (or refused) once the hub came back. */
   onReplayed?(call: PendingCall, result: unknown): void;
   onRejected?(call: PendingCall, error: HubRpcError): void;
@@ -375,6 +377,7 @@ export class HubLink {
           if (Array.isArray(reply?.notHeld)) this.deps.onNotHeld?.(sessions.filter((s) => s.step !== undefined).map((s) => s.sid), reply.notHeld);
           stateTime = undefined;
         }
+        if (reply && Object.hasOwn(reply, "paused")) this.deps.onPaused?.(reply.paused ?? null);
         if (sendRepos) this.sentRepos = reposJson;
         if (sendAgents) this.sentAgents = agentsJson;
         this.confirmed = reply?.share !== undefined;

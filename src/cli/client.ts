@@ -1,4 +1,4 @@
-import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetView, type LaunchRequest, type OfferView, type Step, type DebriefList, type PulseList, type RevertResult } from "../protocol/index.ts";
+import { KEY_HEADER, SayResponse, Session, SessionsResponse, type DaemonConfig, type FleetPause, type FleetView, type LaunchRequest, type OfferView, type Step, type DebriefList, type PulseList, type RevertResult } from "../protocol/index.ts";
 
 export class DaemonUnreachable extends Error {
   constructor(port: number) {
@@ -138,4 +138,6 @@ export interface DaemonStatus {
   oldHooks?: number;
   /** Live OpenCode sessions reported by an older mesh plugin. */
   oldPlugin?: number;
+  /** RL-24: the fleet pause of the hub's last sync reply (missing from older daemons). */
+  fleetPaused?: FleetPause;
 }

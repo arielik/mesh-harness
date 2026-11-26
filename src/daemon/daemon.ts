@@ -82,6 +82,7 @@ import {
   type Repo,
   type Session,
   type SessionsResponse,
+  type FleetPause,
 } from "../protocol/index.ts";
 import type { DaemonStore } from "../store/index.ts";
 import { MESSAGE_TTL_MS, planDelivery } from "./delivery.ts";
@@ -352,6 +353,7 @@ export class Daemon {
         onReplayed: (call, r) => this.replayed(call, r),
         onRejected: (call, e) => this.rejected(call, e),
         onNotHeld: (sids, notHeld) => this.applyNotHeld(sids, notHeld),
+        onPaused: (p) => this.applyFleetPause(p),
       });
     }
     const runner = this.deps.headless;
@@ -371,6 +373,7 @@ export class Daemon {
             secrets: () => [this.config.key, this.link?.credentials()?.token].filter((x): x is string => typeof x === "string" && x.length > 0),
             liveCount: () => this.liveCount(),
             maxSessions: () => this.config.maxSessions,
+            fleetPaused: () => this.fleetPaused != null,
             pendingCallPaths: () => this.store.pendingCalls().map((c) => c.path),
             sessions: () => this.sessions,
             repoForCwd: (cwd) => this.deps.repoForCwd(cwd),
@@ -1223,6 +1226,8 @@ export class Daemon {
     oldHooks: number;
     /** Live OpenCode sessions whose plugin is older than this mesh's. */
     oldPlugin: number;
+    /** RL-24: the fleet pause the hub's last sync reply carried. */
+    fleetPaused?: FleetPause | undefined;
   } {
     const oldHooks = this.sessions.filter((x) => x.state !== "ended" && x.hooksVersion !== undefined && x.hooksVersion < HOOKS_VERSION).length;
     const oldPlugin = this.sessions.filter((x) => x.state !== "ended" && x.pluginVersion !== undefined && x.pluginVersion < OPENCODE_PLUGIN_VERSION).length;
@@ -1239,7 +1244,25 @@ export class Daemon {
       error: this.link.lastError,
       oldHooks,
       oldPlugin,
+      ...(this.fleetPaused ? { fleetPaused: this.fleetPaused } : {}),
     };
+  }
+
+  /**
+   * RL-24: the fleet pause from the hub's last sync reply that carried it (undefined: the hub never
+   * said, an older hub; treated as not paused). While it is set no queued headless run starts.
+   */
+  private fleetPaused: FleetPause | null | undefined;
+
+  /** RL-24: keep the reply's pause; notify once per change (not for the first reply after start). */
+  private applyFleetPause(p: FleetPause | null): void {
+    const prev = this.fleetPaused;
+    this.fleetPaused = p;
+    if (prev === undefined) return;
+    if (prev === null ? p === null : p !== null && p.since === prev.since) return;
+    if (!notifyChannels(this.config).any) return;
+    const text = p ? `fleet paused by @${p.by}${p.via ? ` via ${p.via}` : ""}: ${p.reason}` : "fleet resumed";
+    void this.deps.notify("mesh", text).catch(() => undefined);
   }
 
   private maybeNotify(prev: Session | undefined, s: Session): void {
