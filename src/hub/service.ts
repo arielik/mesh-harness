@@ -166,6 +166,9 @@ import type {
   DoneResult,
   Goal,
   GoalDetail,
+  GoalMembership,
+  ListedGoal,
+  StepState,
   Topic,
   TopicView,
   InboxMessage,
@@ -265,7 +268,7 @@ import type {
   PulseWhenInput,
   SlotReason,
 } from "../protocol/index.ts";
-import { PulseSlot as PulseSlotSchema, StateTimeReport, SLA_DECIDER, type Carry } from "../protocol/index.ts";
+import { PulseSlot as PulseSlotSchema, StateTimeReport, SLA_DECIDER, StepState as StepStateSchema, type Carry } from "../protocol/index.ts";
 import { AGENT_NAME_RE, ALL_TOPIC, TargetRepo, CATALOG_REPO_MAX, HEADLESS_DEFAULTS, parseRosterKey, ROSTER_KEY_RULE, MAX_LABELS, TopicName, goalHasTopics, normalizeTopics, parseLabels } from "../protocol/index.ts";
 import { FIGURE_EVENTS, goalCard, rollup, stepWindow, turnsSinceCommit } from "../core/efficiency.ts";
 import { AlertWebhook, type AlertItem, type AlertWebhookResult } from "../protocol/index.ts";
@@ -382,6 +385,11 @@ export interface Actor extends Principal {
 
 /** The event payload field naming the service that acted for the person (mesh-ai B-178). */
 const viaOf = (actor: { via?: string | undefined }): { via?: string } => (actor.via ? { via: actor.via } : {});
+
+/** RL-28 REQ-REOPEN-7: the `state` values of `GET /v1/goals`. */
+const GOAL_LIST_STATES: readonly string[] = ["open", "done", "dropped", "all"];
+/** The list state of a goal: a done goal waiting for an amendment's decision is open. */
+const listState = (g: { state: string; planPending: boolean }): string => (g.state === "dropped" ? "dropped" : g.state === "done" && !g.planPending ? "done" : "open");
 /** RL-22: the end of a session message relayed by a service for a person. */
 const viaText = (actor: { via?: string | undefined }): string => (actor.via ? ` (via ${actor.via})` : "");
 
@@ -2651,6 +2659,7 @@ export class HubService {
       };
       await this.store.saveSteps([design]);
       await this.emit({ type: "goal.created", user: actor.userId, goal: goal.id, payload: { title: goal.title, ...(topics.length ? { topics } : {}), ...viaOf(actor) } });
+      await this.creatorJoins(actor, goal.id, now);
       await this.emit({ type: "step.ready", goal: goal.id, step: design.id });
       return goal;
     });
@@ -2660,9 +2669,55 @@ export class HubService {
    * All goals, or those carrying every topic in `topics` (`all` matches every goal). RL-3: goals
    * made by a pulse are left out unless `pulses`.
    */
-  async listGoals(topics: readonly string[] = [], o: { pulses?: boolean | undefined } = {}): Promise<Goal[]> {
-    const want = await this.knownTopics(topics);
-    return (await this.store.listGoals()).filter((g) => goalHasTopics(g, want) && (o.pulses === true || g.refs?.pulse === undefined));
+  async listGoals(
+    topics: readonly string[] = [],
+    o: { pulses?: boolean | undefined; member?: string | undefined; state?: string | undefined } = {},
+    viewer?: Actor,
+  ): Promise<ListedGoal[]> {
+    const state = o.state;
+    if (state !== undefined && !GOAL_LIST_STATES.includes(state)) throw new HubError(400, `state must be one of ${GOAL_LIST_STATES.join(", ")}`, undefined, "bad-query");
+    return this.store.tx(async () => {
+      const want = await this.knownTopics(topics);
+      const members = await this.store.membersByGoal();
+      const pending = await this.store.pendingPlanGoals();
+      const member = o.member === "me" ? viewer?.userId : o.member;
+      const listed = (await this.store.listGoals())
+        .filter((g) => goalHasTopics(g, want) && (o.pulses === true || g.refs?.pulse === undefined))
+        .map((g) => ({ ...g, members: members.get(g.id) ?? [], planPending: pending.has(g.id) }));
+      return listed.filter((g) => (member === undefined || g.members.includes(member)) && (state === undefined || listState(g) === state || state === "all"));
+    });
+  }
+
+  // ---------- goal members (RL-28) ----------
+
+  /** REQ-GOALMEM-6: a person who asks for a goal becomes its first member (a service owner does not). */
+  private async creatorJoins(owner: { userId: string; via?: string | undefined }, goal: string, now: number): Promise<void> {
+    const u = await this.store.getUser(owner.userId);
+    if (!u || !u.roles.includes("member")) return;
+    if (await this.store.addGoalMember(goal, u.id, now)) await this.emit({ type: "goal.joined", user: u.id, goal, payload: { ...viaOf(owner) } });
+  }
+
+  /** `POST /v1/goals/:id/join`: the caller (or the person a service acts for) becomes a member. */
+  async joinGoal(actor: Actor, id: string): Promise<GoalMembership> {
+    return await this.goalTx(async () => {
+      const goal = await this.goalOr404(id, true);
+      if (goal.state === "dropped") throw refuse(409, "goal-closed", `${goal.id} is dropped`);
+      const changed = await this.store.addGoalMember(goal.id, actor.userId, this.now());
+      if (changed) await this.emit({ type: "goal.joined", user: actor.userId, goal: goal.id, payload: { ...viaOf(actor) } });
+      const members = await this.store.goalMembers(goal.id);
+      return { goal: goal.id, members, joined: members.includes(actor.userId), changed };
+    });
+  }
+
+  /** `POST /v1/goals/:id/leave`: the caller (or the person a service acts for) stops being a member. */
+  async leaveGoal(actor: Actor, id: string): Promise<GoalMembership> {
+    return await this.goalTx(async () => {
+      const goal = await this.goalOr404(id, true);
+      const changed = await this.store.removeGoalMember(goal.id, actor.userId);
+      if (changed) await this.emit({ type: "goal.left", user: actor.userId, goal: goal.id, payload: { ...viaOf(actor) } });
+      const members = await this.store.goalMembers(goal.id);
+      return { goal: goal.id, members, joined: members.includes(actor.userId), changed };
+    });
   }
 
   // ---------- topics ----------
@@ -2782,6 +2837,7 @@ export class HubService {
         holders,
         ...(Object.keys(offers).length ? { offers } : {}),
         ...(goal.stick ? { stick: await this.targetText(goal.stick.to) } : {}),
+        members: await this.store.goalMembers(goal.id),
       };
     });
   }
@@ -3878,8 +3934,12 @@ export class HubService {
         return { user: this.userView(u), online: ms.some((m) => m.online), machines: ms, sessions: ss };
       });
       const goals: LiveView["goals"] = [];
+      const pending = await this.store.pendingPlanGoals();
       for (const g of (await this.store.listGoals()).filter((x) => goalHasTopics(x, want) && x.refs?.pulse === undefined)) {
-        const steps = (await this.store.listSteps({ goal: g.id })).filter((s) => s.state !== "dropped");
+        const all = await this.store.listSteps({ goal: g.id });
+        const stepStates = Object.fromEntries(StepStateSchema.options.map((st) => [st, 0])) as Record<StepState, number>;
+        for (const s of all) stepStates[s.state]++;
+        const steps = all.filter((s) => s.state !== "dropped");
         goals.push({
           id: g.id,
           title: g.title,
@@ -3889,6 +3949,9 @@ export class HubService {
           done: steps.filter((s) => s.state === "done").length,
           total: steps.length,
           holders: [...new Set(steps.filter((s) => s.holderUser && (s.state === "claimed" || s.state === "paused")).map((s) => s.holderUser as string))],
+          stepStates,
+          review: all.filter((s) => isDebrief(s.policy) && (s.state === "ready" || s.state === "claimed" || s.state === "paused")).length,
+          planPending: pending.has(g.id),
         });
       }
       const hostnames = new Map(machines.map((m) => [m.id, m.hostname]));
@@ -4392,6 +4455,7 @@ export class HubService {
         },
         now,
       );
+      await this.creatorJoins(actor, goal.id, now);
       return goal.id;
     });
     return await this.goalDetail(id);
@@ -8052,6 +8116,12 @@ function describe(type: string, subject: string | undefined, payload: Record<str
       return `${s} paused: ${String(payload.reason)}`;
     case "goal.done":
       return `${s} is done`;
+    case "goal.joined":
+      return `joined ${s}`;
+    case "goal.left":
+      return `left ${s}`;
+    case "goal.reopened":
+      return `reopened ${s} (${String(payload.to)})`;
     case "goal.replan":
       return `asked to replan ${s.split(".")[0]}${payload.comment ? `: ${String(payload.comment)}` : ""}`;
     case "step.released":

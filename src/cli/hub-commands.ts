@@ -10,7 +10,7 @@ import { stringify, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { sha256 } from "../auth/index.ts";
 import { BUILTIN_PRESETS, instantiate, parsePreset, presetKindProblem, presetText, repoMatches, type Preset } from "../core/index.ts";
-import { NICKNAME_RULE, nicknameOk, PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type Step, type TopicView, type TrailFile } from "../protocol/index.ts";
+import { NICKNAME_RULE, nicknameOk, PlanAc, PlanInput, writeFileAtomic, type Goal, type GoalDetail, type GoalMembership, type Step, type TopicView, type TrailFile } from "../protocol/index.ts";
 import { DaemonClient } from "./client.ts";
 import type { Command } from "./commands.ts";
 import { loadConfig, parseArgs, type CliEnv } from "./context.ts";
@@ -236,7 +236,10 @@ export function goalCommand(c: CliEnv): Command {
   const usage = [
     "usage:",
     '  mesh goal new "<title>" [--repo R] [--repos a,b] [--topics a,b] [--refs spec=SPEC-7,backlog=ROW-42] [--preset sdd-split] [--reworks G3] [--issue URL] [--priority 0-9]',
-    "  mesh goal ls [--topic a,b] [--pulses]  # only goals with every topic given; --pulses: also goals made by pulses",
+    "  mesh goal ls [--topic a,b] [--pulses] [--mine | --member <user>] [--state open|done|dropped|all]",
+    "                                      # only goals with every topic given; --pulses: also goals made by pulses",
+    "                                      # open: also done goals with a pending plan; +<n>: its members",
+    "  mesh goal join <G>                  # follow a goal as a member; leave <G> to stop",
     "  mesh goal tag <G> <topic>…          # untag <G> <topic>… to take topics off",
     "  mesh goal show <G>",
     "  mesh goal plan <G> --file plan.yaml [--no-approve]",
@@ -253,7 +256,7 @@ export function goalCommand(c: CliEnv): Command {
     summary: "goals and plans: new, ls, show, tag, plan, approve, revise, drop",
     async run(args) {
       const [sub, ...rest] = args;
-      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs", "topic", "topics", "params", "reason"]);
+      const a = parseArgs(rest, ["repo", "repos", "refs", "issue", "priority", "file", "comment", "preset", "reworks", "acs", "topic", "topics", "params", "reason", "member", "state"]);
       const hub = () => HubClient.from(c.paths);
       switch (sub) {
         case "new": {
@@ -275,11 +278,30 @@ export function goalCommand(c: CliEnv): Command {
         }
         case "ls": {
           const topics = list(a.str("topic") ?? a.str("topics"));
-          const query = new URLSearchParams({ ...(topics.length ? { topic: topics.join(",") } : {}), ...(a.has("pulses") ? { pulses: "1" } : {}) }).toString();
+          const member = a.has("mine") ? "me" : a.str("member");
+          const state = a.str("state");
+          const query = new URLSearchParams({
+            ...(topics.length ? { topic: topics.join(",") } : {}),
+            ...(a.has("pulses") ? { pulses: "1" } : {}),
+            ...(member ? { member } : {}),
+            ...(state ? { state } : {}),
+          }).toString();
           const q = query ? `?${query}` : "";
-          const { goals } = await hub().get<{ goals: Goal[] }>(`/v1/goals${q}`);
-          if (goals.length === 0) c.io.out(topics.length ? `No goals with topic ${topics.join(" and ")}.` : "No goals yet. Create one: mesh goal new \"<title>\"");
-          for (const g of goals) c.io.out(`${g.id.padEnd(5)} ${g.state.padEnd(18)} @${g.ownerId.padEnd(12)} ${g.title}${g.trial ? " (trial)" : ""}${g.topics?.length ? `  [${g.topics.join(", ")}]` : ""}`);
+          const { goals } = await hub().get<{ goals: (Goal & { members?: string[] })[] }>(`/v1/goals${q}`);
+          if (goals.length === 0) c.io.out(member || state ? "No goals match." : topics.length ? `No goals with topic ${topics.join(" and ")}.` : "No goals yet. Create one: mesh goal new \"<title>\"");
+          for (const g of goals) {
+            const members = g.members?.length ? `+${g.members.length} ` : "";
+            c.io.out(`${g.id.padEnd(5)} ${g.state.padEnd(18)} @${g.ownerId.padEnd(12)} ${members}${g.title}${g.trial ? " (trial)" : ""}${g.topics?.length ? `  [${g.topics.join(", ")}]` : ""}`);
+          }
+          return 0;
+        }
+        case "join":
+        case "leave": {
+          const id = a.positional[0];
+          if (!id) break;
+          const r = await hub().post<GoalMembership>(`/v1/goals/${encodeURIComponent(id)}/${sub}`, {});
+          if (sub === "join") c.io.out(r.changed ? `Joined ${r.goal} (members: ${r.members.join(", ")})` : `Already a member of ${r.goal}`);
+          else c.io.out(r.changed ? `Left ${r.goal}` : `Not a member of ${r.goal}`);
           return 0;
         }
         case "tag":

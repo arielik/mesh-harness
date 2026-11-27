@@ -341,6 +341,23 @@ export type DisposeRequest = z.infer<typeof DisposeRequest>;
 export const GoalDrop = z.object({ reason: z.string().min(1).max(2000).optional() }).strict();
 export type GoalDrop = z.infer<typeof GoalDrop>;
 
+/** RL-28: body of `POST /v1/goals/:id/join` and `/leave` (the caller, or the person a service acts for). */
+export const GoalMembershipRequest = z.object({}).strict();
+export type GoalMembershipRequest = z.infer<typeof GoalMembershipRequest>;
+
+/** RL-28: reply of `POST /v1/goals/:id/join` and `/leave`. `changed`: false when nothing was to do. */
+export interface GoalMembership {
+  goal: string;
+  /** User ids, sorted. */
+  members: string[];
+  /** The caller is a member after the call. */
+  joined: boolean;
+  changed: boolean;
+}
+
+/** RL-28: one goal of `GET /v1/goals`. */
+export type ListedGoal = Goal & { members: string[]; planPending: boolean };
+
 /** RL-9: body of `POST /v1/items/sink` (add a lineage's filed items to its clean-audit goal). */
 export const SinkRequest = z
   .object({
@@ -623,6 +640,8 @@ export interface GoalDetail {
   offers?: Record<string, OfferLine> | undefined;
   /** MM-3: the target text of the goal's stick; absent when none. */
   stick?: string | undefined;
+  /** RL-28: the goal's members (user ids, sorted); always set by a 0.1.45+ hub, absent from an older one. */
+  members?: string[] | undefined;
 }
 
 /** MM-3: reply of `POST /v1/steps/:id/assign`. */
@@ -781,7 +800,22 @@ export interface LiveView {
   now: number;
   me: UserView;
   people: { user: UserView; online: boolean; machines: LiveMachine[]; sessions: LiveSession[] }[];
-  goals: { id: string; title: string; state: string; owner: string; topics: string[]; done: number; total: number; holders: string[] }[];
+  goals: {
+    id: string;
+    title: string;
+    state: string;
+    owner: string;
+    topics: string[];
+    done: number;
+    total: number;
+    holders: string[];
+    /** RL-28: the goal's steps per state, every state (dropped steps included). */
+    stepStates: Record<StepState, number>;
+    /** RL-28: findings-review (debrief) steps in ready, claimed or paused. */
+    review: number;
+    /** RL-28: a plan waits for a decision. */
+    planPending: boolean;
+  }[];
   attention: Attention[];
   activity: { seq: number; at: number; type: string; user?: string | undefined; goal?: string | undefined; step?: string | undefined; text: string }[];
 }
@@ -825,7 +859,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "step-park", "team-attention", "team-offers", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "goal-members", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "step-park", "team-attention", "team-offers", "trial"];
 
 /** RL-25: an RFC 3339 time as Alertmanager writes it (fractions to nanoseconds, `Z` or an offset). */
 const Rfc3339 = z

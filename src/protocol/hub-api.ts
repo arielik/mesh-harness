@@ -23,6 +23,7 @@ import {
   DoneRequest,
   GateDecision,
   GoalDrop,
+  GoalMembershipRequest,
   LoginDirect,
   MachineLabels,
   MachineName,
@@ -77,7 +78,7 @@ const Readiness = z.object({ ok: z.boolean(), schema: z.number().int().optional(
 export type HubRouteRule = "public" | "member" | "admin" | "events";
 
 /** What a service token may do beyond the event feed (`mesh hub token --service <name> --scope …`). */
-export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message", "fleet:pause", "alerts:notify", "sessions:stop"] as const;
+export const SERVICE_SCOPES = ["goals:read", "goals:write", "live:read", "pulses:write", "profiles:write", "steps:assign", "goals:decide", "questions:answer", "sessions:message", "fleet:pause", "alerts:notify", "sessions:stop", "goals:join"] as const;
 export const ServiceScope = z.enum(SERVICE_SCOPES);
 export type ServiceScope = z.infer<typeof ServiceScope>;
 
@@ -213,8 +214,15 @@ export const HUB_API: readonly HubApiRoute[] = [
     rule: "member",
     scope: "goals:read",
     tag: "goals",
-    query: { topic: TOPIC_QUERY, pulses: "1: also goals created by pulses (left out by default)" },
-    summary: "All goals, or those with the given topics.",
+    onBehalfOf: true,
+    onBehalfOfOptional: true,
+    query: {
+      topic: TOPIC_QUERY,
+      pulses: "1: also goals created by pulses (left out by default)",
+      member: "a user id: only the goals that user is a member of (`me`: the caller, or the person a service acts for)",
+      state: "open | done | dropped | all: `open` also has done goals with a pending plan, `done` only the other done goals (absent: every goal)",
+    },
+    summary: "All goals, or those with the given topics, members or state; each with its members and whether a plan is pending.",
   },
   { method: "POST", path: "/v1/goals", rule: "member", scope: "goals:write", onBehalfOf: true, onBehalfOfOptional: true, tag: "goals", body: NewGoal, status: 201, summary: "Create a goal (a service may create it for a person, who then owns it)." },
   {
@@ -337,6 +345,8 @@ export const HUB_API: readonly HubApiRoute[] = [
   { method: "POST", path: "/v1/goals/:id/approve", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: Approve, summary: "Approve the proposed plan (approvers)." },
   { method: "POST", path: "/v1/goals/:id/revise", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: Decide, summary: "Ask the design session to revise the proposed plan." },
   { method: "POST", path: "/v1/goals/:id/drop", rule: "member", scope: "goals:write", onBehalfOf: true, onBehalfOfOptional: true, tag: "goals", body: GoalDrop, summary: "Drop a goal (its owner, an approver or an admin); no step may be held." },
+  { method: "POST", path: "/v1/goals/:id/join", rule: "member", scope: "goals:join", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: GoalMembershipRequest, summary: "Join a goal as a member (yourself, or the person a service acts for)." },
+  { method: "POST", path: "/v1/goals/:id/leave", rule: "member", scope: "goals:join", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: GoalMembershipRequest, summary: "Leave a goal (yourself, or the person a service acts for)." },
   { method: "POST", path: "/v1/goals/:id/replan", rule: "member", scope: "goals:decide", onBehalfOf: true, onBehalfOfRequired: true, tag: "goals", body: Replan, summary: "Reopen design for a goal with an approved plan." },
   { method: "GET", path: "/v1/goals/:id/files", rule: "member", scope: "goals:read", tag: "goals", summary: "The record files of a goal, as the ledger writes them." },
   { method: "POST", path: "/v1/goals/:id/topics", rule: "member", scope: "goals:write", tag: "goals", body: GoalTopicsChange, summary: "Tag a goal with topics or untag it (any member)." },

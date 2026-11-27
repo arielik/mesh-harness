@@ -1993,7 +1993,7 @@
     "/v1/goals": {
       "get": {
         "operationId": "getVGoals",
-        "summary": "All goals, or those with the given topics.",
+        "summary": "All goals, or those with the given topics, members or state; each with its members and whether a plan is pending.",
         "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:read`.",
         "tags": [
           "goals"
@@ -2013,6 +2013,33 @@
             "in": "query",
             "required": false,
             "description": "1: also goals created by pulses (left out by default)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "member",
+            "in": "query",
+            "required": false,
+            "description": "a user id: only the goals that user is a member of (`me`: the caller, or the person a service acts for)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "open | done | dropped | all: `open` also has done goals with a pending plan, `done` only the other done goals (absent: every goal)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (optional: without it the service acts as itself).",
             "schema": {
               "type": "string"
             }
@@ -7320,6 +7347,150 @@
                     "maxLength": 2000
                   }
                 },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/goals/{id}/join": {
+      "post": {
+        "operationId": "postVGoalsIdJoin",
+        "summary": "Join a goal as a member (yourself, or the person a service acts for).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:join`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
+    "/v1/goals/{id}/leave": {
+      "post": {
+        "operationId": "postVGoalsIdLeave",
+        "summary": "Leave a goal (yourself, or the person a service acts for).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:join`.",
+        "tags": [
+          "goals"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
                 "additionalProperties": false
               }
             }

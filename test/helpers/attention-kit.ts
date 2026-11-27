@@ -41,7 +41,9 @@ export class Ak {
     this.w = w;
   }
 
-  static async start(clock = NOW - 10 * HOUR): Promise<Ak> {
+  /** `approvers`: the users in the approvers group (default apu). */
+  static async start(clock = NOW - 10 * HOUR, o: { approvers?: string[] } = {}): Promise<Ak> {
+    const approvers = o.approvers ?? ["apu"];
     const w = new World();
     const users = ["ann", "bob", "apu", "root"];
     await w.start(users, {
@@ -52,7 +54,7 @@ export class Ak {
             {
               id: "team",
               kind: "token",
-              users: users.map((n) => ({ name: n, token_sha256: sha256(`${n}-token-secret`), ...(n === "apu" ? { groups: ["approvers"] } : {}) })),
+              users: users.map((n) => ({ name: n, token_sha256: sha256(`${n}-token-secret`), ...(approvers.includes(n) ? { groups: ["approvers"] } : {}) })),
               roles: { approver: ["approvers"] },
             },
           ],

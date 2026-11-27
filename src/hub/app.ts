@@ -59,6 +59,7 @@ import {
   SESSION_COOKIE,
   SyncRequest,
   FleetPauseRequest,
+  GoalMembershipRequest,
   FleetResumeRequest,
   StopRun,
   StopSession,
@@ -310,7 +311,17 @@ export function buildRoutes(svc: HubService): Route[] {
     ),
 
     // ---------- goals ----------
-    r("GET", "/v1/goals", "member", async (c) => c.json({ goals: await svc.listGoals(topicsQuery(c), { pulses: c.req.query("pulses") === "1" }) }), "goals:read"),
+    // RL-28: `member=me` is the caller, or the person a service acts for.
+    forPerson(
+      r(
+        "GET",
+        "/v1/goals",
+        "member",
+        async (c, a) => c.json({ goals: await svc.listGoals(topicsQuery(c), { pulses: c.req.query("pulses") === "1", member: c.req.query("member") || undefined, state: c.req.query("state") || undefined }, a) }),
+        "goals:read",
+      ),
+      { optional: true },
+    ),
     forPerson(r("POST", "/v1/goals", "member", async (c, a) => c.json(await svc.createGoal(a, await body(c, NewGoal)), 201), "goals:write"), { optional: true }),
     // RL-3: ingest (a goal with an approved plan from a preset).
     forPerson(r("POST", "/v1/goals/from-preset", "member", async (c, a) => c.json(await svc.goalFromPreset(a, await body(c, GoalFromPreset)), 201), "goals:write"), { optional: true }),
@@ -333,6 +344,33 @@ export function buildRoutes(svc: HubService): Route[] {
     forPerson(r("POST", "/v1/goals/:id/revise", "member", async (c, a) => c.json(await svc.revisePlan(a, param(c, "id"), (await body(c, Decide)).comment)), "goals:decide"), { required: true }),
     // RL-9: a person ends a goal (RL-22: a service may drop for a person, or as itself).
     forPerson(r("POST", "/v1/goals/:id/drop", "member", async (c, a) => c.json(await svc.dropGoalByPerson(a, param(c, "id"), (await body(c, GoalDrop)).reason)), "goals:write"), { optional: true }),
+    // RL-28: a person joins or leaves a goal; a service only for a person (header required).
+    forPerson(
+      r(
+        "POST",
+        "/v1/goals/:id/join",
+        "member",
+        async (c, a) => {
+          await body(c, GoalMembershipRequest);
+          return c.json(await svc.joinGoal(a, param(c, "id")));
+        },
+        "goals:join",
+      ),
+      { required: true },
+    ),
+    forPerson(
+      r(
+        "POST",
+        "/v1/goals/:id/leave",
+        "member",
+        async (c, a) => {
+          await body(c, GoalMembershipRequest);
+          return c.json(await svc.leaveGoal(a, param(c, "id")));
+        },
+        "goals:join",
+      ),
+      { required: true },
+    ),
     forPerson(r("POST", "/v1/goals/:id/replan", "member", async (c, a) => c.json(await svc.replan(a, param(c, "id"), (await body(c, Replan)).comment)), "goals:decide"), { required: true }),
     r("GET", "/v1/goals/:id/files", "member", async (c) => c.json({ files: await svc.goalFiles(param(c, "id")) }), "goals:read"),
     r("POST", "/v1/goals/:id/topics", "member", async (c, a) => c.json(await svc.changeGoalTopics(a, param(c, "id"), await body(c, GoalTopicsChange))), "goals:write"),

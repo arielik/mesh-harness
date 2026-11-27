@@ -25,6 +25,7 @@ export function renderGoal(d: GoalDetail, opts: { color?: boolean } = {}): strin
   lines.push(paint("1", `${g.id} · ${g.title}${g.trial ? " (trial)" : ""}`));
   lines.push(`${g.state.replace(/_/g, " ")} · owner @${g.ownerId} · ${done}/${visible.length} steps done${g.primaryRepo ? ` · ${g.primaryRepo}` : ""}`);
   if (g.topics?.length) lines.push(`topics: ${g.topics.join(", ")}`);
+  if (d.members) lines.push(`members: ${d.members.length ? d.members.join(", ") : "none"}`);
   // RL-9: a clean-audit goal's finding steps by severity.
   if (g.sink) {
     const c = sinkCounts(d.steps);
