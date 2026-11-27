@@ -47,6 +47,8 @@ export const TABLES: readonly { name: string; identity?: string }[] = [
   { name: "hub_state" },
   // RL-25: alert episodes.
   { name: "alert_episode" },
+  // RL-28: goal members.
+  { name: "goal_member" },
 ];
 
 /** BLOB columns (RL-1 artifact content) go to Postgres bytea as Buffers. */

@@ -787,7 +787,7 @@ describe("RL-9 AC-18/AC-19 routes and schema", () => {
   });
 
   it("test_AC19_schema_version", () => {
-    expect(HubStore.SCHEMA_VERSION).toBe(14);
+    expect(HubStore.SCHEMA_VERSION).toBe(15);
   });
 });
 
@@ -826,6 +826,6 @@ describe("RL-10 AC-12/AC-13 routes and schema", () => {
   });
 
   it("test_AC13_schema_version", () => {
-    expect(HubStore.SCHEMA_VERSION).toBe(14);
+    expect(HubStore.SCHEMA_VERSION).toBe(15);
   });
 });

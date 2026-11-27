@@ -438,12 +438,12 @@ function contract(d: Driver) {
     const nick = async (s: HubStore, id: string) => (await s.getMachine(id))?.nickname;
 
     it("test_AC05_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
     });
 
     it("test_AC05_migration_lengths_equal", () => {
       expect(HUB_MIGRATIONS.length).toBe(HUB_MIGRATIONS_PG.length);
-      expect(HUB_MIGRATIONS.length).toBe(14);
+      expect(HUB_MIGRATIONS.length).toBe(15);
     });
 
     it("test_AC05_fresh_machine_row_strict", async () => {
@@ -579,9 +579,9 @@ function contract(d: Driver) {
     const labelsOf = async (s: HubStore, id: string) => (await s.getMachine(id))?.labels;
 
     it("test_AC08_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
-      expect(HUB_MIGRATIONS.length).toBe(14);
-      expect(HUB_MIGRATIONS_PG.length).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
     });
 
     it("test_AC08_set_and_get", async () => {
@@ -671,9 +671,9 @@ function contract(d: Driver) {
     const acceptOf = async (s: HubStore, id: string) => ((await s.getMachine(id)) as { accept?: string[] } | undefined)?.accept;
 
     it("test_AC06_schema_version_8", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
-      expect(HUB_MIGRATIONS.length).toBe(14);
-      expect(HUB_MIGRATIONS_PG.length).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
     });
 
     /** m1 with repos, labels, share and nickname, then an accept-only touch. */
@@ -772,9 +772,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
-      expect(HUB_MIGRATIONS.length).toBe(14);
-      expect(HUB_MIGRATIONS_PG.length).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
     });
 
     it("test_AC08_v7_migrates", async () => {
@@ -808,7 +808,7 @@ function contract(d: Driver) {
       expect(await X(s).listArtifacts({})).toStrictEqual([]);
       expect(await X(s).listProfiles()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(14);
+      expect(Number((v as { version: number }).version)).toBe(15);
     });
 
     it("test_AC08_artifact_roundtrip", async () => {
@@ -957,9 +957,9 @@ function contract(d: Driver) {
     });
 
     it("test_AC08_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
-      expect(HUB_MIGRATIONS.length).toBe(14);
-      expect(HUB_MIGRATIONS_PG.length).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
     });
 
     it("test_AC08_v8_migrates", async () => {
@@ -991,7 +991,7 @@ function contract(d: Driver) {
       expect(await X(s).listItems("L")).toStrictEqual([]);
       expect(await X(s).itemHistory("L")).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(14);
+      expect(Number((v as { version: number }).version)).toBe(15);
     });
 
     it("test_AC08_addReview", async () => {
@@ -1110,9 +1110,9 @@ function contract(d: Driver) {
     const slotIds = (xs: { slot: string }[]) => xs.map((x) => x.slot);
 
     it("test_AC05_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
-      expect(HUB_MIGRATIONS.length).toBe(14);
-      expect(HUB_MIGRATIONS_PG.length).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
     });
 
     it("test_AC05_v9_upgrade", async () => {
@@ -1165,7 +1165,7 @@ function contract(d: Driver) {
       expect(await X(s).listPulses()).toStrictEqual([]);
       expect((await X(s).createPulse(pulseRow())).id).toBe("p-1");
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(14);
+      expect(Number((v as { version: number }).version)).toBe(15);
     });
 
     it("test_AC05_ids", async () => {
@@ -1322,7 +1322,7 @@ function contract(d: Driver) {
     });
 
     it("test_AC25_schema_version_unchanged", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
     });
 
     it("test_AC25_listSteps_updatedSince", async () => {
@@ -1372,9 +1372,9 @@ function contract(d: Driver) {
       xs.map(({ at: _a, ...x }) => x).sort((a, b) => `${String(a.machine)}${String(a.repo)}${String(a.name)}`.localeCompare(`${String(b.machine)}${String(b.repo)}${String(b.name)}`));
 
     it("test_AC03_schema_version", () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
-      expect(HUB_MIGRATIONS.length).toBe(14);
-      expect(HUB_MIGRATIONS_PG.length).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
     });
 
     it("test_AC03_v10_migrates", async () => {
@@ -1419,7 +1419,7 @@ function contract(d: Driver) {
       expect(await X(s).listRepoAgents()).toStrictEqual([]);
       expect(await X(s).listCatalogSources()).toStrictEqual([]);
       const v = await s.db.get("SELECT version FROM schema_version");
-      expect(Number((v as { version: number }).version)).toBe(14);
+      expect(Number((v as { version: number }).version)).toBe(15);
     });
 
     it("test_AC03_replace_machine_agents", async () => {
@@ -1536,7 +1536,7 @@ function contract(d: Driver) {
 
     it("test_AC12_step_time_upsert", async () => {
       const s = await store();
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
       expect(await s.putStepTime(row(1000 * D + 500, 500))).toBe(true);
       // Newer wins, equal replaces, older is ignored, another user never overwrites.
       expect(await s.putStepTime(row(1000 * D + 900, 900))).toBe(true);
@@ -1673,11 +1673,11 @@ function contract(d: Driver) {
     });
 
     it("test_AC14_migration_13", async () => {
-      expect(HubStore.SCHEMA_VERSION).toBe(14);
-      expect(HUB_MIGRATIONS.length).toBe(14);
-      expect(HUB_MIGRATIONS_PG.length).toBe(14);
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
       const s = await store();
-      expect(await s.schemaVersion()).toBe(14);
+      expect(await s.schemaVersion()).toBe(15);
       expect(await s.db.all("SELECT * FROM alert_episode")).toStrictEqual([]);
     });
 
@@ -1714,6 +1714,89 @@ function contract(d: Driver) {
       expect(await X(s).getAlertEpisode("fp2", "ann")).toBeUndefined();
       expect(await X(s).getAlertEpisode("fp3", "ann")).toMatchObject({ state: "firing" });
       expect(await X(s).getAlertEpisode("fp1", "ann")).toMatchObject({ state: "resolved" });
+    });
+  });
+
+  // RL-28 AC-09 AC-19: migration 15 (goal_member and its backfill) and the member store methods.
+  describe("RL-28 goal members", () => {
+    it("test_AC09_migration_15", async () => {
+      expect(HubStore.SCHEMA_VERSION).toBe(15);
+      expect(HUB_MIGRATIONS.length).toBe(15);
+      expect(HUB_MIGRATIONS_PG.length).toBe(15);
+      const s = await store();
+      expect(await s.schemaVersion()).toBe(15);
+      expect(await s.db.all("SELECT * FROM goal_member")).toStrictEqual([]);
+    });
+
+    it("test_AC19_backfill", async () => {
+      const target = await d.fresh();
+      const migrations = d.name === "sqlite" ? HUB_MIGRATIONS : HUB_MIGRATIONS_PG;
+      const v14 = await d.openDb(target, migrations.slice(0, 14));
+      const user = (id: string, roles: string[], extra: string[] = []) =>
+        v14.run('INSERT INTO "user" (id, name, roles, roles_extra, created_at) VALUES (?, ?, ?, ?, ?)', id, id, JSON.stringify(roles), JSON.stringify(extra), T0);
+      await user("ann", ["member"]);
+      await user("bob", ["member", "approver"]);
+      await user("svc", ["service"]);
+      await user("svx", ["service"], ["member"]);
+      let num = 0;
+      const goal = async (owner: string, state: string, over: Record<string, unknown> = {}) => {
+        const id = `G${++num}`;
+        const at = T0 + num * 1000;
+        const value = { id, title: id, ownerId: owner, state, priority: 0, createdAt: T0, updatedAt: at, ...over };
+        await v14.run("INSERT INTO goal (id, num, state, value, updated_at) VALUES (?, ?, ?, ?, ?)", id, num, state, JSON.stringify(value), at);
+        return { id, at };
+      };
+      const open = await goal("ann", "in_progress");
+      const design = await goal("bob", "design");
+      await goal("ann", "done");
+      await goal("ann", "dropped");
+      await goal("ann", "in_progress", { refs: { pulse: "p-1", slot: "s" } });
+      await goal("ann", "in_progress", { calibration: { key: "k" } });
+      await goal("ann", "in_progress", { spotCheck: { of: "x" } });
+      await goal("ann", "in_progress", { sink: { topic: "t", repo: "r" } });
+      await goal("svc", "in_progress");
+      await goal("svx", "backlog");
+      await v14.close();
+      const s = track(await HubStore.open(target));
+      expect(await s.schemaVersion()).toBe(15);
+      const rows = async () => (await s.db.all<{ goal: string; user_id: string; at: number | string }>("SELECT goal, user_id, at FROM goal_member ORDER BY goal")).map((r) => ({ ...r, at: Number(r.at) }));
+      const want = [
+        { goal: open.id, user_id: "ann", at: open.at },
+        { goal: design.id, user_id: "bob", at: design.at },
+      ];
+      expect(await rows()).toStrictEqual(want);
+      expect(await s.db.all("SELECT * FROM event WHERE type = 'goal.joined'")).toStrictEqual([]);
+      // The statement again (the whole migration: insert-or-ignore on the primary key) adds nothing.
+      await s.db.exec(migrations[14] as string);
+      expect(await rows()).toStrictEqual(want);
+    });
+
+    it("test_AC09_member_methods", async () => {
+      const s = await store();
+      expect(await s.addGoalMember("G1", "bob", T0)).toBe(true);
+      expect(await s.addGoalMember("G1", "ann", T0 + 1)).toBe(true);
+      expect(await s.addGoalMember("G1", "ann", T0 + 2)).toBe(false);
+      expect(await s.addGoalMember("G2", "ann", T0)).toBe(true);
+      expect(await s.goalMembers("G1")).toStrictEqual(["ann", "bob"]);
+      expect(await s.goalMembers("G3")).toStrictEqual([]);
+      expect([...(await s.membersByGoal()).entries()]).toStrictEqual([
+        ["G1", ["ann", "bob"]],
+        ["G2", ["ann"]],
+      ]);
+      expect(await s.removeGoalMember("G1", "bob")).toBe(true);
+      expect(await s.removeGoalMember("G1", "bob")).toBe(false);
+      expect(await s.goalMembers("G1")).toStrictEqual(["ann"]);
+    });
+
+    it("test_AC09_pending_plan_goals", async () => {
+      const s = await store();
+      const plan = (goal: string, version: number, decision: "pending" | "approved" | "revised") => ({ goal, version, steps: [], proposedBy: "ada", proposedAt: T0, decision });
+      expect(await s.pendingPlanGoals()).toStrictEqual(new Set());
+      await s.savePlan(plan("G1", 1, "approved"));
+      await s.savePlan(plan("G1", 2, "pending"));
+      await s.savePlan(plan("G2", 1, "revised"));
+      await s.savePlan(plan("G3", 1, "pending"));
+      expect(await s.pendingPlanGoals()).toStrictEqual(new Set(["G1", "G3"]));
     });
   });
 }

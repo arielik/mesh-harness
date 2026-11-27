@@ -116,6 +116,19 @@ export const HUB_MIGRATIONS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS alert_episode (fingerprint TEXT NOT NULL, person TEXT NOT NULL, state TEXT NOT NULL,
      starts_at INTEGER NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (fingerprint, person));
    CREATE INDEX IF NOT EXISTS alert_episode_prune ON alert_episode (state, updated_at);`,
+  // RL-28: one row per goal member; the owner of each open person-origin goal is backfilled (no event).
+  `CREATE TABLE IF NOT EXISTS goal_member (goal TEXT NOT NULL, user_id TEXT NOT NULL, at INTEGER NOT NULL,
+     PRIMARY KEY (goal, user_id));
+   CREATE INDEX IF NOT EXISTS goal_member_user ON goal_member (user_id);
+   INSERT OR IGNORE INTO goal_member (goal, user_id, at)
+   SELECT g.id, json_extract(g.value, '$.ownerId'), g.updated_at
+   FROM goal g JOIN user u ON u.id = json_extract(g.value, '$.ownerId')
+   WHERE g.state NOT IN ('done', 'dropped')
+     AND json_extract(g.value, '$.refs.pulse') IS NULL
+     AND json_extract(g.value, '$.calibration') IS NULL
+     AND json_extract(g.value, '$.spotCheck') IS NULL
+     AND json_extract(g.value, '$.sink') IS NULL
+     AND EXISTS (SELECT 1 FROM json_each(u.roles) WHERE value = 'member');`,
 ];
 
 /**
@@ -202,6 +215,17 @@ export const HUB_MIGRATIONS_PG: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS alert_episode (fingerprint TEXT NOT NULL, person TEXT NOT NULL, state TEXT NOT NULL,
      starts_at BIGINT NOT NULL, value TEXT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (fingerprint, person));
    CREATE INDEX IF NOT EXISTS alert_episode_prune ON alert_episode (state, updated_at);`,
+  `CREATE TABLE IF NOT EXISTS goal_member (goal TEXT NOT NULL, user_id TEXT NOT NULL, at BIGINT NOT NULL,
+     PRIMARY KEY (goal, user_id));
+   CREATE INDEX IF NOT EXISTS goal_member_user ON goal_member (user_id);
+   INSERT INTO goal_member (goal, user_id, at)
+   SELECT g.id, g.value::jsonb->>'ownerId', g.updated_at
+   FROM goal g JOIN "user" u ON u.id = g.value::jsonb->>'ownerId'
+   WHERE g.state NOT IN ('done', 'dropped')
+     AND g.value::jsonb #> '{refs,pulse}' IS NULL
+     AND NOT (g.value::jsonb ? 'calibration') AND NOT (g.value::jsonb ? 'spotCheck') AND NOT (g.value::jsonb ? 'sink')
+     AND u.roles::jsonb ? 'member'
+   ON CONFLICT DO NOTHING;`,
 ];
 
 /**
@@ -834,6 +858,35 @@ export class HubStore {
 
   async listGoals(): Promise<Goal[]> {
     return (await this.db.all<{ value: string }>("SELECT value FROM goal ORDER BY num")).map((r) => Goal.parse(JSON.parse(r.value)));
+  }
+
+  // ---------- goal members (RL-28) ----------
+
+  /** True when a row was inserted (false: already a member). */
+  async addGoalMember(goal: string, userId: string, at: number): Promise<boolean> {
+    return (await this.db.run("INSERT INTO goal_member (goal, user_id, at) VALUES (?, ?, ?) ON CONFLICT(goal, user_id) DO NOTHING", goal, userId, at)).changes > 0;
+  }
+
+  async removeGoalMember(goal: string, userId: string): Promise<boolean> {
+    return (await this.db.run("DELETE FROM goal_member WHERE goal = ? AND user_id = ?", goal, userId)).changes > 0;
+  }
+
+  /** The members of a goal, sorted. */
+  async goalMembers(goal: string): Promise<string[]> {
+    return (await this.db.all<{ user_id: string }>("SELECT user_id FROM goal_member WHERE goal = ?", goal)).map((r) => r.user_id).sort(cmp);
+  }
+
+  /** Every goal's members (sorted), in one read; a goal without members has no entry. */
+  async membersByGoal(): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>();
+    for (const r of await this.db.all<{ goal: string; user_id: string }>("SELECT goal, user_id FROM goal_member")) out.set(r.goal, [...(out.get(r.goal) ?? []), r.user_id]);
+    for (const v of out.values()) v.sort(cmp);
+    return out;
+  }
+
+  /** The goals with a plan waiting for a decision, in one read. */
+  async pendingPlanGoals(): Promise<Set<string>> {
+    return new Set((await this.db.all<{ goal: string }>("SELECT DISTINCT goal FROM plan WHERE decision = 'pending'")).map((r) => r.goal));
   }
 
   // ---------- topics ----------

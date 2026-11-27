@@ -76,7 +76,7 @@ describe("probes", () => {
   // MM-1 AC-05 checked schema 7; RL-1 AC-08 (migration 8) moved it to 8; RL-2 AC-08 (migration 9) to 9; RL-3 AC-05 (migration 10) to 10; RL-5 AC-03 (migration 11) to 11; RL-24 AC-17 (migration 13) to 13.
   it("test_AC05_readyz_schema_8 (MM-1, RL-1 AC-08, RL-2 AC-08, RL-3 AC-05, RL-5 AC-03)", async () => {
     const hub = await start(":memory:");
-    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 14, version: pkg.version } });
+    expect(await call(hub, "GET", "/readyz")).toEqual({ status: 200, json: { ok: true, schema: 15, version: pkg.version } });
     expect(HUB_MIGRATIONS_PG).toHaveLength(HUB_MIGRATIONS.length);
   });
 
