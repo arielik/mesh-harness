@@ -434,6 +434,6 @@ describe("RL-12 AC-10 AC-11 filters, total, scopes", { timeout: 90_000 }, () => 
     }
     expect(JSON.stringify((await k.r.call(k.c.ann, "GET", "/v1/goals?pulses=1")).json)).toBe(goalsBefore);
     expect((await k.r.call(k.c.ann, "GET", "/v1/events?after=0&limit=1000")).json).toStrictEqual(evBefore);
-    expect((await k.w.call(undefined as never, "GET", "/healthz")).json.features).toStrictEqual(["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "goal-members", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "step-park", "team-attention", "team-offers", "trial"]);
+    expect((await k.w.call(undefined as never, "GET", "/healthz")).json.features).toStrictEqual(["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "goal-members", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "review-decisions", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "step-park", "team-attention", "team-offers", "trial"]);
   });
 });

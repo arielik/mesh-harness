@@ -213,7 +213,7 @@ describe("RL-4 AC-01 schemas", () => {
   });
 
   it("test_AC01_disposition_via", () => {
-    expect(P.DispositionVia.options).toStrictEqual(["stage", "debrief-session", "auto-accept"]);
+    expect(P.DispositionVia.options).toStrictEqual(["stage", "debrief-session", "auto-accept", "review-submit"]);
   });
 
   it("test_AC01_rl2_rows_parse_unchanged", () => {
@@ -255,5 +255,36 @@ describe("RL-4 AC-01 schemas", () => {
     ok(P.Round.safeParse({ n: 1, user: "alice", finishedAt: 2, outcome: "done", read: { user: "alice", at: 1 } }));
     // Control: a step without read still parses.
     ok(P.Step.safeParse(step));
+  });
+});
+
+describe("RL-29 AC-14 protocol", () => {
+  const FP = "abcdefghijklmn27";
+  const d = (o: Record<string, unknown> = {}) => ({ fingerprint: FP, disposition: "accepted", reason: "fix it", ...o });
+
+  it("test_AC14_disposition_via_parses_old_and_new", () => {
+    for (const via of ["stage", "debrief-session", "auto-accept", "review-submit"]) expect(P.DispositionVia.safeParse(via).success, via).toBe(true);
+  });
+
+  it("test_AC14_review_decisions_request", () => {
+    ok(P.ReviewDecisionsRequest.safeParse({ decisions: [] }));
+    ok(P.ReviewDecisionsRequest.safeParse({ decisions: [d(), d({ disposition: "deferred", until: "2026-12-16" }), d({ requires: [FP] })] }));
+    const bad = [
+      { decisions: [d({ reason: "" })] },
+      { decisions: [{ fingerprint: FP, disposition: "accepted" }] },
+      { decisions: [d({ reason: "x".repeat(2001) })] },
+      { decisions: [d({ disposition: "deferred", until: "2026-02-30" })] },
+      { decisions: [d({ disposition: "deferred", until: "16.12.2026" })] },
+      { decisions: [d({ link: "https://x" })] },
+      { decisions: [d({ x: 1 })] },
+      { decisions: [], extra: 1 },
+      { decisions: Array.from({ length: 501 }, () => d()) },
+      {},
+    ];
+    for (const b of bad) expect(P.ReviewDecisionsRequest.safeParse(b).success, JSON.stringify(b).slice(0, 120)).toBe(false);
+  });
+
+  it("test_AC14_feature", () => {
+    expect(P.HUB_FEATURES).toContain("review-decisions");
   });
 });
