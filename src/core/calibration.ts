@@ -21,6 +21,9 @@ export interface AgentRef {
   hash: string;
 }
 
+/** RL-29: the vias of a person's own debrief decisions (one at a time in a session, or a whole review from a client). */
+export const DEBRIEF_PERSON_VIAS: ReadonlySet<DispositionVia> = new Set<DispositionVia>(["debrief-session", "review-submit"]);
+
 export function agentRefKey(a: AgentRef): string {
   return `${a.key}\n${a.hash}`;
 }
@@ -67,8 +70,8 @@ export function flagEntries(rows: readonly DispositionRow[], historyOf: (lineage
       const n = list[j + 1] as Entry;
       if (
         e.disposition === "dismissed" &&
-        e.via === "debrief-session" &&
-        n.via === "debrief-session" &&
+        DEBRIEF_PERSON_VIAS.has(e.via) &&
+        DEBRIEF_PERSON_VIAS.has(n.via) &&
         e.decider.kind === "person" &&
         n.decider.kind === "person" &&
         n.decider.user === e.decider.user &&

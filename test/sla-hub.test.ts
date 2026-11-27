@@ -300,6 +300,8 @@ describe("RL-15 AC-10 health and cards", { timeout: 120_000 }, () => {
     await record(k, `${G2}.validate`, { dispositions: [], agent: { key: "alpha/validator" } });
     await pk.tickAt(T0 + 2 * DAY);
     cards = (await k.r.call(k.c.ann, "GET", "/v1/pulses/p-1/runs")).json.cards as Json[];
-    expect(cards[0]?.superseded).toStrictEqual([G2, G1]);
+    // RL-29: G2's review superseded G1's untouched one when it became ready; the fire supersedes G2.
+    expect(cards[0]?.superseded).toStrictEqual([G2]);
+    expect((await events(k, "review.superseded")).map((e) => [e.goal, e.payload.by])).toStrictEqual([[G1, `${G2}.debrief`]]);
   });
 });

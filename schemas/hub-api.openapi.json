@@ -12825,6 +12825,128 @@
         }
       }
     },
+    "/v1/steps/{id}/decisions": {
+      "post": {
+        "operationId": "postVStepsIdDecisions",
+        "summary": "Decide every open item of a review (a debrief step) and finish it in one request: the assignee, or a service acting for them (RL-29).",
+        "description": "Any logged-in user (bearer token or web session). Also service tokens with the scope `goals:decide`.",
+        "tags": [
+          "steps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "description": "Repeat-safe retries: a repeated key returns the first response.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-mesh-on-behalf-of",
+            "in": "header",
+            "required": false,
+            "description": "Service tokens only: the user id of the person this request acts for (required for a service on this route).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "decisions": {
+                    "maxItems": 500,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "fingerprint": {
+                          "type": "string",
+                          "pattern": "^[a-z2-7]{16}$"
+                        },
+                        "disposition": {
+                          "type": "string",
+                          "enum": [
+                            "confirmed",
+                            "dismissed",
+                            "deferred",
+                            "accepted"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "until": {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        },
+                        "requires": {
+                          "minItems": 1,
+                          "maxItems": 20,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[a-z2-7]{16}$"
+                          }
+                        }
+                      },
+                      "required": [
+                        "fingerprint",
+                        "disposition",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "decisions"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: { error, details }."
+          },
+          "401": {
+            "description": "Login required."
+          },
+          "403": {
+            "description": "Forbidden."
+          }
+        }
+      }
+    },
     "/v1/questions": {
       "post": {
         "operationId": "postVQuestions",

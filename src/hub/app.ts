@@ -60,6 +60,7 @@ import {
   SyncRequest,
   FleetPauseRequest,
   GoalMembershipRequest,
+  ReviewDecisionsRequest,
   FleetResumeRequest,
   StopRun,
   StopSession,
@@ -631,6 +632,8 @@ export function buildRoutes(svc: HubService): Route[] {
     r("POST", "/v1/steps/:id/dispositions", "member", async (c, a) => c.json(await svc.disposeStep(a, param(c, "id"), await body(c, DisposeRequest)), 201)),
     r("POST", "/v1/steps/:id/spot-checks", "member", async (c, a) => c.json(await svc.spotCheckVerdict(a, param(c, "id"), await body(c, SpotCheckRequest)), 201)),
     r("POST", "/v1/steps/:id/dispositions/revert", "member", async (c, a) => c.json(await svc.revertDisposition(a, param(c, "id"), await body(c, RevertRequest)))),
+    // RL-29: a whole review decided from a client (the assignee, or a service acting for them).
+    forPerson(r("POST", "/v1/steps/:id/decisions", "member", async (c, a) => c.json(await svc.decideReview(a, param(c, "id"), await body(c, ReviewDecisionsRequest))), "goals:decide"), { required: true }),
 
     // ---------- questions, messages ----------
     r("POST", "/v1/questions", "member", async (c, a) => c.json(await svc.ask(a, await body(c, AskRequest)), 201)),
@@ -679,7 +682,7 @@ export function createApp(svc: HubService, opts: { webRoot?: string | undefined 
   const routes = buildRoutes(svc);
 
   app.onError((err, c) => {
-    if (err instanceof HubError) return c.json({ error: err.message, ...(err.code ? { code: err.code } : {}), ...(err.details ? { details: err.details } : {}) }, err.status as 400);
+    if (err instanceof HubError) return c.json({ error: err.message, ...(err.code ? { code: err.code } : {}), ...(err.details ? { details: err.details } : {}), ...(err.problems ? { problems: err.problems } : {}) }, err.status as 400);
     if (err instanceof AuthError) return c.json({ error: err.message }, err.status as 401);
     if (err instanceof ZodError) return c.json({ error: "invalid request", details: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`) }, 400);
     process.stderr.write(`hub error: ${String(err)}\n`);

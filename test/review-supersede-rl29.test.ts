@@ -196,7 +196,10 @@ describe("RL-29 AC-12 decisions carry over by fingerprint", { timeout: 120_000 }
     expect((await v.item(B, lineage)).state).toBe("dismissed");
     expect(await v.item(C, lineage)).toMatchObject({ state: "deferred", until });
     // Past C's until: C opens, the validator confirms it, G3 lists C only.
-    v.w.clock += 31 * DAY;
+    // Two steps, each within the device tokens' idle limit (30 days).
+    v.w.clock += 16 * DAY;
+    await v.goals();
+    v.w.clock += 16 * DAY;
     const R3 = await v.run();
     expect((await v.item(C, lineage)).state).toBe("confirmed");
     expect(await v.openSet(R3.D)).toStrictEqual([C]);

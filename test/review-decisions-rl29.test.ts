@@ -162,10 +162,10 @@ describe("RL-29 AC-05 who may decide, and in which state", { timeout: 120_000 },
   it("test_AC05_refusals", async () => {
     const { v, R, lineage } = await world();
     const set = AC01(v.w.clock);
+    const gateGoal = await v.k.goal(v.ann, [{ id: "g", repo: REPO, kind: "gate", gate: "R1" }]);
     const before = await v.snapshot(R.D, lineage);
     const bob = await v.decide(v.bob, R.D, set);
     expect([bob.status, bob.json.code]).toStrictEqual([403, "not-assignee"]);
-    const gateGoal = await v.k.goal(v.ann, [{ id: "g", repo: REPO, kind: "gate", gate: "R1" }]);
     const gate = await v.decide("ann", `${gateGoal}.g`, set);
     expect([gate.status, gate.json.code]).toStrictEqual([409, "not-a-review"]);
     const unknown = await v.decide("ann", "G999.debrief", set);

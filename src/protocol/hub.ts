@@ -14,6 +14,7 @@ import {
   ReviewItem,
   Severity,
   ReviewRecord,
+  RecordDisposition,
   type DispositionRow,
   type FoldMark,
   type ItemState,
@@ -344,6 +345,33 @@ export type GoalDrop = z.infer<typeof GoalDrop>;
 /** RL-28: body of `POST /v1/goals/:id/join` and `/leave` (the caller, or the person a service acts for). */
 export const GoalMembershipRequest = z.object({}).strict();
 export type GoalMembershipRequest = z.infer<typeof GoalMembershipRequest>;
+
+/** RL-29: a real calendar date `YYYY-MM-DD`. */
+const CalendarDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "until is a date YYYY-MM-DD")
+  .refine((d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d, "until is not a calendar date");
+
+/** RL-29: one decision of `POST /v1/steps/:id/decisions` (a record disposition without `link`). */
+export const ReviewDecision = RecordDisposition.omit({ link: true }).extend({ until: CalendarDate.optional() }).strict();
+export type ReviewDecision = z.infer<typeof ReviewDecision>;
+
+/** RL-29: body of `POST /v1/steps/:id/decisions`: one decision per item of the review's open set. */
+export const ReviewDecisionsRequest = z.object({ decisions: z.array(ReviewDecision).max(500) }).strict();
+export type ReviewDecisionsRequest = z.infer<typeof ReviewDecisionsRequest>;
+
+/** RL-29: reply of `POST /v1/steps/:id/decisions`. */
+export interface ReviewDecisionsResult {
+  step: string;
+  goal: string;
+  round: number;
+  /** Over the whole round (decisions a session made earlier in it included). */
+  counts: { accepted: number; dismissed: number; deferred: number };
+  /** The steps the settle changed, in step order. */
+  next: { step: string; state: StepState }[];
+  /** A downstream sink step that became ready: its topic and the clean-audit goal title of the lineage repo. */
+  sink: { topic: string; title: string } | null;
+}
 
 /** RL-28: reply of `POST /v1/goals/:id/join` and `/leave`. `changed`: false when nothing was to do. */
 export interface GoalMembership {
@@ -859,7 +887,7 @@ export interface FleetView {
 }
 
 /** RL-11: the feature names `GET /healthz` reports (sorted; a release adds names, never removes one). */
-export const HUB_FEATURES: readonly string[] = ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "goal-members", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "step-park", "team-attention", "team-offers", "trial"];
+export const HUB_FEATURES: readonly string[] = ["agent-compare", "alert-notify", "changes", "commits", "debrief-sla", "decide-for", "efficiency", "findings-rollup", "fleet-pause", "goal-members", "health", "overlap-policy", "preset-check", "profile-fit", "pulse-runs", "questions-list", "review-decisions", "run-stop", "runs", "session-stop", "spot-checks", "step-assign-for", "step-park", "team-attention", "team-offers", "trial"];
 
 /** RL-25: an RFC 3339 time as Alertmanager writes it (fractions to nanoseconds, `Z` or an offset). */
 const Rfc3339 = z

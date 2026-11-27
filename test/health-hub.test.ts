@@ -203,6 +203,8 @@ describe("RL-12 AC-08 decisions", { timeout: 90_000 }, () => {
     const G1 = (await pk.fireOk("ann", "p-1")).goal as string;
     await stage(k, ann, `${G1}.audit`, { started: true, items: [item("O", { severity: "S2" })], agent: AUD, telemetry: tel({ runId: "a1", agentKey: AUD.key, agentHash: AUD.hash, durationMs: 1, costUsdEstimate: 3 }) });
     g1Ready = await stage(k, ann, `${G1}.validate`, { dispositions: [disp(O, "accepted")], agent: VAL });
+    // RL-29: G1's debrief is held, so G2's review does not supersede it.
+    await k.k.claim(ann, `${G1}.debrief`);
     // Goal 2 of p-1, in the window: raises O (repeat), F (S1), G (S3), X (S4, stays open);
     // validate accepts F; the debrief accepts F again with a link (two rows, one item), and accepts
     // G, then reverts that (G is open again).
