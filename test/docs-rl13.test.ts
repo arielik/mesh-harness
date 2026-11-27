@@ -30,7 +30,7 @@ describe("RL-13 AC-10 docs", () => {
 
   it("test_AC10_operations_events_plan", () => {
     const o = read("docs/guide/operations.md");
-    expect(section(o, "Upgrading to 0.1.45")).toContain("0.1.32 records the commit of each step round");
+    expect(section(o, "Upgrading to 0.1.46")).toContain("0.1.32 records the commit of each step round");
     expect(section(o, "Probes", "###")).toContain("`commits`");
     const ev = read("docs/events.md");
     expect(ev.split("\n").some((l) => l.includes("`step.done`") && l.includes("`commit`"))).toBe(true);

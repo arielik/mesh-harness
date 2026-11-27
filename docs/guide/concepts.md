@@ -739,6 +739,10 @@ note. A revert does not re-run later stages. Person precedence applies to debrie
 any person's: a later agent disposition of the item in the same goal is ignored. Events never
 carry answers, reasons or titles; notes and the item history do (team-visible).
 
+**Deciding a review from a client** (0.1.46, feature `review-decisions`). A client such as a dashboard decides a whole review in one request, `POST /v1/steps/:id/decisions`: one decision per item the review lists now (accept, dismiss or defer), each with a reason; a dismiss needs the person's reason and a defer a date later than today (UTC). The assignee sends it, or a service with `goals:decide` acting for them, while the review is ready, paused or claimed by the assignee; no claim and no session are needed. The request records the decisions (`via: review-submit`, revertable like a session's), the round's review record and the step done, so the next stage (the `file` step) runs on the accepted items at once. A set that leaves an item undecided, names an item the review does not list, or breaks the step's `may_set` is refused with one problem per decision and nothing is written. Deciding item by item in a session stays `mesh debrief <step>`.
+
+**A newer run supersedes an older open review** (0.1.46). When a review of a pulse goal becomes ready, the older open reviews of the same pulse and the same lineage (preset, repo and raising agent) are ended into the newest one, when no one has started deciding them: a review that is claimed, or has a decision in its round, is left alone, as is a goal with other held or paused steps or machine work, a trial goal and another pulse's goal. The older goal sinks what it filed and is dropped with reason `superseded` (`review.superseded`); its undecided items are carried into the newer review, which lists them beside its own run's items, and its `file` step files a carried item accepted there. Decisions carry over by fingerprint: an item accepted, dismissed, or deferred to a later date is not presented again.
+
 ## Calibration
 
 **Trial goals** (0.1.30). Dismissals recorded in a trial goal (a pulse's trial fire) never count:
