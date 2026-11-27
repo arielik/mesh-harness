@@ -388,6 +388,8 @@ const viaOf = (actor: { via?: string | undefined }): { via?: string } => (actor.
 
 /** RL-28 REQ-REOPEN-7: the `state` values of `GET /v1/goals`. */
 const GOAL_LIST_STATES: readonly string[] = ["open", "done", "dropped", "all"];
+/** RL-28 REQ-REOPEN-8: a done goal a person may reopen (not clean-audit, pulse, calibration or spot-check). */
+const reopenable = (g: Goal): boolean => !g.sink && g.refs?.pulse === undefined && !g.calibration && !g.spotCheck;
 /** The list state of a goal: a done goal waiting for an amendment's decision is open. */
 const listState = (g: { state: string; planPending: boolean }): string => (g.state === "dropped" ? "dropped" : g.state === "done" && !g.planPending ? "done" : "open");
 /** RL-22: the end of a session message relayed by a service for a person. */
@@ -2683,7 +2685,7 @@ export class HubService {
       const member = o.member === "me" ? viewer?.userId : o.member;
       const listed = (await this.store.listGoals())
         .filter((g) => goalHasTopics(g, want) && (o.pulses === true || g.refs?.pulse === undefined))
-        .map((g) => ({ ...g, members: members.get(g.id) ?? [], planPending: pending.has(g.id) }));
+        .map((g) => ({ ...g, members: members.get(g.id) ?? [], planPending: g.state !== "dropped" && pending.has(g.id) }));
       return listed.filter((g) => (member === undefined || g.members.includes(member)) && (state === undefined || listState(g) === state || state === "all"));
     });
   }
@@ -2893,8 +2895,8 @@ export class HubService {
     await this.goalTx(async () => {
       const goal = await this.goalOr404(goalId, true);
       if (!isOwnerOrAdmin(actor, goal.ownerId) && !actor.roles.includes("approver")) throw refuse(403, "not-approver", `only the goal owner, approvers or admins can replan ${goal.id}`);
-      // RL-28 REQ-REOPEN-4: a done goal reopens to design (a clean-audit goal does not).
-      if (goal.state === "dropped" || (goal.state === "done" && goal.sink)) throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
+      // RL-28 REQ-REOPEN-4, -8: a done goal reopens to design (not a clean-audit or hub-opened goal).
+      if (goal.state === "dropped" || (goal.state === "done" && !reopenable(goal))) throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
       const design = await this.store.getStep(`${goal.id}.design`);
       if (!design) throw refuse(404, "design-unknown", `${goal.id} has no design step`);
       const now = this.now();
@@ -2929,8 +2931,10 @@ export class HubService {
       const goal = await this.goalOr404(goalId);
       // RL-9: before any other check.
       if (goal.sink) throw new HubError(409, `${goal.id} is a clean-audit goal; its steps come from audits`);
-      // RL-28 REQ-REOPEN-1: a done goal takes an amendment (it stays done until the approval).
+      // RL-28 REQ-REOPEN-1: a done goal takes an amendment (it stays done until the approval);
+      // REQ-REOPEN-8: not a goal the hub opened (pulse, calibration, spot check).
       if (goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      if (goal.state === "done" && !reopenable(goal)) throw refuse(409, "goal-closed", `${goal.id} is done`);
       const errors = [...validatePlan(input.steps), ...validatePolicies(input.steps, input.acs)];
       for (const s of input.steps) if (s.profile !== undefined && !(await this.resolveProfile(s.profile))) errors.push(`step "${s.id}": unknown profile "${s.profile}"`);
       // RL-5: roster keys must resolve to a catalog definition.
@@ -3958,7 +3962,7 @@ export class HubService {
           holders: [...new Set(steps.filter((s) => s.holderUser && (s.state === "claimed" || s.state === "paused")).map((s) => s.holderUser as string))],
           stepStates,
           review: all.filter((s) => isDebrief(s.policy) && (s.state === "ready" || s.state === "claimed" || s.state === "paused")).length,
-          planPending: pending.has(g.id),
+          planPending: g.state !== "dropped" && pending.has(g.id),
         });
       }
       const hostnames = new Map(machines.map((m) => [m.id, m.hostname]));

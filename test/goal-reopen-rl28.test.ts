@@ -1,9 +1,11 @@
 // RL-28 reopen of a done goal: a proposal and an approval reopen it to in_progress (AC-10, AC-11),
 // a revise leaves it done (AC-12), a replan reopens it to design (AC-13), every other refusal on a
-// closed goal stays (AC-14), and the `state` filter of `GET /v1/goals` (AC-20). Written from
+// closed goal stays (AC-14), the `state` filter of `GET /v1/goals` (AC-20), done goals the hub opened stay
+// closed (AC-21) and a dropped goal has no pending plan (AC-22). Written from
 // docs/specs/RL-28.md. People: ann (member), bob (member, approver); the service svc acts for bob.
 
 import { afterEach, describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { Ak, NOW } from "./helpers/attention-kit.ts";
 import { CLEAN_TEXT, Sk, acc, fA, IA } from "./helpers/sink-kit.ts";
 import type { Json } from "./helpers/world.ts";
@@ -66,13 +68,18 @@ describe("RL-28 AC-10 AC-11 an amendment reopens a done goal", () => {
     const tl = await k.call("ann", "GET", `/v1/goals/${G4}/timeline`);
     expect(tl.json.timeline.filter((e: Json) => e.type === "goal.reopened").map((e: Json) => e.text)).toStrictEqual([`reopened ${G4} (in_progress)`]);
     expect((await listed("ann", G4))?.planPending).toBe(false);
-    // The new step finishes: done again, a second goal.done.
+    // The new step finishes later: done again, a second goal.done.
+    k.w.clock += 3_600_000;
     await finish("bob", `${G4}.c`);
     expect(await state(G4)).toBe("done");
-    expect(await ofGoal(G4, ["goal.done"])).toHaveLength(2);
-    // The trail's goal.yaml rolls up from the last goal.done.
+    const dones = await ofGoal(G4, ["goal.done"]);
+    expect(dones).toHaveLength(2);
+    expect(dones[1].at).toBeGreaterThan(dones[0].at);
+    // REQ-REOPEN-5: the trail's goal.yaml rolls up from the last goal.done.
     const files = await k.call("ann", "GET", `/v1/goals/${G4}/files`);
     expect(files.status).toBe(200);
+    const yaml = files.json.files.find((f: Json) => f.path.endsWith("goal.yaml"));
+    expect(Date.parse(parseYaml(yaml.text).done)).toBe(dones[1].at);
   });
 
   it("test_AC10_propose_with_approve", async () => {
@@ -203,6 +210,48 @@ describe("RL-28 AC-14 refusals that stay", () => {
     await sk.w.hub.svc.store.saveGoal({ ...(g as NonNullable<typeof g>), state: "done" });
     const r2 = await sk.call(sk.ann, "POST", `/v1/goals/${CG}/plan`, { steps, approve: false });
     expect([r2.status, r2.json]).toStrictEqual([409, refused]);
+  });
+});
+
+describe("RL-28 AC-21 goals the hub opened stay closed when done", () => {
+  it("test_AC21_pulse_calibration_spot_check", async () => {
+    await start();
+    const ref = { lineage: "L", fp: "f", goal: "G0", step: "G0.a", round: 1, at: NOW };
+    const kinds: [string, Record<string, unknown>][] = [
+      ["pulse", { refs: { pulse: "p-1", slot: "s" } }],
+      ["calibration", { calibration: { key: "app/auditor", hash: "h", threshold: 1, dismissals: [ref] } }],
+      ["spot check", { spotCheck: { key: "app/validator", hash: "h", samples: [{ ...ref, disposition: "dismissed", why: "rate", sampledAt: NOW }] } }],
+    ];
+    for (const [name, extra] of kinds) {
+      const G = await doneGoal("bob");
+      await k.patchGoal(G, extra);
+      const before = (await k.store.listPlans(G)).length;
+      const p = await k.plan("bob", G, AMEND, false);
+      expect([p.status, p.json.code], name).toStrictEqual([409, "goal-closed"]);
+      const r = await k.call("bob", "POST", `/v1/goals/${G}/replan`, {});
+      expect([r.status, r.json.code], name).toStrictEqual([409, "goal-closed"]);
+      expect((await k.store.listPlans(G)).length, name).toBe(before);
+      expect(await state(G), name).toBe("done");
+      expect(await ofGoal(G, ["goal.reopened"]), name).toStrictEqual([]);
+    }
+    // Control: the same done goal without those fields takes the amendment.
+    const P = await doneGoal("bob");
+    expect((await k.plan("bob", P, AMEND, false)).status).toBe(201);
+  });
+});
+
+describe("RL-28 AC-22 planPending on a dropped goal", () => {
+  it("test_AC22_dropped_goal_has_no_pending_plan", async () => {
+    await start();
+    const G = await k.goal("ann", [{ id: "a" }], "dropped with a pending plan");
+    expect((await k.plan("ann", G, AMEND, false)).status).toBe(201);
+    expect((await listed("ann", G))?.planPending).toBe(true);
+    expect((await k.call("ann", "POST", `/v1/goals/${G}/drop`, {})).status).toBe(200);
+    expect((await k.store.listPlans(G)).at(-1)?.decision).toBe("pending");
+    expect((await listed("ann", G))?.planPending).toBe(false);
+    expect((await listed("ann", G, "?state=dropped"))?.planPending).toBe(false);
+    const live = await k.call("ann", "GET", "/v1/live");
+    expect(live.json.goals.find((g: Json) => g.id === G).planPending).toBe(false);
   });
 });
 
