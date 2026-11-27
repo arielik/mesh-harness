@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { record } from "./helpers/overlap-kit.ts";
 import { A, acc, B, C, dayOf, DAY, def, dis, EH2, EV_C, IA, IB, IC, item, Rv, type Json, type Run } from "./helpers/revdec-kit.ts";
+import { carryFps } from "../src/hub/service.ts";
 
 let v: Rv | undefined;
 afterEach(async () => {
@@ -12,9 +13,9 @@ afterEach(async () => {
   v = undefined;
 });
 
-async function start(o: { overlap?: string } = {}): Promise<Rv> {
+async function start(o: { overlap?: string; gate?: boolean } = {}): Promise<Rv> {
   v = await Rv.start();
-  await v.pulse("ann", o.overlap ? { overlap: o.overlap } : {});
+  await v.pulse("ann", { ...(o.overlap ? { overlap: o.overlap } : {}), ...(o.gate ? { gate: true } : {}) });
   return v;
 }
 
@@ -180,6 +181,33 @@ describe("RL-29 AC-11 when an older review is kept", { timeout: 180_000 }, () =>
     const R2 = await w.run();
     expect(await w.goalState(R1.G)).toBe("dropped");
     expect((await w.ev("review.superseded"))[0]?.payload.by).toBe(R2.D);
+  });
+});
+
+describe("RL-29 AC-11 a review reopened from done is not a settle", { timeout: 120_000 }, () => {
+  it("test_AC11_reopened_by_gate_kept", async () => {
+    const w = await start({ gate: true });
+    const R1 = await w.run();
+    await w.decideOk("ann", R1.D, [acc(A), dis(B), dis(C)]);
+    const R2 = await w.run();
+    expect((await w.step(R2.D)).state, "control: G2's review is open").toBe("ready");
+    const rej = await w.k.r.call(w.ann, "POST", `/v1/steps/${R1.G}.g/reject`, { reopen: ["debrief"], comment: "again" });
+    expect(rej.status, JSON.stringify(rej.json)).toBe(200);
+    expect((await w.step(R1.D)).state, "control: G1's review reopened").toBe("ready");
+    expect(await w.goalState(R1.G)).not.toBe("dropped");
+    expect(await w.ev("review.superseded")).toHaveLength(0);
+  });
+});
+
+describe("RL-29 REQ-REVSUP-2 the carry cap keeps the most severe", () => {
+  it("test_carry_cap_item_order", () => {
+    const row = (fp: string, severity: string, at: number) => ({ fp, severity, first: { at } }) as never;
+    const rows = [row("zzzzzzzzzzzzzzzz", "S1", 5000), ...Array.from({ length: 1000 }, (_, i) => row(`a${String(i).padStart(15, "0")}`, "S4", i))];
+    const kept = carryFps(rows);
+    expect(kept).toHaveLength(1000);
+    expect(kept).toContain("zzzzzzzzzzzzzzzz");
+    expect(kept).not.toContain(`a${String(999).padStart(15, "0")}`);
+    expect(kept).toStrictEqual([...kept].sort());
   });
 });
 

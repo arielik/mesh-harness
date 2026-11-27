@@ -38,7 +38,7 @@ export const TITLES: Record<string, string> = { [A]: "T-A", [B]: "T-B", [C]: "T-
 export const dayOf = (ms: number, days = 0) => new Date(ms + days * DAY).toISOString().slice(0, 10);
 
 /** The routine-audit preset; `maySet` replaces the debrief's `may_set`. */
-export function routineText(o: { maySet?: string[] } = {}): string {
+export function routineText(o: { maySet?: string[]; gate?: boolean } = {}): string {
   return `description: Routine audit
 steps:
   - id: audit
@@ -82,7 +82,7 @@ steps:
     inputs: [dispositions]
     title: File
     brief: File.
-`;
+${o.gate ? '  - { id: g, kind: gate, gate: R1, repo: "{repo}", deps: [debrief], title: G, brief: g }\n' : ""}`;
 }
 
 export const acc = (f: string, reason = "fix it", extra: Record<string, unknown> = {}) => ({ fingerprint: f, disposition: "accepted", reason, ...extra });
@@ -136,7 +136,7 @@ export class Rv {
   }
 
   /** A pulse of `who` (overlap `skip` unless given); returns its id. */
-  async pulse(who = "ann", o: { agent?: string; maySet?: string[]; overlap?: string } = {}): Promise<string> {
+  async pulse(who = "ann", o: { agent?: string; maySet?: string[]; overlap?: string; gate?: boolean } = {}): Promise<string> {
     const p = await this.pk.pulseOk(who, {
       preset: snap("routine-audit", routineText(o)),
       params: { repo: REPO, agent: o.agent ?? "auditor" },

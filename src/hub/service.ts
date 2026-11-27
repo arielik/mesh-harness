@@ -483,6 +483,11 @@ function byItemOrder(a: ItemRow, b: ItemRow): number {
   return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || a.first.at - b.first.at || (a.fp < b.fp ? -1 : a.fp > b.fp ? 1 : 0);
 }
 
+/** RL-15/RL-29: the fps of a carry entry: at most 1000, the most severe kept (item order), stored sorted. */
+export function carryFps(rows: readonly ItemRow[]): string[] {
+  return [...rows].sort(byItemOrder).slice(0, 1000).map((r) => r.fp).sort();
+}
+
 /** RL-9: the goal id in the step ids of a sink dry run that would open its clean-audit goal. */
 const NEW_GOAL = "<new>";
 /** RL-9: the states a sync or a refile leaves alone apart from a note. */
@@ -2456,7 +2461,7 @@ export class HubService {
     if (slot) {
       const carry = [...(slot.carry ?? [])];
       const at = carry.findIndex((c) => c.step === local(into.step) && c.lineage === lineage);
-      const merged = [...new Set([...(at >= 0 ? (carry[at] as Carry).fps : []), ...fps])].sort().slice(0, 1000);
+      const merged = carryFps(await this.rowsOf(lineage, new Set([...(at >= 0 ? (carry[at] as Carry).fps : []), ...fps])));
       if (at >= 0) carry[at] = { ...(carry[at] as Carry), fps: merged };
       else carry.push({ step: local(into.step), lineage, fps: merged });
       await this.store.saveSlot({ ...slot, carry });
@@ -3638,8 +3643,8 @@ export class HubService {
         files = [await this.goalYaml(doneGoal)];
       }
       const record = await this.recordOf(r.step, steps);
-      // RL-29: a review made ready here may supersede older ones (last in the transaction).
-      await this.supersedeReviews(nowReady, now);
+      // RL-29: a review this write moved blocked → ready (not one reopened from done) may supersede older ones (last in the transaction).
+      await this.supersedeReviews(nowReady.filter((id) => all.find((x) => x.id === id)?.state === "blocked"), now);
       return { step: r.step, reopened: reopened.map((s) => s.id), nowReady, goalDone, record, ...(files ? { files } : {}) };
     });
   }
@@ -3697,7 +3702,7 @@ export class HubService {
         files = [await this.goalYaml(doneGoal)];
       }
       const record = await this.recordOf(decided, steps);
-      await this.supersedeReviews(nowReady, now);
+      await this.supersedeReviews(nowReady.filter((id) => all.find((x) => x.id === id)?.state === "blocked"), now);
       return { step: decided, reopened: explicit, nowReady, goalDone, record, ...(files ? { files } : {}) };
     });
   }
@@ -7603,7 +7608,7 @@ export class HubService {
     }
     const out: Carry[] = [];
     for (const e of carry.values()) {
-      const fps = [...e.rows.values()].sort(byItemOrder).slice(0, 1000).map((r) => r.fp).sort();
+      const fps = carryFps([...e.rows.values()]);
       if (fps.length) out.push({ step: e.step, lineage: e.lineage, fps });
     }
     return { goals, carry: out };
