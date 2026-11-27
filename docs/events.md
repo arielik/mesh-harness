@@ -14,6 +14,9 @@ Every event has `seq`, `id`, `at` (ms, hub clock; daemon clock for synced `sessi
 | `goal.created` | a new goal | `title`; goals made by a pulse or by ingest: `preset` (name), and for a pulse `pulse`, `slot`, and `trial: true` for a trial fire (0.1.30); a clean-audit goal opened by a sink: `sink` (`repo`, `topic`) |
 | `goal.replan` | the design is reopened | `comment` |
 | `goal.done` | the last step finished | — |
+| `goal.joined` | a person joined a goal (`mesh goal join`, `POST /v1/goals/:id/join`), or created it (after `goal.created`; RL-28); `user` = the member | `via?` |
+| `goal.left` | a person left a goal (`mesh goal leave`, `POST /v1/goals/:id/leave`); `user` = the member | `via?` |
+| `goal.reopened` | a done goal reopened: an approved plan added work (`to: "in_progress"`, after `plan.approved`) or a replan (`to: "design"`, after `goal.replan`); a reopened goal emits `goal.done` again when it completes (RL-28). Activity: `reopened <G> (<to>)` | `from` (`done`), `to`, `version?` (the approved plan), `comment?` (the replan's), `via?` |
 | `goal.dropped` | a pulse dropped the goal (its slot was missed, its goal was abandoned, or a later slot superseded it), or a person dropped it (`mesh goal drop`; `user`) | `reason` (`missed`, `abandoned`, `superseded` (0.1.37), `person`); for `person` also `by` and `comment` (the `--reason`, when given) |
 | `goal.sunk` | a sink stage (done or skipped) or `mesh items sink` added or reopened finding steps in a clean-audit goal, or a move put finding steps in it; one per clean-audit goal that got steps; `goal` = the clean-audit goal, `step` = the sink stage (or the audit step of a fold move). Activity: `<n> findings from <from> (<m> reopened)` | `goal`, `from` (the sink stage's id, `mesh items sink`, the audit step's id for a fold move, or `mesh items retarget`), `added` (created and moved steps), `reopened` (step ids) |
 | `goal.sink_failed` | a sink stage could not sink (its topic is no longer defined); nothing of the sink was written, the stage's own change committed, and the stage got the note `sink failed: <reason>`; `goal`, `step` = the relay goal and its sink stage | `from` (the sink stage's id), `reason` |
@@ -88,7 +91,7 @@ never carry agent texts, descriptions or paths.
 
 A plan replaced before anyone decided is stored as `superseded`, not `revised`. It emits no `plan.revised`, so design rounds count only human requests for changes.
 
-A request a service makes for a person (`X-Mesh-On-Behalf-Of`) emits its events with `user` = the person, and these carry `via` (the service user id) in the payload: `plan.approved`, `plan.revised`, `goal.replan`, `gate.approved`, `gate.rejected`, `step.reopened`, `step.resumed`, `step.parked`, `question.answered`, `message.sent`, `goal.dropped`, `goal.created` (from 0.1.42), and `pulse.*`, `profile.saved` and `step.offered` before that. Events that follow on their own (`step.ready`, `step.skipped`, offer events) carry no `via`, nor does any event of a request made without the header.
+A request a service makes for a person (`X-Mesh-On-Behalf-Of`) emits its events with `user` = the person, and these carry `via` (the service user id) in the payload: `plan.approved`, `plan.revised`, `goal.replan`, `gate.approved`, `gate.rejected`, `step.reopened`, `step.resumed`, `step.parked`, `question.answered`, `message.sent`, `goal.dropped`, `goal.created` (from 0.1.42), `goal.joined`, `goal.left`, `goal.reopened` (from 0.1.45), and `pulse.*`, `profile.saved` and `step.offered` before that. Events that follow on their own (`step.ready`, `step.skipped`, offer events) carry no `via`, nor does any event of a request made without the header.
 
 ## Synced by daemons
 
