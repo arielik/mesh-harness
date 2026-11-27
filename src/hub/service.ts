@@ -2893,7 +2893,8 @@ export class HubService {
     await this.goalTx(async () => {
       const goal = await this.goalOr404(goalId, true);
       if (!isOwnerOrAdmin(actor, goal.ownerId) && !actor.roles.includes("approver")) throw refuse(403, "not-approver", `only the goal owner, approvers or admins can replan ${goal.id}`);
-      if (goal.state === "done" || goal.state === "dropped") throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
+      // RL-28 REQ-REOPEN-4: a done goal reopens to design (a clean-audit goal does not).
+      if (goal.state === "dropped" || (goal.state === "done" && goal.sink)) throw refuse(409, "goal-closed", `${goal.id} is ${goal.state}`);
       const design = await this.store.getStep(`${goal.id}.design`);
       if (!design) throw refuse(404, "design-unknown", `${goal.id} has no design step`);
       const now = this.now();
@@ -2917,6 +2918,7 @@ export class HubService {
         actor.via ? viaOf(actor) : undefined,
       );
       await this.emit({ type: "goal.replan", user: actor.userId, goal: goal.id, step: reopened.id, payload: { comment, ...viaOf(actor) } });
+      if (goal.state === "done") await this.emit({ type: "goal.reopened", user: actor.userId, goal: goal.id, payload: { from: "done", to: "design", ...(comment ? { comment } : {}), ...viaOf(actor) } });
       await this.emitReady(goal.id, reopened.id);
     });
     return await this.goalDetail(goalId);
@@ -2927,7 +2929,8 @@ export class HubService {
       const goal = await this.goalOr404(goalId);
       // RL-9: before any other check.
       if (goal.sink) throw new HubError(409, `${goal.id} is a clean-audit goal; its steps come from audits`);
-      if (goal.state === "done" || goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
+      // RL-28 REQ-REOPEN-1: a done goal takes an amendment (it stays done until the approval).
+      if (goal.state === "dropped") throw new HubError(409, `${goal.id} is ${goal.state}`);
       const errors = [...validatePlan(input.steps), ...validatePolicies(input.steps, input.acs)];
       for (const s of input.steps) if (s.profile !== undefined && !(await this.resolveProfile(s.profile))) errors.push(`step "${s.id}": unknown profile "${s.profile}"`);
       // RL-5: roster keys must resolve to a catalog definition.
@@ -2954,7 +2957,8 @@ export class HubService {
       // A plan made from a template (`mesh goal plan --preset`): the goal records it, so its review
       // lineages carry the preset name like a pulse's goals (RL-3), not "-".
       const preset = input.preset && (goal.preset?.name !== input.preset.name || goal.preset.text !== input.preset.text) ? { preset: input.preset } : {};
-      if (goal.state !== "in_progress" || "preset" in preset) await this.store.saveGoal({ ...goal, ...preset, ...(goal.state !== "in_progress" ? { state: "awaiting_approval" as const } : {}), updatedAt: now });
+      const amends = goal.state === "in_progress" || goal.state === "done";
+      if (!amends || "preset" in preset) await this.store.saveGoal({ ...goal, ...preset, ...(!amends ? { state: "awaiting_approval" as const } : {}), updatedAt: now });
       await this.emit({ type: "plan.proposed", user: actor.userId, goal: goal.id, payload: { version: plan.version, steps: plan.steps.length } });
       return plan;
     });
@@ -3039,8 +3043,11 @@ export class HubService {
     const finalSteps = afterFirst.map((s) => ready.find((x) => x.id === s.id) ?? s);
     const fresh = await this.store.getGoal(goal.id);
     const complete = HubService.goalComplete(fresh ?? goal, finalSteps);
+    // RL-28 REQ-REOPEN-2: an approved amendment that adds work reopens a done goal.
+    const reopens = (fresh ?? goal).state === "done" && !complete;
     await this.store.saveGoal({ ...(fresh ?? goal), state: complete ? "done" : "in_progress", updatedAt: now });
     await this.emit({ type: "plan.approved", user: by.userId, goal: goal.id, payload: { version: plan.version, ...viaOf(by) } });
+    if (reopens) await this.emit({ type: "goal.reopened", user: by.userId, goal: goal.id, payload: { from: "done", to: "in_progress", version: plan.version, ...viaOf(by) } });
     await this.emitOffersEnded(by, [...first.ended, ...second.ended]);
     const finalState = new Map(finalSteps.map((s) => [s.id, s.state]));
     for (const s of [...m.upserts, ...ready].filter((x) => x.state === "ready" && finalState.get(x.id) === "ready")) await this.emitReady(goal.id, s.id);
