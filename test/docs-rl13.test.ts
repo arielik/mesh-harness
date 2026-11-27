@@ -42,6 +42,6 @@ describe("RL-13 AC-10 docs", () => {
   it("test_AC10_skill_and_version", () => {
     expect(read("skills/mesh/SKILL.md")).toBe(MESH_SKILL);
     expect(MESH_SKILL).toContain("pass `commit` only when the work is in a");
-    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.45");
+    expect((JSON.parse(read("package.json")) as { version: string }).version).toBe("0.1.46");
   });
 });
